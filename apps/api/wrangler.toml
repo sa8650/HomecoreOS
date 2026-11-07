@@ -1,0 +1,26 @@
+name = "helios-api"
+main = "src/worker.ts"
+compatibility_date = "2024-11-08"
+compatibility_flags = ["nodejs_compat"]
+
+# Non-secret configuration. All secrets are set with `wrangler secret put`.
+[vars]
+DB_DRIVER = "supabase"
+MQTT_PROVIDER = "emqx"
+PUBLIC_API_BASE = "https://api.example.com"
+INGRESS_INSTANCE = "primary"
+
+[[durable_objects.bindings]]
+name = "MQTT_INGRESS"
+class_name = "MqttIngressDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MqttIngressDO"]
+
+[[r2_buckets]]
+binding = "FIRMWARE_BUCKET"
+bucket_name = "helios-firmware"
+
+[triggers]
+crons = ["0 * * * *"]

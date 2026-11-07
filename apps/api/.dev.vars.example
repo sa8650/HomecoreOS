@@ -1,0 +1,15 @@
+# Local Wrangler development only. Never commit real values.
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=replace-with-service-role-key
+SUPABASE_ANON_KEY=replace-with-anon-key
+SUPABASE_JWT_SECRET=replace-with-jwt-secret
+EMQX_API_BASE=https://your-deployment.emqxcloud.com:443/api/v5
+EMQX_APP_ID=replace-with-app-id
+EMQX_APP_SECRET=replace-with-app-secret
+EMQX_BROKER_HOST=your-deployment.emqxcloud.com
+EMQX_TLS_PORT=8883
+EMQX_WSS_URL=wss://your-deployment.emqxcloud.com:8084/mqtt
+MQTT_BRIDGE_USERNAME=replace-with-bridge-user
+MQTT_BRIDGE_PASSWORD=replace-with-bridge-password
+INGRESS_HMAC_SECRET=replace-with-random-32-byte-hex
+SECRETS_KEY=replace-with-64-char-hex-random-key

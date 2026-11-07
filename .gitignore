@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.local
+*.local
+.pglite-data/
+coverage/
+.DS_Store
+*.log
+apps/web/.vite/
+firmware/helios_esp32/ca_cert.cpp
+.env.local
+.pglite-data/
+
+.npm/

@@ -1,0 +1,26 @@
+{
+  "name": "@helios/api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx --watch src/local-server.ts",
+    "start": "node --import tsx src/local-server.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@helios/core": "*",
+    "hono": "^4.6.13",
+    "jose": "^5.9.6",
+    "zod": "^3.23.8",
+    "mqtt": "^5.10.3"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "@hono/node-server": "^1.13.7",
+    "wrangler": "^3.86.1",
+    "@cloudflare/workers-types": "^4.20241127.0"
+  }
+}

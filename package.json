@@ -1,0 +1,35 @@
+{
+  "name": "helios-home",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Helios \u2014 multi-tenant smart home automation SaaS (Cloudflare Pages + Workers, Supabase, EMQX Serverless, ESP32)",
+  "workspaces": [
+    "packages/core",
+    "apps/api",
+    "apps/web",
+    "apps/broker"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "npm run dev -w apps/web",
+    "dev:api": "npm run dev -w apps/api",
+    "dev:broker": "npm run dev -w apps/broker",
+    "build": "npm run build -w packages/core && npm run build -w apps/web && npm run build -w apps/api",
+    "build:web": "npm run build -w apps/web",
+    "test": "node --import tsx --test tests/*.test.mjs",
+    "test:schema": "node --import tsx --test tests/schema.test.mjs",
+    "db:seed-board-lib": "node scripts/board-catalog.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "sim": "node simulator/esp32-sim.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

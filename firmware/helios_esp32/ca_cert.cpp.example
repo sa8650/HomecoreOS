@@ -1,0 +1,9 @@
+// Copy this file to ca_cert.cpp and paste your EMQX Cloud deployment root CA.
+// ca_cert.cpp is gitignored because it contains deployment-specific PEM data.
+#include "ca_cert.h"
+
+const char *helios_root_ca = R"PEM(
+-----BEGIN CERTIFICATE-----
+PASTE_THE_ROOT_CA_OF_YOUR_EMQX_CLOUD_DEPLOYMENT_HERE
+-----END CERTIFICATE-----
+)PEM";
