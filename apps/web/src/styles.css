@@ -471,12 +471,43 @@ table.tbl tbody tr:hover { background: var(--surface-2); }
 .icon-box { width: 36px; height: 36px; border-radius: var(--r-8); background: var(--surface-3);
   display: grid; place-items: center; color: var(--text-2); flex: none; }
 .icon-box svg { width: 17px; height: 17px; }
+/* Board library cards: a fixed illustration window, a head row, then a body that
+   stretches so every card in a row lines up however long the description is. */
 .board-tile { border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden;
+  display: flex; flex-direction: column; height: 100%; min-width: 0;
   transition: box-shadow var(--tone) var(--ease), transform var(--move) var(--ease); background: var(--surface); }
 .board-tile:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
-.board-tile .art { height: 120px; background: var(--surface-2); display: grid; place-items: center;
-  border-bottom: 1px solid var(--border); }
-.board-tile .model { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+.board-tile .art { flex: none; height: 104px; background: var(--surface-2);
+  display: grid; place-items: center; padding: var(--sp-150);
+  border-bottom: 1px solid var(--border); overflow: hidden; }
+.board-tile .art svg { width: 76px; height: 76px; display: block; }
+.board-tile .head { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--sp-100); margin-bottom: var(--sp-25); }
+.board-tile .head h4 { font-size: 14px; font-weight: 700; line-height: 20px; margin: 0;
+  min-width: 0; overflow-wrap: anywhere; }
+.board-tile .head .badge { flex: none; white-space: nowrap; }
+.board-tile .model { font-size: 12px; color: var(--text-3); margin-top: 2px;
+  overflow-wrap: anywhere; }
+.board-tile .body { padding: var(--sp-200); display: flex; flex-direction: column;
+  gap: var(--sp-100); flex: 1; min-width: 0; }
+.board-tile .desc { font-size: 12px; line-height: 18px; color: var(--text-2); margin: 0;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.board-tile .facts { display: flex; flex-wrap: wrap; gap: var(--sp-50) var(--sp-150);
+  padding-top: var(--sp-100); border-top: 1px solid var(--border); font-size: 12px; color: var(--text-3); }
+.board-tile .facts b { color: var(--text-1); font-weight: 700; }
+.board-tile .actions { display: flex; flex-wrap: wrap; gap: var(--sp-50); margin-top: auto;
+  padding-top: var(--sp-100); }
+.board-tile .actions .btn { flex: 1 1 auto; min-width: 0; }
+.board-tile .doc-link { font-size: 12px; color: var(--text-3); text-decoration: underline;
+  display: inline-flex; gap: 4px; align-items: center; }
+.board-tile .doc-link:hover { color: var(--accent); }
+.board-tile.pending .art { background: repeating-linear-gradient(135deg, var(--surface-2),
+  var(--surface-2) 8px, var(--surface-3) 8px, var(--surface-3) 16px); }
+.board-tile.pending .art svg { opacity: .55; }
+.board-grid { display: grid; gap: var(--sp-200); align-items: stretch;
+  grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .board-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .board-grid { grid-template-columns: 1fr; } }
 .category-title { display: flex; align-items: center; gap: var(--sp-75); font-size: 12px;
   font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3);
   margin: var(--sp-300) 0 var(--sp-100); }
@@ -581,6 +612,36 @@ table.tbl tbody tr:hover { background: var(--surface-2); }
   .btn-icon { min-height: 44px; width: 44px; }
   .nav-item { min-height: 44px; }
 }
+/* ------------------------------------------------------------------ uploads --
+   Progress for two real, asynchronous steps: reading the chosen file in the
+   browser, then uploading and validating it on the server. The bar is driven by
+   the actual stage, never by a timer, so it cannot show progress that is not
+   happening. Both bars respect prefers-reduced-motion (see the rule above). */
+.upload-bar {
+  position: relative; height: 6px; border-radius: 999px; overflow: hidden;
+  background: var(--line, rgba(148, 163, 184, .25));
+}
+.upload-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: inherit; }
+.upload-bar-fill {
+  width: 45%; background: var(--accent, #2563eb);
+  animation: upload-sweep 1.1s ease-in-out infinite;
+}
+.upload-bar-done {
+  width: 100%; background: var(--accent, #2563eb);
+  background-image: linear-gradient(110deg, transparent 0 30%, rgba(255,255,255,.45) 45%, transparent 60% 100%);
+  background-size: 220% 100%;
+  animation: upload-sheen 1.4s linear infinite;
+}
+@keyframes upload-sweep {
+  0% { left: -45%; } 100% { left: 100%; }
+}
+@keyframes upload-sheen {
+  0% { background-position: 120% 0; } 100% { background-position: -60% 0; }
+}
+.check-row svg { flex: none; margin-top: 2px; }
+.check-row { animation: check-in .22s ease-out both; }
+@keyframes check-in { from { opacity: 0; transform: translateY(4px); } }
+
 /* 390px frame — explicit pass for the smallest supported viewport */
 @media (max-width: 390px) {
   .content-inner { max-width: 100%; }

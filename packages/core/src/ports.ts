@@ -56,6 +56,13 @@ export interface MqttProvider {
   /** Only returns values the provider actually reported. */
   fetchUsage(): Promise<ProviderUsage | null>;
   publishConfig?(input: { topic: string; payload: unknown }): Promise<void>;
+  /**
+   * Optional probe used by the owner device-authentication self-check. It answers
+   * a broker-level question ("does this account authenticate?") without creating
+   * a persistent session. Providers that cannot do this omit it, and the
+   * self-check says so instead of pretending the login was tested.
+   */
+  probeCredential?(input: { username: string; password: string; clientId: string }): Promise<{ ok: boolean; detail: string }>;
 }
 
 export interface ObjectStore {

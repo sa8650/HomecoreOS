@@ -31,6 +31,10 @@ export async function sha256Hex(input: string | Uint8Array): Promise<string> {
 }
 
 const PBKDF2_ITERATIONS = 100_000;
+/** Hashes we mint use PBKDF2_ITERATIONS; older rows may have been written at a
+ *  higher cost, so verification accepts anything up to this. The ceiling still
+ *  bounds the work a hostile row can make us do. */
+const PBKDF2_VERIFY_MAX = 1_000_000;
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -43,7 +47,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
   const parts = stored.split('$');
   if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
   const iterations = Number(parts[1]);
-  if (!Number.isFinite(iterations) || iterations < 1 || iterations > PBKDF2_ITERATIONS) return false;
+  if (!Number.isFinite(iterations) || iterations < 1 || iterations > PBKDF2_VERIFY_MAX) return false;
   const salt = fromB64(parts[2]!);
   const expected = fromB64(parts[3]!);
   try {

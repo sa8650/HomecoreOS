@@ -628,24 +628,55 @@ export function BoardLibraryPage() {
         <select className="select" style={{ width: 150 }} value={category} onChange={(e) => setCategory(e.target.value)}><option value="all">All categories</option><option value="devkit">Dev kits</option><option value="chip_family">Chip families</option><option value="custom">Custom</option></select>
         <span className="tiny">{filtered.length} definitions</span>
       </div>
-      {catalog.loading ? <Loading rows={3} /> : <div className="grid grid-3">{filtered.map((b: any) => {
-        const status = b.attributes?.pin_status;
-        return <div className="board-tile" key={b.id}>
-          <div className="art"><BoardArt /></div>
-          <div className="body">
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><h4>{b.model}</h4>{status === 'verified' ? <Badge tone="on">Verified</Badge> : <Badge tone="warn">Pin map pending</Badge>}</div>
-            <div className="model">{b.manufacturer} · {b.chip_family} · {b.chip_variant}</div>
-            <p className="tiny" style={{ margin: '10px 0', minHeight: 32 }}>{b.summary}</p>
-            <div className="divider" style={{ margin: '10px 0' }} />
-            <div className="tiny">GPIO available: <strong>{b.pins.filter((p: any) => !p.restricted).length}</strong> · Reserved: <strong>{b.pins.filter((p: any) => p.restricted).length}</strong> · ADC: <strong>{b.pins.filter((p: any) => p.adc_channels?.length).length}</strong></div>
-            <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-              <button className="btn btn-sm" disabled={!b.pins.length} onClick={() => setView(b)}><Icon.eye />View Pinout</button>
-              <button className="btn btn-primary btn-sm" disabled={status !== 'verified'} onClick={() => navigate(`/setup?board=${encodeURIComponent(b.id)}`)}><Icon.plus />Add Board</button>
+      {catalog.loading ? <Loading rows={3} /> : !filtered.length
+        ? <Card><EmptyState icon="layers" title="No board matches this filter"
+          text="Change the chip family or category, or clear the search." /></Card>
+        : <div className="board-grid">{filtered.map((b: any) => {
+          const verified = b.attributes?.pin_status === 'verified';
+          const pins = Array.isArray(b.pins) ? b.pins : [];
+          // Counts are only ever derived from a verified pin map. A board whose
+          // pins have not been transcribed shows no numbers at all, because a zero
+          // would be a claim in the other direction.
+          const mapped = verified ? pins : [];
+          const usable = mapped.filter((p: any) => !p.restricted && p.exposed !== false);
+          const available = usable.filter((p: any) => p.functions?.includes('gpio') || p.adc_channels?.length);
+          const reserved = mapped.length - usable.length;
+          const adc = mapped.filter((p: any) => p.adc_channels?.length).length;
+          const flash = b.attributes?.flash_mb;
+          const psram = b.attributes?.psram_mb;
+          return <article className={`board-tile ${verified ? '' : 'pending'}`} key={b.id}>
+            <div className="art"><BoardArt /></div>
+            <div className="body">
+              <div className="head">
+                <h4>{b.model}</h4>
+                {verified
+                  ? <Badge tone="on" icon="check">Verified pins</Badge>
+                  : <Badge tone="warn" icon="clock">Pending pins</Badge>}
+              </div>
+              <div className="model">{b.manufacturer} · {b.chip_family}</div>
+              <p className="desc">{b.summary || 'No description recorded for this board yet.'}</p>
+              <div className="facts">
+                {mapped.length ? <>
+                  <span>GPIO <b>{available.length}</b> available</span>
+                  {reserved > 0 && <span><b>{reserved}</b> reserved</span>}
+                  <span>ADC <b>{adc}</b></span>
+                </> : <span>Pin map not verified — GPIO counts stay hidden until the header pins are transcribed</span>}
+                {flash && <span>Flash <b>{String(flash)} MB</b></span>}
+                {psram && <span>PSRAM <b>{String(psram)} MB</b></span>}
+              </div>
+              <div className="actions">
+                <button className="btn btn-sm" disabled={!mapped.length} onClick={() => setView(b)}>
+                  <Icon.eye />Pinout</button>
+                <button className="btn btn-primary btn-sm" disabled={!verified}
+                  title={verified ? 'Start setup with this board' : 'This board has no verified pin map yet'}
+                  onClick={() => navigate(`/setup?board=${encodeURIComponent(b.id)}`)}>
+                  <Icon.plus />Add board</button>
+              </div>
+              {b.doc_source_url && <a className="doc-link" href={b.doc_source_url} target="_blank" rel="noreferrer">
+                Official documentation <Icon.external /></a>}
             </div>
-            <a className="tiny" href={b.doc_source_url} target="_blank" rel="noreferrer" style={{ display: 'block', marginTop: 10, textDecoration: 'underline' }}>Official documentation ↗</a>
-          </div>
-        </div>;
-      })}</div>}
+          </article>;
+        })}</div>}
     </>}
     {tab === 'mine' && <Card pad={false}>{mine.loading ? <div className="card-pad"><Skeleton height={140} /></div> : <DataTable columns={[
       { key: 'name', label: 'Board name', render: (b: any) => <div><div style={{ fontWeight: 600 }}>{b.name}</div><div className="tiny">{b.catalog?.model || 'Custom'}</div></div> },
@@ -927,80 +958,6 @@ function AutomationBuilder({ value, devices, sensors, onClose, onSaved }: any) {
         <Field label="State"><select className="select" value={a.value ? 'on' : 'off'} onChange={(e) => setAt('then', i, 'value', e.target.value === 'on')}><option value="on">ON</option><option value="off">OFF</option></select></Field></>}
 <button className="btn btn-ghost btn-icon" style={{ marginTop: 20 }} onClick={() => set('then', f.then.filter((_: any, j: number) => j !== i))} aria-label="Delete"><Icon.trash /></button></div>)}
     <button className="btn btn-sm" onClick={() => set('then', [...f.then, { type: 'device.set_state', component_id: devices[0]?.slug || '', value: true }])}><Icon.plus />Add action</button>
-  </Modal>;
-}
-
-// ============================================================================
-// Firmware
-// ============================================================================
-export function FirmwarePage() {
-  const releases = useLiveData<any[]>('/api/firmware/releases');
-  const history = useLiveData<any[]>('/api/firmware/history');
-  const boards = useLiveData<any[]>('/api/boards');
-  const toast = useToast();
-  const [add, setAdd] = useState(false);
-  const [ota, setOta] = useState<any>(null);
-  const { can } = useAuth();
-  return <>
-    <PageHead title="Firmware" desc="ESP-IDF OTA releases stored in Supabase Storage with SHA-256 verification and rollback tracking." actions={can('firmware.update') && <button className="btn btn-primary" onClick={() => setAdd(true)}><Icon.plus />New release</button>} />
-    <div className="grid grid-2" style={{ alignItems: 'start' }}>
-      <Card title="Releases" sub="Only published binaries are offered to devices" pad={false}>{releases.loading ? <div className="card-pad"><Skeleton height={120} /></div> : <DataTable columns={[
-        { key: 'version', label: 'Version', render: (r: any) => <span className="mono">{r.version}</span> },
-        { key: 'channel', label: 'Channel' }, { key: 'size', label: 'Size', render: (r: any) => fmtBytes(r.size_bytes) },
-        { key: 'hash', label: 'SHA-256', render: (r: any) => <span className="mono tiny">{r.sha256?.slice(0, 12)}…</span> },
-        { key: 'status', label: 'Status', render: (r: any) => <StatusBadge status={r.status === 'published' ? 'active' : 'queued'} /> },
-        { key: 'actions', label: '', render: (r: any) => can('firmware.update') ? <button className="btn btn-sm" onClick={() => setOta({ release_id: r.id, board_id: '' })}>Deploy</button> : null },
-      ]} rows={releases.data || []} empty={<EmptyState icon="download" title="No firmware releases" text="Publish a signed firmware binary to offer OTA updates." />} />}</Card>
-      <Card title="Installed firmware" sub="Reported by controllers" pad={false}>{boards.loading ? <div className="card-pad"><Skeleton height={120} /></div> : <DataTable columns={[
-        { key: 'name', label: 'Controller' }, { key: 'firmware_version', label: 'Installed', render: (b: any) => b.firmware_version || '—' },
-        { key: 'channel', label: 'Channel', render: (b: any) => b.firmware_channel },
-        { key: 'sync', label: 'Config', render: (b: any) => <StatusBadge status={b.config_sync_status} /> },
-      ]} rows={boards.data || []} empty={<EmptyState icon="cpu" title="No controllers" text="Firmware state appears after pairing." />} />}</Card>
-    </div>
-    <div style={{ height: 14 }} />
-    <Card title="Update history" pad={false}>{history.loading ? <div className="card-pad"><Skeleton height={100} /></div> : <DataTable columns={[
-      { key: 'started_at', label: 'Started', render: (r: any) => timeFull(r.started_at) },
-      { key: 'from_version', label: 'From', render: (r: any) => r.from_version || '—' },
-      { key: 'to_version', label: 'To' },
-      { key: 'progress', label: 'Progress', render: (r: any) => <div style={{ width: 110 }}><Progress value={r.progress} tone={r.status === 'failed' ? 'danger' : ''} /></div> },
-      { key: 'status', label: 'Result', render: (r: any) => <StatusBadge status={r.status} /> },
-      { key: 'error', label: 'Error', render: (r: any) => r.error || '—' },
-    ]} rows={history.data || []} empty={<EmptyState icon="clock" title="No updates yet" text="OTA progress, verification and rollback results will appear here." />} />}</Card>
-    {add && <FirmwareReleaseModal onClose={() => setAdd(false)} onDone={releases.refresh} />}
-    {ota && <Modal title="Start OTA update" onClose={() => setOta(null)} footer={<><button className="btn" onClick={() => setOta(null)}>Cancel</button><button className="btn btn-primary" disabled={!ota.board_id} onClick={async () => {
-      try { await api.post('/api/firmware/ota', ota); toast('OTA command published to the device'); history.refresh(); setOta(null); } catch (e: any) { toast(e.message, 'error'); }
-    }}>Start update</button></>}>
-      <Notice>The API publishes a command with a short-lived signed download URL and SHA-256 digest. The ESP32 verifies the hash before applying; invalid images preserve the last known good partition and roll back.</Notice>
-      <Field label="Controller"><select className="select" value={ota.board_id} onChange={(e) => setOta({ ...ota, board_id: e.target.value })}><option value="">Select controller</option>{(boards.data || []).map((b: any) => <option key={b.id} value={b.id}>{b.name} · {b.firmware_version || 'unknown'}</option>)}</select></Field>
-    </Modal>}
-  </>;
-}
-
-function FirmwareReleaseModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const toast = useToast();
-  const [f, setF] = useState({ version: '', channel: 'stable', chip_family: 'esp32', notes: '', sha256: '', r2_key: '' });
-  const [file, setFile] = useState<File | null>(null);
-  const save = async () => {
-    try {
-      let payload: any = { ...f, size_bytes: file?.size || 0, status: 'published' };
-      if (file) {
-        const buf = new Uint8Array(await file.arrayBuffer());
-        let bin = ''; for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]!);
-        payload.binary_base64 = btoa(bin);
-        const digest = await crypto.subtle.digest('SHA-256', buf);
-        payload.sha256 = [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, '0')).join('');
-      }
-      await api.post('/api/firmware/releases', payload);
-      toast('Firmware release published'); onDone(); onClose();
-    } catch (e: any) { toast(e.message, 'error'); }
-  };
-  return <Modal title="Publish firmware release" onClose={onClose} footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!f.version} onClick={save}>Publish</button></>}>
-    <div className="form-row"><Field label="Version"><input className="input" value={f.version} onChange={(e) => setF({ ...f, version: e.target.value })} placeholder="1.2.0" /></Field>
-      <Field label="Channel"><select className="select" value={f.channel} onChange={(e) => setF({ ...f, channel: e.target.value })}><option value="stable">Stable</option><option value="beta">Beta</option><option value="dev">Dev</option></select></Field></div>
-    <Field label="Firmware binary" hint="SHA-256 is computed in the browser and verified by the API before storage"><input className="input" type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} /></Field>
-    {!file && <Field label="Existing object key" hint="Use when the binary was uploaded out of band"><input className="input mono" value={f.r2_key} onChange={(e) => setF({ ...f, r2_key: e.target.value })} /></Field>}
-    {!file && <Field label="SHA-256 of remote binary"><input className="input mono" value={f.sha256} onChange={(e) => setF({ ...f, sha256: e.target.value })} /></Field>}
-    <Field label="Release notes"><textarea className="textarea" value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>
   </Modal>;
 }
 

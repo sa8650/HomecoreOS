@@ -35,6 +35,7 @@ function StatusBadge({ status }: { status: string }) {
 function Variables({ variables }: { variables: any[] }) {
   const supabase = (variables || []).filter((v: any) => v.group === 'supabase');
   const emqx = (variables || []).filter((v: any) => v.group === 'emqx');
+  const firmware = (variables || []).filter((v: any) => v.group === 'firmware');
   const group = (title: string, rows: any[]) => <div key={title} style={{ display: 'grid', gap: 8 }}>
     <div style={{ fontWeight: 650 }}>{title}</div>
     {rows.map((v: any) => <div key={v.key} style={{ display: 'grid', gridTemplateColumns: 'minmax(170px, 1fr) auto', gap: 8, alignItems: 'start', borderBottom: '1px solid var(--line, #243044)', paddingBottom: 8 }}>
@@ -50,6 +51,7 @@ function Variables({ variables }: { variables: any[] }) {
     <div style={{ display: 'grid', gap: 18 }}>
       {group('Supabase PostgreSQL', supabase)}
       {group('EMQX Cloud Serverless', emqx)}
+      {firmware.length ? group('Firmware signing', firmware) : null}
     </div>
   </Card>;
 }
