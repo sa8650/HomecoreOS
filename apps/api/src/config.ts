@@ -13,7 +13,7 @@ import { r2Binding } from './storage/r2';
 export interface ConfigField {
   key: string;
   label: string;
-  group: 'supabase' | 'emqx';
+  group: 'supabase' | 'emqx' | 'firmware';
   required: boolean;
   sensitive: boolean;
   hint: string;
@@ -34,6 +34,8 @@ export const CONFIG_FIELDS: ConfigField[] = [
     hint: 'EMQX Cloud → Deployment Overview → MQTT connection information → broker address (host only).' },
   { key: 'EMQX_TLS_PORT', label: 'TLS port', group: 'emqx', required: false, sensitive: false,
     hint: 'Defaults to 8883. Use 8883 for EMQX Cloud Serverless.' },
+  { key: 'FW_SIGNING_PUBKEY', label: 'Firmware signing public key', group: 'firmware', required: false, sensitive: false,
+    hint: 'Base64 of the raw 32-byte Ed25519 public key (44 characters). Optional: without it the console reports "signing key not configured" and never claims a signature was verified.' },
 ];
 
 /** Only these two are needed for the app to boot. EMQX enables devices; the R2 binding enables firmware. */

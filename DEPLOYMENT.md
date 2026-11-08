@@ -12,7 +12,7 @@ There are **no R2 API keys and no `R2_…` secrets**. The binding is configured 
 
 1. Open this repository on GitHub and choose **Fork** (or **Use this template**).
 2. Keep the default branch name **main**.
-3. Keep the GitHub → Cloudflare Pages connection. Cloudflare builds and deploys automatically on every push. There is no GitHub Actions workflow in this repository and **no GitHub deployment secrets are needed**.
+3. Keep the GitHub → Cloudflare Pages connection. Cloudflare builds and deploys the website automatically on every push. The only GitHub Actions workflow in this repository is **Firmware**, and it only compiles the controller firmware and publishes a release ZIP — it never deploys the website and needs **no deployment secrets**.
 4. If this repository was previously used with a deployment workflow, delete these now-obsolete GitHub secrets (repository files cannot delete secrets):
 
    | Obsolete secret | Why it is no longer needed |
@@ -149,14 +149,74 @@ If a check is not ready: confirm the value in Cloudflare, then **redeploy** — 
 
 ## How to test firmware upload and device connection
 
-### Firmware upload (Owner Console)
+### Step 1 — Build the firmware (GitHub, in the browser)
 
-1. Open **Owner Console → Firmware management → Test R2 binding**. Wait for **Upload, download, checksum and delete verified against the R2 binding**. If it fails, confirm the `FIRMWARE_BUCKET` binding is attached to **Production**, that the bucket still exists, and redeploy.
-2. Choose **Upload firmware**. Pick a `.bin`, `.elf` or `.img` build (16 MB maximum), give it a name, a version and a short description, choose a channel, select the compatible ESP32 board models, and choose **Save as draft** or **Publish now**.
-3. The website computes the SHA-256 checksum locally; the API decodes the file, checks its size, rejects unknown board models and duplicate versions, writes the binary to the private bucket through the binding, reads it back and verifies the checksum again before saving metadata. Only then does the release appear in the table with its size, upload date, checksum and status.
-4. Use **Edit** to change the name, description, version, channel or compatible boards. Use **Publish / Unpublish / Archive** to control availability. Use **Download** for an owner-authorised server-side download (the API re-verifies the checksum before returning bytes).
-5. In **Assign an update**, choose a published release, then tick the compatible controllers and send the update. Each controller receives a short-lived signed URL and verifies the checksum before installing. **Update history** shows queued, downloading, installing, verifying, successful and failed results as devices report them — nothing is simulated.
-6. Use **Delete** on a release only when you want to remove both the metadata and the stored binary. Type `DELETE` to confirm. A release with an update in progress cannot be deleted.
+You do not compile anything yourself. GitHub does it for you.
+
+1. Open the repository on GitHub and click the **Actions** tab.
+2. In the left list click **Firmware**, then click **Run workflow** on the right.
+3. Fill in:
+   - **Release version** — the version the controller will report, for example `1.3.0`. Use only letters, digits, dots, dashes or plus signs.
+   - **Channel** — `stable` for customers, `beta` or `dev` for testing.
+   - **Mark the GitHub release as a pre-release** — leave off for a normal release.
+4. Click **Run workflow** and wait. The run takes about 5–8 minutes and shows these steps: *Generate the build header*, *Install the ESP32 core*, *Compile the controller image*, *Build the release package*, *Verify the package the way the server will*.
+5. When the run is green, open the finished run and download **`homecoreos-<version>.zip`** from the **Artifacts** box at the bottom. The same ZIP is also attached to the release on the **Releases** page of the repository.
+
+If a step fails, the run page shows the exact line. Nothing has been published at that point — a failed build cannot reach a customer.
+
+### Step 2 — Upload the release package (Owner Console, in the browser)
+
+1. Open **Owner Console → Firmware management → Test storage**. Wait for the green result. If it fails, confirm the `FIRMWARE_BUCKET` binding is attached to **Production**, that the bucket still exists, then redeploy Pages.
+2. Click **Upload release package** and choose the ZIP you downloaded. Do not unzip it and do not rename anything inside it.
+3. Fill in, or leave the defaults:
+   - **Channel** — `stable` for customers.
+   - **After upload** — **Save as draft** (recommended the first time) or **Publish now**.
+   - **Compatible controller models** — leave empty to use the models from `manifest.json`.
+   - **Notes for this upload** — optional, shown to customers.
+4. Click **Upload and validate** and read the checklist. Every line is a real server-side check:
+
+   | Check | What it proves |
+   | --- | --- |
+   | manifest.json is readable JSON | The archive is intact and from this project |
+   | OTA application image | The image is a real ESP32-S3 application build |
+   | USB factory image | Bootloader, partition table and application are at the right offsets |
+   | Checksums match the files | Nothing was altered after the build |
+   | Board compatibility | The models named exist in the board catalog |
+   | Hardware configuration | The build is for 16 MB flash |
+   | Detached signature | Signed with your key, or honestly reported as unsigned |
+
+5. If every check passes, the release is stored and — when you chose it — published. If a check fails, the release is saved as a **draft** only and the dialog lists every reason. Fix the cause in a new build; never edit the ZIP by hand.
+
+The ZIP holds two images, and the console keeps them apart:
+
+- **OTA application image** (`…-app.bin`) — installed wirelessly by a paired controller, and over USB at `0x10000` on a controller that already runs HomecoreOS.
+- **USB factory image** (`…-usb.bin`) — the whole flash layout from `0x0`, used for a first install or a recovery. It can **never** be sent as a wireless update; the server refuses that.
+
+### Step 3 — Send it to controllers
+
+1. Open the release and click **Assign**.
+2. Tick the compatible controllers, or choose **all compatible controllers**, and send.
+3. Each controller downloads the image over HTTPS from the private bucket, verifies the SHA-256 (and the Ed25519 signature when a key is configured), writes it to the inactive slot, reboots, and only reports success once it reconnects and states the new version.
+4. **Update history** shows queued, downloading, installing, verifying, successful, failed and rolled-back results exactly as controllers report them. Nothing is simulated, and a failed report is never shown as a success.
+
+### Step 4 — Managing releases
+
+- **Edit** changes the name, description, version, channel or compatible boards. The binary never changes.
+- **Publish / Archive** controls who can install it. Only a published release is offered.
+- **Download** gives you the stored bytes back; the server re-verifies the checksum first.
+- **Delete** removes metadata and the stored file. Type `DELETE` to confirm. A release with an update in progress cannot be deleted.
+
+### Optional — sign releases (Ed25519)
+
+Signing is optional, and the console never pretends it is on. Two values, both optional:
+
+| Where | Name | What it is |
+| --- | --- | --- |
+| GitHub → **Settings → Secrets and variables → Actions → Secrets** | `FW_SIGNING_KEY` | The Ed25519 **private** key, PEM, PKCS#8 (`-----BEGIN PRIVATE KEY-----`). Used only by the Firmware workflow to sign the image digest. |
+| GitHub → **Settings → Secrets and variables → Actions → Variables** | `HC_FW_PUBKEY` | The base64 (44 characters, ends in `=`) of the raw 32-byte **public** key. Compiled into the firmware. |
+| Cloudflare Pages → **Settings → Variables and Secrets** | `FW_SIGNING_PUBKEY` | The same base64 public key as a plain variable. Lets the console verify a package at upload time. |
+
+Generate the pair once, on a machine you trust, and keep the private key only in GitHub. Without these values the firmware reports `signing key not configured`, the console says `Unsigned · signing key not configured`, and nothing claims a signature was verified. Controllers still verify the SHA-256 of every download.
 
 ### Device connection (Customer Console)
 
@@ -187,6 +247,7 @@ Use **Appearance** in the top bar of either console to choose **Use system setti
 
 - One private **Cloudflare R2 bucket** and its native **`FIRMWARE_BUCKET` binding** under **Settings → Functions → R2 bucket bindings**.
 - Seven encrypted Cloudflare Pages secrets and `NODE_VERSION=20`.
+- Optionally one plain Pages variable, `FW_SIGNING_PUBKEY`, and the matching GitHub values `FW_SIGNING_KEY` (secret) and `HC_FW_PUBKEY` (variable), if you want signed firmware releases.
 
 ## You do NOT need any of these
 
@@ -195,7 +256,7 @@ Use **Appearance** in the top bar of either console to choose **Use system setti
 - Supabase Auth, anon / publishable key, `SUPABASE_JWT_SECRET`, `SECRETS_KEY`, `JWT_SECRET`, `DB_DRIVER`, `PUBLIC_API_BASE`, redirect URLs or OAuth callbacks.
 - Any Google / Firebase / Clerk / Auth0 / external OTP credentials, or any other third-party identity provider.
 - Database connection strings, a public bucket URL, a public R2.dev subdomain, or frontend (`VITE_`) copies of secrets.
-- GitHub Actions deployment secrets, a deploy workflow, or any local Node.js / CLI tooling.
+- GitHub Actions deployment secrets or a website deploy workflow. The one workflow (Firmware) only compiles firmware and publishes release artifacts; Cloudflare Pages deploys the site itself.
 
 ## Quick fixes
 
@@ -204,6 +265,9 @@ Use **Appearance** in the top bar of either console to choose **Use system setti
 | `Platform setup required` / `Missing required configuration` | Add `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in Cloudflare, then redeploy. |
 | `relation "app_users" does not exist` or `Enable the pgcrypto extension` | Enable **pgcrypto** under Supabase → Database → Extensions and run `supabase/schema.sql` once in the SQL Editor, then redeploy. |
 | `relation "platform_settings" does not exist` or a missing firmware column | Run the current `supabase/schema.sql` once in the Supabase SQL Editor. It is safe to re-run. |
+| `42P01: relation "public.app_user_credentials" does not exist` | An older `supabase/schema.sql` created that table, dropped it, and then tried to enable row level security on it. It no longer references it after the drop. Run the current `supabase/schema.sql` once — it completes and enables RLS on all 49 tables. |
+| Firmware upload returns `23502` / `Supabase 400` | The version of the site is older than the current schema. Run `supabase/schema.sql`, then redeploy so the uploader and the table agree. A `23502` reply now deletes the images it had already stored, so nothing is left orphaned. |
+| A release uploaded but no controller is offered it | A release must name at least one controller model. Re-upload and pick the models in the dialog; the current uploader refuses to publish a release that would be offered to nobody. |
 | `Too many attempts` on sign-in | Wait for the lockout window, or use **Owner Console → Authentication & security → Clear lockouts**. |
 | `This account needs a password reset` | Use a recovery code, or ask the Platform Owner to reset the password from **Owner Console → Authentication & security**. |
 | Session expired / repeated sign-in prompts | The absolute and idle session lifetimes are configurable under **Owner Console → Authentication & security**. |
@@ -211,5 +275,7 @@ Use **Appearance** in the top bar of either console to choose **Use system setti
 | Owner Console says **R2 binding missing** | Add `FIRMWARE_BUCKET` under **Settings → Functions → R2 bucket bindings** for **Production**, select the private bucket, **Save**, then redeploy. A binding added to Preview only will not affect the live site. |
 | Firmware test fails with a missing-object or permission error | Confirm the bucket still exists in the same Cloudflare account, that its name is selected in the binding, and that the binding is attached to the deployed environment. Redeploy, then test again. |
 | Firmware upload says storage is not configured | Attach the `FIRMWARE_BUCKET` binding and redeploy, or use the private Supabase Storage fallback. The console will still report the binding as **missing** until the round-trip test passes. |
-| Firmware test passes but upload fails | Check the file extension (`.bin`, `.elf`, `.img`), the 16 MB limit, and that the version is not already used on that channel. |
+| Storage test passes but a package upload fails | Read the checklist in the dialog. The usual causes are a still-zipped folder instead of the release ZIP, a version that already exists on that channel, or an edited file whose checksum no longer matches `manifest.json`. |
+| The dialog says the signature is invalid | The ZIP was signed with a different key than `FW_SIGNING_PUBKEY`, or the image was modified after signing. Rebuild and upload again. |
+| A controller stays on the old version after an update | Open the controller's update history: it shows the stage that failed and the reason the controller itself reported. A controller that cannot reconnect on the new image returns to the previous one by design. |
 | Devices cannot connect | Use the bare broker hostname and port `8883`, with TLS enabled. No `mqtts://` prefix in `EMQX_BROKER_HOST`. |

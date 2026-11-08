@@ -6,7 +6,7 @@ import { Icon, PageHead, EmptyState, Loading } from './components';
 import type { IconKey } from './components';
 import {
   CustomerOverview, RoomsPage, DevicesPage, SwitchesPage, SensorsPage, ControllersPage,
-  BoardLibraryPage, BoardDetailPage, AutomationPage, FirmwarePage, ActivityPage,
+  BoardLibraryPage, BoardDetailPage, AutomationPage, ActivityPage,
   StaffPage, SettingsPage,
 } from './pages/customer';
 import {
@@ -15,6 +15,7 @@ import {
 } from './pages/owner';
 import { OwnerSetup, OwnerIntegrations } from './pages/platform-setup';
 import { OwnerFirmware } from './pages/firmware';
+import { InstallPage } from './pages/install';
 import { OwnerBoards } from './pages/board-admin';
 import { OwnerSettings, OwnerSecurity } from './pages/owner-settings';
 import { SetupWizardPage } from './pages/setup-wizard';
@@ -39,7 +40,7 @@ const CUSTOMER_NAV: NavGroup[] = [
   { group: 'Manage', items: [
     { to: '/setup', label: 'Add a controller', icon: 'plugCharge' },
     { to: '/automation', label: 'Automation', icon: 'zap' },
-    { to: '/firmware', label: 'Firmware', icon: 'download' },
+    { to: '/firmware', label: 'Firmware & updates', icon: 'download' },
     { to: '/activity', label: 'Activity', icon: 'activity' },
     { to: '/staff', label: 'Staff', icon: 'users' },
     { to: '/settings', label: 'Settings', icon: 'settings' },
@@ -278,7 +279,7 @@ function RoutesView() {
         <Route path="/boards/:id" element={<BoardDetailPage />} />
         <Route path="/setup" element={<SetupWizardPage />} />
         <Route path="/automation" element={<AutomationPage />} />
-        <Route path="/firmware" element={<FirmwarePage />} />
+        <Route path="/firmware" element={<InstallPage />} />
         <Route path="/activity" element={<ActivityPage />} />
         <Route path="/staff" element={<StaffPage />} />
         <Route path="/settings" element={<SettingsPage />} />

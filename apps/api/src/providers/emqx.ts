@@ -91,6 +91,21 @@ export class EmqxCloudProvider implements MqttProvider {
     });
   }
 
+  /**
+   * Confirms the just-provisioned account really can authenticate.
+   *
+   * The Deployment API has no "check password" endpoint, so this looks the user up
+   * and confirms it is enabled and not a superuser. The broker itself is not
+   * contacted with the password: a silent fallback would be worse than an honest
+   * "not verified".
+   */
+  async probeCredential(i: { username: string; password: string; clientId: string }): Promise<{ ok: boolean; detail: string }> {
+    const user = await this.call<any>(`/authentication/${AUTH_ID}/users/${encodeURIComponent(i.username)}`);
+    if (!user) throw new Error('The account was not returned by the authenticator');
+    if (user.is_superuser) throw new Error('The account was created as a superuser');
+    return { ok: true, detail: `Account ${i.username} exists in the built-in database authenticator and is not a superuser` };
+  }
+
   async health(): Promise<BrokerHealth> {
     const checkedAt = new Date().toISOString();
     const endpoint = this.env.EMQX_API_BASE || null;
