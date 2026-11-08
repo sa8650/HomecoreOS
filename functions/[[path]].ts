@@ -1,17 +1,4 @@
-/**
- * Cloudflare Pages Functions entry — the ONLY server-side deployment unit.
- *
- * The owner adds two native bindings in Cloudflare Dashboard:
- *   Workers & Pages -> Pages project -> Settings -> Bindings
- *     D1 database  -> name: DB
- *     R2 bucket    -> name: FIRMWARE_BUCKET
- *   Variables and Secrets -> encrypted SECRETS_KEY
- * Then Save and redeploy. No R2 access keys, D1 API tokens or database URLs.
- *
- * Supabase users instead set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY as
- * bootstrap variables (plus SECRETS_KEY); the rest is entered in the Owner
- * Console. Exactly one provider is active per deployment.
- */
+/** Cloudflare Pages Functions entry — the only server-side deployment unit. */
 
 import { createApp } from '../apps/api/src/app';
 import { getCloudRuntime } from '../apps/api/src/runtime/cloud';
@@ -27,12 +14,12 @@ export async function onRequest(ctx: any): Promise<Response> {
     return await app.fetch(ctx.request, ctx.env, ctx);
   } catch (e: any) {
     const message = String(e?.message || 'Configuration error');
-    const setup = /No database configured|SECRETS_KEY is missing|migrat/i.test(message);
+    const setup = /Missing required configuration|signing key|not configured/i.test(message);
     return Response.json({
       error: setup ? 'Platform setup required' : 'Server error',
       detail: message,
       owner_console: '/owner/setup',
-      instructions: 'Cloudflare Dashboard → Workers & Pages → Pages project → Settings → Bindings → add D1 database named DB and R2 bucket named FIRMWARE_BUCKET → Variables and Secrets → add SECRETS_KEY → Save and redeploy.',
+      instructions: 'Cloudflare Pages → Settings → Variables and Secrets → add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY as encrypted secrets, then redeploy. No D1 or R2 binding is needed.',
     }, { status: setup ? 503 : 500 });
   }
 }

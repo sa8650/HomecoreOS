@@ -832,21 +832,14 @@ export function SetupWizardPage() {
         {step === 3 && issued && <>
           <Field label="One-time pairing token" hint="Expires after 15 minutes; cannot be reused"><div className="code" style={{ marginBottom: 8 }}>{issued.token}</div><CopyButton value={issued.token} /></Field>
           <div className="divider" />
-          <h4 style={{ fontSize: 12.5, marginBottom: 8 }}>Firmware provisioning command</h4>
-          <div className="code">{[
-            `curl -X POST ${window.location.origin}/api/device/claim \\`,
-            `  -H 'Content-Type: application/json' \\`,
-            `  -d '{"pairing_token":"${issued.token}"}'`,
-          ].join('\n')}</div>
-          <p className="tiny" style={{ marginTop: 10 }}>The response contains a unique MQTT username, password and client ID for this board only. Store them in NVS; they are never retrievable again.</p>
+          <h4 style={{ fontSize: 12.5, marginBottom: 8 }}>Finish on the device</h4>
+          <div className="code">{`${window.location.origin}/api/device/claim`}</div>
+          <p className="tiny" style={{ marginTop: 10 }}>Enter this one-time token in the HomecoreOS firmware setup. The device claims it over TLS and receives a unique MQTT username, password and client ID for this board only. Store them in NVS; they are never retrievable again.</p>
           <div className="divider" />
           <div className="notice"><Icon.info /><div>Cloud flow: Website → Cloudflare Pages Functions → EMQX → ESP32. The device keeps its own outbound TLS connection; no inbound ports are opened on your router.</div></div>
           <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
             <button className="btn" onClick={() => setStep(2)}><Icon.back />Back</button>
-            <button className="btn" onClick={async () => {
-              try { await api.post('/api/dev/simulator/start', { catalog_board_id: boardId || null, board_name: name || 'Virtual ESP32' }); toast('Virtual ESP32 started — pairing through the real onboarding flow'); }
-              catch (e: any) { toast(e.message, 'error'); }
-            }}><Icon.cpu />Start local simulator (development)</button>
+            <span className="tiny muted" style={{ alignSelf: 'center' }}>This page advances automatically when the device claims the token.</span>
           </div>
         </>}
         {step === 4 && <>
@@ -960,7 +953,7 @@ export function FirmwarePage() {
   const [ota, setOta] = useState<any>(null);
   const { can } = useAuth();
   return <>
-    <PageHead title="Firmware" desc="ESP-IDF OTA releases stored in R2 with SHA-256 verification and rollback tracking." actions={can('firmware.update') && <button className="btn btn-primary" onClick={() => setAdd(true)}><Icon.plus />New release</button>} />
+    <PageHead title="Firmware" desc="ESP-IDF OTA releases stored in Supabase Storage with SHA-256 verification and rollback tracking." actions={can('firmware.update') && <button className="btn btn-primary" onClick={() => setAdd(true)}><Icon.plus />New release</button>} />
     <div className="grid grid-2" style={{ alignItems: 'start' }}>
       <Card title="Releases" sub="Only published binaries are offered to devices" pad={false}>{releases.loading ? <div className="card-pad"><Skeleton height={120} /></div> : <DataTable columns={[
         { key: 'version', label: 'Version', render: (r: any) => <span className="mono">{r.version}</span> },
@@ -988,7 +981,7 @@ export function FirmwarePage() {
     {ota && <Modal title="Start OTA update" onClose={() => setOta(null)} footer={<><button className="btn" onClick={() => setOta(null)}>Cancel</button><button className="btn btn-primary" disabled={!ota.board_id} onClick={async () => {
       try { await api.post('/api/firmware/ota', ota); toast('OTA command published to the device'); history.refresh(); setOta(null); } catch (e: any) { toast(e.message, 'error'); }
     }}>Start update</button></>}>
-      <Notice>The API publishes a command with the R2 URL and SHA-256 digest. The ESP32 verifies the hash before applying; invalid images preserve the last known good partition and roll back.</Notice>
+      <Notice>The API publishes a command with a short-lived signed download URL and SHA-256 digest. The ESP32 verifies the hash before applying; invalid images preserve the last known good partition and roll back.</Notice>
       <Field label="Controller"><select className="select" value={ota.board_id} onChange={(e) => setOta({ ...ota, board_id: e.target.value })}><option value="">Select controller</option>{(boards.data || []).map((b: any) => <option key={b.id} value={b.id}>{b.name} · {b.firmware_version || 'unknown'}</option>)}</select></Field>
     </Modal>}
   </>;
@@ -1016,7 +1009,7 @@ function FirmwareReleaseModal({ onClose, onDone }: { onClose: () => void; onDone
     <div className="form-row"><Field label="Version"><input className="input" value={f.version} onChange={(e) => setF({ ...f, version: e.target.value })} placeholder="1.2.0" /></Field>
       <Field label="Channel"><select className="select" value={f.channel} onChange={(e) => setF({ ...f, channel: e.target.value })}><option value="stable">Stable</option><option value="beta">Beta</option><option value="dev">Dev</option></select></Field></div>
     <Field label="Firmware binary" hint="SHA-256 is computed in the browser and verified by the API before storage"><input className="input" type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} /></Field>
-    {!file && <Field label="Existing R2 object key" hint="Use when the binary was uploaded out of band"><input className="input mono" value={f.r2_key} onChange={(e) => setF({ ...f, r2_key: e.target.value })} /></Field>}
+    {!file && <Field label="Existing object key" hint="Use when the binary was uploaded out of band"><input className="input mono" value={f.r2_key} onChange={(e) => setF({ ...f, r2_key: e.target.value })} /></Field>}
     {!file && <Field label="SHA-256 of remote binary"><input className="input mono" value={f.sha256} onChange={(e) => setF({ ...f, sha256: e.target.value })} /></Field>}
     <Field label="Release notes"><textarea className="textarea" value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>
   </Modal>;

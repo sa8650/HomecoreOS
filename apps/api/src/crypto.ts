@@ -8,11 +8,6 @@ export function toHex(buf: ArrayBuffer | Uint8Array): string {
   for (const x of b) s += x.toString(16).padStart(2, '0');
   return s;
 }
-export function fromHex(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
 export function toB64(buf: ArrayBuffer | Uint8Array): string {
   const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let s = '';
@@ -57,25 +52,6 @@ export async function verifyPassword(password: string, stored: string): Promise<
   let diff = 0;
   for (let i = 0; i < bits.length; i++) diff |= bits[i]! ^ expected[i]!;
   return diff === 0;
-}
-
-/** AES-256-GCM for platform secrets stored in Postgres. */
-export async function seal(plaintext: string, keyHex: string): Promise<{ ciphertext: string; iv: string; tag: string }> {
-  const key = await crypto.subtle.importKey('raw', fromHex(keyHex) as BufferSource, 'AES-GCM', false, ['encrypt']);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const out = new Uint8Array(await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv, tagLength: 128 }, key, enc.encode(plaintext)));
-  const tag = out.slice(out.length - 16);
-  return { ciphertext: toB64(out.slice(0, out.length - 16)), iv: toB64(iv), tag: toB64(tag) };
-}
-
-export async function unseal(rec: { ciphertext: string; iv: string; tag: string }, keyHex: string): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', fromHex(keyHex) as BufferSource, 'AES-GCM', false, ['decrypt']);
-  const ct = fromB64(rec.ciphertext), tag = fromB64(rec.tag);
-  const all = new Uint8Array(ct.length + tag.length);
-  all.set(ct); all.set(tag, ct.length);
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(rec.iv) as BufferSource, tagLength: 128 }, key, all);
-  return new TextDecoder().decode(plain);
 }
 
 export async function hmacHex(secret: string, body: string): Promise<string> {

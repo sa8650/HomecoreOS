@@ -27,7 +27,7 @@ export function OwnerOverview() {
       <div className="grid grid-3" style={{ marginBottom: 14 }}>
         <Card title="MQTT connection health" sub="EMQX deployment API"><HealthRow ok={s.mqtt_health?.connected} label={s.mqtt_health?.detail} foot={s.mqtt_health?.checked_at ? timeAgo(s.mqtt_health.checked_at) : 'Not checked'} /></Card>
         <Card title="System API health"><HealthRow ok={s.api_health?.connected} label="Cloudflare Pages Functions responding" foot="All console routes served through the same-origin API" /></Card>
-        <Card title="Database health"><HealthRow ok={s.database_health?.connected} label={`${s.database_health?.driver === 'd1' ? 'Cloudflare D1' : s.database_health?.driver === 'supabase' ? 'Supabase PostgreSQL' : s.database_health?.driver || 'Database'} · connected`} foot="Tenant isolation enforced server-side in every provider" /></Card>
+        <Card title="Database health"><HealthRow ok={s.database_health?.connected} label="Supabase PostgreSQL · connected" foot="Tenant isolation enforced server-side" /></Card>
       </div>
       <div className="grid grid-2" style={{ alignItems: 'start' }}>
         <Card title="Platform metrics" sub="Last 24 hours"><div className="metric-row"><span>Commands</span><span className="v">{fmt(s.commands_24h, 0)}</span></div>
@@ -146,7 +146,7 @@ export function OwnerStaff() {
 }
 
 // ============================================================================
-// EMQX management — read-only status; credentials live in Integrations & Secrets
+// EMQX management — read-only status; credentials live in Cloudflare Pages secrets
 // ============================================================================
 export function OwnerEmqx() {
   const { data, loading, refresh } = useLiveData<any>('/api/owner/emqx/settings');
@@ -160,10 +160,10 @@ export function OwnerEmqx() {
     return typeof v === 'object' ? JSON.stringify(v) : String(v);
   };
   return <>
-    <PageHead title="EMQX Management" desc="Deployment status, device provisioning strategy and usage synchronization. Credentials are entered in Integrations & Secrets and never exposed to frontend JavaScript." actions={<><Link className="btn btn-primary" to="/owner/settings/integrations"><Icon.lock />Manage credentials</Link>
+    <PageHead title="EMQX Management" desc="Deployment status, device provisioning strategy and usage synchronization. Credentials are encrypted Cloudflare secrets and never exposed to frontend JavaScript." actions={<><Link className="btn btn-primary" to="/owner/settings/integrations"><Icon.link />View integration status</Link>
       <button className="btn" disabled={testing} onClick={async () => { setTesting(true); try { const h = await api.post('/api/owner/emqx/test'); toast(h.connected ? 'Broker connection successful' : `Unavailable: ${h.detail}`, h.connected ? 'ok' : 'error'); refresh(); } catch (e: any) { toast(e.message, 'error'); } finally { setTesting(false); } }}><Icon.refresh />{testing ? 'Testing…' : 'Test connection'}</button>
       <button className="btn" disabled={syncing} onClick={async () => { setSyncing(true); try { const r = await api.post('/api/owner/emqx/sync-usage'); toast(r.message); refresh(); } catch (e: any) { toast(e.message, 'error'); } finally { setSyncing(false); } }}>{syncing ? 'Syncing…' : 'Sync usage'}</button></>} />
-    <Notice tone="info">This page is read-only. Add, rotate or remove EMQX API credentials and broker addresses in <Link to="/owner/settings/integrations">Integrations &amp; Secrets</Link>, where they are AES-256-GCM encrypted at rest. Saved values are never displayed again.</Notice>
+    <Notice tone="info">This page is read-only. Set EMQX API credentials and broker addresses in Cloudflare Pages → Settings → Variables and Secrets, then redeploy. Saved values are never displayed in the browser. <Link to="/owner/settings/integrations">View integration status</Link>.</Notice>
     {loading ? <Loading rows={2} /> : <div className="grid grid-2" style={{ alignItems: 'start', marginTop: 14 }}>
       <Card title="Deployment configuration" sub="Non-secret status from platform_settings and encrypted credential metadata">
         <div className="kv">
@@ -176,13 +176,6 @@ export function OwnerEmqx() {
           <dt>Broker status</dt><dd>{data?.health?.connected ? <Badge tone="on">Connected</Badge> : <Badge tone="danger">Unavailable</Badge>}</dd>
           <dt>Last sync</dt><dd>{s['mqtt.last_sync_at'] ? timeAgo(s['mqtt.last_sync_at']) : 'Never'}</dd>
         </div>
-        <div className="divider" />
-        <h4 style={{ fontSize: 13, marginBottom: 10 }}>Configured credentials</h4>
-        {Object.keys(data?.secrets || {}).length === 0
-          ? <p className="muted" style={{ fontSize: 12.5 }}>No EMQX credentials saved yet. Add them in Integrations &amp; Secrets.</p>
-          : Object.entries(data.secrets).map(([k, v]: [string, any]) => <div className="kv" key={k} style={{ marginBottom: 6 }}>
-              <dt className="mono">{k}</dt><dd>{v.configured ? <><span className="mono">••••••••••••</span> <span className="tiny muted">fingerprint {v.fingerprint} · {timeAgo(v.updated_at)}</span></> : 'Not set'}</dd>
-            </div>)}
       </Card>
       <div style={{ display: 'grid', gap: 14 }}>
         <Card title="Connection status"><HealthRow ok={data?.health?.connected} label={data?.health?.detail} foot={data?.health?.checked_at ? timeFull(data.health.checked_at) : undefined} />
@@ -194,7 +187,7 @@ export function OwnerEmqx() {
           <dt>Device topics</dt><dd className="mono">v1/tenants/{"{id}"}/devices/{"{id}"}/…</dd>
           <dt>Admin secrets</dt><dd>Never sent to browsers or devices</dd>
         </div><div className="divider" />{(data?.capability_notes || []).map((n: string, i: number) => <p className="tiny" key={i} style={{ marginBottom: 6 }}>• {n}</p>)}</Card>
-        <Card title="Migration readiness"><p className="muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>All MQTT operations go through the <span className="mono">MqttProvider</span> port. Switching to a self-hosted EMQX or Mosquitto means adding one adapter — device, tenant and UI code do not change.</p></Card>
+        <Card title="Provider portability"><p className="muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>All MQTT operations go through the <span className="mono">MqttProvider</span> port. Switching to a self-hosted EMQX or Mosquitto means adding one adapter — device, tenant and UI code do not change.</p></Card>
       </div>
     </div>}
   </>;
@@ -330,7 +323,7 @@ export function OwnerBoards() {
       { key: 'status', label: 'Availability', render: (b: any) => b.active ? <Badge tone="on">Enabled</Badge> : <Badge>Disabled</Badge> },
       { key: 'source', label: 'Source', render: (b: any) => b.doc_source_url ? <a className="tiny" href={b.doc_source_url} target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>Official docs ↗</a> : '—' },
       { key: 'actions', label: '', render: (b: any) => <button className="btn btn-sm" onClick={async () => { try { await api.patch(`/api/owner/boards/${b.id}`, { active: !b.active }); toast('Board availability updated'); refresh(); } catch (e: any) { toast(e.message, 'error'); } }}>{b.active ? 'Disable' : 'Enable'}</button> },
-    ]} rows={data || []} empty={<EmptyState icon="layers" title="No board definitions" text="Run the catalog migration to seed verified boards." />} />}</Card>
+    ]} rows={data || []} empty={<EmptyState icon="layers" title="No board definitions" text="Run supabase/schema.sql to seed verified boards." />} />}</Card>
   </>;
 }
 
@@ -342,7 +335,7 @@ export function OwnerSettings() {
   return <>
     <PageHead title="Platform Settings" desc="Global registration, feature availability, security and warning thresholds." actions={<button className="btn btn-primary" onClick={() => setAnnouncement(true)}><Icon.plus />New announcement</button>} />
     <PlatformSettingsLinks />
-    <Notice tone="info">Credentials are managed in <Link to="/owner/settings/integrations">Integrations &amp; Secrets</Link>. This page only lists non-secret platform defaults; values that look like credentials are masked.</Notice>
+    <Notice tone="info">Credentials are encrypted Cloudflare secrets and are not edited here. This page only lists non-secret platform defaults. <Link to="/owner/settings/integrations">View integration status</Link>.</Notice>
     <Card pad={false} style={{ marginTop: 14 }}>{loading ? <div className="card-pad"><Skeleton height={180} /></div> : <DataTable columns={[
       { key: 'key', label: 'Setting', render: (s: any) => <span className="mono">{s.key}</span> },
       { key: 'value', label: 'Value', render: (s: any) => <span className="mono">{JSON.stringify(s.value)}</span> },
@@ -353,7 +346,7 @@ export function OwnerSettings() {
         : /^(registration|features|security|usage|mqtt)\./.test(String(s.key))
           ? <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setEdit(s)}><Icon.edit /></button>
           : <span className="tiny muted">Managed automatically</span> },
-    ]} rows={data || []} empty={<EmptyState icon="settings" title="No settings" text="Platform defaults are seeded by migrations." />} />}</Card>
+    ]} rows={data || []} empty={<EmptyState icon="settings" title="No settings" text="Platform defaults are seeded by supabase/schema.sql." />} />}</Card>
     {edit && <EditSettingModal setting={edit} onClose={() => setEdit(null)} onDone={refresh} />}
     {announcement && <AnnouncementModal onClose={() => setAnnouncement(false)} />}
   </>;

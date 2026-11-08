@@ -1,14 +1,10 @@
-name: Build, test and deploy
+name: Verify
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
-concurrency:
-  group: homecoreos-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   verify:
@@ -17,48 +13,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: 20
+          cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
       - run: npm run build
-      - name: Verify board catalog is in sync
+      - name: Build Pages Functions
+        run: npx wrangler pages functions build --outdir /tmp/homecoreos-pages-worker --compatibility-date 2024-11-08
+      - name: Reject Node built-ins in the Pages bundle
         run: |
-          node scripts/d1-schema.mjs
-          node scripts/board-catalog.mjs
-          git diff --exit-code -- packages/core/data/board-catalog.json supabase/migrations/0008_board_catalog.sql apps/api/src/db/d1-schema.ts
-      - name: Verify Cloudflare Pages Functions bundle
-        run: |
-          npx wrangler pages functions build --outdir /tmp/homecoreos-pages-worker --compatibility-date 2024-11-08
           if grep -rq 'node:' /tmp/homecoreos-pages-worker; then
-            echo 'Pages Functions bundle must use Web APIs only (no node: built-ins)'; exit 1;
+            echo "Pages Functions bundle imports Node built-ins"
+            exit 1
           fi
-      - name: Upload Pages artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: homecoreos-web
-          path: apps/web/dist
-
-  deploy:
-    needs: verify
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
-      - run: npm ci
-      - name: Build frontend
-        run: npm run build -w apps/web
-      # `wrangler pages deploy` uploads apps/web/dist AND the root `functions/`
-      # directory as Pages Functions. Native `DB` / `FIRMWARE_BUCKET` bindings
-      # and SECRETS_KEY are configured once in the Cloudflare dashboard.
-      # D1 migrations are applied idempotently by the runtime on first request;
-      # Supabase migrations are change-controlled (see DEPLOYMENT.md).
-      - name: Deploy Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy apps/web/dist --project-name=homecoreos

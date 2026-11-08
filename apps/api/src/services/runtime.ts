@@ -1,6 +1,7 @@
 import type { DataClient, MqttProvider, AuthPort, ObjectStore } from '@homecoreos/core';
 import type { Env } from '../env';
 import { hmacHex } from '../crypto';
+import { serviceRoleHeaders } from '../db/adapters';
 
 /** Per-request/per-isolate runtime assembled at startup. */
 export interface Runtime {
@@ -11,19 +12,13 @@ export interface Runtime {
   store: ObjectStore | null;
   events: EventBus;
   emit: (tenantId: string, type: string, payload?: Record<string, unknown>) => void;
-  /** Exactly one active database provider per runtime. */
-  provider?: 'supabase' | 'd1';
-  /** Bootstrap env (no decrypted secrets) for setup diagnostics. */
+  /** Raw Cloudflare bindings, kept only for diagnostics. */
   bootstrap?: Env;
 }
 
 type Listener = (event: any) => void;
 
-/**
- * In-process SSE fan-out for local development and as a fallback in production.
- * In production the browser can additionally subscribe to Supabase Realtime
- * (RLS-protected); both channels carry the same event shapes.
- */
+/** In-process SSE fan-out; browsers can additionally use Supabase Realtime. */
 export class EventBus {
   private listeners = new Map<string, Set<Listener>>();
   subscribe(tenantId: string, fn: Listener): () => void {
@@ -39,29 +34,82 @@ export class EventBus {
   get size() { return [...this.listeners.values()].reduce((n, s) => n + s.size, 0); }
 }
 
-/** In-memory object store used ONLY by the Node local-development server. */
-export class LocalObjectStore implements ObjectStore {
-  private mem = new Map<string, Uint8Array>();
-  constructor(private publicBase = '/api/firmware/download', private secret = '') {}
-  async put(key: string, data: ArrayBuffer | Uint8Array) {
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    this.mem.set(key, bytes);
-    return { key, size: bytes.byteLength };
-  }
-  async get(key: string) { const v = this.mem.get(key); return v ? v.buffer.slice(0) as ArrayBuffer : null; }
-  async signedUrl(key: string, expiresSeconds = 3600) {
-    const expires = Math.floor(Date.now() / 1000) + expiresSeconds;
-    const sig = await hmacHex(this.secret, `${key}\n${expires}`);
-    return `${this.publicBase}/${encodeURIComponent(btoa(key))}?expires=${expires}&sig=${sig}`;
-  }
-  async delete(key: string) { this.mem.delete(key); }
+function downloadPath(publicBase: string) {
+  return `${publicBase.replace(/\/$/, '')}/api/firmware/download`;
+}
+
+/** Signed, short-lived firmware URLs served by the API (never a public bucket). */
+async function signedPath(secret: string, publicBase: string, key: string, expiresSeconds: number) {
+  const expires = Math.floor(Date.now() / 1000) + expiresSeconds;
+  const sig = await hmacHex(secret, `${key}\n${expires}`);
+  return `${downloadPath(publicBase)}/${encodeURIComponent(btoa(key))}?expires=${expires}&sig=${sig}`;
 }
 
 /**
- * Cloudflare R2 binding — the API never exposes bucket credentials.
- * Firmware binaries are served through an authenticated Worker download route
- * instead of public presigned URLs.
+ * Default firmware store: a private Supabase Storage bucket. Created on first
+ * use with the service-role key; no Cloudflare R2 binding is needed.
  */
+export class SupabaseObjectStore implements ObjectStore {
+  private ready?: Promise<void>;
+  constructor(
+    private url: string,
+    private key: string,
+    private bucket = 'firmware',
+    private publicBase = '',
+    private secret = '',
+  ) {}
+  private get base() { return `${this.url.replace(/\/$/, '')}/storage/v1`; }
+  private headers(extra: Record<string, string> = {}) {
+    return serviceRoleHeaders(this.key, extra);
+  }
+  private objectPath(key: string) {
+    if (!/^[A-Za-z0-9._\-/]+$/.test(key)) throw new Error('Invalid object key');
+    return `${this.base}/object/${encodeURIComponent(this.bucket)}/${key.split('/').map(encodeURIComponent).join('/')}`;
+  }
+  private async ensure() {
+    if (!this.ready) {
+      this.ready = (async () => {
+        const res = await fetch(`${this.base}/bucket`, {
+          method: 'POST',
+          headers: this.headers({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ id: this.bucket, name: this.bucket, public: false }),
+        });
+        if (res.ok) return;
+        const text = await res.text().catch(() => '');
+        if (res.status === 409 || /already exists|duplicate/i.test(text)) return;
+        throw new Error(`Supabase Storage bucket could not be created (${res.status}: ${text.slice(0, 160)})`);
+      })().catch((e) => { this.ready = undefined; throw e; });
+    }
+    return this.ready;
+  }
+  async put(key: string, data: ArrayBuffer | Uint8Array, _meta: Record<string, string> = {}) {
+    await this.ensure();
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const res = await fetch(this.objectPath(key), {
+      method: 'POST',
+      headers: this.headers({ 'Content-Type': 'application/octet-stream', 'x-upsert': 'true' }),
+      body: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    });
+    if (!res.ok) throw new Error(`Supabase Storage upload failed (${res.status}: ${(await res.text()).slice(0, 160)})`);
+    return { key, size: bytes.byteLength };
+  }
+  async get(key: string): Promise<ArrayBuffer | null> {
+    const res = await fetch(this.objectPath(key), { headers: this.headers() });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`Supabase Storage download failed (${res.status})`);
+    return res.arrayBuffer();
+  }
+  async signedUrl(key: string, expiresSeconds = 3600) {
+    await this.ensure();
+    return signedPath(this.secret, this.publicBase, key, expiresSeconds);
+  }
+  async delete(key: string) {
+    const res = await fetch(this.objectPath(key), { method: 'DELETE', headers: this.headers() });
+    if (!res.ok && res.status !== 404) throw new Error(`Supabase Storage delete failed (${res.status})`);
+  }
+}
+
+/** Optional native R2 binding, used only when one is present. */
 export class R2ObjectStore implements ObjectStore {
   constructor(private bucket: any, private publicBase: string, private secret = '') {}
   async put(key: string, data: ArrayBuffer | Uint8Array, meta: Record<string, string> = {}) {
@@ -73,25 +121,19 @@ export class R2ObjectStore implements ObjectStore {
     const obj = await this.bucket.get(key);
     return obj ? obj.arrayBuffer() : null;
   }
-  async signedUrl(key: string, expiresSeconds = 3600): Promise<string> {
-    const expires = Math.floor(Date.now() / 1000) + expiresSeconds;
-    const sig = await hmacHex(this.secret, `${key}\n${expires}`);
-    return `${this.publicBase.replace(/\/$/, '')}/api/firmware/download/${encodeURIComponent(btoa(key))}?expires=${expires}&sig=${sig}`;
+  async signedUrl(key: string, expiresSeconds = 3600) {
+    return signedPath(this.secret, this.publicBase, key, expiresSeconds);
   }
-  async delete(key: string): Promise<void> { await this.bucket.delete(key); }
+  async delete(key: string) { await this.bucket.delete(key); }
 }
 
 export function createStore(env: Env): ObjectStore | null {
-  // HMAC secret signs short-lived firmware download URLs. It never leaves the
-  // server; the ESP32 receives only the signed URL and the SHA-256 digest.
-  const secret = String(env.SECRETS_KEY || env.INGRESS_HMAC_SECRET || '');
-  if ((env as any).FIRMWARE_BUCKET) {
-    return new R2ObjectStore((env as any).FIRMWARE_BUCKET, String(env.PUBLIC_API_BASE || ''), secret);
+  const secret = String(env.SIGNING_KEY || '');
+  const publicBase = String((env as any).PUBLIC_API_BASE || '');
+  const bucket = String((env as any).STORAGE_BUCKET || 'firmware');
+  if (env.FIRMWARE_BUCKET) return new R2ObjectStore(env.FIRMWARE_BUCKET, publicBase, secret);
+  if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+    return new SupabaseObjectStore(String(env.SUPABASE_URL), String(env.SUPABASE_SERVICE_ROLE_KEY), bucket, publicBase, secret);
   }
-  // Local development (pglite or the local D1 emulator) keeps working with an
-  // in-process store; production without the native R2 binding reports missing.
-  // A hosted D1 deployment without FIRMWARE_BUCKET must honestly report
-  // "not connected" — never substitute the in-memory dev store.
-  if (env.LOCAL_DEV) return new LocalObjectStore('/api/firmware/download', secret);
   return null;
 }

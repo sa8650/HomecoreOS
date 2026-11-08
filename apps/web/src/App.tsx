@@ -39,7 +39,7 @@ const CUSTOMER_NAV = [
 const OWNER_NAV = [
   { group: 'Platform', items: [
     { to: '/owner', label: 'Overview', icon: 'home' },
-    { to: '/owner/setup', label: 'Initial Setup', icon: 'check' },
+    { to: '/owner/setup', label: 'Setup status', icon: 'check' },
     { to: '/owner/customers', label: 'Customers', icon: 'users' },
     { to: '/owner/staff', label: 'Staff & Access', icon: 'shield' },
   ] },
@@ -50,7 +50,7 @@ const OWNER_NAV = [
   ] },
   { group: 'Governance', items: [
     { to: '/owner/settings', label: 'Platform Settings', icon: 'settings' },
-    { to: '/owner/settings/integrations', label: 'Integrations & Secrets', icon: 'lock' },
+    { to: '/owner/settings/integrations', label: 'Integrations', icon: 'link' },
     { to: '/owner/audit', label: 'Audit Logs', icon: 'file' },
   ] },
 ] as const;
@@ -144,7 +144,7 @@ function AuthPage() {
             <span>Website</span><i>→</i><span>Cloudflare Pages</span><i>→</i><span>EMQX</span><i>→</i><span>ESP32</span>
           </div>
         </div>
-        <div className="tiny">Cloudflare Pages · D1 / Supabase PostgreSQL · EMQX Serverless · R2</div>
+        <div className="tiny">Cloudflare Pages · Supabase · EMQX Serverless · Supabase Storage</div>
       </div>
       <div className="auth-panel">
         <div className="auth-card">
@@ -163,7 +163,7 @@ function AuthPage() {
             <div className="field"><label>Password</label><input className="input" type="password" required minLength={10} value={form.password} onChange={(e) => set('password', e.target.value)} placeholder="At least 10 characters" /></div>
             <button className="btn btn-primary btn-block" disabled={busy}>{busy ? 'Please wait…' : mode === 'in' ? 'Sign in' : 'Create account'}</button>
           </form>
-          <p className="tiny" style={{ marginTop: 18, textAlign: 'center' }}>Sessions are signed server-side. Tenant isolation is enforced by database authorization in both D1 and Supabase.</p>
+          <p className="tiny" style={{ marginTop: 18, textAlign: 'center' }}>Sessions are signed server-side. Tenant isolation is enforced by Supabase database authorization.</p>
         </div>
       </div>
     </div>

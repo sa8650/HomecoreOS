@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-/** Versioned wire protocol shared by the API, firmware and simulator. */
+/** Versioned wire protocol shared by the API and the ESP32 firmware. */
 
 export const TelemetryMessage = z.object({
   schema_version: z.literal(1),

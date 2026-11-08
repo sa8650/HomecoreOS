@@ -4,13 +4,8 @@ import type { Runtime } from './services/runtime';
 import { HttpError, actor, context, ownerOnly, p, body, runtime, auditEvent } from './context';
 import { deviceTopics, parseTopic, topic, EMQX_QUOTAS, WARNING_THRESHOLDS } from '@homecoreos/core';
 import { SwitchCommand, TelemetryMessage, StateReport, ConfigAck, OtaProgress } from '@homecoreos/core';
-import { randomHex, randomToken, sha256Hex, hashPassword, verifyPassword, seal, unseal, hmacHex } from './crypto';
-import {
-  SECRET_GROUPS, ENCRYPTED_KEYS, detectProvider, encryptionReady, secretsKey as strictSecretsKey,
-  loadSecrets, effectiveEnv, saveSecret, deleteSecret, getSetting, setSetting,
-  testConnection, recordCheck, testBucket, migrationToken, setupStatus,
-  exportBackup, importBackup, type DbProvider,
-} from './config';
+import { randomHex, randomToken, sha256Hex, hashPassword, verifyPassword, hmacHex } from './crypto';
+import { testConnection, recordCheck, testStorage, setupStatus } from './config';
 
 export function createApp(rt: Runtime) {
   const app = new Hono<{ Variables: { rt: Runtime } }>();
@@ -42,7 +37,7 @@ export function createApp(rt: Runtime) {
   // ==========================================================================
   app.get('/api/health', (c) => c.json({
     ok: true, service: 'homecoreos-api', provider: rt.mqtt.id,
-    database: rt.env.DB_DRIVER || 'pglite', time: new Date().toISOString(),
+    database: 'supabase', time: new Date().toISOString(),
   }));
 
   app.post('/api/auth/signup', async (c) => {
@@ -294,13 +289,13 @@ export function createApp(rt: Runtime) {
     await rt.mqtt.publish({ topic: t.config, payload: config[0]?.config || { schema_version: 1, config_version: 0 }, qos: 1 });
     emit(tenantId, 'device.paired', { board_id: claimed.board_id, device_id: deviceId });
 
-    const brokerHost = rt.env.EMQX_BROKER_HOST || rt.env.MQTT_BROKER_HOST || 'localhost';
+    const brokerHost = String(rt.env.EMQX_BROKER_HOST || '');
     const tlsPort = Number(rt.env.EMQX_TLS_PORT || 8883);
     return c.json({
       tenant_id: tenantId, device_id: deviceId, board_id: claimed.board_id,
       mqtt: {
-        host: brokerHost, port: rt.mqtt.id === 'local' ? 1883 : tlsPort,
-        tls: rt.mqtt.id !== 'local', wss_url: rt.env.EMQX_WSS_URL || null,
+        host: brokerHost, port: tlsPort,
+        tls: true, wss_url: null,
         client_id: clientId, username, password, // shown ONCE; never stored
         keepalive: 60,
       },
@@ -508,7 +503,7 @@ export function createApp(rt: Runtime) {
   });
 
   // ==========================================================================
-  // Firmware (R2 registry, hash verification, OTA progress, rollback)
+  // Firmware (Supabase Storage, hash verification, OTA progress, rollback)
   // ==========================================================================
   app.get('/api/firmware/releases', async (c) => {
     const ctx = await context(c, 'dashboard.view');
@@ -540,7 +535,9 @@ export function createApp(rt: Runtime) {
     if (rel.tenant_id !== null && rel.tenant_id !== ctx.tenantId) throw new HttpError(404, 'Release not available for this account');
     if (rel.status !== 'published') throw new HttpError(409, 'Only published releases can be deployed');
     const url = rt.store ? await rt.store.signedUrl(rel.r2_key) : null;
-    if (!url) throw new HttpError(503, 'Firmware object storage is not configured');
+    if (!url) throw new HttpError(503, 'Firmware storage is not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+    const origin = new URL(c.req.url).origin;
+    const absolute = /^https?:\/\//.test(url) ? url : `${origin}${url.startsWith('/') ? '' : '/'}${url}`;
     await rt.db.insert('device_firmware_history', {
       tenant_id: ctx.tenantId, user_board_id: board.id, firmware_release_id: rel.id,
       from_version: board.firmware_version, to_version: rel.version, status: 'queued', progress: 0,
@@ -550,11 +547,11 @@ export function createApp(rt: Runtime) {
     await rt.mqtt.publish({ topic: t.command, payload: {
       schema_version: 1, command_id: crypto.randomUUID(), device_id: board.device_id,
       component_id: 'board', action: 'update_firmware',
-      url, sha256: rel.sha256, size_bytes: rel.size_bytes, version: rel.version,
+      url: absolute, sha256: rel.sha256, size_bytes: rel.size_bytes, version: rel.version,
       expires_at: Math.floor(Date.now() / 1000) + 600,
     }, qos: 1 });
     emit(ctx.tenantId, 'firmware.ota.started', { board_id: board.id, version: rel.version });
-    return c.json({ queued: true, version: rel.version, sha256: rel.sha256, download_url: url });
+    return c.json({ queued: true, version: rel.version, sha256: rel.sha256, download_url: absolute });
   });
   app.get('/api/firmware/history', async (c) => {
     const ctx = await context(c, 'dashboard.view');
@@ -569,7 +566,7 @@ export function createApp(rt: Runtime) {
     if (!key.startsWith('firmware/')) throw new HttpError(400, 'Invalid firmware key');
     const expires = Number(c.req.query('expires') || 0);
     const sig = String(c.req.query('sig') || '');
-    const secret = String(rt.env.SECRETS_KEY || rt.env.INGRESS_HMAC_SECRET || '');
+    const secret = String(rt.env.SIGNING_KEY || '');
     if (!secret || !expires || expires < Math.floor(Date.now() / 1000)) throw new HttpError(403, 'Firmware URL expired');
     const expected = await hmacHex(secret, `${key}\n${expires}`);
     if (sig.length !== expected.length || sig !== expected) throw new HttpError(403, 'Invalid firmware URL signature');
@@ -716,11 +713,11 @@ export function createApp(rt: Runtime) {
     const ctx = await ownerOnly(c);
     const stats: any = await rt.db.rpc('rpc_owner_overview');
     const activity = await rt.db.select('audit_logs', { order: { column: 'created_at', ascending: false }, limit: 12 });
-    const health = await (await emqxFromSettings(rt)).health();
+    const health = await rt.mqtt.health();
     const platformSettings = await rt.db.select('platform_settings');
     const thresholds = (platformSettings.find((x: any) => x.key === 'usage.warning_thresholds')?.value) || WARNING_THRESHOLDS;
     return c.json({ ...stats, recent_activity: activity, mqtt_health: health, thresholds,
-      database_health: { connected: true, driver: rt.env.DB_DRIVER || 'pglite' },
+      database_health: { connected: true, driver: 'supabase' },
       api_health: { connected: true, version: '1.0.0' }, actor: ctx.profileId });
   });
 
@@ -784,27 +781,30 @@ export function createApp(rt: Runtime) {
     return c.json(await rt.db.select('audit_logs', { order: { column: 'created_at', ascending: false }, limit: 300 }));
   });
 
-  // --- EMQX management: secrets are sealed server-side and always masked ---
+  // --- EMQX management: credentials come from encrypted Cloudflare secrets ---
   app.get('/api/owner/emqx/settings', async (c) => {
     await ownerOnly(c);
     const settings = (await rt.db.select('platform_settings')).filter((x: any) => x.key.startsWith('mqtt.'));
-    const secrets = (await rt.db.select('platform_secrets')).filter((x: any) => String(x.key).startsWith('EMQX_') || String(x.key).startsWith('MQTT_BRIDGE_'));
-    const health = await (await emqxFromSettings(rt)).health();
-    return c.json({ settings: Object.fromEntries(settings.map((x: any) => [x.key, x.value])),
-      secrets: Object.fromEntries(secrets.map((s: any) => [s.key, { configured: true, masked: '••••••••••••', fingerprint: s.fingerprint, updated_at: s.updated_at }])),
-      health, provider: (await emqxFromSettings(rt)).displayName,
+    const health = await rt.mqtt.health();
+    const configured = (k: string) => Boolean(String((rt.env as any)[k] || '').trim());
+    return c.json({ settings: {
+      ...Object.fromEntries(settings.map((x: any) => [x.key, x.value])),
+      'mqtt.deployment_endpoint': rt.env.EMQX_API_BASE || null,
+      'mqtt.broker_host': rt.env.EMQX_BROKER_HOST || null,
+      'mqtt.port_tls': Number(rt.env.EMQX_TLS_PORT || 8883),
+    },
+      secrets: Object.fromEntries(['EMQX_APP_ID', 'EMQX_APP_SECRET']
+        .filter(configured).map((k) => [k, { configured: true, masked: '••••••••••••' }])),
+      health, provider: rt.mqtt.displayName,
       capability_notes: [
         'EMQX Cloud Serverless supports built-in-database authentication and per-identity ACL rules through the Deployment API.',
         'HTTP authentication hooks are NOT supported on Serverless deployments; per-device users are provisioned instead.',
         'Monthly quota usage is visible on the EMQX Cloud console (hourly) but is not exposed by the Deployment API.',
       ] });
   });
-  // Deprecated POST /api/owner/emqx/settings removed: credentials are now
-  // written ONLY through the encrypted /api/owner/integrations endpoints, and
-  // non-secret defaults through /api/owner/settings. No duplicate raw-SQL path.
   app.post('/api/owner/emqx/test', async (c) => {
     const ctx = await ownerOnly(c);
-    const provider = await emqxFromSettings(rt);
+    const provider = rt.mqtt;
     const health = await provider.health();
     await rt.db.insert('emqx_sync_runs', { kind: 'health', status: health.connected ? 'success' : 'failed', detail: health as any, finished_at: new Date().toISOString(), actor_id: ctx.profileId });
     return c.json(health);
@@ -855,7 +855,7 @@ export function createApp(rt: Runtime) {
   });
   app.post('/api/owner/emqx/sync-usage', async (c) => {
     const ctx = await ownerOnly(c);
-    const provider = await emqxFromSettings(rt);
+    const provider = rt.mqtt;
     const usage = await provider.fetchUsage();
     const now = new Date();
     const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -911,41 +911,31 @@ export function createApp(rt: Runtime) {
     const allowed = /^(registration|features|security|usage|mqtt)\./;
     for (const [k, v] of Object.entries(b)) {
       if (!allowed.test(k) || /secret|token|password|key/i.test(k)) {
-        throw new HttpError(400, `Use Integrations & Secrets for ${k}`);
+        throw new HttpError(400, `Credentials are set in Cloudflare Pages → Settings → Variables and Secrets, not here: ${k}`);
       }
       await rt.db.rpc('rpc_set_platform_setting', { p_actor: ctx.profileId, p_key: k, p_value: v });
     }
     return c.json({ saved: true, keys: Object.keys(b) });
   });
   // =========================================================================
-  // Platform Settings -> Initial Setup / Integrations & Secrets (owner only)
-  // No plaintext secret is ever returned, logged, or bundled into the client.
+  // Platform Settings -> Setup status (owner only, read-only)
+  // Configuration lives in Cloudflare Pages -> Variables and Secrets.
   // =========================================================================
-  const bootstrapEnv = () => rt.bootstrap || rt.env;
-  const providerOf = (): DbProvider | 'pglite' | null =>
-    (rt as any).provider || (rt.env.DB_DRIVER === 'pglite' ? 'pglite' : detectProvider(rt.env));
-  const currentEnv = async () => {
-    const loaded = await loadSecrets(rt.db, rt.env);
-    return effectiveEnv(bootstrapEnv(), loaded.values);
-  };
   const dbHealth = async () => {
     try {
-      if ((rt.db as any).health) return await (rt.db as any).health();
       await rt.db.select('platform_settings', { limit: 1 });
-      return { connected: true, provider: providerOf(), tables: null };
-    } catch (e: any) { return { connected: false, provider: providerOf(), error: e?.message || 'unavailable' }; }
+      return { connected: true, provider: 'supabase' };
+    } catch (e: any) {
+      return { connected: false, provider: 'supabase', error: e?.message || 'unavailable' };
+    }
   };
   const buildStatus = async () => {
-    const env = await currentEnv();
-    const secrets = await loadSecrets(rt.db, rt.env);
-    const [supabase, emqx, bucket, health] = await Promise.all([
-      testConnection(env, 'supabase'), testConnection(env, 'emqx'),
-      testBucket(env, rt.store as any), dbHealth(),
+    const [supabase, emqx, storage, health] = await Promise.all([
+      testConnection(rt.env, 'supabase'), testConnection(rt.env, 'emqx'),
+      testStorage(rt.store as any), dbHealth(),
     ]);
-    return setupStatus({ env, db: rt.db, provider: providerOf(), secrets: secrets.values,
-      corrupt: secrets.corrupt, store: rt.store, tests: { supabase, emqx }, bucket, dbHealth: health });
+    return setupStatus({ env: rt.env, db: rt.db, tests: { supabase, emqx }, storage, dbHealth: health });
   };
-
   app.get('/api/owner/setup', async (c) => {
     await ownerOnly(c);
     return c.json(await buildStatus());
@@ -953,121 +943,23 @@ export function createApp(rt: Runtime) {
   app.get('/api/owner/integrations', async (c) => {
     await ownerOnly(c);
     const st = await buildStatus();
-    return c.json({ groups: st.groups, bindings: st.bindings, connections: st.connections,
-      required: st.required, optional: st.optional, encrypted_secrets: st.encrypted_secrets,
-      provider: st.provider, setup_complete: st.setup_complete, corrupt_secrets: st.corrupt_secrets,
-      notes: st.notes });
-  });
-  /** Add / update / rotate credentials. Empty values are ignored (never erase by accident). */
-  app.put('/api/owner/integrations', async (c) => {
-    const ctx = await ownerOnly(c);
-    const b = await body(c);
-    const values: Record<string, string> = { ...(b.secrets || {}), ...Object.fromEntries(
-      Object.entries(b).filter(([k]) => ENCRYPTED_KEYS.includes(k)).map(([k, v]) => [k, String(v)])) };
-    const saved: any[] = [];
-    for (const [key, value] of Object.entries(values)) {
-      if (!ENCRYPTED_KEYS.includes(key) || !value || typeof value !== 'string') continue;
-      saved.push(await saveSecret(rt.db, rt.env, key, value, ctx.profileId));
-    }
-    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
-      action: 'platform.integration.update', entity_type: 'platform_secrets', entity_id: null,
-      after: { keys: saved.map((x) => x.key) } }).catch(() => {});
-    return c.json({ saved: saved.length, secrets: saved.map((x) => ({ key: x.key, configured: true,
-      masked: '••••••••••••', fingerprint: x.fingerprint, updated_at: x.updated_at })), secrets_masked: true });
-  });
-  app.post('/api/owner/integrations/rotate/:key', async (c) => {
-    const ctx = await ownerOnly(c);
-    const key = p(c, 'key');
-    const b = await body(c);
-    if (!ENCRYPTED_KEYS.includes(key)) throw new HttpError(400, 'Not an owner-managed credential');
-    if (!String(b.value || '')) throw new HttpError(400, 'A new value is required to rotate this credential');
-    const saved = await saveSecret(rt.db, rt.env, key, String(b.value), ctx.profileId);
-    return c.json({ rotated: true, key: saved.key, masked: '••••••••••••', fingerprint: saved.fingerprint });
-  });
-  app.delete('/api/owner/integrations/:key', async (c) => {
-    const ctx = await ownerOnly(c);
-    const r = await deleteSecret(rt.db, p(c, 'key'));
-    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
-      action: 'platform.integration.delete', entity_type: 'platform_secrets', entity_id: r.key }).catch(() => {});
-    return c.json(r);
+    return c.json({ variables: st.variables, connections: st.connections,
+      setup_complete: st.setup_complete, notes: st.notes });
   });
   app.post('/api/owner/integrations/test', async (c) => {
     const ctx = await ownerOnly(c);
     const b = await body(c);
-    const target = String(b.target || '');
-    if (target !== 'supabase' && target !== 'emqx') throw new HttpError(400, 'target must be supabase or emqx');
-    const env = await currentEnv();
-    const result = await testConnection(env, target);
+    const target = String(b.target || '') === 'emqx' ? 'emqx' : 'supabase';
+    const result = await testConnection(rt.env, target);
     await recordCheck(rt.db, target, result);
     await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
-      action: 'platform.integration.test', entity_type: 'connection', entity_id: target,
-      after: { connected: result.connected, detail: result.detail } }).catch(() => {});
+      action: 'platform.integration.test', entity_type: 'configuration', entity_id: target,
+      after: { connected: result.connected } }).catch(() => {});
     return c.json(result);
   });
   app.post('/api/owner/setup/test-bucket', async (c) => {
     await ownerOnly(c);
-    const r = await testBucket(await currentEnv(), rt.store as any);
-    await setSetting(rt.db, 'integration.r2.last_check', { ok: r.connected, at: r.checkedAt, message: r.detail });
-    return c.json(r);
-  });
-
-  /** Initial provider selection. Never a silent toggle: a later change needs migration. */
-  app.post('/api/owner/setup/provider', async (c) => {
-    const ctx = await ownerOnly(c);
-    const b = await body(c);
-    const provider = String(b.provider || '');
-    if (provider !== 'supabase' && provider !== 'd1') throw new HttpError(400, 'provider must be supabase or d1');
-    const selected = await getSetting(rt.db, 'platform.database_provider');
-    if (selected && selected !== provider) {
-      throw new HttpError(409, `Switching from ${selected} to ${provider} requires a data migration. Export a backup, change the Cloudflare binding/variables, redeploy, then use the guided provider migration.`);
-    }
-    const detected = providerOf();
-    if (selected === provider) return c.json({ selected: true, provider, already_configured: true });
-    if (detected !== provider && detected !== 'pglite') {
-      throw new HttpError(400, `${provider === 'd1' ? 'The DB binding' : 'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY'} must be configured before selecting ${provider}. Add it in Cloudflare Pages → Settings → Bindings and redeploy.`);
-    }
-    if (provider === 'd1' && (rt.db as any).migrate) await (rt.db as any).migrate();
-    await setSetting(rt.db, 'platform.database_provider', provider);
-    await setSetting(rt.db, 'platform.provider_initialized_at', new Date().toISOString());
-    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
-      action: 'platform.setup.provider', entity_type: 'configuration', entity_id: 'database_provider',
-      after: { provider } }).catch(() => {});
-    return c.json({ selected: true, provider, migrations: provider === 'd1' ? 'applied' : 'see DEPLOYMENT.md' }, 201);
-  });
-  app.get('/api/owner/setup/backup', async (c) => {
-    const ctx = await ownerOnly(c);
-    const backup = await exportBackup(rt.db, String(providerOf() || 'unknown'));
-    const token = await migrationToken(backup, rt.env);
-    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
-      action: 'platform.setup.backup', entity_type: 'backup', entity_id: null,
-      after: { tables: Object.keys(backup.tables).length } }).catch(() => {});
-    return c.json({ ...backup, migration_token: token });
-  });
-  /** Guided provider switch: requires the exact exported backup + its token. */
-  app.post('/api/owner/setup/switch', async (c) => {
-    const ctx = await ownerOnly(c);
-    const b = await body(c);
-    if (String(b.confirm || '') !== 'MIGRATE') throw new HttpError(400, 'Type MIGRATE to confirm the data migration');
-    const provider = String(b.provider || '');
-    if (provider !== 'supabase' && provider !== 'd1') throw new HttpError(400, 'provider must be supabase or d1');
-    const expected = await migrationToken(b.backup, rt.env);
-    if (String(b.migration_token || '') !== expected) {
-      throw new HttpError(400, 'Migration token does not match the exported backup. Export a fresh backup from the current provider before switching.');
-    }
-    const selected = await getSetting(rt.db, 'platform.database_provider');
-    if (selected && selected === provider) throw new HttpError(409, 'This provider is already selected; no migration is needed.');
-    const detected = providerOf();
-    if (detected !== provider && detected !== 'pglite') {
-      throw new HttpError(409, `The runtime is still using ${detected}. Change the Cloudflare binding/variables, redeploy, then run the migration on the new provider.`);
-    }
-    if (provider === 'd1' && (rt.db as any).migrate) await (rt.db as any).migrate();
-    const result = await importBackup(rt.db, b.backup, provider, true);
-    await setSetting(rt.db, 'platform.database_provider', provider);
-    await setSetting(rt.db, 'platform.provider_migrated_at', new Date().toISOString());
-    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
-      action: 'platform.setup.migrate', entity_type: 'configuration', entity_id: 'database_provider',
-      after: { from: selected || 'unselected', to: provider, ...result } }).catch(() => {});
-    return c.json({ migrated: true, from: selected || null, to: provider, ...result });
+    return c.json(await testStorage(rt.store as any));
   });
 
   app.post('/api/owner/announcements', async (c) => {
@@ -1129,35 +1021,10 @@ export function createApp(rt: Runtime) {
 // ============================================================================
 // Helpers
 // ============================================================================
-function secretsKey(rt: Runtime): string { return strictSecretsKey(rt.env); }
-
-async function emqxFromSettings(rt: Runtime) {
-  const { EmqxCloudProvider } = await import('./providers/emqx');
-  const settings = await rt.db.select('platform_settings');
-  const map = Object.fromEntries(settings.map((x: any) => [x.key, x.value]));
-  const secrets = await rt.db.select('platform_secrets');
-  const key = secretsKey(rt);
-  const unsealed: Record<string, string> = {};
-  for (const s of secrets) {
-    try { unsealed[s.key] = await unseal(s, key); } catch { /* ignore corrupt entries */ }
-  }
-  const env: Record<string, any> = { ...rt.env,
-    EMQX_API_BASE: unsealed.EMQX_API_BASE || map['mqtt.deployment_endpoint'] || rt.env.EMQX_API_BASE,
-    EMQX_APP_ID: unsealed.EMQX_APP_ID || rt.env.EMQX_APP_ID,
-    EMQX_APP_SECRET: unsealed.EMQX_APP_SECRET || rt.env.EMQX_APP_SECRET,
-    EMQX_BROKER_HOST: unsealed.EMQX_BROKER_HOST || map['mqtt.broker_host'] || rt.env.EMQX_BROKER_HOST,
-    EMQX_TLS_PORT: unsealed.EMQX_TLS_PORT || map['mqtt.port_tls'] || rt.env.EMQX_TLS_PORT,
-    EMQX_WSS_URL: unsealed.EMQX_WSS_URL || map['mqtt.wss_host'] || rt.env.EMQX_WSS_URL,
-    MQTT_BRIDGE_USERNAME: unsealed.MQTT_BRIDGE_USERNAME || rt.env.MQTT_BRIDGE_USERNAME,
-    MQTT_BRIDGE_PASSWORD: unsealed.MQTT_BRIDGE_PASSWORD || rt.env.MQTT_BRIDGE_PASSWORD,
-  };
-  return new EmqxCloudProvider(env);
-}
-
 async function verifyInternal(c: any, raw?: string) {
   const rt = runtime(c);
-  const secret = String(rt.env.INGRESS_HMAC_SECRET || '');
-  if (!secret) throw new HttpError(503, 'INGRESS_HMAC_SECRET not configured');
+  const secret = String(rt.env.SIGNING_KEY || '');
+  if (!secret) throw new HttpError(503, 'Server signing key is not available');
   const sig = c.req.header('X-HomecoreOS-Signature') || '';
   if (raw !== undefined) {
     const ts = c.req.header('X-HomecoreOS-Timestamp') || '';

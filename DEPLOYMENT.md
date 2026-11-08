@@ -1,207 +1,117 @@
-# HomecoreOS — Deployment & Platform Configuration
+# Deploy HomecoreOS — web dashboards only
 
-This guide is for the **platform owner**. The goal is that no ordinary environment-variable spreadsheet is needed: add two native Cloudflare bindings and one bootstrap secret, redeploy, then finish everything else in the Owner Console.
+You need four free-start accounts: **GitHub**, **Cloudflare**, **Supabase**, **EMQX Cloud**. Everything below is done in a browser. No terminal, no CLI, no local tools, no Cloudflare bindings.
 
----
-
-## 1. Choose one database provider
-
-| | Cloudflare D1 (recommended) | Supabase PostgreSQL |
-|---|---|---|
-| Detection | native `DB` binding present | `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` bootstrap values |
-| Migrations | automatic, idempotent, first request | apply `supabase/migrations/*.sql` once |
-| Connection settings in Cloudflare | none | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
-| Extra API tokens / URLs | **none** | no D1/R2 tokens; only the two Supabase bootstrap values |
-| Auth | local HS256 JWT (PBKDF2 hashes) | Supabase GoTrue + JWT verification |
-| Direct client DB access | none (Pages Functions only) | RLS-protected Realtime/direct access |
-
-**Never configure both at once.** The runtime detects exactly one provider from the `DB` binding or the Supabase bootstrap values. Both providers use the same `DataClient` contract, the same 39 tables, the same seed (9 boards / 106 verified pins / 12 permissions) and the same feature behaviour.
+The database is **Supabase**. Firmware files go into a private **Supabase Storage** bucket that the app creates for you. Devices connect to **EMQX Cloud Serverless** over TLS on port **8883**.
 
 ---
 
-## 2. The only manual Cloudflare steps (D1 path)
+## 1. Put the code on GitHub
 
-Cloudflare Dashboard → **Workers & Pages** → your **Pages project** → **Settings**:
-
-1. **Bindings** → **Add** → **D1 database** → variable name `DB` → select your D1 database.
-2. **Bindings** → **Add** → **R2 bucket** → variable name `FIRMWARE_BUCKET` → select your R2 bucket.
-3. **Variables and Secrets** → **Add** → type `Encrypted secret` → name `SECRETS_KEY`, value = 64 hex characters (32 random bytes, e.g. `openssl rand -hex 32`).
-4. **Save and redeploy.**
-
-That is the entire server-side bootstrap. No R2 access keys, D1 API tokens, database URLs, service-role keys or `wrangler secret put` calls. Do **not** put `SECRETS_KEY` in GitHub, source, docs, `.env` files or the frontend bundle.
-
-For the Supabase path instead: set `SECRETS_KEY`, `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` under Variables and Secrets, apply the SQL migrations once (section 5), and redeploy. `FIRMWARE_BUCKET` is still required.
+1. Open this repository on GitHub and choose **Fork** (or **Use this template**).
+2. Keep the default branch name **main**.
+3. Nothing else is needed here. The file `.github/workflows/deploy.yml` runs checks on every push; it does **not** deploy, and it needs **no GitHub Secrets**.
 
 ---
 
-## 3. First account and the setup wizard
+## 2. Supabase — database, auth and file storage
 
-On a fresh database, **the first signup becomes the platform owner** automatically — no SQL editing. Sign in, open **Owner Console → Initial Setup** (`/owner/setup`) and:
-
-1. Choose the provider in the wizard (D1 or Supabase). This is a one-time decision.
-2. Verify the six-item checklist: Database configured · R2 bucket connected · EMQX API connected · MQTT broker connected · Encryption initialized · Firmware storage ready.
-3. Open **Platform Settings → Integrations & Secrets** (`/owner/settings/integrations`) and fill in the credentials you actually need.
-4. Press **Test connection** for Supabase / EMQX. Status, last successful check, last error and hints are shown; results are stored in `platform_settings` (never plaintext values).
-5. Press **Test R2 upload/download** to run a real put → get → delete round-trip against `FIRMWARE_BUCKET`.
-
-The page clearly separates **Required configuration**, **Optional configuration**, **Cloudflare bindings** and **Encrypted integration secrets**. Customers never see these pages.
+1. In Supabase, choose **New project**, set a database password, and wait for it to finish.
+2. Open **SQL Editor → New query**. On GitHub, open `supabase/schema.sql`, click **Raw**, and copy **the whole file**. Paste it into the SQL Editor and click **Run** once. This creates all tables, roles, policies, functions and the board catalog.
+3. Open **Project Settings → API Keys** (the **Connect** dialog also shows the URL):
+   - **Project URL** → this is `SUPABASE_URL`, shaped like `https://xxxxxxxxxxxx.supabase.co`.
+   - **service_role** key → this is `SUPABASE_SERVICE_ROLE_KEY`. Use the legacy `service_role` JWT if it is shown; the newer `sb_secret_…` secret key also works.
+4. You do **not** need the anon / publishable key, a JWT secret, a database URL, or any Storage setup. The private `firmware` bucket is created automatically on first use, and the service-role key is only ever used on the server.
 
 ---
 
-## 4. Integrations & Secrets
+## 3. EMQX Cloud — Serverless messaging
 
-| Group | Fields | Where they live |
-|---|---|---|
-| Supabase | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET` | URL + service-role key are bootstrap values; anon key and JWT secret are encrypted in `platform_secrets`. Hidden when D1 is selected. |
-| EMQX | `EMQX_API_BASE`, `EMQX_APP_ID`, `EMQX_APP_SECRET`, `EMQX_BROKER_HOST`, `EMQX_TLS_PORT`, `EMQX_WSS_URL`, `MQTT_BRIDGE_USERNAME`, `MQTT_BRIDGE_PASSWORD` | encrypted in `platform_secrets` (AES-256-GCM with `SECRETS_KEY`) |
-| Platform | `INGRESS_HMAC_SECRET`, `PUBLIC_API_BASE` | encrypted; optional (fall back to `SECRETS_KEY` / request origin) |
-| Encryption | `SECRETS_KEY` | **bootstrap only** — Cloudflare Pages encrypted variable, never stored in the DB |
-
-Rules:
-
-- Add, update and rotate credentials from the Owner Console. Saved values are **never displayed again**: only configured status, `••••••••••••`, a SHA-256 fingerprint and the update time.
-- Service-role keys, MQTT credentials and administrative API secrets never reach browsers, customers, frontend bundles, browser storage, GitHub, docs or logs.
-- `SECRETS_KEY` cannot be written through the API. If it changes while encrypted rows exist, those rows become undecryptable and the console lists them as corrupt so they can be re-entered.
-- Optional WSS/bridge fields are only needed for the advanced Durable Object ingress bridge; the normal HMAC webhook path needs only the EMQX API + broker host/TLS port.
-- Do not request Supabase variables when D1 is selected, and vice versa.
-
-### API endpoints (owner only)
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/owner/setup` | provider, wizard, checklist, bindings, required/optional/encrypted groups, connections |
-| GET | `/api/owner/integrations` | organized fields + connection statuses |
-| PUT | `/api/owner/integrations` | add/update credentials (encrypted) |
-| POST | `/api/owner/integrations/rotate/:key` | rotate one credential |
-| DELETE | `/api/owner/integrations/:key` | remove one credential |
-| POST | `/api/owner/integrations/test` | `{ "target": "supabase" \| "emqx" }` live server-side check |
-| POST | `/api/owner/setup/test-bucket` | real R2 put/get/delete probe |
-| POST | `/api/owner/setup/provider` | one-time provider selection |
-| GET | `/api/owner/setup/backup` | portable backup + HMAC migration token |
-| POST | `/api/owner/setup/switch` | guided provider migration |
+1. Create an EMQX Cloud account, then choose **New Deployment → Serverless** (select the free/closest region) and wait until it is **Running**.
+2. On the deployment **Overview** page, find the **MQTT connection information**:
+   - **Broker address / hostname** (host only, no `mqtts://` and no port) → `EMQX_BROKER_HOST`.
+   - TLS port → `EMQX_TLS_PORT` = **8883**.
+3. On the same **Overview** page open **Deployment API Key → + New API Key**:
+   - **App ID** → `EMQX_APP_ID`.
+   - **App Secret** → `EMQX_APP_SECRET`. It is shown **only once** — copy it immediately into Cloudflare.
+   - The **API endpoint** shown there → `EMQX_API_BASE`. It must end in `/api/v5` (for example `https://your-deployment-endpoint/api/v5`) with no trailing slash.
+4. These API credentials are **not** MQTT device usernames/passwords. The app creates one built-in-database user and ACL rule per device. They are never sent to the browser.
 
 ---
 
-## 5. Migrations
+## 4. Cloudflare Pages — exact project settings
 
-**Cloudflare D1** — no CLI step. `apps/api/src/db/d1-schema.ts` is generated from the Postgres migrations by `scripts/d1-schema.mjs` and contains `0001_schema.sql` + `0002_seed.sql`. `D1Adapter.migrate()` applies them once per database on the first request and records them in `_d1_migrations`. Re-running is a no-op. Regenerate after changing the Postgres schema:
+1. Cloudflare dashboard → **Workers & Pages → Create application → Pages → Connect to Git** → choose GitHub and your forked repository → **Begin setup**.
+2. Fill in **Set up builds and deployments** exactly like this:
 
-```bash
-node scripts/d1-schema.mjs
-git add apps/api/src/db/d1-schema.ts
-```
+| Field | Exact value |
+| --- | --- |
+| Project name | anything you like, e.g. `homecoreos` |
+| Production branch | `main` |
+| Framework preset | **None** |
+| **Root directory** | leave **blank** (or `/`) — `package.json` and `functions/` are in the repository root |
+| **Build command** | `npm run build` |
+| **Build output directory** | `apps/web/dist` |
+| **Build comments** | **Off / disabled** — GitHub Actions already reports checks, so Cloudflare PR comments are unnecessary. If the option is not shown during setup, find it later under **Settings → Builds & deployments** |
 
-**Supabase PostgreSQL** — apply in order, once, from a maintenance step (not on every push):
-
-```bash
-supabase db push
-# or: for f in supabase/migrations/*.sql; do psql "$DATABASE_URL" -f "$f"; done
-```
-
-The GitHub workflow deliberately does **not** auto-run Supabase migrations.
-
----
-
-## 6. Backups and switching providers
-
-Switching is **not** a settings toggle — it requires a real data migration:
-
-1. On the current provider: **Initial Setup → Export backup**. Save the JSON privately; it contains platform data and encrypted secrets plus a server-signed `migration_token`.
-2. Change the Cloudflare binding / bootstrap variables to the new provider, **Save and redeploy**.
-3. On the new (empty) provider: **Initial Setup → Run provider migration**. Paste the exact backup, choose the target, type `MIGRATE`.
-4. The server verifies the HMAC token with `SECRETS_KEY`, applies D1 migrations if needed, imports every application table, records `platform.database_provider` and writes an `audit_logs` entry.
-
-Warnings returned by the migration note that Supabase Auth accounts live in GoTrue and must be exported/imported with the Supabase CLI if you switch to or from Supabase. Firmware binaries stay in R2 (the same `FIRMWARE_BUCKET` binding); keep the `firmware_releases` registry and SHA-256 digests with the database backup.
-
-Also enable Supabase Point-in-Time Recovery (Supabase path) or Cloudflare D1 time-travel backups (D1 path) in the provider console.
+3. Click **Save and Deploy**. The first deploy may fail until the variables below are added; that is expected.
 
 ---
 
-## 7. GitHub + Cloudflare Pages deployment
+## 5. Cloudflare Pages — Variables and Secrets
 
-`.github/workflows/deploy.yml`:
+Go to your Pages project → **Settings → Environment variables** (shown as **Variables and Secrets**) → **Add variables**. Add these to **Production**. Use the **Secret / Encrypt** option for all seven values so they are stored encrypted and cannot be read back.
 
-- install → `npm run typecheck` → `npm test` → `npm run build`
-- verify `board-catalog.json`, `0008_board_catalog.sql` and `d1-schema.ts` are in sync
-- `npx wrangler pages functions build` to prove the Functions bundle compiles
-- `wrangler pages deploy apps/web/dist --project-name=homecoreos`
+| Name | Value comes from | Type |
+| --- | --- | --- |
+| `SUPABASE_URL` | Supabase → Project Settings → API / Connect | Secret |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API Keys → `service_role` | Secret |
+| `EMQX_API_BASE` | EMQX → Deployment Overview → Deployment API endpoint, ending `/api/v5` | Secret |
+| `EMQX_APP_ID` | EMQX → Deployment API Key → App ID | Secret |
+| `EMQX_APP_SECRET` | EMQX → Deployment API Key → App Secret (shown once) | Secret |
+| `EMQX_BROKER_HOST` | EMQX → Deployment Overview → broker hostname | Secret |
+| `EMQX_TLS_PORT` | `8883` | Secret |
 
-`wrangler pages deploy` uploads both the static build and the root `functions/` directory. Root `wrangler.toml` contains only `name`, `pages_build_output_dir` and `compatibility_date`; bindings and secrets are configured in the Cloudflare dashboard. `apps/web/public/_routes.json` restricts Functions to `/api/*` and `/internal/*`.
+Add one **plain** variable (not a secret — it is needed during the build):
 
-Secrets needed by the workflow: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. No Supabase access token, no R2 keys, no D1 tokens.
+| Name | Value |
+| --- | --- |
+| `NODE_VERSION` | `20` |
 
-```bash
-# production build, locally
-npm ci
-npm run typecheck
-npm test
-npm run build
-npx wrangler pages functions build --outdir /tmp/homecoreos-pages-worker
-```
-
-### Independent database verification
-
-```bash
-npm run dev && npm test               # Postgres/PGlite configuration
-DB_DRIVER=d1 npm run dev && npm test  # Cloudflare D1 emulator configuration
-```
-
-`tests/d1.test.mjs` always runs the D1 configuration in-process; `tests/api.test.mjs` follows whichever server is up. Both configurations must show 30/30 passing.
+That is the complete list. Only `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are required for the site to start; the five EMQX values enable devices. `EMQX_TLS_PORT` defaults to `8883` if omitted. **Never** add a `VITE_` variable for any of these.
 
 ---
 
-## 8. R2 firmware upload/download
+## 6. Redeploy and check
 
-`FIRMWARE_BUCKET` is used directly by `R2ObjectStore` through the native binding — no SigV4 REST credentials. Releases are created with a binary + SHA-256, listed, and deployed via OTA. `GET /api/firmware/download/:key` requires a valid short-lived HMAC signature, an unexpired URL and a **published** release with a matching `r2_key`; it returns `X-Checksum` and `Cache-Control: private, no-store`. Verify with **Test R2 upload/download** in Initial Setup and by publishing a release + starting an OTA in the customer console.
+1. Cloudflare Pages → **Deployments** → on the latest deployment choose **Retry deployment** (or simply push any change to GitHub).
+2. Wait for **Success**, then open the `*.pages.dev` URL.
+3. **Create your account** on that page. The first account becomes the **platform owner** — do this yourself, on your own URL.
+4. Go to **Setup status** in the Owner Console. All five checks should be **Ready**. Use **Test connection** (Supabase, EMQX) and **Test firmware storage** to confirm live connectivity; the storage test performs a real upload/read/delete probe.
 
----
-
-## 9. EMQX connection and device communication
-
-Enter `EMQX_API_BASE` (ending in `/api/v5`), `EMQX_APP_ID`, `EMQX_APP_SECRET`, `EMQX_BROKER_HOST` and `EMQX_TLS_PORT` in Integrations & Secrets, then press **Test connection**. Success calls `/clients?limit=1&page=1` and reports the live client count.
-
-Post-deployment checks (see `docs/TESTING.md`):
-
-1. `GET /api/health` → `200`.
-2. Sign up two accounts; A cannot read B's rooms/boards.
-3. Device Setup Wizard → generate a pairing token → claim a device (`npm run sim -- <token>` for the simulator, or real ESP32). Confirm unique MQTT credentials shown once.
-4. Verify config sync `Synced`, board `online`, and telemetry rows after the device publishes.
-5. Toggle a switch: `requested` → `confirmed` only after the device ack; `device_commands.status = acknowledged`.
-6. Create two devices on GPIO 5 → the second is rejected; delete the first → GPIO 5 free again.
-7. Publish a firmware release and start an OTA; verify SHA-256 and rollback reporting.
-
-Device ingress is the HMAC-signed `/internal/mqtt/event` endpoint (EMQX rule/webhook or the local broker). The optional standalone Worker + `MqttIngressDO` provides a long-lived WSS bridge; it is not required for normal operation. See `docs/EMQX.md` for the exact API paths and ACL rules.
+If a check is not ready: confirm the value in Cloudflare, then **redeploy** — Pages Functions read variables at deploy time.
 
 ---
 
-## 10. Troubleshooting
+## What the GitHub workflow does
 
-| Symptom | Check |
-|---|---|
-| `503 Platform setup required` | Add the `DB` binding (or Supabase bootstrap vars), `FIRMWARE_BUCKET` and `SECRETS_KEY`; redeploy |
-| `SECRETS_KEY is missing or invalid` | Must be exactly 64 hex chars, stored as an encrypted Pages variable |
-| `No database configured` | Bindings are case-sensitive: `DB`, `FIRMWARE_BUCKET` |
-| Owner routes `403` | First signup becomes owner; ensure you are using that account, or insert a `platform_admins` row |
-| EMQX Test connection fails | AppID/AppSecret, `/api/v5` suffix, deployment firewall, built-in-DB authenticator enabled |
-| Supabase Test connection fails | Bootstrap URL / service-role key, migrations applied |
-| Firmware storage not ready | `FIRMWARE_BUCKET` binding missing or the R2 round-trip probe failed |
-| Encrypted secrets corrupt | `SECRETS_KEY` was rotated; re-enter the listed credentials in Integrations & Secrets |
-| Provider change rejected | Export a backup, change bindings, redeploy, then run the guided migration — not `/setup/provider` |
-| Device connects but no telemetry | HMAC webhook signer, topic tenant/device match, broker ACL, `INGRESS_HMAC_SECRET` |
-| Command stays `published` | Device subscribed to `command`, not expired, ack published on `state` |
-| Pages `/api` 404 | `_routes.json` missing from `apps/web/dist`, or `functions/` was not uploaded by Wrangler |
+`.github/workflows/deploy.yml` runs on pushes and pull requests to `main`: `npm ci`, `npm run typecheck`, `npm run build`, a Pages Functions bundle build, and a guard that rejects Node built-ins in that bundle. Cloudflare's own Git integration performs the deployment. You do **not** need `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID` GitHub Secrets.
 
 ---
 
-## 11. Credential rotation
+## You do NOT need any of these
 
-| Credential | Procedure |
-|---|---|
-| EMQX AppID/AppSecret | Integrations & Secrets → Rotate → Test connection → delete the old EMQX application |
-| Supabase anon / JWT secret | Integrations & Secrets → Rotate → Test connection |
-| Supabase bootstrap URL / service-role key | Cloudflare Pages → Variables and Secrets → update → redeploy (these cannot be changed from the console because the DB connection itself depends on them) |
-| `INGRESS_HMAC_SECRET` | Integrations & Secrets → Rotate; update any external webhook signer simultaneously. Invalidates pending signed firmware URLs |
-| `SECRETS_KEY` | Do **not** rotate while encrypted rows exist. Export a backup, rotate in Cloudflare, redeploy, then re-enter every credential so it is sealed with the new key |
-| Single device credential | Customer console → Controllers → Rotate credentials; update firmware/NVS |
+- Cloudflare **D1** database, **R2** bucket, or any manual binding.
+- `SUPABASE_ANON_KEY` / publishable key, `SUPABASE_JWT_SECRET`, `SECRETS_KEY`, `JWT_SECRET`, `INGRESS_HMAC_SECRET`, `DB_DRIVER`, `PUBLIC_API_BASE`.
+- Any R2 access keys, database connection strings, or frontend (`VITE_`) copies of secrets.
+- A PC terminal, Node.js installed locally, Wrangler CLI, or migration scripts.
 
-All owner actions are recorded in `audit_logs`.
+## Quick fixes
+
+| Symptom | Fix |
+| --- | --- |
+| `Platform setup required` / `Missing required configuration` | Add `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in Cloudflare, then redeploy. |
+| `relation "platform_settings" does not exist` | Run `supabase/schema.sql` once in the Supabase SQL Editor. |
+| EMQX check fails with 401/403 | Recreate the Deployment API Key (the App Secret cannot be retrieved), verify App ID/Secret, and confirm `EMQX_API_BASE` ends with `/api/v5`. |
+| Firmware storage test fails | Check that the service-role key is correct; Supabase Storage must be enabled for the project. |
+| Devices cannot connect | Use the bare broker hostname and port `8883`, with TLS enabled. No `mqtts://` prefix in `EMQX_BROKER_HOST`. |

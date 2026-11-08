@@ -1,222 +1,57 @@
-# HomecoreOS — Multi-Tenant Smart Home Automation SaaS
+# HomecoreOS
 
-HomecoreOS is a production-oriented, multi-tenant SaaS for controlling ESP32-based homes over the internet. Each customer account owns an isolated home workspace with controllers, rooms, switches, sensors, staff, automation and firmware releases. A separate **Platform Owner Console** manages customers, usage, the board catalog, audit logs and — importantly — a simple, secure initial setup.
+A multi-tenant smart-home platform for ESP32 boards: a React dashboard, a serverless API, per-device MQTT credentials, GPIO allocation, commands, telemetry, automations and signed firmware updates.
 
-**There is no demo dashboard.** Every form, control and table is backed by real API endpoints, real database rows and real MQTT messages. Empty states describe the next real action; unavailable provider metrics say "Unavailable" with a reason.
+## How it is hosted
 
----
+| Part | Service |
+| --- | --- |
+| Code and automatic deploys | GitHub → Cloudflare Pages (Git integration) |
+| Website | Cloudflare Pages static build |
+| API | Cloudflare Pages Functions in `functions/` |
+| Database and auth | Supabase (PostgreSQL + Auth) |
+| Firmware files | Private Supabase Storage bucket (created automatically) |
+| Device messaging | EMQX Cloud Serverless, MQTT over TLS on port 8883 |
 
-## 1. Owner setup in four steps
+**No Cloudflare D1 database and no R2 bucket are needed.** No native bindings have to be added in Cloudflare. All configuration is entered once in Cloudflare Pages → Settings → Variables and Secrets.
 
-The platform owner does **not** hand-configure a long list of environment variables.
+## Deploy it
 
-### Recommended: Cloudflare D1 + R2 (no database URL, no API tokens)
+Everything is done in web dashboards — GitHub, Cloudflare, Supabase and EMQX. No PC terminal, no CLI and no local tools.
 
-1. Cloudflare Dashboard → **Workers & Pages** → your **Pages project** → **Settings** → **Bindings**.
-2. Add a **D1 database** named exactly `DB`.
-3. Add an **R2 bucket** named exactly `FIRMWARE_BUCKET`.
-4. **Variables and Secrets** → add one encrypted secret named `SECRETS_KEY` (64 hex characters = 32 random bytes). **Save and redeploy.**
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the exact values to copy into each dashboard.
 
-D1 migrations and seed data are applied automatically on the first request. Then sign up: the **first account becomes the platform owner** automatically — no database row editing. Open **Owner Console → Initial Setup** and follow the checklist; enter the remaining EMQX credentials in **Platform Settings → Integrations & Secrets**.
+In short:
 
-That's it. No R2 access keys, D1 API tokens, database URLs, service-role keys or `wrangler secret put` commands are needed for the D1 path.
+1. Fork / import this repository to your GitHub account.
+2. Create a Cloudflare Pages project connected to that repository (the exact build settings are in DEPLOYMENT.md).
+3. Create a Supabase project, run `supabase/schema.sql` once in its SQL Editor, and copy the Project URL and service-role key.
+4. Create an EMQX Cloud **Serverless** deployment and copy its API base, App ID, App Secret and broker host.
+5. Add those seven values in Cloudflare Pages → Settings → Variables and Secrets (keys and secrets as encrypted **Secrets**), then redeploy.
+6. Open your Pages URL and create the first account — it becomes the platform owner.
 
-### Alternative: Supabase PostgreSQL
+## Configuration
 
-Set three server-side values in Cloudflare Pages → Settings → Variables and Secrets: `SECRETS_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Apply `supabase/migrations/*.sql` once (`supabase db push` or `psql`), redeploy, then enter the rest in the Owner Console. Supabase Auth accounts are managed by GoTrue; application data lives in Postgres with RLS.
+Only two values are required for the site to start:
 
-**Never configure both providers at once.** The runtime detects exactly one: a `DB` binding means D1; otherwise the Supabase bootstrap variables mean Supabase. Switching providers is a **guided data migration** (export → change bindings → redeploy → import with a verified migration token), never a settings toggle.
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
 
----
+Five more values enable devices (EMQX Cloud Serverless). `EMQX_TLS_PORT` is optional and defaults to `8883`. There is no anon key, no JWT secret, no `SECRETS_KEY` and no database URL to configure. See [.env.example](.env.example) for the complete list.
 
-## 2. Technology stack
+Secrets are never sent to the browser, never written to the database and never shown again in the dashboard. The Owner Console shows only which values are set and live connection checks.
 
-| Component | Technology |
-|---|---|
-| Source | GitHub monorepo (npm workspaces) |
-| Frontend | React + TypeScript + Vite, served by Cloudflare Pages |
-| Backend | Hono running as **Cloudflare Pages Functions** (`functions/[[path]].ts`) |
-| Database | **Cloudflare D1** *or* **Supabase PostgreSQL**, behind one `DataClient` adapter |
-| Auth | HS256 JWT verified server-side; Supabase GoTrue when Supabase is selected, local PBKDF2 equivalent for D1/dev |
-| MQTT | EMQX Cloud Serverless behind a swappable `MqttProvider` |
-| Firmware storage | Cloudflare R2 native `FIRMWARE_BUCKET` binding |
-| Firmware | ESP-IDF / Arduino-ESP32 with MQTT TLS, OTA and rollback |
-| Local dev | PGlite (real Postgres/WASM) **or** a faithful D1 emulator (sql.js), Aedes MQTT broker, ESP32 simulator |
+## What is in the box
 
-The optional standalone Worker in `apps/api/src/worker.ts` exists only for the advanced MQTT-over-WSS Durable Object bridge. The normal deployment needs **no extra service**.
+- Owner Console: setup checklist, customers, staff, board library, usage, EMQX status, firmware storage test.
+- Customer Console: homes, boards and pins, devices, telemetry, commands, automations, firmware releases and OTA with SHA-256 verification.
+- Server API: sign-up/sign-in, tenant isolation, pairing, provisioning, GPIO allocation, ingress, quotas, audit log.
+- `supabase/schema.sql`: the complete database schema, roles, policies, functions and board catalog — one file, run once.
+- `functions/[[path]].ts`: the server-side Pages Function.
+- `.github/workflows/deploy.yml`: type checks, builds and verifies the Pages Function bundle on every push.
 
----
+## Safety notes
 
-## 3. System architecture
-
-```
-Browser (Cloudflare Pages)
-   │  /api/*  (JWT)
-   ▼
-Cloudflare Pages Functions  ──────►  ONE database:
-   │  common DataClient                • D1 (native DB binding), or
-   │  AES-256-GCM platform_secrets     • Supabase PostgREST (service role, server-side)
-   │  /internal/mqtt/event (HMAC)   ▲
-   ▼                                 │
-EMQX Cloud Serverless  ◄── MQTT/TLS ─┴─ ESP32 (outbound only)
-   │  Deployment API /api/v5          │
-   │  per-device users + allow-list ACL └── HTTPS /api/firmware/download, /api/device/config
-   ▼
-Cloudflare R2 (FIRMWARE_BUCKET, firmware binaries)
-```
-
-Primary cloud control path: **Website → Cloudflare Pages Functions → EMQX → ESP32**. The ESP32 always initiates the outbound TLS connection. No home router port forwarding, no VPS, no inbound connection to the device. `apps/web/public/_routes.json` limits Functions invocation to `/api/*` and `/internal/*`; static assets are served directly.
-
-### One provider, one schema
-
-`packages/core/src/ports.ts` defines the common `DataClient` contract (`select / insert / update / remove / upsert / rpc`). Three implementations satisfy it:
-
-- `SupabaseRestAdapter` — PostgREST with the service-role key; domain logic in Postgres RPCs (`supabase/migrations/0009`–`0015`).
-- `D1Adapter` — Cloudflare D1; the **same table/column names and seed** are generated by `scripts/d1-schema.mjs` from those Postgres migrations, and the same domain operations are implemented portably in TypeScript (`apps/api/src/db/d1.ts`).
-- `PGliteAdapter` — local development and tests using the real Postgres migrations.
-
-Feature code never branches on the provider. Both providers get the same 39 tables, 9 board-catalog entries, 106 verified pins, 12 permissions, RLS-equivalent tenant scoping, migrations, backups and the setup checklist.
-
----
-
-## 4. Platform configuration & secrets management
-
-Only `SECRETS_KEY` is a one-time bootstrap secret. Everything else the owner enters is **AES-256-GCM encrypted at rest** in `platform_secrets` using that key.
-
-### Owner Console pages
-
-| Page | Purpose |
-|---|---|
-| `/owner/setup` | **Initial Setup**: provider wizard, 6-item checklist, Cloudflare binding instructions, backup/migration tools, R2 round-trip test |
-| `/owner/settings/integrations` | **Integrations & Secrets**: organized Supabase / EMQX / Platform / Encryption forms, rotate/remove, Test Connection, status |
-| `/owner/settings` | Non-secret platform defaults (registration, features, quotas, thresholds) |
-| `/owner/emqx`, `/owner/usage`, `/owner/boards`, `/owner/audit` | Existing EMQX management, honest usage reporting, board catalog and audit trail |
-
-### Checklist
-
-Database configured · R2 bucket connected · EMQX API connected · MQTT broker connected · Encryption initialized · Firmware storage ready. Each item reports status, source (Cloudflare binding / bootstrap variable / encrypted integration secret), last successful check and useful errors.
-
-### Organized forms
-
-- **Supabase**: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`.
-- **EMQX**: `EMQX_API_BASE`, `EMQX_APP_ID`, `EMQX_APP_SECRET`, `EMQX_BROKER_HOST`, `EMQX_TLS_PORT`, `EMQX_WSS_URL`, `MQTT_BRIDGE_USERNAME`, `MQTT_BRIDGE_PASSWORD`.
-- **Platform**: `INGRESS_HMAC_SECRET`, `PUBLIC_API_BASE`.
-- **Encryption**: `SECRETS_KEY` (bootstrap only, never stored in the database).
-
-Supabase fields are hidden when D1 is selected; optional WSS/bridge fields are marked optional. Required configuration, optional configuration, Cloudflare bindings and encrypted integration secrets are clearly separated. Ordinary customers never see any of these pages (`ownerOnly` + `platform_admins`).
-
-### Security guarantees
-
-- Saved values are **never displayed again** — only configured status, masked placeholders, a fingerprint and the update time.
-- Service-role keys, MQTT credentials and administrative API secrets never reach a browser, a customer, the frontend bundle, browser storage, GitHub, docs or logs.
-- Test Connection buttons for Supabase and EMQX run **server-side** and record connection status, last successful check, last error and a hint.
-- `SECRETS_KEY` is never accepted through the console; it stays in Cloudflare Pages → Settings → Variables and Secrets.
-- `GET /api/owner/settings` masks any credential-looking key; `POST /api/owner/settings` rejects credential keys and points to Integrations & Secrets.
-
----
-
-## 5. Console separation
-
-| Customer Home Console | Platform Owner Console |
-|---|---|
-| Overview, Rooms, Devices, Switches, Sensors, Controllers, Board Library, Automation, Firmware, Activity, Staff, Settings, Device Setup Wizard | Overview, Initial Setup, Customers, Staff & Access, EMQX Management, Usage & Monitoring, Board Library, Platform Settings, Integrations & Secrets, Audit Logs |
-
-Owner routes require a verified JWT **and** a `platform_admins` row. Customer routes require an active `tenant_members` row. The two never share a navigation tree or a permission check.
-
----
-
-## 6. Multi-tenancy model
-
-1. Every customer-owned table has `tenant_id` with a foreign key to `tenants`.
-2. Supabase RLS policies (`0006_rls.sql`) restrict direct/Realtime access; D1 has no direct client access at all — all queries go through the Pages Function, which re-checks permissions.
-3. The API resolves the actor from a verified JWT, loads `rpc_context`, and re-checks every permission with `rpc_check_permission`. Tenant/role claims are never read from request bodies.
-4. Domain operations assert `permission_granted(actor, tenant, permission)` again in the database layer (Postgres RPCs or the portable D1 implementation).
-5. MQTT topics are tenant-scoped: `v1/tenants/{tenant_id}/devices/{device_id}/{command|state|telemetry|config|availability}`.
-6. Every device gets a unique built-in-database username/password/client id. ACL rules allow publish only to its own `state`/`telemetry`/`availability` and subscribe only to its own `command`/`config`, with deny-all fallback.
-7. Device ingest resolves `tenant_id` from the authenticated MQTT session (or the DB row matching the topic) and **ignores any `tenant_id` in the JSON payload**.
-8. Pairing tokens are SHA-256-hashed, single-use and expiring. A `device_id` belongs to exactly one tenant; transfer requires explicit unclaim + reset.
-
-### EMQX Serverless reality (verified)
-
-- HTTP authentication hooks are **not supported** → built-in-database users via `/api/v5/authentication/password_based%3Abuilt_in_database/users`.
-- ACL rules are managed per username through `/api/v5/authorization/sources/built_in_database/rules/users`.
-- Monthly traffic, session minutes and rule actions are **not** exposed by the Deployment API. The owner console shows "Unavailable" with a reason, records real live connection counts and supports owner-verified snapshots. No value is fabricated.
-- Device ingress uses an HMAC-signed `/internal/mqtt/event` webhook (or the optional Durable Object bridge). See `docs/EMQX.md`.
-
----
-
-## 7. Database overview
-
-39 tables across `supabase/migrations/0001`–`0015`; D1 gets the same tables from `scripts/d1-schema.mjs`.
-
-| Area | Tables |
-|---|---|
-| Identity | `profiles`, `platform_admins`, `tenants`, `tenant_members`, `staff_invitations`, `roles`, `permissions`, `role_permissions`, `member_permissions`, `member_access_rules` |
-| Hardware | `board_catalog`, `board_catalog_versions`, `board_catalog_pins`, `user_boards`, `board_pins`, `exclusive_allocations`, `shared_buses`, `device_pairing_tokens`, `mqtt_credentials_metadata` |
-| Home | `rooms`, `devices`, `sensors`, `device_templates`, `sensor_readings`, `switch_states`, `device_commands`, `device_configurations` |
-| Operations | `automations`, `automation_logs`, `firmware_releases`, `device_firmware_history`, `platform_settings`, `platform_secrets`, `emqx_usage_snapshots`, `emqx_sync_runs`, `audit_logs`, `notifications`, `system_announcements`, `usage_counters` |
-
-Key invariants: one exclusive owner per `(user_board_id, gpio)`; restricted / input-only / ADC pin validation; shared buses own their pins; commands have TTL, idempotency and ack states; partial unique indexes on soft-deleted `devices` and `sensors`.
-
-### Migrations and backups
-
-- **D1**: `0001_schema.sql` + `0002_seed.sql` are embedded in `apps/api/src/db/d1-schema.ts` and applied idempotently by `D1Adapter.migrate()` on first request (tracked in `_d1_migrations`).
-- **Supabase**: apply `supabase/migrations/*.sql` in order once (`supabase db push` / `psql`). This is change-controlled; the deploy workflow never auto-runs it.
-- **Backup**: Owner Console → Initial Setup → Export backup produces a portable JSON of every application table plus a server-verified `migration_token`.
-- **Provider switch**: export first, change the Cloudflare binding/variables, redeploy, then use **Run provider migration** with the exact backup and `MIGRATE`. The token is HMAC-verified with `SECRETS_KEY`; the import is explicit, replaces only the target database, and is recorded in `audit_logs`. Supabase Auth accounts are called out as a manual export/import step.
-
----
-
-## 8. Device communication
-
-Versioned JSON protocol lives in `packages/core/src/protocol.ts` and is shared by API, firmware and simulator. Commands and configs are published with `retain: false`; acknowledgements and full state reports update `devices.reported_state`; the UI only displays confirmed state. Firmware OTA uses the R2 binding, short-lived HMAC-signed download URLs, published-release checks, SHA-256 verification and ESP-IDF rollback.
-
----
-
-## 9. Board library & GPIO
-
-`scripts/board-catalog.mjs` is the single source of truth for `packages/core/data/board-catalog.json` and `supabase/migrations/0008_board_catalog.sql`; `scripts/d1-schema.mjs` reuses the same JSON for the D1 seed. Four verified Espressif dev-kits (ESP32-DevKitC V4, ESP32-S3-DevKitC-1 v1.1, ESP32-C3-DevKitM-1 v1, ESP32-C6-DevKitC-1 v1.2) plus five chip-family entries with **zero pins** and `pending_verification`. See `docs/BOARD_SOURCES.md`.
-
----
-
-## 10. Local development
-
-```bash
-npm ci
-npm run dev          # Postgres/PGlite + Vite + local MQTT broker, all on 0.0.0.0
-# or
-DB_DRIVER=d1 npm run dev   # independent Cloudflare D1 emulator configuration
-```
-
-Both commands start the local MQTT broker (1883/1884/1885), the API (8787) and Vite (5173). `npm run dev` uses a persistent PGlite data dir; restart the whole command after backend edits (PGlite is single-writer and the API is intentionally not file-watched). A generated dev `SECRETS_KEY` is kept in `.local-dev/` (gitignored) so no secret is committed.
-
-`.env.example` contains safe placeholders only. Copy to `.env.local` if you want to override local values; production configuration lives in Cloudflare and the Owner Console, not in a committed env file.
-
-### Validation
-
-```bash
-npm run typecheck
-npm test                     # 30 tests: Postgres/API/ingress + independent D1 + Pages Functions requests
-npm run build                # core + web + api
-node scripts/d1-schema.mjs   # regenerate D1 schema/seed from Postgres migrations
-npx wrangler pages functions build --outdir /tmp/homecoreos-pages-worker
-```
-
-`tests/pages.test.mjs` sends real requests through `functions/[[path]].ts` with native `DB` / `FIRMWARE_BUCKET` bindings, and `tests/d1.test.mjs` independently verifies D1 schema parity, the setup wizard, encrypted secrets, Test Connection, native R2 upload/download + signed OTA URLs, device communication/tenant isolation, backups and the provider migration. `tests/api.test.mjs` runs against whichever local server is up; run it once with `npm run dev` and once with `DB_DRIVER=d1 npm run dev` to exercise both configurations independently. See `docs/TESTING.md`.
-
----
-
-## 11. Deployment (GitHub + Cloudflare Pages)
-
-`.github/workflows/deploy.yml` runs `npm ci → typecheck → test → build → board-catalog/D1-schema sync check → Pages Functions bundle check → wrangler pages deploy apps/web/dist --project-name=homecoreos`. It uses only `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. No separate Worker deployment, no Supabase access token, no R2 credentials.
-
-`wrangler pages deploy` uploads `apps/web/dist` **and** the root `functions/` directory as Pages Functions. Root `wrangler.toml` holds only the Pages project name, build output directory and compatibility date. See `DEPLOYMENT.md` for the full operator guide.
-
----
-
-## 12. Known limitations / roadmap
-
-- BLE and LAN provisioning are documented but not implemented in the ESP32 firmware; SoftAP + USB serial are available.
-- Five chip families are `pending_verification` with zero pins until an official dev-board header map is transcribed.
-- Real hosted Supabase, Cloudflare D1/R2, EMQX Cloud and hardware TLS/WSS outcomes require owner credentials; local validation uses faithful emulators. `wrangler pages functions build` is verified, but an actual hosted deployment is not performed by this repository's tests.
-- Supabase Auth account export/import during a provider switch is a manual Supabase CLI step (called out in the migration UI).
+- The Supabase service-role key and EMQX App Secret are server-side only. Never prefix them with `VITE_` and never commit them.
+- EMQX App Secret is displayed only once when you create the API key — copy it straight into an encrypted Cloudflare Secret.
+- The first account created after deployment becomes the platform owner. Create it yourself on your own deployment URL.
