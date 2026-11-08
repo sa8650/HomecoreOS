@@ -682,8 +682,20 @@ create table if not exists public.firmware_releases (
   created_by    uuid references public.profiles(id),
   created_at    timestamptz not null default now()
 );
+-- One version per channel, chip family and artifact kind may exist at a time, so
+-- a release package can hold both the OTA application and the USB factory image
+-- under one version number while the same artifact is never stored twice.
+drop index if exists public.firmware_release_version;
 create unique index if not exists firmware_release_version
-  on public.firmware_releases (coalesce(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), channel, version, chip_family);
+  on public.firmware_releases (coalesce(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), channel, version, chip_family, artifact_kind);
+-- owner firmware console: exact image metadata, retirement trail and the
+-- explicit owner control over whether a release may be installed over the air
+alter table public.firmware_releases add column if not exists hw_config text;
+alter table public.firmware_releases add column if not exists ota_eligible boolean not null default true;
+alter table public.firmware_releases add column if not exists superseded_by uuid references public.firmware_releases(id) on delete set null;
+alter table public.firmware_releases add column if not exists retired_reason text;
+alter table public.firmware_releases add column if not exists retired_at timestamptz;
+alter table public.firmware_releases add column if not exists retired_by uuid references public.profiles(id);
 create table if not exists public.device_firmware_history (
   id            uuid primary key default gen_random_uuid(),
   tenant_id     uuid not null references public.tenants(id) on delete cascade,
@@ -1028,6 +1040,7 @@ on conflict (key) do nothing;
 insert into public.board_catalog (id, manufacturer, model, variant, chip_family, chip_variant, revision, category, image_url, pinout_url, doc_source_url, summary, connectivity, attributes, active) values
   ('espressif.esp32-devkitc-v4.wroom32e', 'Espressif', 'ESP32-DevKitC V4', 'ESP32-WROOM-32E / 32UE', 'ESP32', 'ESP32-WROOM-32E', 'V4', 'devkit', null, 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/_images/esp32_devkitC_v4_pinlayout.png', 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html', 'Dual-core ESP32 classic devkit. 38-pin headers; GPIO6–11 are consumed by internal SPI flash.', '{}'::jsonb, '{"flash_mb":4,"psram_mb":0,"wifi":"2.4 GHz","ble":"BLE 4.2","cores":2,"usb":"USB-to-UART bridge","pin_status":"verified","catalog_version":1}'::jsonb, true),
   ('espressif.esp32-s3-devkitc-1.v1.1', 'Espressif', 'ESP32-S3-DevKitC-1', 'N8 / N16R8 / N32R16V', 'ESP32-S3', 'ESP32-S3-WROOM-1', 'v1.1', 'devkit', null, 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/_images/ESP32-S3_DevKitC-1_pinlayout_v1.1.jpg', 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.1.html', '44-pin dual headers, AI-vector instructions, native USB-OTG. Octal-PSRAM variants reserve GPIO35–37.', '{}'::jsonb, '{"flash_mb":"8/16/32","psram_mb":"0/2/8/16 (variant dependent)","wifi":"2.4 GHz","ble":"BLE 5","cores":2,"usb":"USB-OTG + USB-to-UART","pin_status":"verified","catalog_version":1}'::jsonb, true),
+  ('espressif.esp32-s3-devkitc-1.n16r8', 'Espressif', 'ESP32-S3-DevKitC-1 N16R8', 'N16R8 (16 MB flash + 8 MB octal PSRAM)', 'ESP32-S3', 'ESP32-S3-WROOM-1-N16R8', 'v1.1', 'devkit', null, 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/_images/ESP32-S3_DevKitC-1_pinlayout_v1.1.jpg', 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.1.html', 'The N16R8 module used by HomecoreOS controllers: 16 MB quad flash and 8 MB octal PSRAM, so GPIO35–37 are consumed by the PSRAM and never available on the headers.', '{}'::jsonb, '{"flash_mb":16,"psram_mb":8,"psram_type":"octal","wifi":"2.4 GHz","ble":"BLE 5","cores":2,"usb":"USB-OTG + USB-to-UART","pin_status":"verified","catalog_version":1}'::jsonb, true),
   ('espressif.esp32-c3-devkitm-1.v1', 'Espressif', 'ESP32-C3-DevKitM-1', 'ESP32-C3-MINI-1 (N4X)', 'ESP32-C3', 'ESP32-C3-MINI-1', 'v1.0', 'devkit', null, 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c3/_images/esp32-c3-devkitm-1-v1-pinout.png', 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c3/esp32-c3-devkitm-1/user_guide.html', 'Compact RISC-V board. Flash SPI pins are not broken out; GPIO9 is the BOOT button.', '{}'::jsonb, '{"flash_mb":4,"psram_mb":0,"wifi":"2.4 GHz","ble":"BLE 5","cores":1,"usb":"USB Serial/JTAG","pin_status":"verified","catalog_version":1}'::jsonb, true),
   ('espressif.esp32-c6-devkitc-1.v1.2', 'Espressif', 'ESP32-C6-DevKitC-1', 'ESP32-C6-WROOM-1', 'ESP32-C6', 'ESP32-C6-WROOM-1', 'v1.2', 'devkit', null, 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c6/_images/esp32-c6-devkitc-1-pin-layout.png', 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c6/esp32-c6-devkitc-1/user_guide.html', 'Wi-Fi 6 / Thread / Zigbee RISC-V devkit with two USB-C ports and J5 current-measurement header.', '{}'::jsonb, '{"flash_mb":4,"psram_mb":0,"wifi":"2.4 GHz Wi-Fi 6","ieee802154":true,"cores":1,"usb":"USB Serial/JTAG","pin_status":"verified","catalog_version":1}'::jsonb, true),
   ('family.esp32s2', 'Espressif', 'ESP32-S2 family', 'ESP32-S2', 'ESP32-S2', 'ESP32-S2', null, 'chip_family', null, null, 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s2/index.html', 'Single-core USB-OTG capable ESP32 variant.', '{}'::jsonb, '{"note":"Chip family entry. A verified dev-board header map is required before GPIO allocation.","pin_status":"pending_verification","catalog_version":1}'::jsonb, true),
@@ -1039,6 +1052,7 @@ on conflict (id) do update set manufacturer = excluded.manufacturer, model = exc
 insert into public.board_catalog_versions (board_id, version, changelog, published) values
   ('espressif.esp32-devkitc-v4.wroom32e', 1, 'Initial verified header-pin map from official Espressif user guide.', true),
   ('espressif.esp32-s3-devkitc-1.v1.1', 1, 'Initial verified header-pin map from official Espressif user guide.', true),
+  ('espressif.esp32-s3-devkitc-1.n16r8', 1, 'N16R8 module registered with the verified DevKitC-1 header map; GPIO35–37 are reserved for octal PSRAM.', true),
   ('espressif.esp32-c3-devkitm-1.v1', 1, 'Initial verified header-pin map from official Espressif user guide.', true),
   ('espressif.esp32-c6-devkitc-1.v1.2', 1, 'Initial verified header-pin map from official Espressif user guide.', true),
   ('family.esp32s2', 1, 'Chip family registered; dev-board pin map pending verification.', true),
@@ -2063,10 +2077,6 @@ begin
           jsonb_build_object('status',p_status,'reason',p_reason));
   return jsonb_build_object('status',p_status);
 end $$;
-create or replace function public.is_platform_admin_for(p_actor uuid)
-returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from platform_admins where profile_id=p_actor)
-$$;
 create or replace function public.rpc_set_platform_setting(p_actor uuid, p_key text, p_value jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 begin
@@ -2955,3 +2965,450 @@ begin
 end $$;
 revoke all on all functions in schema public from public, anon, authenticated;
 grant execute on all functions in schema public to service_role;
+
+-- ============================================================================
+-- Six-digit pairing, firmware artifacts and OTA rollout
+-- ============================================================================
+
+-- Pairing codes are stored as an HMAC, never in plain text, and are bound to the
+-- workspace, the customer session that created them and the selected home.
+alter table public.device_pairing_tokens add column if not exists code_hmac text;
+alter table public.device_pairing_tokens add column if not exists created_by_session text;
+alter table public.device_pairing_tokens add column if not exists created_ip text;
+alter table public.device_pairing_tokens add column if not exists home_name text;
+alter table public.device_pairing_tokens add column if not exists last_attempt_at timestamptz;
+alter table public.device_pairing_tokens add column if not exists locked_until timestamptz;
+alter table public.device_pairing_tokens add column if not exists failed_attempts integer not null default 0;
+alter table public.device_pairing_tokens add column if not exists revoked_at timestamptz;
+alter table public.device_pairing_tokens add column if not exists revoked_reason text;
+alter table public.device_pairing_tokens add column if not exists consumed_board_id uuid references public.user_boards(id) on delete set null;
+create unique index if not exists pairing_token_code_hmac on public.device_pairing_tokens (code_hmac) where code_hmac is not null;
+create index if not exists pairing_token_open on public.device_pairing_tokens (expires_at) where consumed_at is null and revoked_at is null;
+
+-- Releases: one row per artifact. `board_models` lists catalog ids; the artifact
+-- is what the browser installer flashes and what OTA downloads.
+alter table public.firmware_releases add column if not exists release_notes text;
+alter table public.firmware_releases add column if not exists artifact_kind text not null default 'app';
+alter table public.firmware_releases add column if not exists flash_offset bigint;
+alter table public.firmware_releases add column if not exists hw_config text;
+alter table public.firmware_releases add column if not exists chip_family_target text;
+alter table public.firmware_releases add column if not exists signature text;
+alter table public.firmware_releases add column if not exists signature_alg text;
+alter table public.firmware_releases add column if not exists signed_at timestamptz;
+alter table public.firmware_releases add column if not exists artifact_verified boolean not null default false;
+alter table public.firmware_releases add column if not exists verification_detail jsonb not null default '{}'::jsonb;
+alter table public.firmware_releases add column if not exists ota_eligible boolean not null default true;
+alter table public.firmware_releases add column if not exists superseded_by uuid references public.firmware_releases(id) on delete set null;
+alter table public.firmware_releases add column if not exists downloads integer not null default 0;
+-- Public key the package was signed with (base64 of the raw 32-byte Ed25519 key),
+-- so a stored release can be re-checked against the key it was signed with.
+alter table public.firmware_releases add column if not exists signed_by_key text;
+do $$ begin
+  alter table public.firmware_releases
+    add constraint firmware_releases_artifact_kind_check
+    check (artifact_kind in ('app','factory'));
+exception when duplicate_object then null; end $$;
+
+-- One controller has at most one open update at a time; only 'success' is ever
+-- written by the device after it reconnects on the new image.
+alter table public.device_firmware_history add column if not exists stage_detail text;
+alter table public.device_firmware_history add column if not exists source text not null default 'console';
+alter table public.device_firmware_history add column if not exists command_id uuid;
+alter table public.device_firmware_history add column if not exists signature_verified boolean not null default false;
+create index if not exists fw_history_open on public.device_firmware_history (user_board_id)
+  where status in ('queued','downloading','installing','verifying');
+
+create or replace function public.rpc_pairing_issue(
+  p_actor uuid, p_tenant uuid, p_code_hmac text, p_session text, p_ip text, p_data jsonb
+) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_id uuid; v_board text; v_open int; v_limit int; v_ttl int; v_recent int; v_rate int;
+begin
+  perform public.assert_permission(p_actor, p_tenant, 'devices.manage');
+  if not exists (select 1 from tenants where id = p_tenant and device_registration_enabled and status = 'active') then
+    raise exception 'Device registration is disabled for this workspace' using errcode = '42501';
+  end if;
+  if p_code_hmac is null or length(p_code_hmac) < 32 then
+    raise exception 'A pairing code digest is required' using errcode = '22023';
+  end if;
+  v_board := p_data->>'catalog_board_id';
+  if v_board is not null and not exists (select 1 from board_catalog where id = v_board and active) then
+    raise exception 'Unknown board catalog entry' using errcode = '22023';
+  end if;
+  v_limit := coalesce((select value::int from platform_settings where key = 'pairing.max_open_codes'), 5);
+  select count(*) into v_open from device_pairing_tokens
+    where tenant_id = p_tenant and created_by = p_actor
+      and consumed_at is null and revoked_at is null and expires_at > now();
+  if v_open >= v_limit then
+    raise exception 'Too many open pairing codes. Finish or cancel the current setup first.' using errcode = '42901';
+  end if;
+  v_rate := coalesce((select value::int from platform_settings where key = 'pairing.issue_per_hour'), 10);
+  select count(*) into v_recent from device_pairing_tokens
+    where tenant_id = p_tenant and created_at > now() - interval '1 hour';
+  if v_recent >= v_rate then
+    raise exception 'Pairing code rate limit reached. Try again in a little while.' using errcode = '42901';
+  end if;
+  v_ttl := coalesce((p_data->>'ttl_seconds')::int,
+                    (select value::int from platform_settings where key = 'pairing.code_ttl_seconds'), 300);
+  insert into device_pairing_tokens (tenant_id, token_hash, code_hmac, board_name, catalog_board_id,
+                                     created_by, created_by_session, created_ip, home_name, expires_at)
+  values (p_tenant, p_code_hmac, p_code_hmac, p_data->>'board_name', v_board,
+          p_actor, p_session, p_ip, p_data->>'home_name', now() + (v_ttl || ' seconds')::interval)
+  returning id into v_id;
+  perform public.log_audit(p_tenant, p_actor, 'pairing.code.issue', 'pairing_token', v_id::text, null,
+                           jsonb_build_object('board', v_board, 'ttl_seconds', v_ttl));
+  return jsonb_build_object('id', v_id, 'expires_in_seconds', v_ttl, 'expires_at',
+                            now() + (v_ttl || ' seconds')::interval);
+end $$;
+
+create or replace function public.rpc_pairing_cancel(p_actor uuid, p_tenant uuid, p_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  perform public.assert_permission(p_actor, p_tenant, 'devices.manage');
+  update device_pairing_tokens set revoked_at = now(), revoked_reason = 'cancelled by customer'
+    where id = p_id and tenant_id = p_tenant and consumed_at is null;
+  return jsonb_build_object('cancelled', true);
+end $$;
+
+create or replace function public.rpc_pairing_progress(p_actor uuid, p_tenant uuid, p_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare t device_pairing_tokens%rowtype; b user_boards%rowtype; v_online boolean;
+begin
+  perform public.assert_member(p_actor, p_tenant);
+  select * into t from device_pairing_tokens where id = p_id and tenant_id = p_tenant;
+  if not found then raise exception 'Pairing session not found' using errcode = 'HC404'; end if;
+  if t.user_board_id is not null then
+    select * into b from user_boards where id = t.user_board_id;
+    v_online := coalesce(b.status = 'online' and b.last_seen_at > now() - interval '3 minutes', false);
+  end if;
+  return jsonb_build_object(
+    'id', t.id,
+    'claimed', t.consumed_at is not null,
+    'expired', t.expires_at <= now() or t.revoked_at is not null,
+    'revoked', t.revoked_at is not null,
+    'locked', t.locked_until is not null and t.locked_until > now(),
+    'failed_attempts', t.failed_attempts,
+    'remaining_attempts', greatest(0, 5 - t.failed_attempts),
+    'expires_at', t.expires_at,
+    'seconds_left', greatest(0, floor(extract(epoch from (t.expires_at - now())))::int),
+    'board', case when b.id is null then null else jsonb_build_object(
+      'id', b.id, 'name', b.name, 'device_id', b.device_id, 'status', b.status,
+      'online', v_online, 'firmware_version', b.firmware_version,
+      'catalog_board_id', b.catalog_board_id, 'chip_model', b.chip_model,
+      'chip_family', b.chip_family, 'mac_address', b.mac_address,
+      'sdk_version', b.sdk_version, 'fw_build', b.fw_build,
+      'hardware_revision', b.hardware_revision, 'last_seen_at', b.last_seen_at,
+      'rssi', b.rssi, 'config_version', b.config_version,
+      'config_sync_status', b.config_sync_status) end);
+end $$;
+
+/*
+ * Redeem a code. Everything that matters is atomic:
+ *  - the row is locked, so two controllers cannot redeem the same code;
+ *  - every failure increments a counter and locks the code after five attempts;
+ *  - success is claimed inside the same transaction that creates the board.
+ */
+create or replace function public.rpc_pairing_redeem(
+  p_code_hmac text, p_board_name text, p_device_id text, p_client_id text,
+  p_username text, p_password_hash text, p_provider_ref jsonb, p_ip text
+) returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  t device_pairing_tokens%rowtype;
+  v_board_id uuid;
+  v_existing uuid;
+begin
+  select * into t from device_pairing_tokens where code_hmac = p_code_hmac for update;
+  if not found then
+    raise exception 'That pairing code is not valid' using errcode = '42501';
+  end if;
+  if t.consumed_at is not null then
+    raise exception 'That pairing code has already been used' using errcode = '42501';
+  end if;
+  if t.revoked_at is not null then
+    raise exception 'That pairing code was cancelled' using errcode = '42501';
+  end if;
+  if t.locked_until is not null and t.locked_until > now() then
+    raise exception 'Too many attempts. Wait a few minutes and try again.' using errcode = '42902';
+  end if;
+  if t.expires_at <= now() then
+    update device_pairing_tokens set failed_attempts = failed_attempts + 1, last_attempt_at = now()
+      where id = t.id;
+    raise exception 'That pairing code has expired' using errcode = '42501';
+  end if;
+  if not exists (select 1 from tenants x where x.id = t.tenant_id and x.status = 'active'
+                 and x.device_registration_enabled) then
+    raise exception 'This workspace cannot add controllers right now' using errcode = '42501';
+  end if;
+  select id into v_existing from user_boards where device_id = p_device_id;
+  if v_existing is null then
+    select id into v_existing from user_boards where mqtt_client_id = p_client_id limit 1;
+  end if;
+  if v_existing is not null then
+    raise exception 'This controller is already registered to a home' using errcode = '23505';
+  end if;
+
+  insert into user_boards (tenant_id, catalog_board_id, custom_board, name, device_id, mqtt_client_id,
+                           status, created_by, provisioned_at)
+  values (t.tenant_id, t.catalog_board_id,
+          case when t.catalog_board_id is null then '{}'::jsonb else null end,
+          coalesce(t.board_name, p_board_name, 'ESP32 Controller'),
+          p_device_id, p_client_id, 'provisioning', t.created_by, now())
+  returning id into v_board_id;
+
+  insert into mqtt_credentials_metadata (tenant_id, user_board_id, username, password_hash, provider, provider_ref, status)
+  values (t.tenant_id, v_board_id, p_username, p_password_hash, 'emqx', coalesce(p_provider_ref, '{}'::jsonb), 'active');
+
+  update device_pairing_tokens
+    set consumed_at = now(), consumed_ip = p_ip, consumed_board_id = v_board_id, user_board_id = v_board_id
+    where id = t.id;
+
+  perform public.bump_board_config(v_board_id);
+  perform public.log_audit(t.tenant_id, t.created_by, 'device.pair', 'board', v_board_id::text, null,
+                           jsonb_build_object('device_id', p_device_id, 'catalog_board_id', t.catalog_board_id), 'device');
+  return jsonb_build_object('board_id', v_board_id, 'tenant_id', t.tenant_id,
+                            'device_id', p_device_id, 'reused_credentials', false);
+end $$;
+
+/*
+ * A wrong code cannot be attributed to a row, so failures are counted per source
+ * address: an attacker cannot burn out another customer's pending code, and a
+ * guessing spree is stopped after a handful of tries.
+ */
+create or replace function public.rpc_pairing_record_failure(p_ip text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_window interval := interval '10 minutes'; v_count int;
+begin
+  insert into public.platform_settings (key, value)
+  values ('_pairing_fail:' || coalesce(nullif(p_ip, ''), 'unknown'), jsonb_build_object('n', 1, 'at', now()))
+  on conflict (key) do update set value = jsonb_build_object(
+    'n', case when (platform_settings.value->>'at')::timestamptz < now() - v_window then 1
+              else coalesce((platform_settings.value->>'n')::int, 0) + 1 end,
+    'at', now());
+  select coalesce((value->>'n')::int, 0) into v_count from public.platform_settings
+    where key = '_pairing_fail:' || coalesce(nullif(p_ip, ''), 'unknown');
+  if v_count >= 10 then
+    raise exception 'Too many incorrect pairing codes. Wait ten minutes and try again.' using errcode = '42902';
+  end if;
+  return jsonb_build_object('failures', v_count, 'locked', v_count >= 10);
+end $$;
+
+create or replace function public.rpc_pairing_address_reset(p_ip text)
+returns void language sql security definer set search_path = public as $$
+  delete from public.platform_settings where key = '_pairing_fail:' || coalesce(nullif(p_ip, ''), 'unknown');
+$$;
+
+create or replace function public.rpc_pairing_cleanup()
+returns void language sql security definer set search_path = public as $$
+  update device_pairing_tokens set revoked_at = now(), revoked_reason = 'expired unused'
+    where revoked_at is null and consumed_at is null and expires_at < now();
+  delete from platform_settings where key like '\_pairing\_fail:%' and (value->>'at')::timestamptz < now() - interval '1 day';
+$$;
+
+/* ---- firmware: latest compatible release ------------------------------- */
+
+create or replace function public.rpc_firmware_latest(p_board uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare b user_boards%rowtype; c board_catalog%rowtype; r firmware_releases%rowtype;
+begin
+  select * into b from user_boards where id = p_board and deleted_at is null;
+  if not found then return null; end if;
+  if b.catalog_board_id is not null then
+    select * into c from board_catalog where id = b.catalog_board_id;
+  end if;
+  select * into r from firmware_releases x
+    where x.deleted_at is null and x.status = 'published' and x.channel = 'stable'
+      and x.sha256 is not null and length(x.sha256) = 64
+      and x.ota_eligible and x.artifact_kind = 'app'
+      and (x.board_models @> array[b.catalog_board_id]::text[]
+           or (c.chip_family is not null and x.board_models @> array[c.chip_family]::text[]))
+    order by x.published_at desc nulls last, x.created_at desc
+    limit 1;
+  if not found then return null; end if;
+  return jsonb_build_object(
+    'id', r.id, 'version', r.version, 'name', r.name, 'notes', coalesce(r.description, r.release_notes),
+    'size_bytes', r.size_bytes, 'sha256', r.sha256, 'signature', r.signature,
+    'signature_alg', r.signature_alg, 'mandatory', r.mandatory, 'channel', r.channel,
+    'published_at', r.published_at, 'installed', b.firmware_version,
+    'update_available', coalesce(b.firmware_version, '') <> r.version);
+end $$;
+
+/* ---- firmware: OTA progress reported by the controller ------------------ */
+
+create or replace function public.rpc_ota_report(p_board uuid, p_payload jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_tenant uuid; v_status text; v_row device_firmware_history%rowtype; v_prev text; v_new uuid;
+begin
+  select tenant_id, firmware_version into v_tenant, v_prev from user_boards where id = p_board and deleted_at is null;
+  if v_tenant is null then raise exception 'Unknown board' using errcode = '42501'; end if;
+  v_status := coalesce(p_payload->>'status', 'downloading');
+  if v_status not in ('downloading','installing','verifying','installed','success','failed','rolled_back') then
+    raise exception 'Unknown update status' using errcode = '22023';
+  end if;
+  select * into v_row from device_firmware_history
+    where user_board_id = p_board and status in ('queued','downloading','installing','verifying')
+    order by started_at desc limit 1;
+  if v_row.id is null then
+    insert into device_firmware_history (tenant_id, user_board_id, from_version, to_version, status,
+      progress, bytes_total, bytes_done, error, source, started_at)
+    values (v_tenant, p_board, v_prev, coalesce(p_payload->>'version', v_prev), v_status,
+      coalesce((p_payload->>'progress')::smallint, 0), (p_payload->>'bytes_total')::bigint,
+      (p_payload->>'bytes_done')::bigint, p_payload->>'error', 'device', now())
+    returning id into v_new;
+    select * into v_row from device_firmware_history where id = v_new;
+  end if;
+  update device_firmware_history set
+    status = v_status,
+    progress = greatest(coalesce((p_payload->>'progress')::smallint, progress), progress),
+    bytes_total = coalesce((p_payload->>'bytes_total')::bigint, bytes_total),
+    bytes_done = coalesce((p_payload->>'bytes_done')::bigint, bytes_done),
+    error = nullif(p_payload->>'error', ''),
+    finished_at = case when v_status in ('success','failed','rolled_back') then now() else finished_at end
+  where id = v_row.id;
+  if v_status = 'success' then
+    update user_boards set firmware_version = coalesce(p_payload->>'version', firmware_version),
+      fw_build = nullif(p_payload->>'fw_build', ''), last_seen_at = now(), status = 'online'
+      where id = p_board;
+    insert into audit_logs (tenant_id, actor_type, action, entity_type, entity_id, after)
+    values (v_tenant, 'device', 'firmware.ota.confirmed', 'board', p_board::text,
+      jsonb_build_object('from_version', v_prev, 'to_version', p_payload->>'version'));
+  elsif v_status = 'rolled_back' then
+    insert into audit_logs (tenant_id, actor_type, action, entity_type, entity_id, after)
+    values (v_tenant, 'device', 'firmware.ota.rollback', 'board', p_board::text,
+      jsonb_build_object('from_version', v_prev, 'error', p_payload->>'error'));
+  end if;
+  return jsonb_build_object('ok', true, 'status', v_status,
+    'version', coalesce(p_payload->>'version', v_prev));
+end $$;
+
+create or replace function public.rpc_firmware_signature_set(
+  p_id uuid, p_signature text, p_alg text, p_actor uuid
+) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_row public.firmware_releases%rowtype;
+begin
+  if not public.is_platform_admin_for(p_actor) then
+    raise exception 'Platform admin required' using errcode = '42501';
+  end if;
+  if p_signature is null or length(p_signature) < 40 then
+    raise exception 'A base64 signature is required' using errcode = '22023';
+  end if;
+  if p_alg not in ('ecdsa-p256-sha256','ed25519') then
+    raise exception 'Unsupported signature algorithm' using errcode = '22023';
+  end if;
+  select * into v_row from public.firmware_releases where id = p_id and deleted_at is null;
+  if not found then raise exception 'Firmware release not found' using errcode = 'P0002'; end if;
+  if v_row.sha256 is null or length(v_row.sha256) <> 64 then
+    raise exception 'The release has no trusted checksum' using errcode = '22023';
+  end if;
+  update public.firmware_releases
+    set signature = p_signature, signature_alg = p_alg, signed_at = now(), updated_at = now()
+    where id = p_id;
+  insert into public.audit_logs (actor_id, actor_type, action, entity_type, entity_id, after)
+  values (p_actor, 'platform_admin', 'platform.firmware.signature', 'firmware_release', p_id::text,
+          jsonb_build_object('alg', p_alg));
+  return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function public.rpc_firmware_retire(p_id uuid, p_actor uuid, p_reason text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_row public.firmware_releases%rowtype; v_replacement uuid;
+begin
+  if not public.is_platform_admin_for(p_actor) then
+    raise exception 'Platform admin required' using errcode = '42501';
+  end if;
+  select * into v_row from public.firmware_releases where id = p_id and deleted_at is null;
+  if not found then raise exception 'Firmware release not found' using errcode = 'P0002'; end if;
+  select id into v_replacement from public.firmware_releases
+    where id <> p_id and deleted_at is null and status = 'published' and channel = 'stable'
+      and artifact_kind = 'app' and published_at < coalesce(v_row.published_at, now())
+    order by published_at desc nulls last limit 1;
+  update public.firmware_releases
+    set status = 'archived', archived_at = now(), ota_eligible = false,
+        superseded_by = v_replacement, updated_at = now()
+    where id = p_id;
+  insert into public.audit_logs (actor_id, actor_type, action, entity_type, entity_id, after)
+  values (p_actor, 'platform_admin', 'platform.firmware.retire', 'firmware_release', p_id::text,
+          jsonb_build_object('reason', p_reason, 'replacement', v_replacement));
+  return jsonb_build_object('retired', true, 'replacement_id', v_replacement,
+                            'replacement_version',
+                            (select version from public.firmware_releases where id = v_replacement));
+end $$;
+
+/*
+ * Roll back a controller to a previous stable release. The running version is
+ * read from the database, never from the request, and the target must be a
+ * published, signed, OTA-eligible release compatible with that board.
+ */
+create or replace function public.version_lt(p_a text, p_b text)
+returns boolean language sql immutable set search_path = public as $$
+  with parts as (
+    select i as idx,
+      coalesce(nullif(regexp_replace(split_part(coalesce(p_a, ''), '.', i), '[^0-9].*$', ''), ''), '0')::int as va,
+      coalesce(nullif(regexp_replace(split_part(coalesce(p_b, ''), '.', i), '[^0-9].*$', ''), ''), '0')::int as vb
+    from generate_series(1, greatest(
+      coalesce(array_length(string_to_array(coalesce(p_a, ''), '.'), 1), 1),
+      coalesce(array_length(string_to_array(coalesce(p_b, ''), '.'), 1), 1))) i
+  )
+  select coalesce((select va < vb from parts where va <> vb order by idx limit 1), false);
+$$;
+
+create or replace function public.rpc_firmware_rollback_target(p_board uuid, p_actor uuid, p_tenant uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare b public.user_boards%rowtype; c public.board_catalog%rowtype; r public.firmware_releases%rowtype;
+begin
+  if not public.is_platform_admin_for(p_actor) then
+    perform public.assert_permission(p_actor, p_tenant, 'devices.configure');
+  end if;
+  select * into b from public.user_boards
+    where id = p_board and deleted_at is null
+      and (public.is_platform_admin_for(p_actor) or b.tenant_id = p_tenant);
+  if not found then return null; end if;
+  if b.catalog_board_id is not null then
+    select * into c from public.board_catalog where id = b.catalog_board_id;
+  end if;
+  select * into r from public.firmware_releases x
+    where x.deleted_at is null and x.channel = 'stable' and x.artifact_kind = 'app'
+      and x.sha256 is not null and length(x.sha256) = 64
+      and x.status in ('published','archived') and x.ota_eligible
+      and x.signature is not null
+      and public.version_lt(x.version, coalesce(b.firmware_version, ''))
+      and (x.board_models @> array[b.catalog_board_id]::text[]
+           or (c.chip_family is not null and x.board_models @> array[c.chip_family]::text[]))
+      and exists (select 1 from public.device_firmware_history h
+                  where h.user_board_id = b.id and h.firmware_release_id = x.id and h.status = 'success')
+    order by x.published_at desc nulls last limit 1;
+  if not found then
+    select * into r from public.firmware_releases x
+      where x.deleted_at is null and x.channel = 'stable' and x.artifact_kind = 'app'
+        and x.sha256 is not null and length(x.sha256) = 64
+        and x.status in ('published','archived') and x.ota_eligible
+        and x.signature is not null
+        and public.version_lt(x.version, coalesce(b.firmware_version, ''))
+        and (x.board_models @> array[b.catalog_board_id]::text[]
+             or (c.chip_family is not null and x.board_models @> array[c.chip_family]::text[]))
+      order by x.published_at desc nulls last limit 1;
+  end if;
+  if not found then return null; end if;
+  return jsonb_build_object('id', r.id, 'version', r.version, 'sha256', r.sha256,
+    'signature', r.signature, 'size_bytes', r.size_bytes, 'installed', b.firmware_version,
+    'requires_usb_reinstall', r.artifact_kind <> 'app');
+end $$;
+
+-- The N16R8 module shares the DevKitC-1 v1.1 header layout, so its pin map is the
+-- same except that GPIO35-37 are inside the octal PSRAM package and never reach
+-- the headers. Those three rows are therefore marked restricted, not exposed.
+insert into public.board_catalog_pins (
+  board_id, gpio, header_label, side, header_pin, functions, adc_channels, adc_bits,
+  input_only, exposed, boot_strapping, usb_jtag, flash_connected, psram_connected,
+  touch_channel, rtc_gpio, restricted, restriction_note, notes)
+select 'espressif.esp32-s3-devkitc-1.n16r8', gpio, header_label, side, header_pin, functions, adc_channels, adc_bits,
+  input_only, exposed, boot_strapping, usb_jtag, flash_connected, psram_connected,
+  touch_channel, rtc_gpio,
+  case when gpio in (35, 36, 37) then true else restricted end,
+  case when gpio in (35, 36, 37) then 'Internal to the 8 MB octal PSRAM on the N16R8 module: not available on the headers.' else restriction_note end,
+  notes
+from public.board_catalog_pins where board_id = 'espressif.esp32-s3-devkitc-1.v1.1'
+on conflict (board_id, gpio) do nothing;
+update public.board_catalog_pins set functions = '{}', adc_channels = '{}', exposed = false
+  where board_id = 'espressif.esp32-s3-devkitc-1.n16r8' and gpio in (35, 36, 37);
+insert into public.board_catalog_versions (board_id, version, changelog, published)
+values ('espressif.esp32-s3-devkitc-1.n16r8', 2, 'Pin map derived from DevKitC-1 v1.1 with the octal-PSRAM pins removed from the headers.', true)
+on conflict (board_id, version) do nothing;

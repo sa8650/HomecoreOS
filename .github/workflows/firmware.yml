@@ -1,0 +1,164 @@
+name: Firmware
+# Compiles the ESP32-S3 (N16R8) controller image and publishes one release ZIP
+# holding the OTA application image, the merged USB factory image, manifest.json,
+# SHA256SUMS.txt and - when a signing key is configured - a detached Ed25519
+# signature. Nothing is deployed from here: Cloudflare Pages keeps deploying the
+# site through the existing GitHub integration, and the owner uploads the ZIP in
+# Owner Console -> Firmware Management -> Upload release package.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (for example 1.3.0); it is stamped into the image
+        required: true
+        type: string
+      channel:
+        description: Channel
+        required: true
+        default: stable
+        type: choice
+        options: [stable, beta, dev]
+      prerelease:
+        description: Mark the GitHub release as a pre-release
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: ['fw-v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SKETCH: firmware/homecoreos_esp32
+      FQBN: esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,CDCOnBoot=cdc
+      VERSION: ${{ inputs.version || github.ref_name }}
+      CHANNEL: ${{ inputs.channel || 'stable' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Normalise the version
+        run: |
+          VERSION="${VERSION#fw-v}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[A-Za-z0-9._+-]{1,32}$'; then
+            echo "::error::version '$VERSION' is not a valid image version"; exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      # The version, the API origin and the TLS trust anchors are compiled in from
+      # a generated header. HC_FW_PUBKEY is the Ed25519 public key the controller
+      # uses to verify an update; leave it unset and the firmware reports
+      # "signing key not configured" instead of trusting anything.
+      - name: Generate the build header
+        run: node scripts/firmware/hc_build.mjs
+        env:
+          HC_FW_VERSION: ${{ env.VERSION }}
+          HC_API_BASE: https://homecoreos.pages.dev
+          HC_FW_PUBKEY: ${{ vars.HC_FW_PUBKEY }}
+          HC_FW_SIGNING_ALG: ${{ vars.HC_FW_SIGNING_ALG || 'none' }}
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Install the ESP32 core and libraries
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.12
+          arduino-cli lib install ArduinoJson@7.4.3
+
+      - name: Compile the controller image
+        run: arduino-cli compile --fqbn "$FQBN" --build-path "$RUNNER_TEMP/build" "$SKETCH"
+
+      # One script builds the merged image, the manifest, the checksums and the
+      # ZIP, so the same code runs locally and here. A signing key is only written
+      # from the FW_SIGNING_KEY secret when it is configured.
+      - name: Build the release package
+        run: |
+          set -euo pipefail
+          KEY_ARGS=""
+          if [ -n "${FW_SIGNING_KEY:-}" ]; then
+            KEY_FILE="$RUNNER_TEMP/signing-key.pem"
+            printf '%s' "$FW_SIGNING_KEY" > "$KEY_FILE"
+            KEY_ARGS="--sign-key $KEY_FILE"
+          else
+            echo "::notice::FW_SIGNING_KEY is not set, so the release is unsigned. The console will report 'signing key not configured'."
+          fi
+          node scripts/firmware/hc_package.mjs \
+            --build "$RUNNER_TEMP/build" \
+            --out "$RUNNER_TEMP/release/homecoreos-$VERSION.zip" \
+            --version "$VERSION" \
+            --channel "$CHANNEL" \
+            $KEY_ARGS
+          rm -f "$RUNNER_TEMP/signing-key.pem"
+        env:
+          FW_SIGNING_KEY: ${{ secrets.FW_SIGNING_KEY }}
+
+      - name: Verify the package the way the server will
+        run: |
+          set -euo pipefail
+          ART="$RUNNER_TEMP/release"
+          cd "$ART"
+          shasum -a 256 -c homecoreos-$VERSION.zip.sha256
+          python3 - <<'PY'
+          import json, struct, zipfile, hashlib, sys, os
+          path = [f for f in os.listdir('.') if f.endswith('.zip')][0]
+          z = zipfile.ZipFile(path)
+          assert z.testzip() is None, "the ZIP is corrupt"
+          names = set(z.namelist())
+          assert 'manifest.json' in names, "manifest.json is missing"
+          m = json.loads(z.read('manifest.json'))
+          app = z.read(m['artifacts']['app']['file'])
+          usb = z.read(m['artifacts']['factory']['file'])
+          assert hashlib.sha256(app).hexdigest() == m['artifacts']['app']['sha256'], "app checksum mismatch"
+          assert hashlib.sha256(usb).hexdigest() == m['artifacts']['factory']['sha256'], "usb checksum mismatch"
+          assert app[0] == 0xE9, "app image has no ESP32 magic"
+          assert (app[12] | (app[13] << 8)) == 9, "app image does not target ESP32-S3"
+          assert struct.unpack_from('<I', app, 0x20)[0] == 0xABCD5432, "app descriptor missing"
+          assert usb[0] == 0xE9, "no bootloader at 0x0 in the USB image"
+          assert usb[0x8000:0x8002] == b'\xaa\x50', "no partition table at 0x8000"
+          assert usb[0x10000:0x10000 + len(app)] == app, "the USB image carries a different application"
+          assert b'hcver:' + m['version'].encode() in app, "the image is not stamped with the release version"
+          print(f"package ok: {m['version']} ({m['signature']['state']}), app {len(app)} B, usb {len(usb)} B, {len(names)} files")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homecoreos-${{ env.VERSION }}
+          path: |
+            ${{ runner.temp }}/release/homecoreos-${{ env.VERSION }}.zip
+            ${{ runner.temp }}/release/homecoreos-${{ env.VERSION }}.zip.sha256
+          if-no-files-found: error
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: fw-v${{ env.VERSION }}
+          name: Firmware ${{ env.VERSION }}
+          prerelease: ${{ inputs.prerelease || inputs.channel == 'beta' || inputs.channel == 'dev' }}
+          body: |
+            Controller firmware ${{ env.VERSION }} for the ESP32-S3 N16R8 (16 MB flash, 8 MB PSRAM).
+
+            **Download `homecoreos-${{ env.VERSION }}.zip` and upload it in the Owner Console:**
+
+            1. Open the Owner Console → Firmware Management → Upload release package.
+            2. Choose this ZIP. The console checks the manifest, both images, the checksums and the signature before it stores anything.
+            3. Review the checks, then publish.
+
+            The ZIP contains:
+
+            - `homecoreos-${{ env.VERSION }}-app.bin` — application image, used for wireless OTA updates.
+            - `homecoreos-${{ env.VERSION }}-usb.bin` — merged USB factory image for the in-browser installer and recovery.
+            - `manifest.json`, `SHA256SUMS.txt` — versions, sizes and checksums (and the signature when one is configured).
+
+            The `.zip.sha256` file lets you confirm the download:
+            `shasum -a 256 -c homecoreos-${{ env.VERSION }}.zip.sha256`
+          files: |
+            ${{ runner.temp }}/release/homecoreos-${{ env.VERSION }}.zip
+            ${{ runner.temp }}/release/homecoreos-${{ env.VERSION }}.zip.sha256

@@ -153,6 +153,8 @@ export function OwnerEmqx() {
   const toast = useToast();
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [authCheck, setAuthCheck] = useState<any>(null);
+  const [checking, setChecking] = useState(false);
   const s = data?.settings || {};
   const val = (k: string) => {
     const v = s[k] ?? s[`mqtt.${k}`];
@@ -162,7 +164,14 @@ export function OwnerEmqx() {
   return <>
     <PageHead title="EMQX Management" desc="Deployment status, device provisioning strategy and usage synchronization. Credentials are encrypted Cloudflare secrets and never exposed to frontend JavaScript." actions={<><Link className="btn btn-primary" to="/owner/settings/integrations"><Icon.link />View integration status</Link>
       <button className="btn" disabled={testing} onClick={async () => { setTesting(true); try { const h = await api.post('/api/owner/emqx/test'); toast(h.connected ? 'Broker connection successful' : `Unavailable: ${h.detail}`, h.connected ? 'ok' : 'error'); refresh(); } catch (e: any) { toast(e.message, 'error'); } finally { setTesting(false); } }}><Icon.refresh />{testing ? 'Testing…' : 'Test connection'}</button>
-      <button className="btn" disabled={syncing} onClick={async () => { setSyncing(true); try { const r = await api.post('/api/owner/emqx/sync-usage'); toast(r.message); refresh(); } catch (e: any) { toast(e.message, 'error'); } finally { setSyncing(false); } }}>{syncing ? 'Syncing…' : 'Sync usage'}</button></>} />
+      <button className="btn" disabled={syncing} onClick={async () => { setSyncing(true); try { const r = await api.post('/api/owner/emqx/sync-usage'); toast(r.message); refresh(); } catch (e: any) { toast(e.message, 'error'); } finally { setSyncing(false); } }}>{syncing ? 'Syncing…' : 'Sync usage'}</button>
+      <button className="btn" disabled={checking} onClick={async () => {
+        setChecking(true); setAuthCheck(null);
+        try { const r = await api.post('/api/owner/emqx/device-auth-check'); setAuthCheck(r);
+          toast(r.ok ? 'Device authentication works end to end' : 'Device authentication needs attention', r.ok ? 'ok' : 'error'); }
+        catch (e: any) { toast(e.message, 'error'); }
+        finally { setChecking(false); }
+      }}><Icon.shieldOk />{checking ? 'Checking…' : 'Check device authentication'}</button></>} />
     <Notice tone="info">This page is read-only. Set EMQX API credentials and broker addresses in Cloudflare Pages → Settings → Variables and Secrets, then redeploy. Saved values are never displayed in the browser. <Link to="/owner/settings/integrations">View integration status</Link>.</Notice>
     {loading ? <Loading rows={2} /> : <div className="grid grid-2" style={{ alignItems: 'start', marginTop: 14 }}>
       <Card title="Deployment configuration" sub="Non-secret status from platform_settings and encrypted credential metadata">
@@ -187,6 +196,19 @@ export function OwnerEmqx() {
           <dt>Device topics</dt><dd className="mono">v1/tenants/{"{id}"}/devices/{"{id}"}/…</dd>
           <dt>Admin secrets</dt><dd>Never sent to browsers or devices</dd>
         </div><div className="divider" />{(data?.capability_notes || []).map((n: string, i: number) => <p className="tiny" key={i} style={{ marginBottom: 6 }}>• {n}</p>)}</Card>
+        <Card title="Device authentication self-check"
+          sub="Runs the provisioning calls pairing uses, then removes the probe account">
+          {!authCheck ? <p className="muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
+            Nothing here is assumed. The check creates one temporary device account, confirms the authenticator holds it,
+            and deletes it again, so you can see what this deployment really supports before a customer pairs a controller.
+          </p> : <div style={{ display: 'grid', gap: 8 }}>
+            {authCheck.checks.map((c: any) => <div key={c.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              {c.ok ? <Badge tone="on" icon="check">Works</Badge> : <Badge tone="danger" icon="fail">Failed</Badge>}
+              <div><div style={{ fontSize: 12.5, fontWeight: 600 }}>{c.label}</div><div className="tiny">{c.detail}</div></div>
+            </div>)}
+            <div className="tiny">{authCheck.note}</div>
+          </div>}
+        </Card>
         <Card title="Provider portability"><p className="muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>All MQTT operations go through the <span className="mono">MqttProvider</span> port. Switching to a self-hosted EMQX or Mosquitto means adding one adapter — device, tenant and UI code do not change.</p></Card>
       </div>
     </div>}
