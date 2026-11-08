@@ -1,8 +1,8 @@
 import type { DataClient, MqttProvider, AuthPort, ObjectStore } from '@homecoreos/core';
 import type { Env } from '../env';
-import { hmacHex } from '../crypto';
 import { serviceRoleHeaders } from '../db/adapters';
-import { R2Client, R2ObjectStore, r2Config } from '../storage/r2';
+import { signedPath } from '../storage/signed-url';
+import { R2ObjectStore, createR2Store, r2Binding } from '../storage/r2';
 
 /** Per-request/per-isolate runtime assembled at startup. */
 export interface Runtime {
@@ -11,7 +11,7 @@ export interface Runtime {
   auth: AuthPort;
   mqtt: MqttProvider;
   store: ObjectStore | null;
-  r2: R2Client | null;
+  r2: R2ObjectStore | null;
   storageBackend: 'r2' | 'supabase' | 'none';
   events: EventBus;
   emit: (tenantId: string, type: string, payload?: Record<string, unknown>) => void;
@@ -37,20 +37,9 @@ export class EventBus {
   get size() { return [...this.listeners.values()].reduce((n, s) => n + s.size, 0); }
 }
 
-function downloadPath(publicBase: string) {
-  return `${publicBase.replace(/\/$/, '')}/api/firmware/download`;
-}
-
-/** Signed, short-lived firmware URLs served by the API (never a public bucket). */
-async function signedPath(secret: string, publicBase: string, key: string, expiresSeconds: number) {
-  const expires = Math.floor(Date.now() / 1000) + expiresSeconds;
-  const sig = await hmacHex(secret, `${key}\n${expires}`);
-  return `${downloadPath(publicBase)}/${encodeURIComponent(btoa(key))}?expires=${expires}&sig=${sig}`;
-}
-
 /**
- * Default firmware store: a private Supabase Storage bucket. Created on first
- * use with the service-role key; no Cloudflare R2 binding is needed.
+ * Fallback firmware store: a private Supabase Storage bucket. Used only when
+ * no native R2 bucket binding has been added in Cloudflare Pages.
  */
 export class SupabaseObjectStore implements ObjectStore {
   private ready?: Promise<void>;
@@ -116,11 +105,8 @@ export function createStore(env: Env): ObjectStore | null {
   const secret = String(env.SIGNING_KEY || '');
   const publicBase = String((env as any).PUBLIC_API_BASE || '');
   const bucket = String((env as any).STORAGE_BUCKET || 'firmware');
-  const cfg = r2Config(env as Record<string, unknown>);
-  if (cfg) {
-    const client = new R2Client({ ...cfg, publicBase, signingKey: secret });
-    return new R2ObjectStore(client, publicBase, secret);
-  }
+  const r2 = createR2Store(env as Record<string, unknown>);
+  if (r2) return r2;
   if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
     return new SupabaseObjectStore(String(env.SUPABASE_URL), String(env.SUPABASE_SERVICE_ROLE_KEY), bucket, publicBase, secret);
   }
@@ -128,7 +114,7 @@ export function createStore(env: Env): ObjectStore | null {
 }
 
 export function storageBackend(env: Env): 'r2' | 'supabase' | 'none' {
-  if (r2Config(env as Record<string, unknown>)) return 'r2';
+  if (r2Binding(env as Record<string, unknown>)) return 'r2';
   if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) return 'supabase';
   return 'none';
 }

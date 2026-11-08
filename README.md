@@ -1,6 +1,6 @@
 # HomecoreOS
 
-A multi-tenant smart-home platform for ESP32 controllers: a device-focused React console, a serverless API, per-device MQTT credentials, GPIO allocation, commands, telemetry, automations, a guided setup wizard, board management and firmware updates stored in private Cloudflare R2.
+A multi-tenant smart-home platform for ESP32 controllers: a device-focused React console, a serverless API, per-device MQTT credentials, GPIO allocation, commands, telemetry, automations, a guided setup wizard, board management and firmware updates stored in a private Cloudflare R2 bucket attached as a native Pages binding.
 
 ## How it is hosted
 
@@ -10,10 +10,10 @@ A multi-tenant smart-home platform for ESP32 controllers: a device-focused React
 | Website | Cloudflare Pages static build |
 | API and authentication | Cloudflare Pages Functions in `functions/` |
 | Database, accounts, sessions, permissions, firmware metadata | Supabase PostgreSQL (database only, no Supabase Auth) |
-| Firmware binaries | Private Cloudflare R2 bucket via encrypted S3 API secrets |
+| Firmware binaries | Private Cloudflare R2 bucket via the native `FIRMWARE_BUCKET` Pages binding |
 | Device messaging | EMQX Cloud Serverless, MQTT over TLS on port 8883 |
 
-**No Cloudflare D1 database and no R2 bucket *binding* are needed.** R2 is reached with four encrypted Cloudflare Pages secrets; the bucket itself stays private. All configuration is entered once in Cloudflare Pages → Settings → Variables and Secrets. GitHub stays directly connected to Cloudflare Pages; there is no deploy workflow and no GitHub deployment secret.
+**A Cloudflare D1 database is not used.** Firmware storage uses the one native R2 bucket binding named `FIRMWARE_BUCKET`, added once in Cloudflare Pages → Settings → Functions → R2 bucket bindings; the bucket itself stays private. All other configuration is entered in Cloudflare Pages → Settings → Variables and Secrets. There are no R2 API keys or `R2_…` secrets. GitHub stays directly connected to Cloudflare Pages; there is no deploy workflow and no GitHub deployment secret.
 
 ## What is in the box
 
@@ -38,18 +38,18 @@ Authentication is entirely custom and database-backed. There is no Supabase Auth
 
 ## Firmware storage and security
 
-- `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` are encrypted Cloudflare Pages secrets. They are read only by the Pages Function, never sent to a browser, never stored in PostgreSQL and never shown again in the dashboard.
-- Requests are signed with AWS Signature Version 4 using WebCrypto; no S3 SDK and no R2 binding is required.
+- A private R2 bucket is attached to the Pages project under **Settings → Functions → R2 bucket bindings** with the variable name **`FIRMWARE_BUCKET`** (`R2_BUCKET` also works). The Pages Function uses that binding directly; no R2 API token, access key, secret, account ID, S3 endpoint or SDK is configured anywhere.
+- The binding never reaches the browser. No R2 credential is stored in PostgreSQL, in an environment variable, or shown in the dashboard.
 - Uploads are limited to 16 MB and `.bin`/`.elf`/`.img`. The client and the server both compute SHA-256; the server verifies the size, rejects duplicate versions and unknown board models, stores the binary, reads it back and verifies the checksum before saving metadata.
 - Download URLs are short-lived HMAC-signed API URLs, or owner-authorised server-side downloads that re-verify the checksum. The private bucket has no public URL.
 - Deletion is two-step (`DELETE` confirmation plus a server-side `confirm=DELETE` check), refuses to run while an update is in progress, and only commits the metadata removal after the R2 object is deleted.
-- The Owner Console reports R2 as **Verified** only after a real upload → download → checksum → delete round trip succeeds. Without the four secrets the app falls back to private Supabase Storage and says so explicitly.
+- The Owner Console reports R2 as **Verified** only after a real upload → download → checksum → delete round trip succeeds. Without the binding the app falls back to private Supabase Storage and says so explicitly.
 
 ## Deploy it
 
 Everything is done in web dashboards — GitHub, Cloudflare, Supabase and EMQX. No PC terminal, no CLI and no local tools.
 
-See **[DEPLOYMENT.md](DEPLOYMENT.md)** for exact Cloudflare dashboard steps: creating a private R2 bucket, generating an R2 API token, adding all eleven encrypted secrets, the complete Pages build settings, testing firmware upload, and testing the device connection flow.
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for exact Cloudflare dashboard steps: creating a private R2 bucket, attaching the `FIRMWARE_BUCKET` binding, adding the seven encrypted secrets, the complete Pages build settings, testing firmware upload, and testing the device connection flow.
 
 In short:
 
@@ -57,13 +57,13 @@ In short:
 2. Create a Cloudflare Pages project connected to that repository (exact build settings are in DEPLOYMENT.md).
 3. Create a Supabase project and run `supabase/schema.sql` once in its SQL Editor; copy the Project URL and service-role key.
 4. Create an EMQX Cloud **Serverless** deployment and copy its API base, App ID, App Secret and broker host.
-5. Create a **private Cloudflare R2 bucket** and an **Object Read & Write** API token for that bucket only; copy the Account ID, bucket name, Access Key ID and Secret Access Key.
-6. Add all eleven values as encrypted **Secrets** in Cloudflare Pages → Settings → Variables and Secrets, add `NODE_VERSION=20` as a plain variable, then redeploy.
-7. Open your Pages URL and register the first account — it becomes the Platform Owner. Save the recovery codes shown after registration. Run **Firmware management → Test R2 connection** before uploading a build.
+5. Create a **private Cloudflare R2 bucket**. In the Pages project open **Settings → Functions → R2 bucket bindings** and add **`FIRMWARE_BUCKET`** pointing at that bucket for **Production**.
+6. Add the seven Supabase/EMQX values as encrypted **Secrets** in Cloudflare Pages → Settings → Variables and Secrets, add `NODE_VERSION=20` as a plain variable, then redeploy so the binding is attached.
+7. Open your Pages URL and register the first account — it becomes the Platform Owner. Save the recovery codes shown after registration. Run **Firmware management → Test R2 binding** before uploading a build.
 
 ## Configuration
 
-Only two values are required for the site to start: `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Five EMQX values enable devices; four `R2_…` values enable private firmware storage. `EMQX_TLS_PORT` defaults to `8883`. There is no anon key, JWT secret, `SECRETS_KEY`, auth-provider key, database URL or R2 binding to configure. See [.env.example](.env.example) for the complete list.
+Only two values are required for the site to start: `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Five EMQX values enable devices; the `FIRMWARE_BUCKET` R2 binding enables private firmware storage. `EMQX_TLS_PORT` defaults to `8883`. There is no anon key, JWT secret, `SECRETS_KEY`, auth-provider key, database URL, R2 API token or `R2_…` variable to configure. See [.env.example](.env.example) for the complete list.
 
 Secrets are never sent to the browser, never written to the database and never shown again in the dashboard. The Owner Console shows only which values are set and live connection checks.
 
@@ -76,7 +76,7 @@ Secrets are never sent to the browser, never written to the database and never s
 | `apps/web/src/components.tsx` | Shared UI, composed states, device illustrations |
 | `apps/web/src/pages/` | Customer and Owner Console pages, firmware, board library, setup wizard, settings, security |
 | `apps/api/src/app.ts` | Hono API routes, validation, owner authorisation, tenant isolation |
-| `apps/api/src/storage/r2.ts` | SigV4 R2 client and real round-trip verification |
+| `apps/api/src/storage/r2.ts` | Native R2 binding store and real round-trip verification |
 | `apps/api/src/auth.ts`, `context.ts` | Custom database-backed authentication and request context |
 | `packages/core/` | Protocol, topics, board catalog, GPIO evaluation |
 | `supabase/schema.sql` | Consolidated, re-runnable PostgreSQL schema and RPCs |

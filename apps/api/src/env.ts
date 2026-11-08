@@ -1,4 +1,4 @@
-/** Runtime configuration: Cloudflare Pages Variables and Secrets only. */
+/** Runtime configuration: Cloudflare Pages Variables, Secrets and native bindings. */
 
 export interface Env {
   SUPABASE_URL?: string;
@@ -8,11 +8,10 @@ export interface Env {
   EMQX_APP_SECRET?: string;
   EMQX_BROKER_HOST?: string;
   EMQX_TLS_PORT?: string;
-  R2_ACCOUNT_ID?: string;
-  R2_BUCKET?: string;
-  R2_ACCESS_KEY_ID?: string;
-  R2_SECRET_ACCESS_KEY?: string;
-  R2_ENDPOINT?: string;
+  /** Native R2 bucket binding, added in Cloudflare Pages → Settings → Functions. */
+  FIRMWARE_BUCKET?: unknown;
+  /** Optional alias for the same native binding. */
+  R2_BUCKET?: unknown;
   /** Derived from the service-role key at runtime. Never set by the owner. */
   SIGNING_KEY?: string;
   [key: string]: unknown;

@@ -1197,7 +1197,7 @@ export function createApp(rt: Runtime) {
   };
 
   // ==========================================================================
-  // Owner Console — Firmware management over private Cloudflare R2
+  // Owner Console — Firmware management over the native private R2 binding
   // ==========================================================================
   const MAX_FIRMWARE_BYTES = 16 * 1024 * 1024;
   const storageStatus = async () => {
@@ -1210,8 +1210,8 @@ export function createApp(rt: Runtime) {
       connected: last ? last.backend === rt.storageBackend && !!last.connected : false,
       last_test: last ? { connected: !!last.connected, detail: last.detail, checked_at: last.checked_at } : null,
       hint: rt.storageBackend === 'r2'
-        ? 'Set R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY as encrypted Cloudflare Pages secrets.'
-        : 'R2 is not configured. Firmware currently uses private Supabase Storage.',
+        ? 'Run the upload/download test to verify the native FIRMWARE_BUCKET R2 binding.'
+        : 'No FIRMWARE_BUCKET R2 binding was found. Add it in Cloudflare Pages → Settings → Functions → R2 bucket bindings, then redeploy. Firmware currently uses private Supabase Storage.',
     };
   };
   app.get('/api/owner/firmware', async (c) => {

@@ -1,4 +1,4 @@
-/** Owner Console — Firmware management over private Cloudflare R2. */
+/** Owner Console — Firmware management over the native private R2 binding. */
 import React, { useMemo, useState } from 'react';
 import { api, useLiveData } from '../api';
 import { useAuth } from '../state';
@@ -66,7 +66,7 @@ function UploadModal({ catalog, limits, onClose, onDone }: {
     } catch (e: any) { setError(e.message || 'The upload failed.'); }
     finally { setBusy(false); }
   };
-  return <Modal title="Upload firmware" description="The binary goes to your private R2 bucket. Only its checksum and details are stored in the database."
+  return <Modal title="Upload firmware" description="The binary goes to your private R2 bucket through the Pages binding. Only its checksum and details are stored in the database."
     onClose={onClose} wide footer={<>
       <button className="btn" onClick={onClose} disabled={busy} aria-busy={busy || undefined}>Cancel</button>
       <button className="btn btn-primary" onClick={save} disabled={busy || !digest}>
@@ -248,7 +248,7 @@ export function OwnerFirmware() {
       desc="Store firmware in a private Cloudflare R2 bucket, publish versions and follow real update results on customer controllers."
       actions={<>
         <button className="btn" onClick={runTest} disabled={busy === 'storage'} aria-busy={busy === 'storage' || undefined}>
-          <Icon.refresh />{busy === 'storage' ? 'Testing…' : 'Test R2 connection'}</button>
+          <Icon.refresh />{busy === 'storage' ? 'Testing…' : 'Test R2 binding'}</button>
         <button className="btn btn-primary" onClick={() => setUpload(true)}><Icon.cloudUp />Upload firmware</button>
       </>} />
 
@@ -256,9 +256,9 @@ export function OwnerFirmware() {
       <Card title="Private storage" icon="cloudUp">
         <div style={{ display: 'grid', gap: 8 }}>
           <Badge tone={storage.connected ? 'on' : storage.r2_configured ? 'warn' : 'danger'} icon={storage.connected ? 'cloudOk' : 'cloudOff'}>
-            {storage.connected ? 'Verified' : storage.r2_configured ? 'Not verified' : 'R2 not configured'}</Badge>
-          <div className="tiny">{storage.backend === 'r2' ? 'Cloudflare R2 · S3 API · server-side secrets'
-            : 'Supabase Storage fallback · add the four R2 secrets to switch'}</div>
+            {storage.connected ? 'Verified' : storage.r2_configured ? 'Not verified' : 'R2 binding missing'}</Badge>
+          <div className="tiny">{storage.backend === 'r2' ? 'Cloudflare R2 · FIRMWARE_BUCKET Pages binding · private'
+            : 'Supabase Storage fallback · add the FIRMWARE_BUCKET R2 binding to switch'}</div>
           {storage.last_test && <div className="tiny">Last check: {timeAgo(storage.last_test.checked_at)} · {storage.last_test.detail}</div>}
           {test && <div className={`notice ${test.connected ? 'success' : 'danger'}`}><Icon.info />{test.detail}</div>}
         </div>
@@ -269,7 +269,7 @@ export function OwnerFirmware() {
     </div>
 
     {!storage.connected && <div style={{ marginBottom: 16 }}><Notice tone="warn" title="R2 is not confirmed as connected">
-      Firmware upload is available once the four encrypted R2 secrets are set in Cloudflare Pages and the upload/download test below passes. No fake status is shown.
+      Attach the <code>FIRMWARE_BUCKET</code> R2 bucket binding in Cloudflare Pages → Settings → Functions, redeploy, then run the upload/download test. Until that real round trip succeeds no verified status is shown. Firmware currently uses private Supabase Storage.
     </Notice></div>}
 
     {error && <div style={{ marginBottom: 16 }}><div className="notice danger"><Icon.fail />{error} <button className="btn btn-sm" onClick={refresh}><Icon.retry />Try again</button></div></div>}

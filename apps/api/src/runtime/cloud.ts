@@ -1,12 +1,13 @@
 /**
- * Cloudflare Pages Functions runtime — Supabase PostgreSQL is the only database
- * provider. No D1 database, R2 bucket or other native binding is required.
+ * Cloudflare Pages Functions runtime — Supabase PostgreSQL is the database and
+ * the native FIRMWARE_BUCKET R2 binding is the firmware store. No D1 binding,
+ * S3 API token or other native binding is required.
  */
 import type { DataClient } from '@homecoreos/core';
 import type { Env } from '../env';
 import type { Runtime } from '../services/runtime';
 import { EventBus, createStore, storageBackend } from '../services/runtime';
-import { R2Client, r2Config } from '../storage/r2';
+import { createR2Store } from '../storage/r2';
 import { createAuth } from '../auth';
 import { SupabaseRestAdapter } from '../db/adapters';
 import { EmqxCloudProvider } from '../providers/emqx';
@@ -20,8 +21,7 @@ export async function createCloudRuntime(bindings: Record<string, unknown>): Pro
   const env = await buildEnv(bindings);
   const db: DataClient = new SupabaseRestAdapter(env);
   const events = new EventBus();
-  const r2cfg = r2Config(env as Record<string, unknown>);
-  const r2 = r2cfg ? new R2Client({ ...r2cfg, publicBase: String(env.PUBLIC_API_BASE || ''), signingKey: String(env.SIGNING_KEY || '') }) : null;
+  const r2 = createR2Store(env as Record<string, unknown>);
   return {
     env, db,
     auth: createAuth(db, env),
@@ -42,8 +42,8 @@ export async function getCloudRuntime(bindings: Record<string, unknown>): Promis
     String(bindings.SUPABASE_URL || ''),
     String(bindings.SUPABASE_SERVICE_ROLE_KEY || '').slice(0, 12),
     String(bindings.EMQX_API_BASE || ''),
-    String(bindings.R2_BUCKET || ''),
-    String(bindings.R2_ACCESS_KEY_ID || '').slice(0, 8),
+    Boolean(bindings.FIRMWARE_BUCKET),
+    Boolean(bindings.R2_BUCKET),
   ].join('|');
   if (cache && cache.key === key && Date.now() - cache.at < 30_000) return cache.rt;
   const rt = await createCloudRuntime(bindings);

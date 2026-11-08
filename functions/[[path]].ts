@@ -19,7 +19,7 @@ export async function onRequest(ctx: any): Promise<Response> {
       error: setup ? 'Platform setup required' : 'Server error',
       detail: message,
       owner_console: '/owner/setup',
-      instructions: 'Cloudflare Pages → Settings → Variables and Secrets → add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY as encrypted secrets, then redeploy. Run supabase/schema.sql once in the Supabase SQL Editor. R2 uses four optional encrypted secrets, not a binding.',
+      instructions: 'Cloudflare Pages → Settings → Variables and Secrets → add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY as encrypted secrets, then redeploy. Run supabase/schema.sql once in the Supabase SQL Editor. Firmware uses the FIRMWARE_BUCKET R2 binding from Settings → Functions → R2 bucket bindings.',
     }, { status: setup ? 503 : 500 });
   }
 }

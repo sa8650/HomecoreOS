@@ -93,12 +93,12 @@ All body-text pairs clear 4.5:1 and all large/UI pairs clear 3:1. Status is neve
 ## 4. Verification performed
 
 - `npm run typecheck` — clean for `core`, `api`, `web`.
-- `npm run build` — clean with no warnings; framework and app code split into two cacheable chunks (vendor 164.62 kB / 53.56 kB gzip, app 339.93 kB / 87.46 kB gzip, CSS 35.13 kB / 7.08 kB gzip).
+- `npm run build` — clean with no warnings; framework and app code split into two cacheable chunks (vendor 164.62 kB / 53.56 kB gzip, app 341.59 kB / 87.86 kB gzip, CSS 35.13 kB / 7.08 kB gzip).
 - Static CSS audit — 372 balanced rule blocks, 103 defined tokens, 78 used tokens, 0 undefined `var()` references, media queries at 1100 / 860 / 480 / 390 px plus a reduced-motion path.
-- PostgREST-free API integration against a real PostgreSQL (PGlite) — 46/46 assertions covering owner auth, firmware upload/checksum/duplicates/download, board GPIO validation, settings enforcement, feature gates, real security events, pairing-token progress/cancel, and customer denial of owner routes.
+- PostgREST-free API integration against a real PostgreSQL (PGlite) — 64/64 assertions covering owner auth, native R2 binding detection, firmware upload/checksum/duplicates/download, board GPIO validation, settings enforcement, feature gates, real security events, pairing-token progress/cancel, and customer denial of owner routes.
 - `supabase/schema.sql` applied twice — 45/45 assertions, 0 comments.
 - Pages Functions bundle — 0 `node:` imports.
-- Local S3-compatible SigV4 mock — 11/11 assertions (the R2 client only; **not** a connection to Cloudflare R2).
+- Native R2 binding store mock — 29/29 assertions for binding detection, put/get/delete, a 2 MB round trip, checksum verification, signed URLs, invalid keys and honest failure reporting (a client-side test only; **not** a connection to Cloudflare R2).
 - Static greps: no `lucide-react`, no `@phosphor-icons/react`, no `supabase.auth`/GoTrue calls, no `window.alert`, no `VITE_` credential copies, 0 SQL comments.
 
 ## 5. Remaining checks (require a browser or a hosted environment)
@@ -109,4 +109,4 @@ These were not possible in this workspace and are called out rather than claimed
 2. Keyboard-only walkthrough of the theme menu, modal focus trapping, and wizard step navigation; screen-reader pass on landmarks and live regions.
 3. Rendering with Manrope actually loaded from the network (the in-app file preview has no network access, so the local fallback is used there).
 4. `Theme = System` behaviour when the OS preference changes while the console is open.
-5. A real upload → download → SHA-256 → delete round trip against a private Cloudflare R2 bucket, which is the only event that may mark storage as **Verified**.
+5. A real upload → download → SHA-256 → delete round trip through the `FIRMWARE_BUCKET` binding against a private Cloudflare R2 bucket, which is the only event that may mark storage as **Verified**.
