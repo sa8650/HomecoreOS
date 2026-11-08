@@ -1,4 +1,4 @@
-/** WebCrypto primitives — work identically in Node 20 and Cloudflare Workers. */
+/** WebCrypto primitives — work identically in Node 20 and Cloudflare Pages Functions / Workers. */
 
 const enc = new TextEncoder();
 

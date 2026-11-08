@@ -7,7 +7,7 @@ import {
   Notice, PageHead, Progress, Skeleton, Stat, StatusBadge, Tabs, fmt, fmtBytes, timeAgo, timeFull,
   DEVICE_ICONS, SENSOR_ICONS, ROOM_ICONS,
 } from '../components';
-import { DEVICE_TYPES, SENSOR_CATEGORIES, PROVISIONING_METHODS, CHIP_FAMILIES, evaluatePin } from '@helios/core';
+import { DEVICE_TYPES, SENSOR_CATEGORIES, PROVISIONING_METHODS, CHIP_FAMILIES, evaluatePin } from '@homecoreos/core';
 
 function useToast() { return useAuth().toast; }
 const human = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -226,7 +226,7 @@ function CommunicationSummary({ boardId, component }: { boardId: string; compone
   const base = `v1/tenants/<tenant>/devices/${board.device_id}`;
   return <div className="notice" style={{ display: 'block', background: 'var(--surface-2)', borderLeftColor: 'var(--border-strong)', color: 'var(--text-2)' }}>
     <strong style={{ color: 'var(--text)' }}>Communication path</strong>
-    <div style={{ marginTop: 6 }}>Website → Cloudflare Worker → EMQX → {board.name}</div>
+    <div style={{ marginTop: 6 }}>Website → Cloudflare Pages Functions → EMQX → {board.name}</div>
     <div style={{ marginTop: 8 }} className="code">{component === 'device'
       ? `Subscribes: ${base}/command\nPublishes:  ${base}/state`
       : `Publishes:  ${base}/telemetry\nField:      sensors.<component_id>.value`}</div>
@@ -432,7 +432,7 @@ export function SensorsPage() {
   const [del, setDel] = useState<any>(null);
   const open = async (s: any) => { setDetail(s); setReadings(await api.get(`/api/sensors/${s.id}/readings?limit=60`)); };
   return <>
-    <PageHead title="Sensors" desc="Sensor definitions are separate from readings; telemetry is validated and stored in Postgres." actions={can('devices.manage') && <button className="btn btn-primary" onClick={() => setAdd(true)}><Icon.plus />Add sensor</button>} />
+    <PageHead title="Sensors" desc="Sensor definitions are separate from readings; telemetry is validated and stored in the database." actions={can('devices.manage') && <button className="btn btn-primary" onClick={() => setAdd(true)}><Icon.plus />Add sensor</button>} />
     {loading ? <Loading rows={3} /> : !data?.length ? <Card><EmptyState icon="gauge" title="No sensors" text="Add a temperature, humidity, motion, water level or custom sensor." action={<button className="btn btn-primary" onClick={() => setAdd(true)}>Add sensor</button>} /></Card> :
       <div className="grid grid-3">{data.map((s: any) => {
         const I = Icon[SENSOR_ICONS[s.category] || 'gauge'];
@@ -458,7 +458,7 @@ export function SensorsPage() {
       {detail.publishes ? <>
         <div className="kv"><dt>Controller</dt><dd>{detail.controller?.name}</dd><dt>Path</dt><dd>{detail.path?.join(' → ')}</dd><dt>Interface</dt><dd>{human(detail.interface?.type || '')}{detail.interface?.gpio != null ? ` · GPIO ${detail.interface.gpio}` : ''}</dd><dt>Field mapping</dt><dd className="mono">{detail.mapping?.telemetry_field}</dd></div>
         <div className="divider" /><div className="tiny mono">{detail.publishes?.[0]?.topic}</div><div className="code">{JSON.stringify(detail.publishes?.[0]?.example, null, 2)}</div>
-        <p className="tiny" style={{ marginTop: 10 }}>Values outside the configured min/max or with a mismatched unit are rejected at the Worker boundary and never stored.</p>
+        <p className="tiny" style={{ marginTop: 10 }}>Values outside the configured min/max or with a mismatched unit are rejected at the API boundary and never stored.</p>
       </> : <>
         {readings.length ? <><MiniChart points={readings.slice().reverse().map((r: any) => Number(r.value))} labels={readings.slice().reverse().filter((_: any, i: number) => i % 12 === 0).map((r: any) => new Date(r.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))} />
           <DataTable columns={[
@@ -840,7 +840,7 @@ export function SetupWizardPage() {
           ].join('\n')}</div>
           <p className="tiny" style={{ marginTop: 10 }}>The response contains a unique MQTT username, password and client ID for this board only. Store them in NVS; they are never retrievable again.</p>
           <div className="divider" />
-          <div className="notice"><Icon.info /><div>Cloud flow: Website → Cloudflare Worker → EMQX → ESP32. The device keeps its own outbound TLS connection; no inbound ports are opened on your router.</div></div>
+          <div className="notice"><Icon.info /><div>Cloud flow: Website → Cloudflare Pages Functions → EMQX → ESP32. The device keeps its own outbound TLS connection; no inbound ports are opened on your router.</div></div>
           <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
             <button className="btn" onClick={() => setStep(2)}><Icon.back />Back</button>
             <button className="btn" onClick={async () => {
@@ -988,7 +988,7 @@ export function FirmwarePage() {
     {ota && <Modal title="Start OTA update" onClose={() => setOta(null)} footer={<><button className="btn" onClick={() => setOta(null)}>Cancel</button><button className="btn btn-primary" disabled={!ota.board_id} onClick={async () => {
       try { await api.post('/api/firmware/ota', ota); toast('OTA command published to the device'); history.refresh(); setOta(null); } catch (e: any) { toast(e.message, 'error'); }
     }}>Start update</button></>}>
-      <Notice>The Worker publishes a command with the R2 URL and SHA-256 digest. The ESP32 verifies the hash before applying; invalid images preserve the last known good partition and roll back.</Notice>
+      <Notice>The API publishes a command with the R2 URL and SHA-256 digest. The ESP32 verifies the hash before applying; invalid images preserve the last known good partition and roll back.</Notice>
       <Field label="Controller"><select className="select" value={ota.board_id} onChange={(e) => setOta({ ...ota, board_id: e.target.value })}><option value="">Select controller</option>{(boards.data || []).map((b: any) => <option key={b.id} value={b.id}>{b.name} · {b.firmware_version || 'unknown'}</option>)}</select></Field>
     </Modal>}
   </>;
@@ -1015,7 +1015,7 @@ function FirmwareReleaseModal({ onClose, onDone }: { onClose: () => void; onDone
   return <Modal title="Publish firmware release" onClose={onClose} footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!f.version} onClick={save}>Publish</button></>}>
     <div className="form-row"><Field label="Version"><input className="input" value={f.version} onChange={(e) => setF({ ...f, version: e.target.value })} placeholder="1.2.0" /></Field>
       <Field label="Channel"><select className="select" value={f.channel} onChange={(e) => setF({ ...f, channel: e.target.value })}><option value="stable">Stable</option><option value="beta">Beta</option><option value="dev">Dev</option></select></Field></div>
-    <Field label="Firmware binary" hint="SHA-256 is computed in the browser and verified by the Worker before storage"><input className="input" type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} /></Field>
+    <Field label="Firmware binary" hint="SHA-256 is computed in the browser and verified by the API before storage"><input className="input" type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} /></Field>
     {!file && <Field label="Existing R2 object key" hint="Use when the binary was uploaded out of band"><input className="input mono" value={f.r2_key} onChange={(e) => setF({ ...f, r2_key: e.target.value })} /></Field>}
     {!file && <Field label="SHA-256 of remote binary"><input className="input mono" value={f.sha256} onChange={(e) => setF({ ...f, sha256: e.target.value })} /></Field>}
     <Field label="Release notes"><textarea className="textarea" value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>
@@ -1068,7 +1068,7 @@ export function StaffPage() {
     <Card title="Permission categories" sub="Applied server-side on every request"><div className="grid grid-3">{(data?.permissions || []).map((p: any) => <div className="list-item" key={p.key} style={{ padding: '8px 0', border: 0 }}><div className="icon-box"><Icon.shield /></div><div className="grow"><div className="title">{p.label}</div><div className="meta mono">{p.key}</div></div></div>)}</div></Card>
     {invite && <InviteModal onClose={() => setInvite(false)} roles={data?.roles || []} onDone={refresh} />}
     {edit && <PermissionsModal member={edit} permissions={data?.permissions || []} roles={data?.roles || []} onClose={() => setEdit(null)} onDone={refresh} />}
-    {revoke && <ConfirmModal title={`Revoke ${revoke.profile?.full_name || 'member'}?`} confirmLabel="Revoke access" text="Access stops immediately: the Worker re-checks membership and permissions on every request." onClose={() => setRevoke(null)} onConfirm={async () => {
+    {revoke && <ConfirmModal title={`Revoke ${revoke.profile?.full_name || 'member'}?`} confirmLabel="Revoke access" text="Access stops immediately: the API re-checks membership and permissions on every request." onClose={() => setRevoke(null)} onConfirm={async () => {
       try { await api.del(`/api/staff/${revoke.id}`); toast('Access revoked immediately'); refresh(); } catch (e: any) { toast(e.message, 'error'); }
     }} />}
     {newRole && <CustomRoleModal permissions={data?.permissions || []} onClose={() => setNewRole(false)} onDone={refresh} />}
@@ -1099,7 +1099,7 @@ function PermissionsModal({ member, permissions, roles, onClose, onDone }: any) 
   }}>Save</button></>}>
     <div className="form-row"><Field label="Role"><select className="select" value={f.role_key} onChange={(e) => setF({ ...f, role_key: e.target.value })}>{roles.filter((r: any) => r.key !== 'owner').map((r: any) => <option key={r.id} value={r.key}>{r.name}</option>)}</select></Field>
       <Field label="Status"><select className="select" value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}><option value="active">Active</option><option value="suspended">Suspended</option><option value="revoked">Revoked</option></select></Field></div>
-    <Notice>Overrides are evaluated before role defaults. A member cannot change their own permissions — the database trigger and Worker both block self-escalation.</Notice>
+    <Notice>Overrides are evaluated before role defaults. A member cannot change their own permissions — the database layer and API both block self-escalation.</Notice>
     <div className="divider" /><h4 style={{ fontSize: 13, marginBottom: 10 }}>Per-member overrides</h4>
     {permissions.map((p: any) => <div className="list-item" key={p.key} style={{ padding: '8px 0' }}><div className="grow"><div className="title">{p.label}</div><div className="meta mono">{p.key}</div></div>
       <div className="segmented">{['role', 'allow', 'deny'].map((e) => <button key={e} className={(f.permissions.find((x: any) => x.key === p.key)?.effect || 'role') === e ? 'on' : ''} onClick={() => e === 'role' ? setF({ ...f, permissions: f.permissions.filter((x: any) => x.key !== p.key) }) : toggle(p.key, e)}>{e}</button>)}</div></div>)}
@@ -1131,7 +1131,7 @@ export function SettingsPage() {
   const exportData = async () => {
     const d = await api.get('/api/export');
     const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'helios-export.json'; a.click();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'homecoreos-export.json'; a.click();
     toast('Workspace data exported');
   };
   return <>
@@ -1165,7 +1165,7 @@ export function SettingsPage() {
         <Card title="Notification & security"><div className="kv">
           <dt>Sessions</dt><dd>Signed JWT, verified on every request</dd>
           <dt>Device credentials</dt><dd>Unique per controller; rotate from Controllers</dd>
-          <dt>Isolation</dt><dd>Postgres RLS + Worker authorization + MQTT ACL</dd>
+          <dt>Isolation</dt><dd>Database authorization + API tenant checks + MQTT ACL</dd>
           <dt>Activity log</dt><dd><Link to="/activity" style={{ textDecoration: 'underline' }}>View audit trail</Link></dd>
         </div></Card>
       </div>

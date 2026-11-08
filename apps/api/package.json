@@ -1,5 +1,5 @@
 {
-  "name": "@helios/api",
+  "name": "@homecoreos/api",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@helios/core": "*",
+    "@homecoreos/core": "*",
     "hono": "^4.6.13",
     "jose": "^5.9.6",
     "zod": "^3.23.8",

@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createTestDb, seed, rpc } from './helpers/pglite.mjs';
-import { deviceTopics } from '@helios/core';
+import { deviceTopics } from '@homecoreos/core';
 import { handleIngress } from '../apps/api/src/app.ts';
 import { PGliteAdapter } from '../apps/api/src/db/adapters.ts';
 import { createMqttProvider } from '../apps/api/src/providers/index.ts';

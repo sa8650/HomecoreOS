@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 concurrency:
-  group: helios-${{ github.ref }}
+  group: homecoreos-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -25,12 +25,19 @@ jobs:
       - run: npm run build
       - name: Verify board catalog is in sync
         run: |
+          node scripts/d1-schema.mjs
           node scripts/board-catalog.mjs
-          git diff --exit-code -- packages/core/data/board-catalog.json supabase/migrations/0008_board_catalog.sql
+          git diff --exit-code -- packages/core/data/board-catalog.json supabase/migrations/0008_board_catalog.sql apps/api/src/db/d1-schema.ts
+      - name: Verify Cloudflare Pages Functions bundle
+        run: |
+          npx wrangler pages functions build --outdir /tmp/homecoreos-pages-worker --compatibility-date 2024-11-08
+          if grep -rq 'node:' /tmp/homecoreos-pages-worker; then
+            echo 'Pages Functions bundle must use Web APIs only (no node: built-ins)'; exit 1;
+          fi
       - name: Upload Pages artifact
         uses: actions/upload-artifact@v4
         with:
-          name: helios-web
+          name: homecoreos-web
           path: apps/web/dist
 
   deploy:
@@ -42,20 +49,16 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - run: npm ci
-      - name: Deploy Worker
-        working-directory: apps/api
-        run: npx wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Build frontend
         run: npm run build -w apps/web
-      - name: Deploy Pages
+      # `wrangler pages deploy` uploads apps/web/dist AND the root `functions/`
+      # directory as Pages Functions. Native `DB` / `FIRMWARE_BUCKET` bindings
+      # and SECRETS_KEY are configured once in the Cloudflare dashboard.
+      # D1 migrations are applied idempotently by the runtime on first request;
+      # Supabase migrations are change-controlled (see DEPLOYMENT.md).
+      - name: Deploy Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy apps/web/dist --project-name=helios-web
-      # Database migrations are change-controlled: run `supabase db push`
-      # from a maintenance step after enabling SUPABASE_ACCESS_TOKEN, or apply
-      # supabase/migrations/*.sql in order with psql. Never auto-run on every push.
+          command: pages deploy apps/web/dist --project-name=homecoreos

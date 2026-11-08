@@ -21,18 +21,18 @@ Source: EMQX Cloud documentation, EMQX v5 API docs, EMQX Cloud Serverless API no
 | HTTP authentication hook | **Not supported on Serverless** | `docs.emqx.com/en/cloud/latest/deployments/http_auth.html` |
 | Batch user import | Supported | multipart import, up to 1000 users (not used here) |
 
-## 2. Consequences for Helios
+## 2. Consequences for HomecoreOS
 
-Because HTTP auth is unavailable, the Worker **cannot** be an authentication webhook. Instead, at pairing:
+Because HTTP auth is unavailable, the API **cannot** be an authentication webhook. Instead, at pairing:
 
-1. The Worker creates a unique username/password/client id.
+1. The API creates a unique username/password/client id.
 2. `EmqxCloudProvider.provisionDevice()` creates a built-in-database user via the Deployment API.
 3. It writes a per-username allow-list: publish to this board's `state`, `telemetry`, `availability`; subscribe to its `command`, `config`; then `{topic:"#", action:"all", permission:"deny"}` as a fallback. Authorization is configured with `no_match = deny`.
 4. On ACL failure the user is deleted immediately, so no half-provisioned device can connect.
-5. The Worker stores only a PBKDF2 hash of the password in `mqtt_credentials_metadata`; the plaintext is returned to the firmware exactly once.
+5. The API stores only a PBKDF2 hash of the password in `mqtt_credentials_metadata`; the plaintext is returned to the firmware exactly once.
 6. Revoke = delete ACL rules + user + kick client. Rotate = update password + kick.
 
-There is **no shared admin credential on devices or browsers**. The only shared credential is a dedicated platform-side ingress bridge used by the Durable Object, with subscribe-only ACL — it never appears in frontend JavaScript or ESP32 firmware.
+There is **no shared admin credential on devices or browsers**. The only shared credential is a dedicated platform-side ingress bridge used by the optional Durable Object, with subscribe-only ACL — it never appears in frontend JavaScript or ESP32 firmware.
 
 If a deployment lacks one of these endpoints, provisioning throws a clear 502 and no device row is created. The system never silently degrades to shared credentials. Documented fallback for such a deployment: move to a self-hosted EMQX (or a paid/dedicated EMQX tier) with the same v5 API, keeping the identical `MqttProvider` interface and firmware topic contract.
 
@@ -40,7 +40,7 @@ If a deployment lacks one of these endpoints, provisioning throws a clear 502 an
 
 Verified Serverless free-tier quotas: **1,000,000 session minutes**, **1 GB traffic**, **1,000,000 rule actions** per month, **1,000** maximum connections, **1 MB** max message size. Usage statistics on the EMQX Cloud console are updated **hourly**; exceeding the free quota stops the deployment until the next month (spend limit controls overage).
 
-| Metric requested | Deployment API | Helios behaviour |
+| Metric requested | Deployment API | HomecoreOS behaviour |
 |---|---|---|
 | Monthly traffic / quota / remaining / utilisation | Not exposed (console only) | Shows "Unavailable" + reason; owner enters a console snapshot (`source=owner_manual`) |
 | Inbound / outbound byte split | Not exposed | Unavailable unless the owner enters it |
@@ -60,7 +60,7 @@ Verified Serverless free-tier quotas: **1,000,000 session minutes**, **1 GB traf
 |---|---|---|
 | Local development | `apps/broker` Aedes broker forwards `publish` events with the authenticated MQTT client id, HMAC-signed to `/internal/mqtt/event` | `rpc_board_from_client` |
 | Cloudflare production | `MqttIngressDO` holds one outbound MQTT-over-WSS subscription; messages reach `handleIngress` | `rpc_board_from_device` (tenant + device from DB row matching topic) |
-| EMQX rule/webhook (if your plan supports an HTTP action) | POST `/internal/mqtt/event` with `X-Helios-Signature` HMAC | `rpc_board_from_client` when client id provided |
+| EMQX rule/webhook (if your plan supports an HTTP action) | POST `/internal/mqtt/event` with `X-HomecoreOS-Signature` HMAC | `rpc_board_from_client` when client id provided |
 
 `handleIngress` always: parses the topic, resolves the board from the database, verifies `tenant_id`/`device_id` match the authenticated identity, verifies the topic is an allowed publish topic, strips `tenant_id` from the payload, validates the versioned JSON schema, and inserts through tenant-safe RPCs. A `tenant_id` inside JSON is never trusted.
 
@@ -79,3 +79,12 @@ Commands and configs are published with `retain:false` and a 30-second TTL. Hist
 ## 6. Migration path
 
 Implement a new class satisfying `MqttProvider` (`provisionDevice`, `revokeDevice`, `rotateDevice`, `publish`, `health`, `fetchUsage`), register it in `apps/api/src/providers/index.ts`, set `MQTT_PROVIDER`, and recreate device credentials/ACLs from `mqtt_credentials_metadata`. No tenant, device, GPIO, automation, UI or firmware logic changes.
+
+
+---
+
+## Owner configuration (current setup model)
+
+`EMQX_API_BASE`, `EMQX_APP_ID`, `EMQX_APP_SECRET`, `EMQX_BROKER_HOST`, `EMQX_TLS_PORT` and the optional WSS/bridge values are **not** environment variables you hand-wire. Enter them in **Owner Console → Platform Settings → Integrations & Secrets**, where they are AES-256-GCM sealed in `platform_secrets` with `SECRETS_KEY`. Use **Test connection** to verify the Deployment API; the result (status, endpoint, last success/error and hint) is recorded in `platform_settings`. Saved values are never returned to the browser — only masked placeholders, fingerprints and update times.
+
+With Cloudflare D1, no Supabase variables are requested; with Supabase, only `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are bootstrap variables. See `DEPLOYMENT.md`.

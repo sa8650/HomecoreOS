@@ -1,11 +1,11 @@
 /**
- * Helios local development MQTT broker.
+ * HomecoreOS local development MQTT broker.
  *
  * This is a REAL broker with the same isolation contract as EMQX Cloud:
  *  - per-device username/password verified against the API's credential metadata
  *  - per-device ACL: publish only state/telemetry/availability, subscribe only
  *    command/config, everything else denied
- *  - device publishes are forwarded to the Worker ingress (with the AUTHENTIC
+ *  - device publishes are forwarded to the API ingress (with the AUTHENTIC
  *    MQTT client id) via an HMAC-signed internal event
  *
  * Production uses EMQX Cloud Serverless with built-in-database users + ACL
@@ -43,21 +43,21 @@ broker.authenticate = async (client, username, password, done) => {
   const u = username?.toString() || '';
   const pw = password?.toString() || '';
   // Platform-side publisher only (never given to devices or browsers).
-  if (u === 'helios-platform' && pw === BRIDGE_PASSWORD) return done(null, true);
+  if (u === 'homecoreos-platform' && pw === BRIDGE_PASSWORD) return done(null, true);
   const result = await post('/internal/mqtt/auth', { clientId: client.id, username: u, password: pw });
   if (!result?.ok) return done(new Error('authentication failed'), false);
-  (client as any).helios = { boardId: result.board_id, tenantId: result.tenant_id };
+  (client as any).homecoreos = { boardId: result.board_id, tenantId: result.tenant_id };
   done(null, true);
 };
 
 broker.authorizePublish = async (client, packet, done) => {
-  if (client.id.startsWith('helios-platform')) return done(null);
+  if (client.id.startsWith('homecoreos-platform')) return done(null);
   const result = await post('/internal/mqtt/acl', { clientId: client.id, topic: packet.topic, action: 'publish' });
   done(result?.allowed ? null : new Error('publish denied by ACL'));
 };
 
 broker.authorizeSubscribe = async (client, sub, done) => {
-  if (client.id.startsWith('helios-platform')) return done(null, sub);
+  if (client.id.startsWith('homecoreos-platform')) return done(null, sub);
   const result = await post('/internal/mqtt/acl', { clientId: client.id, topic: sub.topic, action: 'subscribe' });
   done(null, result?.allowed ? sub : null);
 };
@@ -66,7 +66,7 @@ broker.on('client', () => { stats.clients = broker.connectedClients; });
 broker.on('clientDisconnect', () => { stats.clients = broker.connectedClients; });
 broker.on('publish', async (packet, client) => {
   stats.packets++;
-  if (!client || client.id.startsWith('helios-platform')) return;
+  if (!client || client.id.startsWith('homecoreos-platform')) return;
   if (!/^v1\/tenants\/[^/]+\/devices\/[^/]+\/(state|telemetry|availability|config)$/.test(packet.topic)) return;
   stats.publishes++;
   const body = JSON.stringify({ clientId: client.id, topic: packet.topic, payload: packet.payload.toString() });
@@ -74,7 +74,7 @@ broker.on('publish', async (packet, client) => {
   const sig = createHmac('sha256', HMAC_SECRET).update(`${ts}.${body}`).digest('hex');
   try {
     await fetch(`${API_BASE}/internal/mqtt/event`, { method: 'POST', headers: {
-      'Content-Type': 'application/json', 'X-Helios-Signature': sig, 'X-Helios-Timestamp': ts,
+      'Content-Type': 'application/json', 'X-HomecoreOS-Signature': sig, 'X-HomecoreOS-Timestamp': ts,
     }, body });
   } catch (e) { console.error('[broker] ingress forward failed:', (e as Error).message); }
 });

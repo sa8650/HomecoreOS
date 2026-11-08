@@ -28,11 +28,12 @@ export function PageHead({ title, desc, actions }: { title: string; desc?: strin
   );
 }
 
-export function Card({ title, sub, actions, children, pad = true, className = '' }: {
-  title?: string; sub?: string; actions?: React.ReactNode; children: React.ReactNode; pad?: boolean; className?: string;
+export function Card({ title, sub, actions, children, pad = true, className = '', style }: {
+  title?: string; sub?: string; actions?: React.ReactNode; children: React.ReactNode;
+  pad?: boolean; className?: string; style?: React.CSSProperties;
 }) {
   return (
-    <section className={`card ${className}`}>
+    <section className={`card ${className}`} style={style}>
       {(title || actions) && (
         <div className="card-head">
           <div><h3>{title}</h3>{sub && <div className="sub">{sub}</div>}</div>

@@ -6,10 +6,10 @@
 // treats certificates as sensitive.
 //
 // Example shape (replace entirely):
-// const char *helios_root_ca = R"EOF(
+// const char *homecoreos_root_ca = R"EOF(
 // -----BEGIN CERTIFICATE-----
 // ...your broker CA in PEM format...
 // -----END CERTIFICATE-----
 // )EOF";
 
-extern const char *helios_root_ca;
+extern const char *homecoreos_root_ca;

@@ -1,4 +1,4 @@
-import type { BrokerHealth, MqttProvider, ProviderUsage, ProvisionedCredential } from '@helios/core';
+import type { BrokerHealth, MqttProvider, ProviderUsage, ProvisionedCredential } from '@homecoreos/core';
 
 /**
  * Local development provider — a real MQTT broker (Aedes) with the SAME
@@ -16,8 +16,8 @@ export class LocalMqttProvider implements MqttProvider {
     if (this.client?.connected) return this.client;
     const mqtt = await import('mqtt');
     this.client = mqtt.connect(this.cfg.brokerUrl, {
-      username: 'helios-platform', password: process.env.MQTT_BRIDGE_PASSWORD || 'local-dev-bridge',
-      clientId: 'helios-platform-publisher', clean: true, reconnectPeriod: 1000,
+      username: 'homecoreos-platform', password: process.env.MQTT_BRIDGE_PASSWORD || 'local-dev-bridge',
+      clientId: 'homecoreos-platform-publisher', clean: true, reconnectPeriod: 1000,
     });
     await new Promise<void>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('Local MQTT broker connection timeout')), 5000);

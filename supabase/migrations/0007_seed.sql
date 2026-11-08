@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios — 0007 platform seed: permission catalog, system roles, defaults
+-- HomecoreOS — 0007 platform seed: permission catalog, system roles, defaults
 -- ============================================================================
 
 insert into public.permissions (key, category, label, description, sort_order) values

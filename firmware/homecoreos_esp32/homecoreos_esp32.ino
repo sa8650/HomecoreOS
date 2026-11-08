@@ -1,5 +1,5 @@
 /**
- * Helios ESP32 firmware — ESP-IDF / Arduino-ESP32 reference implementation.
+ * HomecoreOS ESP32 firmware — ESP-IDF / Arduino-ESP32 reference implementation.
  *
  * Cloud path:  Website -> Cloudflare Worker -> EMQX -> ESP32 (outbound TLS only)
  * Topics:      v1/tenants/{tenant_id}/devices/{device_id}/{command,config,state,telemetry,availability}
@@ -35,14 +35,14 @@
 // ---------------------------------------------------------------------------
 // Compile-time configuration — no secrets in source control
 // ---------------------------------------------------------------------------
-#define HELIOS_API_BASE       "https://api.example.com"   // Cloudflare Worker URL
-#define HELIOS_MQTT_PORT      8883
-#define HELIOS_FW_VERSION     "1.0.0"
+#define HOMECOREOS_API_BASE       "https://api.example.com"   // Cloudflare Worker URL
+#define HOMECOREOS_MQTT_PORT      8883
+#define HOMECOREOS_FW_VERSION     "1.0.0"
 #define MAX_COMPONENTS        24
 #define LOCAL_RULE_MAX        12
 #define COMMAND_CACHE         8
 
-static const char *PAIRING_AP_PREFIX = "Helios-Setup-";
+static const char *PAIRING_AP_PREFIX = "HomecoreOS-Setup-";
 static WebServer portal(80);
 static Preferences nvs;
 static WiFiClientSecure tls;
@@ -81,7 +81,7 @@ static bool provisioned = false;
 // ---------------------------------------------------------------------------
 static uint32_t nowEpoch() { time_t t = time(nullptr); return t > 1700000000 ? (uint32_t)t : millis() / 1000; }
 
-static void logLine(const char *msg) { Serial.printf("[helios] %s\n", msg); }
+static void logLine(const char *msg) { Serial.printf("[homecoreos] %s\n", msg); }
 
 static void rememberCommand(const String &id) {
   for (int i = COMMAND_CACHE - 1; i > 0; --i) recentCommands[i] = recentCommands[i - 1];
@@ -211,7 +211,7 @@ static bool validateConfig(const JsonDocument &d) {
 static bool applyConfig(const String &raw) {
   JsonDocument d;
   if (deserializeJson(d, raw) || !validateConfig(d)) {
-    Serial.println("[helios] rejected invalid configuration — keeping last known good");
+    Serial.println("[homecoreos] rejected invalid configuration — keeping last known good");
     publishConfigAck(d["config_version"] | 0, "rejected", "invalid schema");
     return false;
   }
@@ -363,9 +363,9 @@ static void onMessage(char *topic, byte *payload, unsigned int length) {
 }
 
 static bool fetchConfigOverHttps() {
-  WiFiClientSecure client; client.setCACert(helios_root_ca);
+  WiFiClientSecure client; client.setCACert(homecoreos_root_ca);
   HTTPClient http;
-  http.begin(client, String(HELIOS_API_BASE) + "/api/device/config");
+  http.begin(client, String(HOMECOREOS_API_BASE) + "/api/device/config");
   http.addHeader("Content-Type", "application/json");
   JsonDocument req; req["client_id"] = mqttClientId; req["password"] = mqttPass;
   String body; serializeJson(req, body);
@@ -381,7 +381,7 @@ static bool ensureMqtt() {
   if (mqtt.connected()) return true;
   if (millis() - lastReconnect < 5000) return false;
   lastReconnect = millis();
-  mqtt.setServer(brokerHost.c_str(), HELIOS_MQTT_PORT);
+  mqtt.setServer(brokerHost.c_str(), HOMECOREOS_MQTT_PORT);
   mqtt.setCallback(onMessage);
   mqtt.setKeepAlive(60);
   mqtt.setSocketTimeout(15);
@@ -389,7 +389,7 @@ static bool ensureMqtt() {
   { JsonDocument d; d["schema_version"] = 1; d["device_id"] = deviceId; d["status"] = "offline"; serializeJson(d, will); }
   if (!mqtt.connect(mqttClientId.c_str(), mqttUser.c_str(), mqttPass.c_str(),
                     availabilityTopic.c_str(), 1, false, will.c_str())) {
-    Serial.printf("[helios] MQTT connect failed, state %d — retrying\n", mqtt.state());
+    Serial.printf("[homecoreos] MQTT connect failed, state %d — retrying\n", mqtt.state());
     return false;
   }
   mqtt.subscribe(cmdTopic.c_str(), 1);
@@ -406,15 +406,15 @@ static bool ensureMqtt() {
 // Pairing: single-use token -> per-device credentials (shown once)
 // ---------------------------------------------------------------------------
 static bool claimDevice(const String &token) {
-  WiFiClientSecure client; client.setCACert(helios_root_ca);
+  WiFiClientSecure client; client.setCACert(homecoreos_root_ca);
   HTTPClient http;
-  http.begin(client, String(HELIOS_API_BASE) + "/api/device/claim");
+  http.begin(client, String(HOMECOREOS_API_BASE) + "/api/device/claim");
   http.addHeader("Content-Type", "application/json");
   JsonDocument req; req["pairing_token"] = token;
   String body; serializeJson(req, body);
   int code = http.POST(body);
   String resp = http.getString(); http.end();
-  if (code != 201) { Serial.printf("[helios] pairing failed (%d): %s\n", code, resp.c_str()); return false; }
+  if (code != 201) { Serial.printf("[homecoreos] pairing failed (%d): %s\n", code, resp.c_str()); return false; }
   JsonDocument d; if (deserializeJson(d, resp)) return false;
   deviceId = d["device_id"] | ""; tenantId = d["tenant_id"] | "";
   mqttClientId = d["mqtt"]["client_id"] | ""; mqttUser = d["mqtt"]["username"] | "";
@@ -439,7 +439,7 @@ static bool claimDevice(const String &token) {
 static String pairingToken;
 static void handlePortalRoot() {
   String html = "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<h2>Helios ESP32 setup</h2><form method=POST action=/save>"
+    "<h2>HomecoreOS ESP32 setup</h2><form method=POST action=/save>"
     "<p>Wi-Fi SSID<input name=ssid></p><p>Wi-Fi password<input name=pass type=password></p>"
     "<p>One-time pairing token<input name=token></p><button>Connect</button></form>"
     "<p>Cloud control uses an outbound MQTT/TLS connection. No router port forwarding is required.</p>";
@@ -502,8 +502,8 @@ static void reportTelemetry(bool force) {
 
 void setup() {
   Serial.begin(115200);
-  nvs.begin("helios", false);
-  tls.setCACert(helios_root_ca);
+  nvs.begin("homecoreos", false);
+  tls.setCACert(homecoreos_root_ca);
   mqtt.setBufferSize(4096);
 
   deviceId = nvs.getString("device_id", "");

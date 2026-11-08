@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios — 0006 Row Level Security (defense-in-depth tenant isolation)
+-- HomecoreOS — 0006 Row Level Security (defense-in-depth tenant isolation)
 -- ============================================================================
 -- The Worker authorizes every request server-side and writes with the service
 -- role. RLS protects direct PostgREST/Realtime access using the user's JWT:

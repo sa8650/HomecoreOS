@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios — 0012 request context helpers used by the Worker on every request
+-- HomecoreOS — 0012 request context helpers used by the Worker on every request
 -- ============================================================================
 
 create or replace function public.rpc_context(p_actor uuid)

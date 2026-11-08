@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
-import type { AuthPort, DataClient } from '@helios/core';
+import type { AuthPort, DataClient } from '@homecoreos/core';
 import type { Env } from './env';
 import { jwtSecret } from './env';
 import { hashPassword, verifyPassword } from './crypto';
@@ -21,7 +21,7 @@ export class LocalAuthAdapter implements AuthPort {
       .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
       .setSubject(profileId)
       .setIssuedAt()
-      .setIssuer('helios-local')
+      .setIssuer('homecoreos-local')
       .setAudience('authenticated')
       .setExpirationTime('7d')
       .sign(enc.encode(jwtSecret(this.env)));
@@ -51,6 +51,48 @@ export class LocalAuthAdapter implements AuthPort {
   async verify(token: string) {
     return verifyHs256(token, this.env);
   }
+}
+
+/**
+ * Local-auth twin for Cloudflare D1. D1 has no SQL triggers or `auth.users`
+ * schema, so signup writes the equivalent `auth_users` row and calls the
+ * portable `rpc_bootstrap_user` domain operation (profile + tenant + owner
+ * membership). Everything else (PBKDF2 hashes, HS256 JWT) is identical.
+ */
+export class D1LocalAuthAdapter implements AuthPort {
+  constructor(private db: DataClient, private env: Env) {}
+  private async issue(profileId: string, email: string) {
+    return new SignJWT({ email, role: 'authenticated' })
+      .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+      .setSubject(profileId)
+      .setIssuedAt()
+      .setIssuer('homecoreos-local')
+      .setAudience('authenticated')
+      .setExpirationTime('7d')
+      .sign(enc.encode(jwtSecret(this.env)));
+  }
+  async signup(email: string, password: string, meta: Record<string, string> = {}) {
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('Enter a valid email address');
+    if (password.length < 10) throw new Error('Password must be at least 10 characters');
+    const existing = await this.db.select<any>('auth_users', { eq: { email }, limit: 1 });
+    if (existing.length) throw new Error('An account with this email already exists');
+    const profileId = crypto.randomUUID();
+    await this.db.insert('auth_users', {
+      id: profileId, email, raw_user_meta_data: meta,
+      password_hash: await hashPassword(password),
+    });
+    await this.db.rpc('rpc_bootstrap_user', { p_actor: profileId, p_email: email, p_meta: meta });
+    return { token: await this.issue(profileId, email), profileId };
+  }
+  async login(email: string, password: string) {
+    const rows = await this.db.select<any>('auth_users', { eq: { email }, limit: 1 });
+    const row = rows[0];
+    if (!row || !row.password_hash || !(await verifyPassword(password, row.password_hash))) {
+      throw new Error('Invalid email or password');
+    }
+    return { token: await this.issue(row.id, row.email), profileId: row.id as string };
+  }
+  async verify(token: string) { return verifyHs256(token, this.env); }
 }
 
 export class SupabaseAuthAdapter implements AuthPort {
@@ -88,7 +130,7 @@ export class SupabaseAuthAdapter implements AuthPort {
 export async function verifyHs256(token: string, env: Env) {
   try {
     const { payload } = await jwtVerify(token, enc.encode(jwtSecret(env)), {
-      issuer: env.SUPABASE_JWT_SECRET ? undefined : 'helios-local',
+      issuer: env.SUPABASE_JWT_SECRET ? undefined : 'homecoreos-local',
       audience: env.SUPABASE_JWT_SECRET ? undefined : 'authenticated',
       algorithms: ['HS256'],
     });
@@ -100,5 +142,7 @@ export async function verifyHs256(token: string, env: Env) {
 }
 
 export function createAuth(db: DataClient, env: Env): AuthPort {
-  return env.DB_DRIVER === 'supabase' ? new SupabaseAuthAdapter(env) : new LocalAuthAdapter(db, env);
+  if (env.DB_DRIVER === 'supabase') return new SupabaseAuthAdapter(env);
+  if ((db as any).kind === 'd1') return new D1LocalAuthAdapter(db, env);
+  return new LocalAuthAdapter(db, env);
 }

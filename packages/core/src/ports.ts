@@ -71,6 +71,8 @@ export interface DataClient {
   update<T = any>(table: string, match: Record<string, unknown>, patch: Record<string, unknown>): Promise<T[]>;
   remove(table: string, match: Record<string, unknown>): Promise<void>;
   rpc<T = any>(name: string, args?: Record<string, unknown>): Promise<T>;
+  /** Provider-safe upsert (atomic rotate of owner-managed secrets). */
+  upsert?<T = any>(table: string, row: Record<string, unknown>, conflictKeys?: string[]): Promise<T[]>;
   /** Dev-only raw SQL for the local Postgres adapter; production uses RPC/PostgREST. */
   raw?<T = any>(sql: string, params?: unknown[]): Promise<T[]>;
 }

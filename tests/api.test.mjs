@@ -133,7 +133,7 @@ test('API: full onboarding, GPIO isolation, command ledger and owner console', {
 
   // Owner console: separate authentication and honest unavailable metrics.
   const ownerLogin = await call('/api/auth/login', { method: 'POST',
-    body: { email: process.env.PLATFORM_OWNER_EMAIL || 'owner@helios.local', password: process.env.PLATFORM_OWNER_PASSWORD || 'HeliosOwner2026!' } });
+    body: { email: process.env.PLATFORM_OWNER_EMAIL || 'owner@homecoreos.local', password: process.env.PLATFORM_OWNER_PASSWORD || 'HomecoreOSOwner2026!' } });
   assert.equal(ownerLogin.status, 200);
   const ownerToken = ownerLogin.data.token;
   const denied = await call('/api/owner/overview', { token });

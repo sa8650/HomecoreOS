@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios — 0003 board catalog, physical boards, GPIO pin management
+-- HomecoreOS — 0003 board catalog, physical boards, GPIO pin management
 -- ============================================================================
 
 -- Versioned, platform-maintained board catalog (never a physical device).

@@ -1,5 +1,5 @@
 /**
- * Helios verified ESP32 board catalog — SINGLE SOURCE OF TRUTH.
+ * HomecoreOS verified ESP32 board catalog — SINGLE SOURCE OF TRUTH.
  *
  * Rules (do not relax):
  *  - Every pin row below is transcribed from the "Header Block" table of the

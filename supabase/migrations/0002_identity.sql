@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios — 0002 identity, tenancy, roles & permissions
+-- HomecoreOS — 0002 identity, tenancy, roles & permissions
 -- ============================================================================
 
 create table if not exists public.profiles (

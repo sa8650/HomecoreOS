@@ -1,4 +1,4 @@
-import type { DataClient } from '@helios/core';
+import type { DataClient } from '@homecoreos/core';
 import type { Env } from '../env';
 
 export interface SelectOpts {
@@ -23,7 +23,7 @@ function ident(s: string): string {
   return s;
 }
 
-/** Cloudflare Workers -> Supabase PostgREST with the service-role key (server only). */
+/** Cloudflare Pages Functions -> Supabase PostgREST with the service-role key (server only). */
 export class SupabaseRestAdapter implements DataClient {
   constructor(private env: Env) {}
   private get base() {
@@ -64,7 +64,13 @@ export class SupabaseRestAdapter implements DataClient {
   async insert<T = any>(table: string, row: any): Promise<T[]> {
     return this.request(`/${ident(table)}`, {
       method: 'POST', body: JSON.stringify(Array.isArray(row) ? row : [row]),
-      headers: { Prefer: 'return=representation,resolution=ignore-duplicates' },
+      headers: { Prefer: 'return=representation,resolution=merge-duplicates' },
+    });
+  }
+  async upsert<T = any>(table: string, row: any): Promise<T[]> {
+    return this.request(`/${ident(table)}`, {
+      method: 'POST', body: JSON.stringify(Array.isArray(row) ? row : [row]),
+      headers: { Prefer: 'return=representation,resolution=merge-duplicates' },
     });
   }
   async update<T = any>(table: string, match: Record<string, unknown>, patch: Record<string, unknown>): Promise<T[]> {
@@ -135,6 +141,16 @@ export class PGliteAdapter implements DataClient {
       return `(${marks.join(',')})`;
     });
     const q = `insert into public.${ident(table)} (${cols.map(ident).join(',')}) values ${values.join(',')} returning *`;
+    return (await this.db.query(q, params)).rows as T[];
+  }
+  async upsert<T = any>(table: string, row: any, conflictKeys: string[] = ['key']): Promise<T[]> {
+    const keys = Object.keys(row);
+    const params = keys.map((k) => toPg(row[k]));
+    const marks = keys.map((_, i) => `$${i + 1}`).join(',');
+    const sets = keys.filter((k) => !conflictKeys.includes(k)).map((k) => `${ident(k)} = excluded.${ident(k)}`).join(',');
+    const conflict = conflictKeys.map(ident).join(',');
+    const tail = sets ? ` on conflict (${conflict}) do update set ${sets}` : ` on conflict (${conflict}) do nothing`;
+    const q = `insert into public.${ident(table)} (${keys.map(ident).join(',')}) values (${marks})${tail} returning *`;
     return (await this.db.query(q, params)).rows as T[];
   }
   async update<T = any>(table: string, match: Record<string, unknown>, patch: Record<string, unknown>): Promise<T[]> {

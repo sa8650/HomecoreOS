@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios — 0009 domain RPCs (atomic, tenant-safe, transport-independent)
+-- HomecoreOS — 0009 domain RPCs (atomic, tenant-safe, transport-independent)
 -- ============================================================================
 -- The Worker calls these via PostgREST /rpc/<name>. Every function takes the
 -- ACTOR id resolved server-side from the verified JWT, never from the request

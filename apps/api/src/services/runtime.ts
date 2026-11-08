@@ -1,4 +1,4 @@
-import type { DataClient, MqttProvider, AuthPort, ObjectStore } from '@helios/core';
+import type { DataClient, MqttProvider, AuthPort, ObjectStore } from '@homecoreos/core';
 import type { Env } from '../env';
 import { hmacHex } from '../crypto';
 
@@ -11,6 +11,10 @@ export interface Runtime {
   store: ObjectStore | null;
   events: EventBus;
   emit: (tenantId: string, type: string, payload?: Record<string, unknown>) => void;
+  /** Exactly one active database provider per runtime. */
+  provider?: 'supabase' | 'd1';
+  /** Bootstrap env (no decrypted secrets) for setup diagnostics. */
+  bootstrap?: Env;
 }
 
 type Listener = (event: any) => void;
@@ -35,7 +39,7 @@ export class EventBus {
   get size() { return [...this.listeners.values()].reduce((n, s) => n + s.size, 0); }
 }
 
-/** R2-backed firmware store; falls back to an in-workspace store for dev. */
+/** In-memory object store used ONLY by the Node local-development server. */
 export class LocalObjectStore implements ObjectStore {
   private mem = new Map<string, Uint8Array>();
   constructor(private publicBase = '/api/firmware/download', private secret = '') {}
@@ -54,7 +58,7 @@ export class LocalObjectStore implements ObjectStore {
 }
 
 /**
- * Cloudflare R2 binding — the Worker never exposes bucket credentials.
+ * Cloudflare R2 binding — the API never exposes bucket credentials.
  * Firmware binaries are served through an authenticated Worker download route
  * instead of public presigned URLs.
  */
@@ -79,11 +83,15 @@ export class R2ObjectStore implements ObjectStore {
 
 export function createStore(env: Env): ObjectStore | null {
   // HMAC secret signs short-lived firmware download URLs. It never leaves the
-  // Worker; the ESP32 receives only the signed URL and the SHA-256 digest.
+  // server; the ESP32 receives only the signed URL and the SHA-256 digest.
   const secret = String(env.SECRETS_KEY || env.INGRESS_HMAC_SECRET || '');
   if ((env as any).FIRMWARE_BUCKET) {
     return new R2ObjectStore((env as any).FIRMWARE_BUCKET, String(env.PUBLIC_API_BASE || ''), secret);
   }
-  if (env.DB_DRIVER === 'supabase') return null;
-  return new LocalObjectStore('/api/firmware/download', secret);
+  // Local development (pglite or the local D1 emulator) keeps working with an
+  // in-process store; production without the native R2 binding reports missing.
+  // A hosted D1 deployment without FIRMWARE_BUCKET must honestly report
+  // "not connected" — never substitute the in-memory dev store.
+  if (env.LOCAL_DEV) return new LocalObjectStore('/api/firmware/download', secret);
+  return null;
 }

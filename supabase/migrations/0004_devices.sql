@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios — 0004 rooms, devices, sensors, telemetry
+-- HomecoreOS — 0004 rooms, devices, sensors, telemetry
 -- ============================================================================
 
 create table if not exists public.rooms (

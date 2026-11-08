@@ -1,14 +1,14 @@
-/** Typed client for the Cloudflare Worker API. All calls go through /api (proxied by Pages). */
+/** Typed client for the HomecoreOS API (Cloudflare Pages Functions). All calls go through same-origin /api. */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public detail?: unknown) { super(message); }
 }
 
-let token: string | null = localStorage.getItem('helios_token');
+let token: string | null = localStorage.getItem('homecoreos_token');
 export function setToken(t: string | null) {
   token = t;
-  if (t) localStorage.setItem('helios_token', t); else localStorage.removeItem('helios_token');
+  if (t) localStorage.setItem('homecoreos_token', t); else localStorage.removeItem('homecoreos_token');
 }
 export function getToken() { return token; }
 
@@ -34,7 +34,7 @@ export const api = {
   del: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'DELETE', body: body === undefined ? undefined : JSON.stringify(body) }),
 };
 
-/** Fetch + refresh on live events (SSE). The event types come from the Worker. */
+/** Fetch + refresh on live events (SSE). The event types come from the API. */
 export function useLiveData<T>(path: string | null, deps: unknown[] = []) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(!!path);

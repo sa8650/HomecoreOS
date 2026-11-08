@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-/** Versioned wire protocol shared by the Worker, firmware and simulator. */
+/** Versioned wire protocol shared by the API, firmware and simulator. */
 
 export const TelemetryMessage = z.object({
   schema_version: z.literal(1),

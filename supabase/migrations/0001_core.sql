@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios Smart Home SaaS — 0001 core helpers
+-- HomecoreOS Smart Home SaaS — 0001 core helpers
 -- ============================================================================
 -- Everything tenant-owned carries tenant_id. RLS is enforced in 0006.
 -- Supabase provides auth.uid(); this file only defines app helpers.

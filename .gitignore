@@ -6,12 +6,10 @@ dist/
 .env.local
 *.local
 .pglite-data/
+.local-dev/
 coverage/
 .DS_Store
 *.log
 apps/web/.vite/
-firmware/helios_esp32/ca_cert.cpp
-.env.local
-.pglite-data/
-
+firmware/homecoreos_esp32/ca_cert.cpp
 .npm/

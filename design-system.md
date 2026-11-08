@@ -1,4 +1,4 @@
-# Helios Design System
+# HomecoreOS Design System
 
 > Every UI implementation in this repository must follow this document. It is the authoritative source for visual and interaction decisions: `apps/web/src/styles.css` is its executable form.
 

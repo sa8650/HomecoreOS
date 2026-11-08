@@ -1,4 +1,4 @@
-# Helios Typography
+# HomecoreOS Typography
 
 > Typography is the primary hierarchy tool. No decorative display fonts, no all-caps headings, no coloured text used for emphasis.
 

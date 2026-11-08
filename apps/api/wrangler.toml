@@ -1,13 +1,22 @@
-name = "helios-api"
+# ============================================================================
+# OPTIONAL standalone Worker — ONLY for the advanced MQTT-over-WSS Durable
+# Object ingress bridge. The normal deployment is Cloudflare Pages Functions
+# (root `functions/[[path]].ts` + root `wrangler.toml`) and needs no Worker.
+#
+# Configure bindings/secrets in the Cloudflare dashboard, not in this file:
+#   D1 database named DB (or SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)
+#   R2 bucket named FIRMWARE_BUCKET
+#   encrypted SECRETS_KEY (64 hex chars)
+# All EMQX / remaining Supabase values are entered in the Owner Console and
+# encrypted in platform_secrets. No API keys or credentials are hardcoded here.
+# ============================================================================
+name = "homecoreos-mqtt-bridge"
 main = "src/worker.ts"
 compatibility_date = "2024-11-08"
-compatibility_flags = ["nodejs_compat"]
 
-# Non-secret configuration. All secrets are set with `wrangler secret put`.
+# No nodejs_compat flag: the API uses Web APIs only. No database provider is
+# hardcoded — the runtime detects exactly one from the binding/bootstrap vars.
 [vars]
-DB_DRIVER = "supabase"
-MQTT_PROVIDER = "emqx"
-PUBLIC_API_BASE = "https://api.example.com"
 INGRESS_INSTANCE = "primary"
 
 [[durable_objects.bindings]]
@@ -20,7 +29,7 @@ new_classes = ["MqttIngressDO"]
 
 [[r2_buckets]]
 binding = "FIRMWARE_BUCKET"
-bucket_name = "helios-firmware"
+bucket_name = "homecoreos-firmware"
 
 [triggers]
 crons = ["0 * * * *"]

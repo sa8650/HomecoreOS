@@ -1,5 +1,5 @@
 /**
- * Helios virtual ESP32 — exercises the REAL cloud path end-to-end.
+ * HomecoreOS virtual ESP32 — exercises the REAL cloud path end-to-end.
  *
  * Usage: node simulator/esp32-sim.mjs <pairing-token> [catalog-board-id] [api-url]
  *

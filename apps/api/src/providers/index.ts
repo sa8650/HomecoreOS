@@ -1,4 +1,4 @@
-import type { MqttProvider } from '@helios/core';
+import type { MqttProvider } from '@homecoreos/core';
 import type { Env } from '../env';
 import { EmqxCloudProvider } from './emqx';
 import { LocalMqttProvider } from './local';

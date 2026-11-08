@@ -1,5 +1,5 @@
 /**
- * Helios acceptance tests — run against a REAL Postgres (PGlite/WASM) with the
+ * HomecoreOS acceptance tests — run against a REAL Postgres (PGlite/WASM) with the
  * exact production migrations, RLS policies, constraints and domain RPCs.
  *
  * Run: npm test
@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTestDb, seed, asUser, rpc, ok } from './helpers/pglite.mjs';
-import { deviceTopics, deviceAclRules, evaluatePin, EMQX_QUOTAS } from '@helios/core';
+import { deviceTopics, deviceAclRules, evaluatePin, EMQX_QUOTAS } from '@homecoreos/core';
 import { randomBytes } from 'node:crypto';
 const hex64 = () => randomBytes(32).toString('hex');
 

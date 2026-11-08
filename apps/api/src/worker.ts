@@ -1,9 +1,9 @@
 /**
  * Cloudflare Workers entry point.
  *
- * - `fetch` serves the entire API (Hono) using Supabase PostgREST with the
- *   service-role key. Every request is authorized server-side; the service key
- *   never reaches the browser.
+ * - `fetch` serves the entire API (Hono) using the ONE detected database
+ *   provider (Cloudflare D1 binding or Supabase PostgREST). Every request is
+ *   authorized server-side; no service key ever reaches the browser.
  * - `MqttIngressDO` holds one outbound MQTT-over-WSS subscription for device
  *   messages. It is started by the platform owner (or a scheduled trigger) and
  *   forwards into the same tenant-safe ingress used locally.
@@ -11,47 +11,34 @@
  *   download route. No bucket credentials or presigned secrets are exposed.
  */
 import { createApp, handleIngress } from './app';
-import { SupabaseRestAdapter } from './db/adapters';
-import { createAuth } from './auth';
-import { createMqttProvider } from './providers';
-import { EventBus, createStore } from './services/runtime';
 import type { Runtime } from './services/runtime';
-import { loadEnv } from './env';
-import type { Env } from './env';
 import { MqttWsBridge } from './ingress/mqtt-ws';
+import { getCloudRuntime } from './runtime/cloud';
 
-function createRuntime(bindings: Record<string, unknown>): Runtime {
-  const env = loadEnv({
-    ...bindings,
-    DB_DRIVER: 'supabase',
-    MQTT_PROVIDER: bindings.MQTT_PROVIDER || 'emqx',
-    JWT_SECRET: bindings.SUPABASE_JWT_SECRET,
-  });
-  const db = new SupabaseRestAdapter(env);
-  const events = new EventBus();
-  return {
-    env, db, auth: createAuth(db, env), mqtt: createMqttProvider(env),
-    store: createStore(env), events,
-    emit: (tenantId, type, payload = {}) => events.publish(tenantId, { type, ...payload }),
-  };
-}
-
+/**
+ * Optional standalone Worker entry. The primary deployment is Cloudflare Pages
+ * Functions (functions/[[path]].ts), which uses the same runtime with the
+ * native DB / FIRMWARE_BUCKET bindings and needs no extra service.
+ *
+ * This Worker is only needed if you want the optional long-lived MQTT-over-WSS
+ * ingress bridge backed by a Durable Object. It never hardcodes Supabase.
+ */
 let cached: { key: string; rt: Runtime } | null = null;
-function getRuntime(env: Record<string, unknown>): Runtime {
-  const key = String(env.SUPABASE_URL || '') + '|' + String(env.EMQX_API_BASE || '');
-  if (!cached || cached.key !== key) cached = { key, rt: createRuntime(env) };
+async function getRuntime(env: Record<string, unknown>): Promise<Runtime> {
+  const key = String(env.SUPABASE_URL || '') + '|' + Boolean(env.DB) + '|' + String(env.SECRETS_KEY || '').slice(0, 12);
+  if (!cached || cached.key !== key) cached = { key, rt: await getCloudRuntime(env) };
   return cached.rt;
 }
 
 const worker = {
   async fetch(request: Request, env: Record<string, unknown>, ctx: any): Promise<Response> {
-    const rt = getRuntime(env);
+    const rt = await getRuntime(env);
     const app = createApp(rt);
     return app.fetch(request, env, ctx);
   },
   async scheduled(_event: any, env: Record<string, unknown>, ctx: any) {
     // Hourly: expire stale commands and wake the ingress Durable Object.
-    const rt = getRuntime(env);
+    const rt = await getRuntime(env);
     ctx.waitUntil((async () => {
       await rt.db.rpc('rpc_expire_commands', {}).catch(() => {});
       const id = (env as any).MQTT_INGRESS?.idFromName?.('platform-ingress');
@@ -82,26 +69,26 @@ export class MqttIngressDO {
     else if (url.pathname === '/status') {
       return Response.json({ state: this.state, detail: this.lastDetail, connected: !!this.bridge?.connected });
     } else {
-      this.start();
+      await this.start();
       await this.doState.storage.setAlarm(Date.now() + 30_000);
     }
     return Response.json({ started: this.state !== 'idle', state: this.state });
   }
 
   async alarm() {
-    if (!this.bridge) this.start();
+    if (!this.bridge) await this.start();
     else this.bridge.tick();
     await this.doState.storage.setAlarm(Date.now() + 30_000);
   }
 
-  private start() {
+  private async start() {
     if (this.bridge) return;
-    const rt = getRuntime(this.env);
+    const rt = await getRuntime(this.env);
     const url = String(this.env.EMQX_WSS_URL || '');
     if (!url) { this.state = 'disconnected'; this.lastDetail = 'EMQX_WSS_URL not configured'; return; }
     this.bridge = new MqttWsBridge({
       url,
-      clientId: `helios-ingress-${String(this.env.INGRESS_INSTANCE || 'primary')}`,
+      clientId: `homecoreos-ingress-${String(this.env.INGRESS_INSTANCE || 'primary')}`,
       username: String(this.env.MQTT_BRIDGE_USERNAME || ''),
       password: String(this.env.MQTT_BRIDGE_PASSWORD || ''),
       topics: [

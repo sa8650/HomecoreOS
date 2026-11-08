@@ -1,5 +1,5 @@
-import type { BrokerHealth, MqttProvider, ProviderUsage, ProvisionedCredential } from '@helios/core';
-import { deviceAclRules, deviceTopics } from '@helios/core';
+import type { BrokerHealth, MqttProvider, ProviderUsage, ProvisionedCredential } from '@homecoreos/core';
+import { deviceAclRules, deviceTopics } from '@homecoreos/core';
 import type { Env } from '../env';
 
 const AUTH_ID = 'password_based%3Abuilt_in_database';
@@ -87,7 +87,7 @@ export class EmqxCloudProvider implements MqttProvider {
       payload_encoding: 'plain',
       qos: i.qos ?? 1,
       retain: false, // Commands and configs are NEVER retained: no stale ON/OFF.
-      clientid: 'helios-platform-publisher',
+      clientid: 'homecoreos-platform-publisher',
     });
   }
 

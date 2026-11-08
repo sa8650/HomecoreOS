@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios — 0005 automation, firmware, platform ops, EMQX usage, audit
+-- HomecoreOS — 0005 automation, firmware, platform ops, EMQX usage, audit
 -- ============================================================================
 
 create table if not exists public.automations (

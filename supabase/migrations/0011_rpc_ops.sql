@@ -1,5 +1,5 @@
 -- ============================================================================
--- Helios — 0011 automation, firmware, staff, platform ops RPCs
+-- HomecoreOS — 0011 automation, firmware, staff, platform ops RPCs
 -- ============================================================================
 
 create or replace function public.rpc_delete_bus(p_actor uuid, p_tenant uuid, p_bus uuid)

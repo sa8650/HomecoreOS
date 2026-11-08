@@ -1,6 +1,6 @@
-# Helios ESP32 firmware
+# HomecoreOS ESP32 firmware
 
-`helios_esp32/helios_esp32.ino` is an Arduino-ESP32 (ESP-IDF underneath) reference firmware. It implements the production protocol used by the Worker and the local simulator.
+`homecoreos_esp32/homecoreos_esp32.ino` is an Arduino-ESP32 (ESP-IDF underneath) reference firmware. It implements the production protocol used by the HomecoreOS API and the local simulator.
 
 ## What it does
 
@@ -15,7 +15,7 @@
 | Config | Versioned master config from Website/DB, validated before apply, last-known-good in NVS, ack on `state` topic |
 | Telemetry | One aggregated `schema_version: 1` message, event-driven changes + reporting interval |
 | Local safety | Pump dry-run / overflow / emergency shutdown rules run locally with no internet |
-| OTA | HTTP download from the Worker, streaming SHA-256 verification, `Update` + `esp_ota_mark_app_valid_cancel_rollback`, rollback on failure |
+| OTA | HTTP download from the HomecoreOS API, streaming SHA-256 verification, `Update` + `esp_ota_mark_app_valid_cancel_rollback`, rollback on failure |
 | Reconnect | Exponential-ish retry, LWT `offline`, HTTPS config re-fetch, full state resync |
 
 ## Provisioning methods
@@ -33,10 +33,10 @@
 
 1. Install Arduino IDE 2.x or `arduino-cli` with `esp32:esp32` core (ESP-IDF 5.x based).
 2. Libraries: `PubSubClient`, `ArduinoJson` v7, `HTTPClient` (built in), `WebServer` (built in).
-3. Set `HELIOS_API_BASE` in the sketch to your Cloudflare Worker URL.
+3. Set `HOMECOREOS_API_BASE` in the sketch to your Cloudflare Pages URL (same-origin `/api`).
 4. Copy `ca_cert.cpp.example` → `ca_cert.cpp` and paste the **root CA of your EMQX Cloud deployment** (deployment overview → TLS certificate). `ca_cert.cpp` is gitignored.
 5. Select your board (ESP32 / S3 / C3 / C6 DevKit) and partition scheme with **two OTA app slots** (e.g. `default_8MB.csv` or `min_spiffs.csv` with OTA).
-6. Flash over USB serial. On first boot, either send `TOKEN=...` over serial or connect to the `Helios-Setup-XXXX` access point.
+6. Flash over USB serial. On first boot, either send `TOKEN=...` over serial or connect to the `HomecoreOS-Setup-XXXX` access point.
 7. Generate a one-time pairing token in **Device Setup Wizard** in the customer console. Tokens expire (default 15 min) and are single-use.
 
 ## ESP-IDF native notes

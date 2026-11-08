@@ -6,7 +6,8 @@ import {
   Badge, Card, DataTable, EmptyState, Field, Icon, Loading, MiniChart, Modal, Notice,
   PageHead, Progress, Skeleton, Stat, StatusBadge, fmt, fmtBytes, timeAgo, timeFull,
 } from '../components';
-import { EMQX_QUOTAS, WARNING_THRESHOLDS } from '@helios/core';
+import { EMQX_QUOTAS, WARNING_THRESHOLDS } from '@homecoreos/core';
+import { PlatformSettingsLinks } from './platform-setup';
 
 function useToast() { return useAuth().toast; }
 
@@ -25,8 +26,8 @@ export function OwnerOverview() {
       </div>
       <div className="grid grid-3" style={{ marginBottom: 14 }}>
         <Card title="MQTT connection health" sub="EMQX deployment API"><HealthRow ok={s.mqtt_health?.connected} label={s.mqtt_health?.detail} foot={s.mqtt_health?.checked_at ? timeAgo(s.mqtt_health.checked_at) : 'Not checked'} /></Card>
-        <Card title="System API health"><HealthRow ok={s.api_health?.connected} label="Cloudflare Worker responding" foot="All console routes served through the Worker" /></Card>
-        <Card title="Database health"><HealthRow ok={s.database_health?.connected} label={`Supabase Postgres · ${s.database_health?.driver}`} foot="RLS enabled on all tenant-owned tables" /></Card>
+        <Card title="System API health"><HealthRow ok={s.api_health?.connected} label="Cloudflare Pages Functions responding" foot="All console routes served through the same-origin API" /></Card>
+        <Card title="Database health"><HealthRow ok={s.database_health?.connected} label={`${s.database_health?.driver === 'd1' ? 'Cloudflare D1' : s.database_health?.driver === 'supabase' ? 'Supabase PostgreSQL' : s.database_health?.driver || 'Database'} · connected`} foot="Tenant isolation enforced server-side in every provider" /></Card>
       </div>
       <div className="grid grid-2" style={{ alignItems: 'start' }}>
         <Card title="Platform metrics" sub="Last 24 hours"><div className="metric-row"><span>Commands</span><span className="v">{fmt(s.commands_24h, 0)}</span></div>
@@ -90,7 +91,7 @@ function SuspendModal({ tenant, onClose, onDone }: any) {
     <button className={`btn ${next === 'suspended' ? 'btn-danger' : 'btn-primary'}`} onClick={async () => {
       try { await api.post(`/api/owner/customers/${tenant.id}/status`, { status: next, reason }); toast(`Account ${next}`); onDone(); onClose(); } catch (e: any) { toast(e.message, 'error'); }
     }}>{next === 'suspended' ? 'Suspend account' : 'Reactivate account'}</button></>}>
-    <Notice tone={next === 'suspended' ? 'warn' : 'info'}>Suspending blocks all Worker requests and RLS access for this workspace. Devices remain registered but cannot be operated until reactivation.</Notice>
+    <Notice tone={next === 'suspended' ? 'warn' : 'info'}>Suspending blocks all API requests and tenant access for this workspace. Devices remain registered but cannot be operated until reactivation.</Notice>
     <Field label="Reason (audited)"><textarea className="textarea" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
   </Modal>;
 }
@@ -145,35 +146,43 @@ export function OwnerStaff() {
 }
 
 // ============================================================================
-// EMQX management — secrets masked, never returned to the browser
+// EMQX management — read-only status; credentials live in Integrations & Secrets
 // ============================================================================
 export function OwnerEmqx() {
   const { data, loading, refresh } = useLiveData<any>('/api/owner/emqx/settings');
   const toast = useToast();
-  const [f, setF] = useState<any>({});
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const s = data?.settings || {};
-  const save = async () => {
-    try { await api.post('/api/owner/emqx/settings', f); toast('EMQX settings saved securely'); setF({}); refresh(); }
-    catch (e: any) { toast(e.message, 'error'); }
+  const val = (k: string) => {
+    const v = s[k] ?? s[`mqtt.${k}`];
+    if (v == null || v === '') return 'Not configured';
+    return typeof v === 'object' ? JSON.stringify(v) : String(v);
   };
   return <>
-    <PageHead title="EMQX Management" desc="Deployment endpoint, ports and API credentials. Secrets are encrypted server-side and never exposed to frontend JavaScript." actions={<><button className="btn" disabled={testing} onClick={async () => { setTesting(true); try { const h = await api.post('/api/owner/emqx/test'); toast(h.connected ? 'Broker connection successful' : `Unavailable: ${h.detail}`, h.connected ? 'ok' : 'error'); refresh(); } catch (e: any) { toast(e.message, 'error'); } finally { setTesting(false); } }}><Icon.refresh />Test connection</button>
-      <button className="btn btn-primary" disabled={syncing} onClick={async () => { setSyncing(true); try { const r = await api.post('/api/owner/emqx/sync-usage'); toast(r.message); refresh(); } catch (e: any) { toast(e.message, 'error'); } finally { setSyncing(false); } }}>{syncing ? 'Syncing…' : 'Sync usage'}</button></>} />
-    {loading ? <Loading rows={2} /> : <div className="grid grid-2" style={{ alignItems: 'start' }}>
-      <Card title="Deployment configuration" sub="Values are stored in platform_settings; secrets in platform_secrets" actions={<button className="btn btn-primary btn-sm" onClick={save}>Save settings</button>}>
-        <Field label="Deployment API endpoint" hint="EMQX Cloud Serverless Deployment API base, ending in /api/v5"><input className="input mono" placeholder="https://…/api/v5" value={f.EMQX_API_BASE ?? s['mqtt.deployment_endpoint'] ?? ''} onChange={(e) => setF({ ...f, EMQX_API_BASE: e.target.value })} /></Field>
-        <Field label="MQTT broker hostname"><input className="input mono" placeholder="broker.emqxcloud.com" value={f.mqtt_broker_host ?? s['mqtt.broker_host'] ?? ''} onChange={(e) => setF({ ...f, mqtt_broker_host: e.target.value })} /></Field>
-        <div className="form-row"><Field label="TLS port"><input className="input" type="number" value={f.mqtt_port_tls ?? s['mqtt.port_tls'] ?? 8883} onChange={(e) => setF({ ...f, mqtt_port_tls: Number(e.target.value) })} /></Field>
-          <Field label="WSS port"><input className="input" type="number" value={f.mqtt_wss_port ?? s['mqtt.wss_port'] ?? 8084} onChange={(e) => setF({ ...f, mqtt_wss_port: Number(e.target.value) })} /></Field></div>
-        <Field label="WebSocket endpoint"><input className="input mono" placeholder="wss://…/mqtt" value={f.mqtt_wss_host ?? s['mqtt.wss_host'] ?? ''} onChange={(e) => setF({ ...f, mqtt_wss_host: e.target.value })} /></Field>
-        <div className="divider" /><h4 style={{ fontSize: 13, marginBottom: 10 }}>Platform-side API credentials</h4>
-        {['EMQX_APP_ID', 'EMQX_APP_SECRET'].map((k) => <Field key={k} label={`${k.replace('EMQX_', '').replace('_', ' ')} ${data?.secrets?.[k]?.configured ? '· configured' : '· not set'}`} hint={data?.secrets?.[k]?.configured ? `Fingerprint ${data.secrets[k].fingerprint} · ${timeAgo(data.secrets[k].updated_at)}` : 'Stored encrypted; never displayed'}>
-          <input className="input mono" type="password" placeholder={data?.secrets?.[k]?.configured ? '•••••••••••• (leave blank to keep)' : 'Enter value'} value={f[k] || ''} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></Field>)}
-        <div className="kv" style={{ marginTop: 10 }}><dt>Provider</dt><dd>{data?.provider || 'EMQX Cloud Serverless'}</dd>
+    <PageHead title="EMQX Management" desc="Deployment status, device provisioning strategy and usage synchronization. Credentials are entered in Integrations & Secrets and never exposed to frontend JavaScript." actions={<><Link className="btn btn-primary" to="/owner/settings/integrations"><Icon.lock />Manage credentials</Link>
+      <button className="btn" disabled={testing} onClick={async () => { setTesting(true); try { const h = await api.post('/api/owner/emqx/test'); toast(h.connected ? 'Broker connection successful' : `Unavailable: ${h.detail}`, h.connected ? 'ok' : 'error'); refresh(); } catch (e: any) { toast(e.message, 'error'); } finally { setTesting(false); } }}><Icon.refresh />{testing ? 'Testing…' : 'Test connection'}</button>
+      <button className="btn" disabled={syncing} onClick={async () => { setSyncing(true); try { const r = await api.post('/api/owner/emqx/sync-usage'); toast(r.message); refresh(); } catch (e: any) { toast(e.message, 'error'); } finally { setSyncing(false); } }}>{syncing ? 'Syncing…' : 'Sync usage'}</button></>} />
+    <Notice tone="info">This page is read-only. Add, rotate or remove EMQX API credentials and broker addresses in <Link to="/owner/settings/integrations">Integrations &amp; Secrets</Link>, where they are AES-256-GCM encrypted at rest. Saved values are never displayed again.</Notice>
+    {loading ? <Loading rows={2} /> : <div className="grid grid-2" style={{ alignItems: 'start', marginTop: 14 }}>
+      <Card title="Deployment configuration" sub="Non-secret status from platform_settings and encrypted credential metadata">
+        <div className="kv">
+          <dt>Deployment API endpoint</dt><dd className="mono">{val('deployment_endpoint')}</dd>
+          <dt>MQTT broker hostname</dt><dd className="mono">{val('broker_host')}</dd>
+          <dt>TLS port</dt><dd className="mono">{val('port_tls')}</dd>
+          <dt>WSS port</dt><dd className="mono">{val('wss_port')}</dd>
+          <dt>WebSocket endpoint</dt><dd className="mono">{val('wss_host')}</dd>
+          <dt>Provider</dt><dd>{data?.provider || 'EMQX Cloud Serverless'}</dd>
           <dt>Broker status</dt><dd>{data?.health?.connected ? <Badge tone="on">Connected</Badge> : <Badge tone="danger">Unavailable</Badge>}</dd>
-          <dt>Last sync</dt><dd>{s['mqtt.last_sync_at'] ? timeAgo(s['mqtt.last_sync_at']) : 'Never'}</dd></div>
+          <dt>Last sync</dt><dd>{s['mqtt.last_sync_at'] ? timeAgo(s['mqtt.last_sync_at']) : 'Never'}</dd>
+        </div>
+        <div className="divider" />
+        <h4 style={{ fontSize: 13, marginBottom: 10 }}>Configured credentials</h4>
+        {Object.keys(data?.secrets || {}).length === 0
+          ? <p className="muted" style={{ fontSize: 12.5 }}>No EMQX credentials saved yet. Add them in Integrations &amp; Secrets.</p>
+          : Object.entries(data.secrets).map(([k, v]: [string, any]) => <div className="kv" key={k} style={{ marginBottom: 6 }}>
+              <dt className="mono">{k}</dt><dd>{v.configured ? <><span className="mono">••••••••••••</span> <span className="tiny muted">fingerprint {v.fingerprint} · {timeAgo(v.updated_at)}</span></> : 'Not set'}</dd>
+            </div>)}
       </Card>
       <div style={{ display: 'grid', gap: 14 }}>
         <Card title="Connection status"><HealthRow ok={data?.health?.connected} label={data?.health?.detail} foot={data?.health?.checked_at ? timeFull(data.health.checked_at) : undefined} />
@@ -332,12 +341,18 @@ export function OwnerSettings() {
   const [announcement, setAnnouncement] = useState(false);
   return <>
     <PageHead title="Platform Settings" desc="Global registration, feature availability, security and warning thresholds." actions={<button className="btn btn-primary" onClick={() => setAnnouncement(true)}><Icon.plus />New announcement</button>} />
-    <Card pad={false}>{loading ? <div className="card-pad"><Skeleton height={180} /></div> : <DataTable columns={[
+    <PlatformSettingsLinks />
+    <Notice tone="info">Credentials are managed in <Link to="/owner/settings/integrations">Integrations &amp; Secrets</Link>. This page only lists non-secret platform defaults; values that look like credentials are masked.</Notice>
+    <Card pad={false} style={{ marginTop: 14 }}>{loading ? <div className="card-pad"><Skeleton height={180} /></div> : <DataTable columns={[
       { key: 'key', label: 'Setting', render: (s: any) => <span className="mono">{s.key}</span> },
       { key: 'value', label: 'Value', render: (s: any) => <span className="mono">{JSON.stringify(s.value)}</span> },
       { key: 'is_secret', label: 'Secret', render: (s: any) => s.is_secret ? <Badge tone="danger">Secret</Badge> : <Badge>Public</Badge> },
       { key: 'updated_at', label: 'Updated', render: (s: any) => timeAgo(s.updated_at) },
-      { key: 'actions', label: '', render: (s: any) => <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setEdit(s)}><Icon.edit /></button> },
+      { key: 'actions', label: '', render: (s: any) => /secret|token|password|key/i.test(String(s.key))
+        ? <Link className="btn btn-ghost btn-sm" to="/owner/settings/integrations"><Icon.lock />Manage</Link>
+        : /^(registration|features|security|usage|mqtt)\./.test(String(s.key))
+          ? <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setEdit(s)}><Icon.edit /></button>
+          : <span className="tiny muted">Managed automatically</span> },
     ]} rows={data || []} empty={<EmptyState icon="settings" title="No settings" text="Platform defaults are seeded by migrations." />} />}</Card>
     {edit && <EditSettingModal setting={edit} onClose={() => setEdit(null)} onDone={refresh} />}
     {announcement && <AnnouncementModal onClose={() => setAnnouncement(false)} />}
@@ -378,17 +393,33 @@ export function OwnerAudit() {
 
 function EditSettingModal({ setting, onClose, onDone }: any) {
   const toast = useToast();
-  const [text, setText] = useState(JSON.stringify(setting.value, null, 2));
+  const kind = Array.isArray(setting.value) || (setting.value && typeof setting.value === 'object') ? 'json'
+    : typeof setting.value === 'boolean' ? 'boolean' : typeof setting.value === 'number' ? 'number' : 'text';
+  const [text, setText] = useState(kind === 'json' ? JSON.stringify(setting.value, null, 2) : String(setting.value ?? ''));
   const [invalid, setInvalid] = useState(false);
+  const parse = (): any => {
+    if (kind === 'json') return JSON.parse(text);
+    if (kind === 'boolean') return text === 'true';
+    if (kind === 'number') return Number(text);
+    return text;
+  };
+  const validate = (v: string) => {
+    if (kind === 'json') { try { JSON.parse(v); setInvalid(false); } catch { setInvalid(true); } }
+    else if (kind === 'number') setInvalid(!/^-?\d+(\.\d+)?$/.test(v));
+    else setInvalid(false);
+  };
   return <Modal title={setting.key} onClose={onClose} footer={<><button className="btn" onClick={onClose}>Cancel</button>
     <button className="btn btn-primary" disabled={invalid} onClick={async () => {
       let value: unknown;
-      try { value = JSON.parse(text); } catch { toast('Enter valid JSON', 'error'); return; }
+      try { value = parse(); } catch { toast('Enter a valid value', 'error'); return; }
       try { await api.post('/api/owner/settings', { [setting.key]: value }); toast('Platform setting updated'); onDone(); onClose(); }
       catch (e: any) { toast(e.message, 'error'); }
     }}>Save</button></>}>
-    <Field label="JSON value"><textarea className="textarea mono" value={text} onChange={(e) => { setText(e.target.value); try { JSON.parse(e.target.value); setInvalid(false); } catch { setInvalid(true); } }} /></Field>
-    {invalid && <Notice tone="danger">Invalid JSON.</Notice>}
-    <p className="tiny">Changes are audited. Secret values must be set in EMQX Management, not here.</p>
+    {kind === 'boolean' ? <Field label="Enabled"><select className="select" value={text} onChange={(e) => setText(e.target.value)}><option value="true">Yes</option><option value="false">No</option></select></Field>
+      : kind === 'number' ? <Field label="Number"><input className="input mono" type="number" value={text} onChange={(e) => { setText(e.target.value); validate(e.target.value); }} /></Field>
+      : kind === 'text' ? <Field label="Value"><input className="input mono" value={text} onChange={(e) => { setText(e.target.value); validate(e.target.value); }} /></Field>
+      : <Field label="Structured value (JSON)" hint="Used for lists and objects such as warning thresholds."><textarea className="textarea mono" value={text} onChange={(e) => { setText(e.target.value); validate(e.target.value); }} /></Field>}
+    {invalid && <Notice tone="danger">{kind === 'number' ? 'Enter a valid number.' : 'Invalid JSON.'}</Notice>}
+    <p className="tiny">Changes are audited. Credentials are managed in Integrations &amp; Secrets, never here.</p>
   </Modal>;
 }

@@ -12,6 +12,7 @@ import {
   OwnerOverview, OwnerCustomers, OwnerCustomerDetail, OwnerStaff, OwnerEmqx,
   OwnerUsage, OwnerBoards, OwnerSettings, OwnerAudit,
 } from './pages/owner';
+import { OwnerSetup, OwnerIntegrations, PlatformSettingsLinks } from './pages/platform-setup';
 import { LogOut, ChevronDown, ArrowUpRight } from 'lucide-react';
 
 const CUSTOMER_NAV = [
@@ -38,6 +39,7 @@ const CUSTOMER_NAV = [
 const OWNER_NAV = [
   { group: 'Platform', items: [
     { to: '/owner', label: 'Overview', icon: 'home' },
+    { to: '/owner/setup', label: 'Initial Setup', icon: 'check' },
     { to: '/owner/customers', label: 'Customers', icon: 'users' },
     { to: '/owner/staff', label: 'Staff & Access', icon: 'shield' },
   ] },
@@ -48,6 +50,7 @@ const OWNER_NAV = [
   ] },
   { group: 'Governance', items: [
     { to: '/owner/settings', label: 'Platform Settings', icon: 'settings' },
+    { to: '/owner/settings/integrations', label: 'Integrations & Secrets', icon: 'lock' },
     { to: '/owner/audit', label: 'Audit Logs', icon: 'file' },
   ] },
 ] as const;
@@ -63,8 +66,8 @@ function Shell({ owner, children }: { owner: boolean; children: React.ReactNode 
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="brand-mark">H</div>
-          <div><div className="brand-name">Helios</div><div className="brand-sub">{owner ? 'Platform Owner' : 'Home Console'}</div></div>
+          <div className="brand-mark">HC</div>
+          <div><div className="brand-name">HomecoreOS</div><div className="brand-sub">{owner ? 'Platform Owner' : 'Home Console'}</div></div>
         </div>
         {nav.map((g) => (
           <div key={g.group}>
@@ -133,15 +136,15 @@ function AuthPage() {
   return (
     <div className="auth-wrap">
       <div className="auth-art">
-        <div className="sidebar-brand" style={{ padding: 0 }}><div className="brand-mark">H</div><div><div className="brand-name">Helios</div><div className="brand-sub">Smart Home Platform</div></div></div>
+        <div className="sidebar-brand" style={{ padding: 0 }}><div className="brand-mark">HC</div><div><div className="brand-name">HomecoreOS</div><div className="brand-sub">Smart Home Platform</div></div></div>
         <div>
           <h2>One platform. Every home, independently secure.</h2>
           <p>Multi-tenant control for ESP32 boards: real GPIO allocation, per-device MQTT credentials, acknowledged commands, telemetry and automation — with tenant isolation enforced at every layer.</p>
           <div className="auth-diagram">
-            <span>Website</span><i>→</i><span>Cloudflare Worker</span><i>→</i><span>EMQX</span><i>→</i><span>ESP32</span>
+            <span>Website</span><i>→</i><span>Cloudflare Pages</span><i>→</i><span>EMQX</span><i>→</i><span>ESP32</span>
           </div>
         </div>
-        <div className="tiny">Cloudflare Pages · Workers · Supabase Postgres · EMQX Serverless · R2</div>
+        <div className="tiny">Cloudflare Pages · D1 / Supabase PostgreSQL · EMQX Serverless · R2</div>
       </div>
       <div className="auth-panel">
         <div className="auth-card">
@@ -160,7 +163,7 @@ function AuthPage() {
             <div className="field"><label>Password</label><input className="input" type="password" required minLength={10} value={form.password} onChange={(e) => set('password', e.target.value)} placeholder="At least 10 characters" /></div>
             <button className="btn btn-primary btn-block" disabled={busy}>{busy ? 'Please wait…' : mode === 'in' ? 'Sign in' : 'Create account'}</button>
           </form>
-          <p className="tiny" style={{ marginTop: 18, textAlign: 'center' }}>Sessions are signed server-side. Tenant isolation is enforced by Postgres RLS and Worker authorization.</p>
+          <p className="tiny" style={{ marginTop: 18, textAlign: 'center' }}>Sessions are signed server-side. Tenant isolation is enforced by database authorization in both D1 and Supabase.</p>
         </div>
       </div>
     </div>
@@ -198,7 +201,9 @@ function RoutesView() {
         <Route path="/owner/emqx" element={<OwnerEmqx />} />
         <Route path="/owner/usage" element={<OwnerUsage />} />
         <Route path="/owner/boards" element={<OwnerBoards />} />
+        <Route path="/owner/setup" element={<OwnerSetup />} />
         <Route path="/owner/settings" element={<OwnerSettings />} />
+        <Route path="/owner/settings/integrations" element={<OwnerIntegrations />} />
         <Route path="/owner/audit" element={<OwnerAudit />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

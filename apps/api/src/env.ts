@@ -18,12 +18,15 @@ export interface Env {
   MQTT_BRIDGE_USERNAME?: string;
   MQTT_BRIDGE_PASSWORD?: string;
   INGRESS_HMAC_SECRET?: string;
-  R2_ACCOUNT_ID?: string;
-  R2_ACCESS_KEY_ID?: string;
-  R2_SECRET_ACCESS_KEY?: string;
-  R2_BUCKET?: string;
-  R2_PUBLIC_BASE?: string;
-  DB_DRIVER?: 'pglite' | 'supabase';
+  /** True only in the Node local-development server; never in Pages/Workers. */
+  LOCAL_DEV?: boolean;
+  PUBLIC_API_BASE?: string;
+  DATABASE_PROVIDER?: 'supabase' | 'd1';
+  /** Native Cloudflare Pages bindings (never API credentials). */
+  DB?: unknown;
+  FIRMWARE_BUCKET?: unknown;
+  MQTT_BROKER_ADMIN_URL?: string;
+  DB_DRIVER?: 'pglite' | 'supabase' | 'd1';
   PLATFORM_OWNER_EMAIL?: string;
   PLATFORM_OWNER_PASSWORD?: string;
   [key: string]: unknown;
