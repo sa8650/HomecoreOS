@@ -2,6 +2,7 @@ import type { DataClient, MqttProvider, AuthPort, ObjectStore } from '@homecoreo
 import type { Env } from '../env';
 import { hmacHex } from '../crypto';
 import { serviceRoleHeaders } from '../db/adapters';
+import { R2Client, R2ObjectStore, r2Config } from '../storage/r2';
 
 /** Per-request/per-isolate runtime assembled at startup. */
 export interface Runtime {
@@ -10,6 +11,8 @@ export interface Runtime {
   auth: AuthPort;
   mqtt: MqttProvider;
   store: ObjectStore | null;
+  r2: R2Client | null;
+  storageBackend: 'r2' | 'supabase' | 'none';
   events: EventBus;
   emit: (tenantId: string, type: string, payload?: Record<string, unknown>) => void;
   /** Raw Cloudflare bindings, kept only for diagnostics. */
@@ -109,31 +112,23 @@ export class SupabaseObjectStore implements ObjectStore {
   }
 }
 
-/** Optional native R2 binding, used only when one is present. */
-export class R2ObjectStore implements ObjectStore {
-  constructor(private bucket: any, private publicBase: string, private secret = '') {}
-  async put(key: string, data: ArrayBuffer | Uint8Array, meta: Record<string, string> = {}) {
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    await this.bucket.put(key, bytes, { customMetadata: meta });
-    return { key, size: bytes.byteLength };
-  }
-  async get(key: string): Promise<ArrayBuffer | null> {
-    const obj = await this.bucket.get(key);
-    return obj ? obj.arrayBuffer() : null;
-  }
-  async signedUrl(key: string, expiresSeconds = 3600) {
-    return signedPath(this.secret, this.publicBase, key, expiresSeconds);
-  }
-  async delete(key: string) { await this.bucket.delete(key); }
-}
-
 export function createStore(env: Env): ObjectStore | null {
   const secret = String(env.SIGNING_KEY || '');
   const publicBase = String((env as any).PUBLIC_API_BASE || '');
   const bucket = String((env as any).STORAGE_BUCKET || 'firmware');
-  if (env.FIRMWARE_BUCKET) return new R2ObjectStore(env.FIRMWARE_BUCKET, publicBase, secret);
+  const cfg = r2Config(env as Record<string, unknown>);
+  if (cfg) {
+    const client = new R2Client({ ...cfg, publicBase, signingKey: secret });
+    return new R2ObjectStore(client, publicBase, secret);
+  }
   if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
     return new SupabaseObjectStore(String(env.SUPABASE_URL), String(env.SUPABASE_SERVICE_ROLE_KEY), bucket, publicBase, secret);
   }
   return null;
+}
+
+export function storageBackend(env: Env): 'r2' | 'supabase' | 'none' {
+  if (r2Config(env as Record<string, unknown>)) return 'r2';
+  if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) return 'supabase';
+  return 'none';
 }

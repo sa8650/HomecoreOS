@@ -2075,7 +2075,7 @@ begin
   on conflict (key) do update set value=excluded.value, updated_by=excluded.updated_by, updated_at=now();
   insert into audit_logs (actor_id, actor_type, action, entity_type, entity_id, after)
   values (p_actor, 'platform_admin', 'platform.setting.update', 'setting', p_key,
-          jsonb_build_object('key',p_key,'value',case when p_key ilike '%secret%' or p_key ilike '%token%' then '***' else p_value end));
+          jsonb_build_object('key',p_key,'value',case when p_key ilike '%secret%' or p_key ilike '%token%' then to_jsonb('***'::text) else p_value end));
   return jsonb_build_object('key',p_key);
 end $$;
 create or replace function public.rpc_record_usage_snapshot(p_actor uuid, p_data jsonb)
@@ -2783,3 +2783,175 @@ revoke all on public.app_users, public.app_sessions, public.app_login_attempts,
 revoke all on all functions in schema public from public, anon, authenticated;
 grant execute on all functions in schema public to service_role;
 grant usage on schema public to service_role;
+alter table public.firmware_releases add column if not exists name text;
+alter table public.firmware_releases add column if not exists description text;
+alter table public.firmware_releases add column if not exists storage_backend text not null default 'supabase';
+alter table public.firmware_releases add column if not exists checksum_verified boolean not null default false;
+alter table public.firmware_releases add column if not exists uploaded_by uuid references public.profiles(id);
+alter table public.firmware_releases add column if not exists updated_at timestamptz not null default now();
+alter table public.firmware_releases add column if not exists archived_at timestamptz;
+alter table public.firmware_releases add column if not exists deleted_at timestamptz;
+update public.firmware_releases set name = coalesce(name, 'Firmware ' || version) where name is null;
+create index if not exists firmware_releases_live on public.firmware_releases (created_at desc) where deleted_at is null;
+drop trigger if exists firmware_releases_touch on public.firmware_releases;
+create trigger firmware_releases_touch before update on public.firmware_releases
+  for each row execute function public.tg_set_updated_at();
+create table if not exists public.firmware_storage_tests (
+  id          uuid primary key default gen_random_uuid(),
+  backend     text not null,
+  connected   boolean not null,
+  detail      text not null,
+  checked_at  timestamptz not null default now(),
+  tested_by   uuid references public.profiles(id)
+);
+create table if not exists public.app_security_events (
+  id         uuid primary key default gen_random_uuid(),
+  event_type text not null,
+  email      text,
+  user_id    uuid references public.app_users(id) on delete set null,
+  ip         text,
+  detail     text,
+  created_at timestamptz not null default now()
+);
+create index if not exists app_security_events_recent on public.app_security_events (created_at desc);
+insert into public.app_auth_config (key, value) values ('registration_enabled',1) on conflict (key) do nothing;
+alter table public.board_catalog add column if not exists is_custom boolean not null default false;
+alter table public.board_catalog add column if not exists archived_at timestamptz;
+alter table public.board_catalog add column if not exists capabilities jsonb not null default '{}'::jsonb;
+update public.board_catalog set is_custom = true where category = 'custom';
+create or replace function public.rpc_firmware_overview()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'releases', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', r.id, 'name', coalesce(r.name, 'Firmware ' || r.version), 'description', r.description,
+        'version', r.version, 'channel', r.channel, 'chip_family', r.chip_family,
+        'board_models', r.board_models, 'storage_backend', r.storage_backend,
+        'size_bytes', r.size_bytes, 'sha256', r.sha256, 'status', r.status,
+        'checksum_verified', r.checksum_verified, 'created_at', r.created_at,
+        'updated_at', r.updated_at, 'published_at', r.published_at, 'archived_at', r.archived_at,
+        'deployments', (select count(*) from public.device_firmware_history h where h.firmware_release_id = r.id),
+        'successful', (select count(*) from public.device_firmware_history h where h.firmware_release_id = r.id and h.status = 'success'),
+        'failed', (select count(*) from public.device_firmware_history h where h.firmware_release_id = r.id and h.status = 'failed'),
+        'pending', (select count(*) from public.device_firmware_history h where h.firmware_release_id = r.id and h.status in ('queued','downloading','installing','verifying')))
+        order by r.created_at desc)
+      from public.firmware_releases r where r.deleted_at is null), '[]'::jsonb),
+    'history', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', h.id, 'release_id', h.firmware_release_id, 'board_id', h.user_board_id,
+        'board_name', (select name from public.user_boards b where b.id = h.user_board_id),
+        'tenant_name', (select name from public.tenants t where t.id = h.tenant_id),
+        'from_version', h.from_version, 'to_version', h.to_version, 'status', h.status,
+        'progress', h.progress, 'error', h.error, 'started_at', h.started_at, 'finished_at', h.finished_at)
+        order by h.started_at desc)
+      from (select * from public.device_firmware_history order by started_at desc limit 200) h), '[]'::jsonb),
+    'controllers', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', b.id, 'name', b.name, 'catalog_board_id', b.catalog_board_id,
+        'chip_family', (select chip_family from public.board_catalog c where c.id = b.catalog_board_id),
+        'firmware_version', b.firmware_version, 'status', b.status,
+        'tenant_name', (select name from public.tenants t where t.id = b.tenant_id))
+        order by b.name)
+      from public.user_boards b where b.deleted_at is null), '[]'::jsonb));
+$$;
+create or replace function public.rpc_firmware_set_status(p_actor uuid, p_id uuid, p_status text)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_row public.firmware_releases%rowtype;
+begin
+  if not public.is_platform_admin_for(p_actor) then
+    raise exception 'Platform admin required' using errcode = '42501';
+  end if;
+  if p_status not in ('draft','published','archived') then
+    raise exception 'Unknown firmware status' using errcode = '22023';
+  end if;
+  select * into v_row from public.firmware_releases where id = p_id and deleted_at is null;
+  if not found then raise exception 'Firmware release not found' using errcode = 'P0002'; end if;
+  if p_status = 'published' and (v_row.sha256 is null or length(v_row.sha256) <> 64) then
+    raise exception 'A verified checksum is required before publishing' using errcode = '22023';
+  end if;
+  update public.firmware_releases set status = p_status,
+    published_at = case when p_status = 'published' then coalesce(published_at, now()) else published_at end,
+    archived_at = case when p_status = 'archived' then now() else null end,
+    updated_at = now()
+  where id = p_id;
+  insert into public.audit_logs (actor_id, actor_type, action, entity_type, entity_id, after)
+  values (p_actor, 'platform_admin', 'platform.firmware.status', 'firmware_release', p_id::text,
+          jsonb_build_object('status', p_status));
+  return jsonb_build_object('ok', true, 'status', p_status);
+end $$;
+create or replace function public.rpc_auth_security_events(p_limit integer default 50)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', e.id, 'event_type', e.event_type, 'email', e.email, 'ip', e.ip,
+    'detail', e.detail, 'created_at', e.created_at) order by e.created_at desc), '[]'::jsonb)
+  from (select * from public.app_security_events order by created_at desc limit greatest(1, least(coalesce(p_limit,50), 300))) e;
+$$;
+create or replace function public.rpc_auth_all_sessions()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', s.id, 'user_id', s.user_id, 'email', u.email,
+    'created_at', s.created_at, 'last_seen_at', s.last_seen_at, 'expires_at', s.expires_at,
+    'ip', s.ip, 'user_agent', s.user_agent) order by s.created_at desc), '[]'::jsonb)
+  from public.app_sessions s join public.app_users u on u.id = s.user_id
+  where s.revoked_at is null and s.expires_at > now();
+$$;
+create or replace function public.rpc_auth_session_revoke_any(p_session_id uuid)
+returns void language sql security definer set search_path = public as $$
+  update public.app_sessions set revoked_at = now() where id = p_session_id and revoked_at is null;
+$$;
+create or replace function public.rpc_auth_roles()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'roles', coalesce((select jsonb_agg(jsonb_build_object(
+      'key', r.key, 'description', r.description, 'rank', r.rank,
+      'accounts', (select count(*) from public.app_user_roles ur where ur.role_key = r.key),
+      'permissions', coalesce((select jsonb_agg(rp.permission_key order by rp.permission_key)
+        from public.app_role_permissions rp where rp.role_key = r.key), '[]'::jsonb))
+      order by r.rank) from public.app_roles r), '[]'::jsonb),
+    'permissions', coalesce((select jsonb_agg(jsonb_build_object('key', p.key, 'label', p.label)
+      order by p.key) from public.app_permissions p), '[]'::jsonb));
+$$;
+revoke all on public.firmware_storage_tests, public.app_security_events from anon, authenticated;
+alter table public.firmware_storage_tests enable row level security;
+alter table public.app_security_events enable row level security;
+revoke all on all functions in schema public from public, anon, authenticated;
+grant execute on all functions in schema public to service_role;
+alter table public.user_boards add column if not exists chip_family text;
+alter table public.user_boards add column if not exists mac_address text;
+alter table public.user_boards add column if not exists chip_model text;
+alter table public.user_boards add column if not exists chip_revision text;
+alter table public.user_boards add column if not exists sdk_version text;
+alter table public.device_pairing_tokens add column if not exists revoked_at timestamptz;
+create or replace function public.rpc_claim_pairing_token(
+  p_token_hash text, p_device_id text, p_client_id text, p_password_hash text,
+  p_username text, p_provider_ref jsonb default '{}'::jsonb
+) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_tok device_pairing_tokens%rowtype; v_board_id uuid; v_existing uuid;
+begin
+  select * into v_tok from device_pairing_tokens
+    where token_hash = p_token_hash for update;
+  if not found then raise exception 'Invalid pairing token' using errcode = '42501'; end if;
+  if v_tok.consumed_at is not null then raise exception 'Pairing token already used' using errcode = '42501'; end if;
+  if v_tok.revoked_at is not null then raise exception 'Pairing token was cancelled' using errcode = '42501'; end if;
+  if v_tok.expires_at < now() then raise exception 'Pairing token expired' using errcode = '42501'; end if;
+  if not exists (select 1 from tenants t where t.id = v_tok.tenant_id and t.status='active' and t.device_registration_enabled) then
+    raise exception 'Workspace cannot register devices' using errcode = '42501'; end if;
+  select id into v_existing from user_boards where device_id = p_device_id;
+  if v_existing is not null then
+    update device_pairing_tokens set attempts = attempts + 1 where id = v_tok.id;
+    raise exception 'Device is already claimed. Unclaim or reset it before transferring ownership.' using errcode = '23505';
+  end if;
+  insert into user_boards (tenant_id, catalog_board_id, custom_board, name, device_id, mqtt_client_id,
+                           status, created_by, provisioned_at)
+  values (v_tok.tenant_id, v_tok.catalog_board_id,
+          case when v_tok.catalog_board_id is null then '{}'::jsonb else null end,
+          coalesce(v_tok.board_name, 'ESP32 Controller'), p_device_id, p_client_id,
+          'provisioning', v_tok.created_by, now())
+  returning id into v_board_id;
+  insert into mqtt_credentials_metadata (tenant_id, user_board_id, username, password_hash, provider_ref, status)
+  values (v_tok.tenant_id, v_board_id, p_username, p_password_hash, coalesce(p_provider_ref,'{}'::jsonb), 'active');
+  update device_pairing_tokens set consumed_at = now(), user_board_id = v_board_id where id = v_tok.id;
+  return jsonb_build_object('board_id', v_board_id, 'tenant_id', v_tok.tenant_id);
+end $$;
+revoke all on all functions in schema public from public, anon, authenticated;
+grant execute on all functions in schema public to service_role;

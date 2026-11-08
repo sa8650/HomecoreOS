@@ -3,8 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#FFFFFF" />
-    <title>HomecoreOS — Smart Home Platform</title>
+    <meta name="theme-color" content="#F1F4F6" />
+    <meta name="description" content="HomecoreOS — manage rooms, ESP32 controllers, sensors, switches, automations and firmware from one calm smart-home console." />
+    <title>HomecoreOS — Smart Home Console</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232B7CB4'/%3E%3Cpath d='M20 44V20h8v8h8v-8h8v24h-8V32h-8v12z' fill='white'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      (function () {
+        try {
+          var p = localStorage.getItem('homecoreos_theme') || 'system';
+          var dark = p === 'dark' || (p === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        } catch (e) { document.documentElement.dataset.theme = 'light'; }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -38,6 +38,10 @@
 #define HOMECOREOS_API_BASE       "https://api.example.com"   // Cloudflare Worker URL
 #define HOMECOREOS_MQTT_PORT      8883
 #define HOMECOREOS_FW_VERSION     "1.0.0"
+#define HOMECOREOS_FIRMWARE_VERSION HOMECOREOS_FW_VERSION
+#ifndef HOMECOREOS_BOARD_REVISION
+#define HOMECOREOS_BOARD_REVISION "unspecified"
+#endif
 #define MAX_COMPONENTS        24
 #define LOCAL_RULE_MAX        12
 #define COMMAND_CACHE         8
@@ -368,6 +372,16 @@ static bool fetchConfigOverHttps() {
   http.begin(client, String(HOMECOREOS_API_BASE) + "/api/device/config");
   http.addHeader("Content-Type", "application/json");
   JsonDocument req; req["client_id"] = mqttClientId; req["password"] = mqttPass;
+  JsonObject hw = req["hardware"].to<JsonObject>();
+  hw["chip_model"] = ESP.getChipModel();
+  hw["chip_revision"] = String(ESP.getChipRevision());
+  hw["mac_address"] = WiFi.macAddress();
+  hw["sdk_version"] = ESP.getSdkVersion();
+  hw["fw_build"] = ESP.getSketchMD5();
+  hw["firmware_version"] = HOMECOREOS_FIRMWARE_VERSION;
+  hw["hardware_revision"] = HOMECOREOS_BOARD_REVISION;
+  hw["rssi"] = WiFi.RSSI();
+  hw["uptime_seconds"] = (uint32_t)(millis() / 1000);
   String body; serializeJson(req, body);
   int code = http.POST(body);
   if (code != 200) { http.end(); return false; }
@@ -411,6 +425,14 @@ static bool claimDevice(const String &token) {
   http.begin(client, String(HOMECOREOS_API_BASE) + "/api/device/claim");
   http.addHeader("Content-Type", "application/json");
   JsonDocument req; req["pairing_token"] = token;
+  JsonObject hw = req["hardware"].to<JsonObject>();
+  hw["chip_model"] = ESP.getChipModel();
+  hw["chip_revision"] = String(ESP.getChipRevision());
+  hw["mac_address"] = WiFi.macAddress();
+  hw["sdk_version"] = ESP.getSdkVersion();
+  hw["fw_build"] = ESP.getSketchMD5();
+  hw["firmware_version"] = HOMECOREOS_FIRMWARE_VERSION;
+  hw["hardware_revision"] = HOMECOREOS_BOARD_REVISION;
   String body; serializeJson(req, body);
   int code = http.POST(body);
   String resp = http.getString(); http.end();

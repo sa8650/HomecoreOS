@@ -7,7 +7,7 @@ import {
   Notice, PageHead, Progress, Skeleton, Stat, StatusBadge, Tabs, fmt, fmtBytes, timeAgo, timeFull,
   DEVICE_ICONS, SENSOR_ICONS, ROOM_ICONS,
 } from '../components';
-import { DEVICE_TYPES, SENSOR_CATEGORIES, PROVISIONING_METHODS, CHIP_FAMILIES, evaluatePin } from '@homecoreos/core';
+import { DEVICE_TYPES, SENSOR_CATEGORIES, CHIP_FAMILIES, evaluatePin } from '@homecoreos/core';
 
 function useToast() { return useAuth().toast; }
 const human = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -18,7 +18,7 @@ function ConfirmModal({ title, text, confirmLabel = 'Delete', danger = true, onC
   const { run, busy } = useAction();
   return <Modal title={title} onClose={onClose} footer={<>
     <button className="btn" onClick={onClose}>Cancel</button>
-    <button className={`btn ${danger ? 'btn-danger' : 'btn-primary'}`} disabled={busy} onClick={async () => { await run(async () => { await onConfirm(); }); onClose(); }}>{confirmLabel}</button>
+    <button className={`btn ${danger ? 'btn-danger' : 'btn-primary'}`} disabled={busy} aria-busy={busy || undefined} onClick={async () => { await run(async () => { await onConfirm(); }); onClose(); }}>{confirmLabel}</button>
   </>}><p className="muted" style={{ lineHeight: 1.6 }}>{text}</p>{children}</Modal>;
 }
 
@@ -27,84 +27,168 @@ function ConfirmModal({ title, text, confirmLabel = 'Delete', danger = true, onC
 // ============================================================================
 export function CustomerOverview() {
   const { tenant, can } = useAuth();
-  const { data, loading, refresh } = useLiveData<any>('/api/overview');
+  const { data, loading, error, refresh } = useLiveData<any>('/api/overview');
   const stats = data?.stats || {};
   const [pending, setPending] = useState<string | null>(null);
+  const [area, setArea] = useState('all');
   const toast = useToast();
+  const devices: any[] = data?.devices || [];
+  const rooms: any[] = data?.rooms || [];
+  const sensors: any[] = data?.sensors || [];
+  const boards: any[] = data?.boards || [];
+  const automations: any[] = data?.automations || [];
+  const visible = area === 'all' ? devices : devices.filter((d) => d.room_id === area || d.room_name === area);
   const toggle = async (d: any) => {
     setPending(d.id);
     try {
       const value = d.reported_state !== 'on';
       await api.post(`/api/devices/${d.id}/command`, { action: 'set_state', value });
-      toast(`${d.name}: command sent, waiting for device acknowledgement`);
+      toast(`${d.name}: command sent, waiting for the controller to confirm`);
       setTimeout(refresh, 700);
     } catch (e: any) { toast(e.message, 'error'); }
     finally { setPending(null); }
   };
   return <>
-    <PageHead title="Overview" desc={tenant?.name} actions={<>
-      <Link className="btn" to="/rooms"><Icon.pin />Manage rooms</Link>
-      {can('devices.manage') && <Link className="btn btn-primary" to="/setup"><Icon.plus />Add Controller</Link>}
-    </>} />
+    <PageHead title="Your home" eyebrow="Home console" desc={tenant?.name || 'Rooms, devices and live states'}
+      actions={<>
+        <Link className="btn" to="/rooms"><Icon.pin />Rooms & areas</Link>
+        {can('devices.manage') && <Link className="btn btn-primary" to="/setup"><Icon.plus />Add controller</Link>}
+      </>} />
+    {error && <div style={{ marginBottom: 16 }}><div className="notice danger"><Icon.fail />{error}
+      <button className="btn btn-sm" onClick={refresh}><Icon.retry />Try again</button></div></div>}
     {loading ? <Loading rows={4} /> : <>
-      <div className="grid grid-4" style={{ marginBottom: 16 }}>
-        <Stat label="Rooms" value={stats.rooms ?? 0} icon="pin" foot="Organised spaces" />
-        <Stat label="Controllers" value={stats.boards ?? 0} icon="cpu" foot={`${stats.boards_online ?? 0} online`} />
-        <Stat label="Devices" value={stats.devices ?? 0} icon="power" foot={`${stats.devices_on ?? 0} confirmed ON`} />
-        <Stat label="Sensors" value={stats.sensors ?? 0} icon="gauge" foot={`${stats.readings_24h ?? 0} readings / 24h`} />
+      <div className="grid grid-4" style={{ marginBottom: 24 }}>
+        <Stat label="Controllers online" value={`${stats.boards_online ?? 0}/${stats.boards ?? 0}`} icon="cpu"
+          foot={boards.length ? boards.filter((b) => b.status === 'online').length + ' reporting now' : 'Pair a controller to begin'} />
+        <Stat label="Devices" value={stats.devices ?? 0} icon="power" foot={`${stats.devices_on ?? 0} confirmed on`} />
+        <Stat label="Sensors" value={stats.sensors ?? 0} icon="gauge" foot={`${stats.readings_24h ?? 0} readings in 24 h`} />
+        <Stat label="Areas" value={stats.rooms ?? 0} icon="pin" foot={`${automations.filter((a) => a.enabled).length} automation rules active`} />
       </div>
-      <div className="grid grid-2" style={{ alignItems: 'start' }}>
-        <Card title="Quick control" sub="Acknowledged physical state, not button intent" actions={<Link className="btn btn-sm" to="/switches">All switches <Icon.next /></Link>}>
-          {!data?.devices?.length ? <EmptyState icon="power" title="No devices yet" text="Register a controller and add a switch to start controlling real hardware." action={<Link className="btn btn-primary btn-sm" to="/setup">Start setup</Link>} /> :
-            <div className="grid grid-2">{data.devices.slice(0, 6).map((d: any) => <DeviceCard key={d.id} d={d} onToggle={() => toggle(d)} pending={pending === d.id} compact />)}</div>}
-        </Card>
-        <div style={{ display: 'grid', gap: 14 }}>
-          <Card title="Controllers" sub="Live connection state" actions={<Link className="btn btn-sm" to="/controllers">Open <Icon.next /></Link>}>
-            {!data?.boards?.length ? <EmptyState icon="cpu" title="No controllers" text="Pair your first ESP32 to create a controller." /> :
-              <>{data.boards.slice(0, 5).map((b: any) => <div className="list-item" key={b.id}>
-                <div className="icon-box"><Icon.cpu /></div>
-                <div className="grow"><div className="title">{b.name}</div><div className="meta mono">{b.device_id}</div></div>
-                <StatusBadge status={b.status} />
-              </div>)}</>}
-          </Card>
-          <Card title="Recent activity" sub="Audit trail from this workspace">
-            {!data?.recent_activity?.length ? <EmptyState icon="activity" title="No activity yet" text="Administrative and device operations will appear here." /> :
-              data.recent_activity.slice(0, 6).map((a: any) => <div className="list-item" key={a.id}>
-                <div className="icon-box"><Icon.activity /></div>
-                <div className="grow"><div className="title">{human(a.action.replace(/\./g, ' '))}</div><div className="meta">{a.actor_email || a.actor_type}</div></div>
-                <span className="tiny">{timeAgo(a.created_at)}</span>
-              </div>)}
-          </Card>
+
+      <div className="category-title"><Icon.grid />Areas</div>
+      {!rooms.length ? <div className="card"><EmptyState icon="pin" title="No areas yet"
+        text="Areas group your devices by room so you can find and control them quickly."
+        action={<Link className="btn btn-primary btn-sm" to="/rooms"><Icon.plus />Create an area</Link>} /></div>
+        : <div className="grid grid-areas">
+          {rooms.map((r: any) => {
+            const count = devices.filter((d) => d.room_id === r.id || d.room_name === r.name).length;
+            const on = devices.filter((d) => (d.room_id === r.id || d.room_name === r.name) && d.reported_state === 'on').length;
+            const G = Icon[ROOM_ICONS[r.icon] || 'cube'];
+            return <Link to="/rooms" key={r.id} className="card area-tile">
+              <span className="area-glyph"><G /></span>
+              <span><span className="area-name">{r.name}</span><br />
+                <span className="area-meta">{count} device{count === 1 ? '' : 's'}{on ? ` · ${on} on` : ''}</span></span>
+              <span className="area-count">{count}</span>
+            </Link>;
+          })}
+        </div>}
+
+      <div className="category-title"><Icon.box />Devices</div>
+      <div className="filter-bar">
+        <div className="segmented" role="group" aria-label="Filter devices by area">
+          <button className={area === 'all' ? 'on' : ''} onClick={() => setArea('all')}>All devices</button>
+          {rooms.slice(0, 8).map((r: any) => <button key={r.id}
+            className={area === r.id || area === r.name ? 'on' : ''}
+            onClick={() => setArea(r.id)}>{r.name}</button>)}
         </div>
+        <Link className="btn btn-sm" to="/devices"><Icon.settings />Manage devices</Link>
+      </div>
+      {!visible.length ? <div className="card"><EmptyState icon="box" title="No devices in this view"
+        text="Add a switch, light or sensor to a controller and it will appear here with its real state."
+        action={<Link className="btn btn-primary btn-sm" to="/setup"><Icon.plus />Add a controller</Link>} /></div>
+        : <div className="grid grid-devices">{visible.slice(0, 12).map((d: any) =>
+          <DeviceCard key={d.id} d={d} onToggle={() => toggle(d)} pending={pending === d.id} compact />)}</div>}
+
+      <div className="grid grid-2" style={{ marginTop: 24, alignItems: 'start' }}>
+        <Card title="Controllers" sub="Live connection state" icon="cpu"
+          actions={<Link className="btn btn-sm" to="/controllers">Open <Icon.next /></Link>}>
+          {!boards.length ? <EmptyState icon="cpu" title="No controllers"
+            text="Pair your first ESP32 controller to see its connection and firmware here."
+            action={<Link className="btn btn-primary btn-sm" to="/setup">Start setup</Link>} />
+            : boards.slice(0, 6).map((b: any) => <div className="list-item" key={b.id} style={{ padding: '10px 0' }}>
+              <span className="icon-box"><Icon.cpu /></span>
+              <span className="grow"><span className="title">{b.name}</span>
+                <span className="meta">{b.firmware_version ? `Firmware ${b.firmware_version}` : b.device_id}</span></span>
+              <StatusBadge status={b.status} />
+            </div>)}
+        </Card>
+        <Card title="Sensors" sub="Latest reported values" icon="gauge"
+          actions={<Link className="btn btn-sm" to="/sensors">Open <Icon.next /></Link>}>
+          {!sensors.length ? <EmptyState icon="gauge" title="No sensors"
+            text="Temperature, humidity, motion and other readings appear after a sensor reports." />
+            : sensors.slice(0, 6).map((x: any) => {
+              const G = Icon[SENSOR_ICONS[x.category] || 'gauge'];
+              return <div className="list-item" key={x.id} style={{ padding: '10px 0' }}>
+                <span className="icon-box"><G /></span>
+                <span className="grow"><span className="title">{x.name}</span>
+                  <span className="meta">{x.room_name || 'No area'} · {timeAgo(x.last_value_at)}</span></span>
+                <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                  {x.last_value ?? '—'} <span className="tiny">{x.unit || ''}</span></span>
+              </div>;
+            })}
+        </Card>
+      </div>
+
+      <div className="grid grid-2" style={{ marginTop: 16, alignItems: 'start' }}>
+        <Card title="Automation" sub="Rules that actually run in this home" icon="zap"
+          actions={<Link className="btn btn-sm" to="/automation">Open <Icon.next /></Link>}>
+          {!automations.length ? <EmptyState icon="zap" title="No automation rules"
+            text="Create a rule to turn devices on or off from sensor conditions." />
+            : automations.slice(0, 5).map((a: any) => <div className="list-item" key={a.id} style={{ padding: '10px 0' }}>
+              <span className="icon-box"><Icon.zap /></span>
+              <span className="grow"><span className="title">{a.name}</span>
+                <span className="meta">{a.run_count || 0} runs · {a.last_run_at ? timeAgo(a.last_run_at) : 'never run'}</span></span>
+              <Badge tone={a.enabled ? 'on' : 'off'} icon={a.enabled ? 'ok' : 'block'}>{a.enabled ? 'Enabled' : 'Paused'}</Badge>
+            </div>)}
+        </Card>
+        <Card title="Recent activity" sub="Audit trail from this workspace" icon="activity"
+          actions={<Link className="btn btn-sm" to="/activity">Open <Icon.next /></Link>}>
+          {!data?.recent_activity?.length ? <EmptyState icon="activity" title="No activity yet"
+            text="Device commands and account changes will appear here." />
+            : data.recent_activity.slice(0, 6).map((a: any) => <div className="list-item" key={a.id} style={{ padding: '10px 0' }}>
+              <span className="icon-box"><Icon.activity /></span>
+              <span className="grow"><span className="title">{human(String(a.action || '').replace(/\./g, ' '))}</span>
+                <span className="meta">{a.actor_email || a.actor_type}</span></span>
+              <span className="tiny">{timeAgo(a.created_at)}</span>
+            </div>)}
+        </Card>
       </div>
     </>}
   </>;
 }
 
-function DeviceCard({ d, onToggle, pending, compact = false, readOnly = false }: { d: any; onToggle: () => void; pending?: boolean; compact?: boolean; readOnly?: boolean }) {
+function DeviceCard({ d, onToggle, pending, compact = false, readOnly = false }: {
+  d: any; onToggle: () => void; pending?: boolean; compact?: boolean; readOnly?: boolean;
+}) {
   const boardOffline = d.board_status && d.board_status !== 'online';
   const confirmed = d.reported_state === 'on';
   const requested = d.requested_state;
   const stateLabel = boardOffline ? 'Controller offline' :
     d.reported_state === 'unknown' ? 'State unknown' :
-      requested && requested !== d.reported_state ? `Requested ${String(requested).toUpperCase()} — awaiting acknowledgement` :
+      requested && requested !== d.reported_state ? `Requested ${String(requested).toUpperCase()} — awaiting confirmation` :
         `Confirmed ${String(d.reported_state).toUpperCase()}`;
   const I = Icon[DEVICE_ICONS[d.device_type] || 'power'];
-  return <div className="card device-card">
+  return <div className={`card device-card ${confirmed ? 'is-on' : ''}`}>
     <div className="device-top">
-      <div style={{ display: 'flex', gap: 10 }}><div className="device-icon"><I /></div>
-        <div><div className="device-name">{d.name}</div><div className="device-meta">{human(d.device_type)} · {d.room_name || 'No room'}</div></div></div>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <div className="device-icon"><I /></div>
+        <div><div className="device-name">{d.name}</div>
+          <div className="device-meta">{human(d.device_type)} · {d.room_name || 'No area'}</div></div>
+      </div>
       <StatusBadge status={d.reported_state} />
     </div>
     {!compact && <div className="kv" style={{ gridTemplateColumns: '100px 1fr' }}>
-      <dt>GPIO</dt><dd className="mono">{d.output_gpio ?? '—'}</dd>
+      <dt>Pin</dt><dd className="mono">{d.output_gpio ?? '—'}</dd>
       <dt>Logic</dt><dd>{d.active_low ? 'Active low' : 'Active high'}</dd>
       <dt>Interface</dt><dd>{human(d.interface || 'gpio')}</dd>
       <dt>Last update</dt><dd>{timeAgo(d.last_state_at)}</dd>
     </div>}
     <div className="device-state">
-      <div><div className="tiny">{stateLabel}</div><div className="state-line">{boardOffline ? 'Commands cannot be confirmed right now' : requested ? 'Command in flight' : 'Device-reported state'}</div></div>
-      <button className={`switch ${confirmed ? 'on' : ''}`} disabled={pending || readOnly || boardOffline} onClick={onToggle} aria-label={`Toggle ${d.name}`} aria-pressed={confirmed} />
+      <div><div className="state-label">{stateLabel}</div>
+        <div className="state-line">{boardOffline ? 'Commands cannot be confirmed right now'
+          : requested ? 'Command in flight' : 'State reported by the controller'}</div></div>
+      <button className={`switch ${confirmed ? 'on' : ''}`} disabled={pending || readOnly || boardOffline}
+        onClick={onToggle} aria-label={`Toggle ${d.name}`} aria-pressed={confirmed} />
     </div>
   </div>;
 }
@@ -138,8 +222,8 @@ export function RoomsPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div className="icon-box" style={{ width: 38, height: 38 }}><I /></div>
               <div style={{ display: 'flex', gap: 4 }}>
-                {can('rooms.manage') && <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setForm({ ...r })}><Icon.edit /></button>}
-                {can('rooms.manage') && <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setDel(r)}><Icon.trash /></button>}
+                {can('rooms.manage') &&<button className="btn btn-ghost btn-icon btn-sm" onClick={() => setForm({ ...r })} aria-label="Edit"><Icon.edit /></button>}
+                {can('rooms.manage') &&<button className="btn btn-ghost btn-icon btn-sm" onClick={() => setDel(r)} aria-label="Delete"><Icon.trash /></button>}
               </div>
             </div>
             <h3 style={{ fontSize: 15, fontWeight: 650, marginTop: 14 }}>{r.name}</h3>
@@ -254,7 +338,7 @@ function AddDeviceWizard({ onClose, onDone }: { onClose: () => void; onDone: () 
     {step > 0 && <button className="btn" onClick={() => setStep(step - 1)}><Icon.back />Back</button>}
     <button className="btn" onClick={onClose}>Cancel</button>
     {step < 2 ? <button className="btn btn-primary" disabled={step === 0 ? (!f.name || !f.user_board_id) : f.output_gpio === null} onClick={() => setStep(step + 1)}>Next <Icon.next /></button> :
-      <button className="btn btn-primary" disabled={busy} onClick={submit}>{busy ? 'Creating…' : 'Create device'}</button>}
+      <button className="btn btn-primary" disabled={busy} aria-busy={busy || undefined} onClick={submit}>{busy ? 'Creating…' : 'Create device'}</button>}
   </>}>
     <div className="stepper">{[ 'Device', 'GPIO', 'Review' ].map((s, i) => <React.Fragment key={s}><div className={`step ${i === step ? 'on' : i < step ? 'done' : ''}`}><span className="num">{i < step ? '✓' : i + 1}</span><span>{s}</span></div>{i < 2 && <span className="step-line" />}</React.Fragment>)}</div>
     {step === 0 && <>
@@ -360,8 +444,8 @@ export function DevicesPage() {
         { key: 'gpio', label: 'GPIO', render: (d: any) => <span className="mono">{d.output_gpio ?? '—'}</span> },
         { key: 'state', label: 'State', render: (d: any) => <StatusBadge status={d.reported_state} /> },
         { key: 'actions', label: '', render: (d: any) => <div className="row-actions">
-          <button className="btn btn-ghost btn-icon btn-sm" title="Communication" onClick={async () => setMsg(await api.get(`/api/messages/${d.id}`))}><Icon.link /></button>
-          {can('devices.manage') && <button className="btn btn-ghost btn-icon btn-sm" title="Delete" onClick={() => setDel(d)}><Icon.trash /></button>}
+<button className="btn btn-ghost btn-icon btn-sm" title="Communication" onClick={async () => setMsg(await api.get(`/api/messages/${d.id}`))} aria-label="Communication"><Icon.link /></button>
+          {can('devices.manage') &&<button className="btn btn-ghost btn-icon btn-sm" title="Delete" onClick={() => setDel(d)} aria-label="Delete"><Icon.trash /></button>}
         </div> },
       ]} rows={rows} empty={<EmptyState icon="box" title="No devices" text="Add a switch after pairing a controller and creating rooms." action={can('devices.manage') && <button className="btn btn-primary" onClick={() => setAdd(true)}>Add device</button>} />} />}
     </Card>
@@ -449,7 +533,7 @@ export function SensorsPage() {
           <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
             <button className="btn btn-sm" onClick={() => open(s)}><Icon.chart />History</button>
             <button className="btn btn-sm" onClick={async () => setDetail(await api.get(`/api/messages/${s.id}`))}><Icon.link />Messages</button>
-            {can('devices.manage') && <button className="btn btn-ghost btn-icon btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setDel(s)}><Icon.trash /></button>}
+            {can('devices.manage') &&<button className="btn btn-ghost btn-icon btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setDel(s)} aria-label="Delete"><Icon.trash /></button>}
           </div>
         </div>;
       })}</div>}
@@ -496,9 +580,9 @@ export function ControllersPage() {
         { key: 'fw', label: 'Firmware', render: (b: any) => b.firmware_version || '—' },
         { key: 'last', label: 'Last seen', render: (b: any) => timeAgo(b.last_seen_at) },
         { key: 'actions', label: '', render: (b: any) => <div className="row-actions">
-          <Link className="btn btn-ghost btn-icon btn-sm" title="Pin manager" to={`/boards/${b.id}`}><Icon.sliders /></Link>
-          {can('devices.configure') && <button className="btn btn-ghost btn-icon btn-sm" title="Rotate credentials" onClick={async () => { try { setRotated(await api.post(`/api/boards/${b.id}/rotate-credentials`)); toast('Credentials rotated'); } catch (e: any) { toast(e.message, 'error'); } }}><Icon.refresh /></button>}
-          {can('devices.manage') && <button className="btn btn-ghost btn-icon btn-sm" title="Unclaim" onClick={() => { setUnclaim(b); setConfirmText(''); }}><Icon.trash /></button>}
+          <Link className="btn btn-ghost btn-icon btn-sm" title="Pin manager" to={`/boards/${b.id}`} aria-label="Pin manager"><Icon.sliders /></Link>
+          {can('devices.configure') &&<button className="btn btn-ghost btn-icon btn-sm" title="Rotate credentials" onClick={async () => { try { setRotated(await api.post(`/api/boards/${b.id}/rotate-credentials`)); toast('Credentials rotated'); } catch (e: any) { toast(e.message, 'error'); } }} aria-label="Rotate credentials"><Icon.refresh /></button>}
+          {can('devices.manage') &&<button className="btn btn-ghost btn-icon btn-sm" title="Unclaim" onClick={() => { setUnclaim(b); setConfirmText(''); }} aria-label="Delete"><Icon.trash /></button>}
         </div> },
       ]} rows={data || []} empty={<EmptyState icon="cpu" title="No controllers registered" text="Pair an ESP32 with a one-time token to create your first controller." action={<Link className="btn btn-primary" to="/setup">Start setup wizard</Link>} />} />}
     </Card>
@@ -647,7 +731,7 @@ function CustomBoardForm() {
       <Field label="Header label"><input className="input" value={r.header_label} onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, header_label: e.target.value } : x))} /></Field>
       <Field label="Functions"><input className="input" value={r.functions} onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, functions: e.target.value } : x))} /></Field>
       <Field label="ADC channels"><input className="input" value={r.adc_channels} onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, adc_channels: e.target.value } : x))} /></Field>
-      <button className="btn btn-ghost btn-icon" onClick={() => setRows(rows.filter((_, j) => j !== i))}><Icon.trash /></button>
+<button className="btn btn-ghost btn-icon" onClick={() => setRows(rows.filter((_, j) => j !== i))} aria-label="Delete"><Icon.trash /></button>
     </div>)}
     <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
       <button className="btn btn-sm" onClick={() => setRows([...rows, { gpio: '', header_label: '', functions: 'gpio,pwm', adc_channels: '', input_only: false, restricted: false, boot_strapping: false }])}><Icon.plus />Add pin row</button>
@@ -710,7 +794,7 @@ export function BoardDetailPage() {
           data.buses.map((b: any) => <div className="list-item" key={b.id}><div className="icon-box"><Icon.layers /></div>
             <div className="grow"><div className="title">{b.label}</div><div className="meta mono">{b.kind.toUpperCase()} · SDA {b.sda_gpio ?? '—'} · SCL {b.scl_gpio ?? '—'} · MOSI {b.mosi_gpio ?? '—'}</div></div>
             <span className="tiny">{(data.sensors || []).filter((s: any) => s.bus_id === b.id).length} sensors</span>
-            {can('devices.manage') && <button className="btn btn-ghost btn-icon btn-sm" onClick={async () => { try { await api.del(`/api/buses/${b.id}`); toast('Bus deleted'); refresh(); } catch (e: any) { toast(e.message, 'error'); } }}><Icon.trash /></button>}
+            {can('devices.manage') &&<button className="btn btn-ghost btn-icon btn-sm" onClick={async () => { try { await api.del(`/api/buses/${b.id}`); toast('Bus deleted'); refresh(); } catch (e: any) { toast(e.message, 'error'); } }} aria-label="Delete"><Icon.trash /></button>}
           </div>)}
       </Card>}
       {tab === 'components' && <div className="grid grid-2">
@@ -770,101 +854,6 @@ function PinDetailModal({ pin, onClose }: { pin: any; onClose: () => void }) {
 }
 
 // ============================================================================
-// Device Setup Wizard
-// ============================================================================
-export function SetupWizardPage() {
-  const catalog = useLiveData<any[]>('/api/board-catalog');
-  const boards = useLiveData<any[]>('/api/boards');
-  const toast = useToast();
-  const navigate = useNavigate();
-  const [step, setStep] = useState(0);
-  const [boardId, setBoardId] = useState(new URLSearchParams(window.location.search).get('board') || '');
-  const [name, setName] = useState('');
-  const [method, setMethod] = useState('mqtt_tls');
-  const [issued, setIssued] = useState<any>(null);
-  const [status, setStatus] = useState<'idle' | 'waiting' | 'paired'>('idle');
-  const { can } = useAuth();
-  const selected = (catalog.data || []).find((b: any) => b.id === boardId);
-  const generate = async () => {
-    try {
-      const r = await api.post('/api/pairing-tokens', { catalog_board_id: boardId || null, board_name: name || selected?.model || 'ESP32 Controller' });
-      setIssued(r); setStatus('waiting'); setStep(3);
-    } catch (e: any) { toast(e.message, 'error'); }
-  };
-  // Poll board list until the newly paired controller appears.
-  React.useEffect(() => {
-    if (status !== 'waiting') return;
-    const before = new Set((boards.data || []).map((b: any) => b.id));
-    const timer = setInterval(async () => {
-      try {
-        const list: any[] = await api.get('/api/boards');
-        const fresh = list.find((b) => !before.has(b.id));
-        if (fresh) { setStatus('paired'); setStep(4); boards.refresh(); clearInterval(timer); }
-      } catch { /* keep polling */ }
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [status]);
-  return <>
-    <PageHead title="Device Setup Wizard" desc="Pair an ESP32 through a single-use token. Cloud control stays outbound — no router port forwarding." actions={<Link className="btn" to="/controllers">Controllers <Icon.next /></Link>} />
-    <div className="stepper">{['Board', 'Method', 'Token', 'Provision', 'Status'].map((s, i) => <React.Fragment key={s}><div className={`step ${i === step ? 'on' : i < step ? 'done' : ''}`}><span className="num">{i < step ? '✓' : i + 1}</span><span>{s}</span></div>{i < 4 && <span className="step-line" />}</React.Fragment>)}</div>
-    <div className="grid grid-2" style={{ alignItems: 'start' }}>
-      <Card title={step === 0 ? 'Select your controller board' : step === 1 ? 'Connection method' : step === 2 ? 'Generate pairing token' : step === 3 ? 'Provision the ESP32' : 'Connection status'}>
-        {step === 0 && <>
-          <div className="search" style={{ marginBottom: 12 }}><Icon.search /><input className="input" placeholder="Search board models" onChange={(e) => { /* filtered below */ }} id="board-search" /></div>
-          <Field label="Verified board definition" hint="Only boards with a verified header pin map can be registered"><select className="select" value={boardId} onChange={(e) => { setBoardId(e.target.value); setName(''); }}><option value="">Select a board</option>{(catalog.data || []).filter((b: any) => b.attributes?.pin_status === 'verified').map((b: any) => <option key={b.id} value={b.id}>{b.model} · {b.chip_family}</option>)}</select></Field>
-          <Field label="Board name in your home"><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Living Room Controller" /></Field>
-          {selected && <div className="kv"><dt>Revision</dt><dd>{selected.revision || '—'}</dd><dt>Exposed GPIO</dt><dd>{selected.pins.length}</dd><dt>Source</dt><dd><a className="tiny" href={selected.doc_source_url} target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>Official Espressif guide ↗</a></dd></div>}
-          <div className="divider" /><button className="btn btn-primary btn-block" disabled={!boardId || !can('devices.manage')} onClick={() => setStep(1)}>Continue <Icon.next /></button>
-        </>}
-        {step === 1 && <>
-          <Notice>Worldwide cloud control is MQTT over TLS. Bluetooth LE, SoftAP and USB serial are provisioning/recovery paths only — they do not replace the cloud connection.</Notice>
-          <div style={{ marginTop: 14 }}>{PROVISIONING_METHODS.map((m) => <label key={m.id} className="card card-pad" style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 8, cursor: 'pointer', borderColor: method === m.id ? 'var(--text)' : undefined }}>
-            <input type="radio" name="method" checked={method === m.id} onChange={() => setMethod(m.id)} style={{ marginTop: 3 }} />
-            <div><div style={{ fontWeight: 600, fontSize: 12.5 }}>{m.label} <Badge tone={m.scope === 'cloud' ? 'on' : m.scope === 'local' ? 'info' : ''}>{m.scope}</Badge></div><div className="tiny" style={{ marginTop: 3 }}>{m.detail}</div></div>
-          </label>)}</div>
-          <div className="divider" /><div style={{ display: 'flex', gap: 8 }}><button className="btn" onClick={() => setStep(0)}><Icon.back />Back</button><button className="btn btn-primary" onClick={() => setStep(2)}>Continue <Icon.next /></button></div>
-        </>}
-        {step === 2 && <>
-          <div className="kv"><dt>Board</dt><dd>{selected?.model || 'Custom / unspecified'}</dd><dt>Name</dt><dd>{name || 'ESP32 Controller'}</dd><dt>Method</dt><dd>{PROVISIONING_METHODS.find((m) => m.id === method)?.label}</dd><dt>Token lifetime</dt><dd>15 minutes, single-use</dd></div>
-          <div className="divider" /><Notice>Pairing tokens are stored as SHA-256 hashes. The plaintext token is shown once and consumed when the device claims it.</Notice>
-          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}><button className="btn" onClick={() => setStep(1)}><Icon.back />Back</button><button className="btn btn-primary" onClick={generate}>Generate token <Icon.next /></button></div>
-        </>}
-        {step === 3 && issued && <>
-          <Field label="One-time pairing token" hint="Expires after 15 minutes; cannot be reused"><div className="code" style={{ marginBottom: 8 }}>{issued.token}</div><CopyButton value={issued.token} /></Field>
-          <div className="divider" />
-          <h4 style={{ fontSize: 12.5, marginBottom: 8 }}>Finish on the device</h4>
-          <div className="code">{`${window.location.origin}/api/device/claim`}</div>
-          <p className="tiny" style={{ marginTop: 10 }}>Enter this one-time token in the HomecoreOS firmware setup. The device claims it over TLS and receives a unique MQTT username, password and client ID for this board only. Store them in NVS; they are never retrievable again.</p>
-          <div className="divider" />
-          <div className="notice"><Icon.info /><div>Cloud flow: Website → Cloudflare Pages Functions → EMQX → ESP32. The device keeps its own outbound TLS connection; no inbound ports are opened on your router.</div></div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
-            <button className="btn" onClick={() => setStep(2)}><Icon.back />Back</button>
-            <span className="tiny muted" style={{ alignSelf: 'center' }}>This page advances automatically when the device claims the token.</span>
-          </div>
-        </>}
-        {step === 4 && <>
-          <div style={{ textAlign: 'center', padding: '20px 0' }}><div className="icon-box" style={{ width: 52, height: 52, margin: '0 auto 12px', background: 'var(--state-on-bg)', color: 'var(--state-on)' }}><Icon.ok /></div>
-            <h3 style={{ fontSize: 16, fontWeight: 650 }}>Controller paired</h3><p className="muted" style={{ marginTop: 6, fontSize: 12.5 }}>The device now owns its own MQTT credentials and has received its configuration.</p></div>
-          <div className="divider" /><div style={{ display: 'flex', gap: 8 }}><Link className="btn btn-primary" to="/controllers">View controllers <Icon.next /></Link><button className="btn" onClick={() => { setStep(0); setIssued(null); setStatus('idle'); }}>Add another</button></div>
-        </>}
-      </Card>
-      <div style={{ display: 'grid', gap: 14 }}>
-        <Card title="Security model"><div className="kv">
-          <dt>Tenant topics</dt><dd className="mono">v1/tenants/{"{id}"}/devices/{"{id}"}/…</dd>
-          <dt>Publish</dt><dd>state · telemetry · availability</dd>
-          <dt>Subscribe</dt><dd>command · config</dd>
-          <dt>Identity</dt><dd>From the authenticated MQTT session</dd>
-          <dt>Shared admin creds</dt><dd>Never distributed to devices or browsers</dd>
-        </div></Card>
-        <Card title="Registered controllers" actions={<button className="btn btn-ghost btn-icon btn-sm" onClick={boards.refresh}><Icon.refresh /></button>}>
-          {!boards.data?.length ? <EmptyState icon="cpu" title="None yet" text="Pair a board to see its live status here." /> : boards.data.map((b: any) => <div className="list-item" key={b.id}><div className="icon-box"><Icon.cpu /></div><div className="grow"><div className="title">{b.name}</div><div className="meta mono">{b.device_id}</div></div><StatusBadge status={b.status} /></div>)}
-        </Card>
-      </div>
-    </div>
-  </>;
-}
-
-// ============================================================================
 // Automation builder
 // ============================================================================
 export function AutomationPage() {
@@ -883,8 +872,8 @@ export function AutomationPage() {
       <div className="grid grid-2">{data.map((a: any) => <Card key={a.id} title={a.name} sub={a.description || undefined} actions={<div style={{ display: 'flex', gap: 6 }}>
         <StatusBadge status={a.enabled ? 'active' : 'off'} />
         <button className="btn btn-sm" onClick={async () => { try { const r = await api.post(`/api/automations/${a.id}/run`); toast(`${(r.executed || []).filter((x: any) => x.executed).length} action(s) executed`); refresh(); } catch (e: any) { toast(e.message, 'error'); } }}><Icon.zap />Run</button>
-        {can('automation.manage') && <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setEdit(a)}><Icon.edit /></button>}
-        {can('automation.manage') && <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setDel(a)}><Icon.trash /></button>}
+        {can('automation.manage') &&<button className="btn btn-ghost btn-icon btn-sm" onClick={() => setEdit(a)} aria-label="Edit"><Icon.edit /></button>}
+        {can('automation.manage') &&<button className="btn btn-ghost btn-icon btn-sm" onClick={() => setDel(a)} aria-label="Delete"><Icon.trash /></button>}
       </div>}>
         <RuleSection label="WHEN" items={a.when_config.map((w: any) => `${human(w.kind)}${w.sensor_id ? ' · sensor' : ''}`)} />
         <RuleSection label="IF" items={(a.conditions || []).length ? a.conditions.map((c: any) => `${c.sensor_slug || 'any'} ${c.op || ''} ${c.value ?? ''}`) : ['Always']} />
@@ -929,14 +918,14 @@ function AutomationBuilder({ value, devices, sensors, onClose, onSaved }: any) {
       <Field label="Sensor"><select className="select" value={c.sensor_slug || ''} onChange={(e) => setAt('if', i, 'sensor_slug', e.target.value)}>{sensors.map((s: any) => <option key={s.id} value={s.slug}>{s.name}</option>)}</select></Field>
       <Field label="Operator"><select className="select" value={c.op || 'gt'} onChange={(e) => setAt('if', i, 'op', e.target.value)}>{['gt', 'gte', 'lt', 'lte', 'eq'].map((x) => <option key={x} value={x}>{x}</option>)}</select></Field>
       <Field label="Value"><input className="input" type="number" value={c.value ?? ''} onChange={(e) => setAt('if', i, 'value', Number(e.target.value))} /></Field>
-      <button className="btn btn-ghost btn-icon" style={{ marginTop: 20 }} onClick={() => set('if', f.if.filter((_: any, j: number) => j !== i))}><Icon.trash /></button></div>)}
+<button className="btn btn-ghost btn-icon" style={{ marginTop: 20 }} onClick={() => set('if', f.if.filter((_: any, j: number) => j !== i))} aria-label="Delete"><Icon.trash /></button></div>)}
     <button className="btn btn-sm" onClick={() => set('if', [...f.if, { sensor_slug: sensors[0]?.slug || '', op: 'gt', value: 25 }])}><Icon.plus />Add condition</button>
     <div className="divider" /><h4 style={{ fontSize: 13, marginBottom: 10 }}>THEN</h4>
     {f.then.map((a: any, i: number) => <div className="form-row" key={i} style={{ gridTemplateColumns: '1fr 1fr 100px auto' }}>
       <Field label="Action"><select className="select" value={a.type || 'device.set_state'} onChange={(e) => setAt('then', i, 'type', e.target.value)}>{['device.set_state', 'notification', 'automation.run'].map((x) => <option key={x} value={x}>{human(x)}</option>)}</select></Field>
       {a.type === 'device.set_state' && <><Field label="Device"><select className="select" value={a.component_id || ''} onChange={(e) => setAt('then', i, 'component_id', e.target.value)}>{devices.map((d: any) => <option key={d.id} value={d.slug}>{d.name}</option>)}</select></Field>
         <Field label="State"><select className="select" value={a.value ? 'on' : 'off'} onChange={(e) => setAt('then', i, 'value', e.target.value === 'on')}><option value="on">ON</option><option value="off">OFF</option></select></Field></>}
-      <button className="btn btn-ghost btn-icon" style={{ marginTop: 20 }} onClick={() => set('then', f.then.filter((_: any, j: number) => j !== i))}><Icon.trash /></button></div>)}
+<button className="btn btn-ghost btn-icon" style={{ marginTop: 20 }} onClick={() => set('then', f.then.filter((_: any, j: number) => j !== i))} aria-label="Delete"><Icon.trash /></button></div>)}
     <button className="btn btn-sm" onClick={() => set('then', [...f.then, { type: 'device.set_state', component_id: devices[0]?.slug || '', value: true }])}><Icon.plus />Add action</button>
   </Modal>;
 }
@@ -1055,7 +1044,7 @@ export function StaffPage() {
         { key: 'joined_at', label: 'Joined', render: (m: any) => timeAgo(m.joined_at) },
         { key: 'actions', label: '', render: (m: any) => isOwner && m.role_key !== 'owner' ? <div className="row-actions">
           <button className="btn btn-sm" onClick={() => setEdit(m)}><Icon.shield />Permissions</button>
-          <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setRevoke(m)}><Icon.trash /></button></div> : <span className="tiny">Owner</span> },
+<button className="btn btn-ghost btn-icon btn-sm" onClick={() => setRevoke(m)} aria-label="Delete"><Icon.trash /></button></div> : <span className="tiny">Owner</span> },
       ]} rows={data?.members || []} empty={<EmptyState icon="users" title="No staff yet" text="Invite people by email. They must accept with the matching account." />} />}</Card>
     <div style={{ height: 14 }} />
     <Card title="Permission categories" sub="Applied server-side on every request"><div className="grid grid-3">{(data?.permissions || []).map((p: any) => <div className="list-item" key={p.key} style={{ padding: '8px 0', border: 0 }}><div className="icon-box"><Icon.shield /></div><div className="grow"><div className="title">{p.label}</div><div className="meta mono">{p.key}</div></div></div>)}</div></Card>

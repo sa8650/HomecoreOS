@@ -8,10 +8,13 @@ export interface Env {
   EMQX_APP_SECRET?: string;
   EMQX_BROKER_HOST?: string;
   EMQX_TLS_PORT?: string;
+  R2_ACCOUNT_ID?: string;
+  R2_BUCKET?: string;
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
+  R2_ENDPOINT?: string;
   /** Derived from the service-role key at runtime. Never set by the owner. */
   SIGNING_KEY?: string;
-  /** Optional native R2 binding. Not required for deployment. */
-  FIRMWARE_BUCKET?: unknown;
   [key: string]: unknown;
 }
 

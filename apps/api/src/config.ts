@@ -12,7 +12,7 @@ import { serviceRoleHeaders } from './db/adapters';
 export interface ConfigField {
   key: string;
   label: string;
-  group: 'supabase' | 'emqx';
+  group: 'supabase' | 'emqx' | 'r2';
   required: boolean;
   sensitive: boolean;
   hint: string;
@@ -33,9 +33,17 @@ export const CONFIG_FIELDS: ConfigField[] = [
     hint: 'EMQX Cloud → Deployment Overview → MQTT connection information → broker address (host only).' },
   { key: 'EMQX_TLS_PORT', label: 'TLS port', group: 'emqx', required: false, sensitive: false,
     hint: 'Defaults to 8883. Use 8883 for EMQX Cloud Serverless.' },
+  { key: 'R2_ACCOUNT_ID', label: 'Account ID', group: 'r2', required: false, sensitive: false,
+    hint: 'Cloudflare dashboard → R2 → account ID shown on the overview page.' },
+  { key: 'R2_BUCKET', label: 'Bucket name', group: 'r2', required: false, sensitive: false,
+    hint: 'The private bucket you created for firmware binaries.' },
+  { key: 'R2_ACCESS_KEY_ID', label: 'Access key ID', group: 'r2', required: false, sensitive: true,
+    hint: 'R2 → Manage R2 API tokens → the Access Key ID of an Object Read & Write token.' },
+  { key: 'R2_SECRET_ACCESS_KEY', label: 'Secret access key', group: 'r2', required: false, sensitive: true,
+    hint: 'Shown only once when the R2 API token is created. Server-side only.' },
 ];
 
-/** Only these two are needed for the app to boot. EMQX values enable devices. */
+/** Only these two are needed for the app to boot. EMQX enables devices; R2 enables firmware. */
 export const REQUIRED_VARS = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
 
 /**
@@ -116,7 +124,7 @@ export async function testConnection(env: Env, target: 'supabase' | 'emqx'): Pro
   }
 }
 
-/** Real put → get → delete round-trip against Supabase Storage (or an R2 binding). */
+/** Real put → get → delete round-trip against the configured object store. */
 export async function testStorage(store: {
   put(k: string, d: Uint8Array): Promise<any>;
   get(k: string): Promise<ArrayBuffer | null>;
@@ -124,7 +132,7 @@ export async function testStorage(store: {
 } | null) {
   const checkedAt = new Date().toISOString();
   if (!store) return { connected: false, checkedAt, detail: 'Firmware storage is not configured.',
-    hint: 'Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, or add an optional FIRMWARE_BUCKET binding.' };
+    hint: 'Add the four R2_ encrypted secrets in Cloudflare Pages → Settings → Variables and Secrets, or check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.' };
   const key = `__setup_probe__/${Date.now()}`;
   const bytes = new Uint8Array([0x48, 0x4f, 0x4d, 0x45]);
   try {
@@ -213,9 +221,11 @@ export async function setupStatus(input: {
       status: brokerConfig ? 'ok' : 'missing', detail: brokerConfig
         ? `Devices connect to ${env.EMQX_BROKER_HOST}:${env.EMQX_TLS_PORT || '8883'} over TLS.`
         : 'EMQX_BROKER_HOST is not configured.' },
-    { id: 'firmware', label: 'Firmware storage ready', required: true, source: 'supabase',
-      status: storage.connected ? 'ok' : 'error', detail: storage.detail,
-      last_success: storage.connected ? storage.checkedAt : null },
+    { id: 'firmware', label: 'Firmware storage ready', required: true, source: 'cloudflare',
+      status: storage.connected ? 'ok' : 'error',
+      detail: `${storage.detail} Backend: ${String((env as any).R2_BUCKET ? 'private Cloudflare R2' : 'private Supabase Storage')}.`,
+      last_success: storage.connected ? storage.checkedAt : null,
+      hint: String((env as any).R2_BUCKET || '') ? '' : 'Add the four R2 encrypted secrets in Cloudflare Pages to store firmware in a private R2 bucket.' },
     { id: 'auth', label: 'Custom authentication ready', required: true, source: 'supabase',
       status: authHealth?.pgcrypto ? 'ok' : 'error',
       detail: authHealth?.pgcrypto
@@ -230,9 +240,13 @@ export async function setupStatus(input: {
       masked: configured(f.key) && f.sensitive ? '••••••••••••' : '',
     })),
     connections: { supabase, emqx },
+    storage: { backend: String((env as any).R2_BUCKET || '') ? 'r2' : 'supabase',
+      r2_configured: Boolean(String((env as any).R2_BUCKET || '').trim()),
+      connected: storage.connected, detail: storage.detail },
     notes: [
       'All settings come from Cloudflare Pages → Settings → Variables and Secrets.',
-      'No Cloudflare D1 or R2 binding is required.',
+      'No Cloudflare D1 or R2 binding is required. R2 uses encrypted server-side S3 API credentials.',
+      'R2 is reported as connected only after a real upload and download round trip succeeds.',
       'Sensitive values are encrypted Cloudflare secrets and are never shown again.',
       'The first registered account becomes the Platform Owner in a single atomic database transaction.',
     ],

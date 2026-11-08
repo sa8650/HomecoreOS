@@ -45,6 +45,13 @@ export class CustomAuth implements AuthPort {
 
   private async hashOf(token: string): Promise<string> { return sha256Hex(token); }
 
+  private async logEvent(type: string, data: { email?: string; userId?: string; ip?: string; detail?: string } = {}) {
+    await this.db.insert('app_security_events', {
+      event_type: type, email: data.email || null, user_id: data.userId || null,
+      ip: data.ip || null, detail: data.detail || null,
+    }).catch(() => {});
+  }
+
   async config(): Promise<Record<string, number>> {
     if (this.configCache && Date.now() - this.configCache.at < 15_000) return this.configCache.value;
     const value = (await this.db.rpc<any>('rpc_auth_config', {})) || {};
@@ -115,6 +122,10 @@ export class CustomAuth implements AuthPort {
   }
 
   async signup(email: string, password: string, meta: Record<string, string>, request: AuthRequest): Promise<AuthSessionTicket> {
+    const cfg = await this.config();
+    if (cfg.registration_enabled === 0) {
+      throw new AuthError(403, 'New registrations are currently closed by the platform owner');
+    }
     const normalized = String(email || '').trim().toLowerCase();
     if (!EMAIL.test(normalized)) throw new AuthError(400, 'Enter a valid email address');
     await this.passwordRules(password);
@@ -129,6 +140,8 @@ export class CustomAuth implements AuthPort {
     if (!reg?.user_id) throw new AuthError(500, 'Could not create the account');
     const recoveryCodes = await this.issueRecoveryCodes(reg.user_id);
     const session = await this.openSession(reg.user_id, request);
+    await this.logEvent('signup', { email: reg.email, userId: reg.user_id, ip: request.ip,
+      detail: reg.role === 'platform_owner' ? 'First account became Platform Owner' : 'Customer account created' });
     return { token: session.token, expiresAt: session.expiresAt, userId: reg.user_id,
       email: reg.email, role: reg.role, recoveryCodes };
   }
@@ -137,6 +150,7 @@ export class CustomAuth implements AuthPort {
     const normalized = String(email || '').trim().toLowerCase();
     const check: any = await this.guard(normalized, request.ip, 'check');
     if (check.allowed === false) {
+      await this.logEvent('login_locked', { email: normalized, ip: request.ip, detail: 'Rate limit active' });
       throw new AuthError(429, `Too many attempts. Try again in ${check.retry_after || 1} seconds`, Number(check.retry_after || 1));
     }
     let lookup: any = null;
@@ -172,10 +186,14 @@ export class CustomAuth implements AuthPort {
     }
     if (!ok) {
       const failed: any = await this.guard(normalized, request.ip, 'fail');
+      await this.logEvent('login_failed', { email: normalized, ip: request.ip,
+        detail: failed.allowed === false ? 'Account locked after repeated failures' : 'Invalid email or password' });
       if (failed.allowed === false) throw new AuthError(429, `Too many attempts. Try again in ${failed.retry_after || 1} seconds`, Number(failed.retry_after || 1));
       throw new AuthError(401, 'Invalid email or password');
     }
     await this.guard(normalized, request.ip, 'clear');
+    await this.logEvent('login', { email: lookup.email, userId: lookup.user_id, ip: request.ip,
+      detail: lookup.password_algo !== 'bcrypt-pepper' ? 'Legacy password hash upgraded' : undefined });
     const session = await this.openSession(lookup.user_id, request);
     const principal = await this.verify(session.token);
     return { token: session.token, expiresAt: session.expiresAt, userId: lookup.user_id,
@@ -200,6 +218,7 @@ export class CustomAuth implements AuthPort {
   async logout(token: string): Promise<void> {
     try { await this.db.rpc('rpc_auth_session_revoke', { p_token_hash: await this.hashOf(token) }); }
     catch { /* session already gone */ }
+    await this.logEvent('logout', { detail: 'Session closed' });
   }
 
   async changePassword(userId: string, currentPassword: string, newPassword: string, keepTokenHash: string): Promise<void> {
@@ -212,6 +231,7 @@ export class CustomAuth implements AuthPort {
       await this.db.rpc('rpc_auth_update_secret', {
         p_user_id: userId, p_hash: hash, p_keep_token_hash: keepTokenHash,
       });
+      await this.logEvent('password_changed', { userId, detail: 'Other sessions revoked' });
     } catch (e: any) { throw safeMessage(e, 'Could not change the password', 400); }
   }
 
@@ -235,6 +255,7 @@ export class CustomAuth implements AuthPort {
       throw safeMessage(e, 'Invalid or expired recovery code', 400);
     }
     await this.guard(normalized, request.ip, 'clear', 'recovery');
+    await this.logEvent('recovery_used', { email: normalized, ip: request.ip, detail: 'Password reset with a recovery code' });
   }
 
   async regenerateRecoveryCodes(userId: string): Promise<string[]> {
@@ -248,7 +269,11 @@ export class CustomAuth implements AuthPort {
       await this.db.rpc('rpc_auth_update_secret', { p_user_id: userId, p_hash: hash, p_keep_token_hash: '' });
       await this.db.select('app_users', { columns: 'id,email', eq: { id: userId }, limit: 1 })
         .then(async (rows: any[]) => {
-          if (rows[0]?.email) await this.db.rpc('rpc_auth_guard_reset_for', { p_email: String(rows[0].email) });
+          if (rows[0]?.email) {
+            await this.db.rpc('rpc_auth_guard_reset_for', { p_email: String(rows[0].email) });
+            await this.logEvent('password_reset_by_owner', { email: String(rows[0].email), userId,
+              detail: 'Administrator set a new password' });
+          }
         }).catch(() => {});
     } catch (e: any) { throw safeMessage(e, 'Could not reset the password', 400); }
   }

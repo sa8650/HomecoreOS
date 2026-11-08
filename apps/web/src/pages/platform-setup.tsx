@@ -11,15 +11,16 @@ import { Badge, Card, Icon, Loading, Notice, PageHead } from '../components';
 
 function CloudflareSteps() {
   return <Notice tone="info">
-    <div style={{ display: 'grid', gap: 7 }}>
+    <div style={{ display: 'grid', gap: 8 }}>
       <strong>One-time setup — all in web dashboards</strong>
       <div className="tiny">Cloudflare Pages → your project → <b>Settings → Variables and Secrets</b>:</div>
-      <ol style={{ margin: '4px 0 0', paddingLeft: 18, lineHeight: 1.75, fontSize: 12.5 }}>
-        <li>Add the two Supabase values and the five EMQX values listed below. Store keys and secrets as <b>Secrets</b> (encrypted), not plain text variables.</li>
+      <ol style={{ margin: '4px 0 0', paddingLeft: 18, lineHeight: 1.8, fontSize: 13 }}>
+        <li>Add the two Supabase values and the five EMQX values listed below. Store keys and secrets as <b>Secrets</b> (encrypted), never as plain text variables.</li>
+        <li>For firmware files, create a <b>private R2 bucket</b> and an R2 API token, then add the four <b>R2_…</b> encrypted secrets listed below.</li>
         <li><b>Save</b>, then open <b>Deployments → Retry deployment</b> (or push to GitHub again).</li>
         <li>In Supabase, run <code>supabase/schema.sql</code> once in the <b>SQL Editor</b>.</li>
       </ol>
-      <div className="tiny">No Cloudflare D1 database, R2 bucket or other binding is required. Firmware files go into a private Supabase Storage bucket that is created automatically.</div>
+      <div className="tiny">No Cloudflare D1 database or R2 bucket <b>binding</b> is required. R2 is reached with encrypted server-side S3 API credentials. Firmware Management reports “Verified” only after a real upload and download test passes.</div>
     </div>
   </Notice>;
 }
@@ -33,6 +34,7 @@ function StatusBadge({ status }: { status: string }) {
 function Variables({ variables }: { variables: any[] }) {
   const supabase = (variables || []).filter((v: any) => v.group === 'supabase');
   const emqx = (variables || []).filter((v: any) => v.group === 'emqx');
+  const r2 = (variables || []).filter((v: any) => v.group === 'r2');
   const group = (title: string, rows: any[]) => <div key={title} style={{ display: 'grid', gap: 8 }}>
     <div style={{ fontWeight: 650 }}>{title}</div>
     {rows.map((v: any) => <div key={v.key} style={{ display: 'grid', gridTemplateColumns: 'minmax(170px, 1fr) auto', gap: 8, alignItems: 'start', borderBottom: '1px solid var(--line, #243044)', paddingBottom: 8 }}>
@@ -46,8 +48,9 @@ function Variables({ variables }: { variables: any[] }) {
   </div>;
   return <Card title="Required configuration" sub="Values are only ever read by the server. Nothing here can be edited in the browser.">
     <div style={{ display: 'grid', gap: 18 }}>
-      {group('Supabase', supabase)}
+      {group('Supabase PostgreSQL', supabase)}
       {group('EMQX Cloud Serverless', emqx)}
+      {!!r2.length && group('Cloudflare R2 — private firmware storage', r2)}
     </div>
   </Card>;
 }
@@ -72,7 +75,7 @@ function Connections({ connections, onTest, busy }: { connections: any; onTest: 
             <div className="tiny muted">{s.last_error || s.detail || 'Run a test to check this connection.'}</div>
             {s.last_checked && <div className="tiny muted">Last checked: {new Date(s.last_checked).toLocaleString()}</div>}
           </div>
-          <button className="btn" disabled={busy !== null} onClick={() => onTest(r.id)}>
+          <button className="btn" disabled={busy !== null} aria-busy={busy !== null || undefined} onClick={() => onTest(r.id)}>
             <Icon.refresh size={14} /> {busy === r.id ? 'Testing…' : 'Test connection'}
           </button>
         </div>;
@@ -98,7 +101,7 @@ function useChecks(refresh: () => void) {
     try {
       const r = await api.post<any>('/api/owner/setup/test-bucket', {});
       setStorage(r);
-      toast(r.connected ? 'Firmware storage verified' : r.detail, r.connected ? 'ok' : 'error');
+      toast(r.connected ? 'Firmware upload and download verified' : r.detail, r.connected ? 'ok' : 'error');
     } catch (e: any) { toast(e.message || 'Test failed', 'error'); }
     finally { setBusy(null); refresh(); }
   };
@@ -109,7 +112,7 @@ export function OwnerSetup() {
   const { data, loading, error, refresh } = useLiveData<any>('/api/owner/setup');
   const checks = useChecks(refresh);
   return <>
-    <PageHead title="Initial setup" desc="Supabase for data and files, EMQX Cloud Serverless for devices."
+    <PageHead title="Initial setup" desc="Supabase for data, EMQX Cloud Serverless for devices and private Cloudflare R2 for firmware binaries."
       actions={<button className="btn" onClick={refresh}><Icon.refresh size={14} /> Refresh</button>} />
     <div style={{ display: 'grid', gap: 16 }}>
       <CloudflareSteps />
@@ -128,7 +131,7 @@ export function OwnerSetup() {
             </div>)}
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
               <button className="btn" disabled={checks.busy !== null} onClick={checks.testStorage}>
-                <Icon.drive size={14} /> {checks.busy === 'storage' ? 'Testing…' : 'Test firmware storage'}
+                <Icon.drive size={14} /> {checks.busy === 'storage' ? 'Testing…' : 'Test firmware upload & download'}
               </button>
               {checks.storage && <span className="tiny muted">{checks.storage.detail}</span>}
             </div>
@@ -149,7 +152,7 @@ export function OwnerIntegrations() {
   const { data, loading, error, refresh } = useLiveData<any>('/api/owner/integrations');
   const checks = useChecks(refresh);
   return <>
-    <PageHead title="Integrations" desc="Read-only status of the values stored as encrypted Cloudflare secrets."
+    <PageHead title="Integrations" desc="Read-only status of the values stored as encrypted Cloudflare secrets, including the R2 credentials used for firmware."
       actions={<><Link className="btn" to="/owner/setup"><Icon.check size={14} />Setup checklist</Link><Link className="btn" to="/owner/settings"><Icon.settings size={14} />Platform Settings</Link></>} />
     <div style={{ display: 'grid', gap: 16 }}>
       <CloudflareSteps />
@@ -170,11 +173,11 @@ export function PlatformSettingsLinks() {
   return <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
     <Link className="card" to="/owner/setup" style={{ padding: 16, textDecoration: 'none', color: 'inherit' }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}><Icon.check size={16} /><b>Initial setup</b></div>
-      <div className="tiny muted">Checklist, required variables and live connection tests.</div>
+      <div className="tiny muted">Checklist, encrypted secrets and live connection tests.</div>
     </Link>
     <Link className="card" to="/owner/settings/integrations" style={{ padding: 16, textDecoration: 'none', color: 'inherit' }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}><Icon.link size={16} /><b>Integrations</b></div>
-      <div className="tiny muted">Supabase and EMQX Cloud status. Set values in Cloudflare Pages.</div>
+      <div className="tiny muted">Supabase, EMQX and R2 status. Set values in Cloudflare Pages.</div>
     </Link>
   </div>;
 }

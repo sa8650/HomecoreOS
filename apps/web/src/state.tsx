@@ -84,8 +84,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   return (
     <Ctx.Provider value={value}>
       {children}
-      <div className="toast-host">
-        {toasts.map((t) => <div key={t.id} className={`toast ${t.kind === 'error' ? 'error' : ''}`}>{t.text}</div>)}
+      <div className="toast-host" aria-live="polite">
+        {toasts.map((t) => <div key={t.id} className={`toast ${t.kind === 'error' ? 'error' : ''}`}
+          role={t.kind === 'error' ? 'alert' : 'status'}>{t.text}</div>)}
       </div>
     </Ctx.Provider>
   );

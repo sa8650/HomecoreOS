@@ -6,7 +6,7 @@ import { HttpError, actor, context, ownerOnly, p, body, runtime, auditEvent,
   SESSION_COOKIE, clearSessionCookie } from './context';
 import { deviceTopics, parseTopic, topic, EMQX_QUOTAS, WARNING_THRESHOLDS } from '@homecoreos/core';
 import { SwitchCommand, TelemetryMessage, StateReport, ConfigAck, OtaProgress } from '@homecoreos/core';
-import { randomHex, randomToken, sha256Hex, verifyPassword, hmacHex } from './crypto';
+import { randomHex, randomToken, sha256Hex, verifyPassword, hmacHex, fromB64, toHex } from './crypto';
 import { testConnection, recordCheck, testStorage, setupStatus } from './config';
 
 export function createApp(rt: Runtime) {
@@ -132,7 +132,10 @@ export function createApp(rt: Runtime) {
     const boards = await rt.db.select('user_boards', { eq: { tenant_id: ctx.tenantId }, isNull: ['deleted_at'], order: { column: 'created_at', ascending: false } });
     const devices = await rt.db.select('devices', { eq: { tenant_id: ctx.tenantId }, isNull: ['deleted_at'], order: { column: 'created_at', ascending: false }, limit: 40 });
     const recent = await rt.db.select('audit_logs', { eq: { tenant_id: ctx.tenantId }, order: { column: 'created_at', ascending: false }, limit: 8 });
-    return c.json({ stats, boards, devices, recent_activity: recent });
+    const rooms = await rt.db.select('rooms', { eq: { tenant_id: ctx.tenantId }, isNull: ['archived_at'], order: { column: 'name' } });
+    const sensors = await rt.db.select('sensors', { eq: { tenant_id: ctx.tenantId }, isNull: ['deleted_at'], order: { column: 'created_at', ascending: false }, limit: 12 });
+    const automations = await rt.db.select('automations', { eq: { tenant_id: ctx.tenantId } });
+    return c.json({ stats, boards, devices, rooms, sensors, automations, recent_activity: recent });
   });
 
   app.get('/api/activity', async (c) => {
@@ -243,6 +246,7 @@ export function createApp(rt: Runtime) {
   });
   app.post('/api/boards/custom', async (c) => {
     const ctx = await context(c, 'boards.manage');
+    if (!(await featureEnabled('features.custom_boards'))) throw new HttpError(403, 'Custom boards are turned off in Platform Settings');
     const b = await body(c);
     const pins = Array.isArray(b.pins) ? b.pins : [];
     if (!pins.length) throw new HttpError(400, 'A custom board needs at least one verified GPIO row');
@@ -337,6 +341,16 @@ export function createApp(rt: Runtime) {
       p_token_hash: tokenHash, p_device_id: deviceId, p_client_id: clientId,
       p_password_hash: passwordHash, p_username: username, p_provider_ref: providerRef,
     });
+    const hw = (b && typeof b.hardware === 'object' && b.hardware) ? b.hardware : {};
+    const hardware: Record<string, unknown> = {};
+    for (const [k, max] of [['chip_family', 40], ['chip_model', 40], ['chip_revision', 20],
+      ['mac_address', 24], ['sdk_version', 60], ['fw_build', 80], ['firmware_version', 40],
+      ['hardware_revision', 40]] as [string, number][]) {
+      if (hw[k] !== undefined && hw[k] !== null && String(hw[k]).trim()) hardware[k] = String(hw[k]).trim().slice(0, max);
+    }
+    if (Object.keys(hardware).length) {
+      await rt.db.update('user_boards', { id: claimed.board_id }, hardware).catch(() => {});
+    }
     const t = deviceTopics(tenantId, deviceId);
     const config = await rt.db.select('device_configurations', { eq: { user_board_id: claimed.board_id }, order: { column: 'version', ascending: false }, limit: 1 });
     await rt.mqtt.publish({ topic: t.config, payload: config[0]?.config || { schema_version: 1, config_version: 0 }, qos: 1 });
@@ -364,6 +378,16 @@ export function createApp(rt: Runtime) {
     const password = String(b.password || '');
     const info: any = await rt.db.rpc('rpc_board_from_client', { p_client_id: clientId });
     if (!info || !(await verifyDevicePassword(rt, password, info.password_hash))) throw new HttpError(401, 'Invalid device credentials');
+    const h = (b && typeof b.hardware === 'object' && b.hardware) ? b.hardware : {};
+    const hardware: Record<string, unknown> = {};
+    for (const [k, max] of [['chip_family', 40], ['chip_model', 40], ['chip_revision', 20],
+      ['mac_address', 24], ['sdk_version', 60], ['fw_build', 80], ['firmware_version', 40],
+      ['hardware_revision', 40]] as [string, number][]) {
+      if (h[k] !== undefined && h[k] !== null && String(h[k]).trim()) hardware[k] = String(h[k]).trim().slice(0, max);
+    }
+    if (b.rssi !== undefined && Number.isFinite(Number(b.rssi))) hardware.rssi = Math.round(Number(b.rssi));
+    if (b.uptime_seconds !== undefined && Number.isFinite(Number(b.uptime_seconds))) hardware.uptime_seconds = Math.round(Number(b.uptime_seconds));
+    if (Object.keys(hardware).length) await rt.db.update('user_boards', { id: info.board_id }, hardware).catch(() => {});
     const cfg = await rt.db.select('device_configurations', { eq: { user_board_id: info.board_id }, order: { column: 'version', ascending: false }, limit: 1 });
     return c.json({ config: cfg[0]?.config || null, topics: info.topics });
   });
@@ -534,6 +558,7 @@ export function createApp(rt: Runtime) {
   });
   app.post('/api/automations', async (c) => {
     const ctx = await context(c, 'automation.manage');
+    if (!(await featureEnabled('features.automation'))) throw new HttpError(403, 'Automation is turned off in Platform Settings');
     const b = await body(c);
     const data = { ...b, when: b.when || b.when_config || [], conditions: b.if || b.conditions || [], then: b.then || b.actions || [] };
     const r = await rt.db.rpc('rpc_save_automation', { p_actor: ctx.profileId, p_tenant: ctx.tenantId, p_id: b.id || null, p_data: data });
@@ -550,6 +575,7 @@ export function createApp(rt: Runtime) {
   });
   app.post('/api/automations/:id/run', async (c) => {
     const ctx = await context(c, 'automation.manage');
+    if (!(await featureEnabled('features.automation'))) throw new HttpError(403, 'Automation is turned off in Platform Settings');
     const r: any = await rt.db.rpc('rpc_evaluate_automations', { p_tenant: ctx.tenantId, p_event: { kind: 'manual_trigger', automation_id: p(c, 'id') } });
     const executed = await executeAutomationActions(rt, ctx, r.actions || []);
     return c.json({ ...r, executed });
@@ -580,6 +606,7 @@ export function createApp(rt: Runtime) {
   });
   app.post('/api/firmware/ota', async (c) => {
     const ctx = await context(c, 'firmware.update');
+    if (!(await featureEnabled('features.ota'))) throw new HttpError(403, 'Firmware updates are turned off in Platform Settings');
     const b = await body(c);
     const releases = await rt.db.select('firmware_releases', { eq: { id: b.release_id }, limit: 1 });
     const boards = await rt.db.select('user_boards', { eq: { id: b.board_id, tenant_id: ctx.tenantId }, isNull: ['deleted_at'], limit: 1 });
@@ -646,6 +673,7 @@ export function createApp(rt: Runtime) {
   });
   app.post('/api/staff/invite', async (c) => {
     const ctx = await context(c, 'staff.manage');
+    if (!(await featureEnabled('features.staff_invites'))) throw new HttpError(403, 'Staff invitations are turned off in Platform Settings');
     const b = await body(c);
     const token = randomToken(24);
     const r = await rt.db.rpc('rpc_invite_staff', { p_actor: ctx.profileId, p_tenant: ctx.tenantId,
@@ -947,7 +975,11 @@ export function createApp(rt: Runtime) {
   app.patch('/api/owner/boards/:id', async (c) => {
     const ctx = await ownerOnly(c);
     const b = await body(c);
-    await rt.db.update('board_catalog', { id: p(c, 'id') }, Object.fromEntries(['active', 'summary', 'doc_source_url'].filter((k) => k in b).map((k) => [k, b[k]])));
+    const allowed = ['active', 'summary', 'doc_source_url', 'manufacturer', 'model', 'variant',
+      'chip_family', 'chip_variant', 'revision', 'image_url', 'pinout_url', 'capabilities'];
+    const patch = Object.fromEntries(allowed.filter((k) => k in b).map((k) => [k, b[k]]));
+    if ('model' in patch && !String(patch.model || '').trim()) throw new HttpError(400, 'A board name is required');
+    if (Object.keys(patch).length) await rt.db.update('board_catalog', { id: p(c, 'id') }, patch);
     await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin', action: 'platform.board.update', entity_type: 'board_catalog', entity_id: p(c, 'id'), after: b });
     return c.json({ ok: true });
   });
@@ -961,14 +993,35 @@ export function createApp(rt: Runtime) {
   app.post('/api/owner/settings', async (c) => {
     const ctx = await ownerOnly(c);
     const b = await body(c);
-    const allowed = /^(registration|features|security|usage|mqtt)\./;
+    // Only settings that the API genuinely reads and enforces can be changed.
+    const allowedKeys = new Set([
+      'registration.pairing_ttl_seconds', 'registration.rate_limit_per_hour',
+      'features.ota', 'features.automation', 'features.custom_boards', 'features.staff_invites',
+      'usage.warning_thresholds', 'usage.quotas',
+    ]);
     for (const [k, v] of Object.entries(b)) {
-      if (!allowed.test(k) || /secret|token|password|key/i.test(k)) {
-        throw new HttpError(400, `Credentials are set in Cloudflare Pages → Settings → Variables and Secrets, not here: ${k}`);
+      if (k === 'confirm' || k === '__confirm') continue;
+      if (!allowedKeys.has(k) || /secret|token|password|key/i.test(k)) {
+        throw new HttpError(400, `This setting is not editable here: ${k}`);
       }
+      const sensitive = /^(features|registration)\./.test(k);
+      if (sensitive && b.confirm !== true && b.__confirm !== true) {
+        throw new HttpError(400, `Confirm this change before saving ${k}`);
+      }
+      if (k === 'registration.pairing_ttl_seconds' && (!Number.isInteger(Number(v)) || Number(v) < 60 || Number(v) > 86400)) {
+        throw new HttpError(400, 'Pairing code lifetime must be between 60 and 86400 seconds');
+      }
+      if (k === 'registration.rate_limit_per_hour' && (!Number.isInteger(Number(v)) || Number(v) < 1 || Number(v) > 100)) {
+        throw new HttpError(400, 'Pairing attempts must be between 1 and 100 per hour');
+      }
+      if (k === 'usage.warning_thresholds') {
+        const arr = Array.isArray(v) ? v.map(Number) : [];
+        if (!arr.length || arr.some((n) => !Number.isFinite(n) || n < 1 || n > 100)) throw new HttpError(400, 'Warning thresholds must be numbers from 1 to 100');
+      }
+      if (/^features\./.test(k) && typeof v !== 'boolean') throw new HttpError(400, 'Feature switches must be true or false');
       await rt.db.rpc('rpc_set_platform_setting', { p_actor: ctx.profileId, p_key: k, p_value: v });
     }
-    return c.json({ saved: true, keys: Object.keys(b) });
+    return c.json({ saved: true, keys: Object.keys(b).filter((k) => k !== 'confirm' && k !== '__confirm') });
   });
   // =========================================================================
   // Platform Settings -> Setup status (owner only, read-only)
@@ -1128,6 +1181,478 @@ export function createApp(rt: Runtime) {
   app.get('/internal/health', async (c) => {
     await verifyInternal(c);
     return c.json({ ok: true, provider: rt.mqtt.id, listeners: rt.events.size });
+  });
+
+
+  // ==========================================================================
+  // Configuration helpers — every value below is actually enforced in the API
+  // ==========================================================================
+  const settingValue = async (key: string, fallback: any = null) => {
+    const rows = await rt.db.select('platform_settings', { eq: { key }, limit: 1 });
+    return rows.length ? (rows[0] as any).value : fallback;
+  };
+  const featureEnabled = async (key: string, fallback = true) => {
+    const v = await settingValue(key, fallback);
+    return v === null ? fallback : v !== false && v !== 'false' && v !== 0;
+  };
+
+  // ==========================================================================
+  // Owner Console — Firmware management over private Cloudflare R2
+  // ==========================================================================
+  const MAX_FIRMWARE_BYTES = 16 * 1024 * 1024;
+  const storageStatus = async () => {
+    const rows = await rt.db.select('firmware_storage_tests', { order: { column: 'checked_at', ascending: false }, limit: 1 });
+    const last = (rows[0] as any) || null;
+    return {
+      backend: rt.storageBackend,
+      configured: rt.storageBackend !== 'none',
+      r2_configured: rt.storageBackend === 'r2',
+      connected: last ? last.backend === rt.storageBackend && !!last.connected : false,
+      last_test: last ? { connected: !!last.connected, detail: last.detail, checked_at: last.checked_at } : null,
+      hint: rt.storageBackend === 'r2'
+        ? 'Set R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY as encrypted Cloudflare Pages secrets.'
+        : 'R2 is not configured. Firmware currently uses private Supabase Storage.',
+    };
+  };
+  app.get('/api/owner/firmware', async (c) => {
+    await ownerOnly(c);
+    const [overview, catalog, storage] = await Promise.all([
+      rt.db.rpc<any>('rpc_firmware_overview', {}),
+      rt.db.select('board_catalog', { eq: { active: true }, order: { column: 'model' } }),
+      storageStatus(),
+    ]);
+    return c.json({ ...(overview || {}), board_catalog: catalog, storage,
+      limits: { max_bytes: MAX_FIRMWARE_BYTES, allowed_extensions: ['.bin', '.elf', '.img'] } });
+  });
+  app.post('/api/owner/firmware/test-storage', async (c) => {
+    const ctx = await ownerOnly(c);
+    let result: any;
+    if (rt.r2) result = await rt.r2.roundTrip();
+    else result = await testStorage(rt.store);
+    await rt.db.insert('firmware_storage_tests', {
+      backend: rt.storageBackend, connected: !!result.ok || !!result.connected,
+      detail: String(result.detail || ''), tested_by: ctx.profileId,
+    }).catch(() => {});
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.firmware.storage.test', entity_type: 'storage', entity_id: rt.storageBackend,
+      after: { connected: !!result.ok || !!result.connected } }).catch(() => {});
+    return c.json({ connected: !!result.ok || !!result.connected, detail: result.detail,
+      checked_at: result.checkedAt || new Date().toISOString(), backend: rt.storageBackend });
+  });
+  app.post('/api/owner/firmware/upload', async (c) => {
+    const ctx = await ownerOnly(c);
+    const b = await body(c);
+    const name = String(b.name || '').trim();
+    const version = String(b.version || '').trim();
+    const description = String(b.description || '').trim() || null;
+    const filename = String(b.filename || 'firmware.bin');
+    const boardModels: string[] = Array.isArray(b.board_models) ? b.board_models.map(String) : [];
+    const channel = ['stable', 'beta', 'dev'].includes(String(b.channel)) ? String(b.channel) : 'stable';
+    if (!name || !version) throw new HttpError(400, 'A name and version are required');
+    if (!/^[A-Za-z0-9._+\- ]{1,64}$/.test(version)) throw new HttpError(400, 'Version may only contain letters, numbers, dots, dashes, plus signs and spaces');
+    if (!/\.(bin|elf|img)$/i.test(filename)) throw new HttpError(400, 'Only .bin, .elf and .img firmware files are accepted');
+    if (!b.binary_base64) throw new HttpError(400, 'Choose a firmware file to upload');
+    let bytes: Uint8Array;
+    try { bytes = fromB64(String(b.binary_base64)); }
+    catch { throw new HttpError(400, 'The uploaded file could not be decoded'); }
+    if (!bytes.byteLength) throw new HttpError(400, 'The uploaded file is empty');
+    if (bytes.byteLength > MAX_FIRMWARE_BYTES) throw new HttpError(413, `Firmware files must be ${MAX_FIRMWARE_BYTES / 1048576} MB or smaller`);
+    if (Number(b.size_bytes || bytes.byteLength) !== bytes.byteLength) throw new HttpError(400, 'Reported file size does not match the upload');
+    const digest = await sha256Hex(bytes);
+    if (b.sha256 && String(b.sha256).toLowerCase() !== digest) throw new HttpError(400, 'Checksum mismatch: the file changed during upload');
+    if (!rt.store) throw new HttpError(503, 'Firmware storage is not configured');
+    const catalog = await rt.db.select('board_catalog', { eq: { active: true } });
+    for (const id of boardModels) {
+      if (!(catalog as any[]).some((x: any) => x.id === id)) throw new HttpError(400, `Unknown board model: ${id}`);
+    }
+    const existing = await rt.db.select('firmware_releases', {
+      eq: { version, channel, chip_family: String(b.chip_family || 'esp32') }, limit: 1 });
+    if (existing.length) throw new HttpError(409, 'A release with this version and channel already exists');
+    const key = `firmware/platform/${version.replace(/[^A-Za-z0-9._-]/g, '_')}/${randomHex(6)}.bin`;
+    await rt.store.put(key, bytes);
+    const readBack = await rt.store.get(key);
+    const verified = !!readBack && (await sha256Hex(new Uint8Array(readBack))) === digest;
+    if (!verified) {
+      await rt.store.delete(key).catch(() => {});
+      throw new HttpError(502, 'Stored firmware failed the read-back checksum verification');
+    }
+    const status = String(b.status || 'draft');
+    if (!['draft', 'published'].includes(status)) throw new HttpError(400, 'Invalid release status');
+    if (status === 'published' && !boardModels.length) throw new HttpError(400, 'Select at least one compatible board before publishing');
+    const rows = await rt.db.insert('firmware_releases', {
+      tenant_id: null, channel, version, chip_family: String(b.chip_family || 'esp32'),
+      board_models: boardModels, r2_key: key, size_bytes: bytes.byteLength, sha256: digest,
+      notes: description, name, description, storage_backend: rt.storageBackend,
+      checksum_verified: true, uploaded_by: ctx.profileId, created_by: ctx.profileId,
+      status, published_at: status === 'published' ? new Date().toISOString() : null,
+    });
+    const id = (rows[0] as any)?.id || null;
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.firmware.upload', entity_type: 'firmware_release', entity_id: String(id),
+      after: { name, version, size_bytes: bytes.byteLength, sha256: digest, status } }).catch(() => {});
+    return c.json({ id, version, sha256: digest, size_bytes: bytes.byteLength,
+      checksum_verified: true, status, storage_backend: rt.storageBackend }, 201);
+  });
+  app.get('/api/owner/firmware/download/:id', async (c) => {
+    await ownerOnly(c);
+    const rows = await rt.db.select('firmware_releases', { eq: { id: p(c, 'id') }, limit: 1 });
+    if (!rows.length) throw new HttpError(404, 'Release not found');
+    const rel: any = rows[0];
+    const data = await rt.store?.get(rel.r2_key);
+    if (!data) throw new HttpError(404, 'Firmware binary not found in storage');
+    const digest = await sha256Hex(new Uint8Array(data));
+    if (digest !== rel.sha256) throw new HttpError(409, 'Stored binary failed checksum verification');
+    c.header('Content-Type', 'application/octet-stream');
+    c.header('Content-Disposition', `attachment; filename="${String(rel.version).replace(/[^A-Za-z0-9._-]/g, '_')}.bin"`);
+    c.header('X-Checksum-SHA256', digest);
+    return new Response(data, { headers: new Headers(c.res.headers) });
+  });
+  app.patch('/api/owner/firmware/:id', async (c) => {
+    const ctx = await ownerOnly(c);
+    const b = await body(c);
+    const rows = await rt.db.select('firmware_releases', { eq: { id: p(c, 'id') }, limit: 1 });
+    if (!rows.length || (rows[0] as any).deleted_at) throw new HttpError(404, 'Release not found');
+    const patch: Record<string, unknown> = {};
+    if ('name' in b) {
+      const name = String(b.name || '').trim();
+      if (!name) throw new HttpError(400, 'A name is required');
+      patch.name = name.slice(0, 120);
+    }
+    if ('description' in b) patch.description = String(b.description || '').slice(0, 2000) || null;
+    if ('version' in b) {
+      const version = String(b.version || '').trim();
+      if (!/^[A-Za-z0-9._+\- ]{1,64}$/.test(version)) throw new HttpError(400, 'Invalid version');
+      const dup = await rt.db.select('firmware_releases', { eq: { version }, limit: 5 });
+      if (dup.some((x: any) => x.id !== p(c, 'id') && !x.deleted_at)) throw new HttpError(409, 'Another release already uses this version');
+      patch.version = version;
+    }
+    if ('channel' in b) {
+      if (!['stable', 'beta', 'dev'].includes(String(b.channel))) throw new HttpError(400, 'Invalid channel');
+      patch.channel = String(b.channel);
+    }
+    if ('board_models' in b) {
+      const ids: string[] = Array.isArray(b.board_models) ? b.board_models.map(String) : [];
+      const catalog = await rt.db.select('board_catalog', { eq: { active: true } });
+      for (const id of ids) if (!(catalog as any[]).some((x: any) => x.id === id)) throw new HttpError(400, `Unknown board model: ${id}`);
+      patch.board_models = ids;
+    }
+    if ('notes' in b) patch.notes = String(b.notes || '').slice(0, 2000) || null;
+    if (!Object.keys(patch).length) throw new HttpError(400, 'Nothing to change');
+    await rt.db.update('firmware_releases', { id: p(c, 'id') }, patch);
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.firmware.update', entity_type: 'firmware_release', entity_id: p(c, 'id'),
+      after: patch }).catch(() => {});
+    return c.json({ ok: true });
+  });
+  app.post('/api/owner/firmware/:id/status', async (c) => {
+    const ctx = await ownerOnly(c);
+    const b = await body(c);
+    const status = String(b.status || '');
+    if (!['draft', 'published', 'archived'].includes(status)) throw new HttpError(400, 'Unknown status');
+    const rows = await rt.db.select('firmware_releases', { eq: { id: p(c, 'id') }, limit: 1 });
+    if (!rows.length || (rows[0] as any).deleted_at) throw new HttpError(404, 'Release not found');
+    const rel: any = rows[0];
+    if (status === 'published' && !(rel.board_models || []).length) throw new HttpError(400, 'Add compatible board models before publishing');
+    try { await rt.db.rpc('rpc_firmware_set_status', { p_actor: ctx.profileId, p_id: p(c, 'id'), p_status: status }); }
+    catch (e: any) { throw rpcError(e, 'Could not change the release status'); }
+    return c.json({ ok: true, status });
+  });
+  app.delete('/api/owner/firmware/:id', async (c) => {
+    const ctx = await ownerOnly(c);
+    const confirm = String(c.req.query('confirm') || (await body(c).catch(() => ({} as any))).confirm || '');
+    if (confirm !== 'DELETE') throw new HttpError(400, 'Type DELETE to confirm');
+    const rows = await rt.db.select('firmware_releases', { eq: { id: p(c, 'id') }, limit: 1 });
+    if (!rows.length) throw new HttpError(404, 'Release not found');
+    const rel: any = rows[0];
+    const running = await rt.db.select('device_firmware_history', {
+      eq: { firmware_release_id: rel.id }, limit: 200 });
+    if (running.some((h: any) => ['queued', 'downloading', 'installing', 'verifying'].includes(h.status))) {
+      throw new HttpError(409, 'An update is still running on a controller. Wait until it finishes.');
+    }
+    await rt.db.update('firmware_releases', { id: rel.id }, { deleted_at: new Date().toISOString() });
+    try { await rt.store?.delete(rel.r2_key); }
+    catch (e: any) {
+      await rt.db.update('firmware_releases', { id: rel.id }, { deleted_at: null });
+      throw new HttpError(502, `Safe deletion aborted: ${e?.message || 'storage delete failed'}`);
+    }
+    await rt.db.remove('firmware_releases', { id: rel.id });
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.firmware.delete', entity_type: 'firmware_release', entity_id: rel.id,
+      after: { version: rel.version, key: rel.r2_key, object_deleted: true } }).catch(() => {});
+    return c.json({ ok: true, object_deleted: true });
+  });
+  app.post('/api/owner/firmware/:id/deploy', async (c) => {
+    const ctx = await ownerOnly(c);
+    const b = await body(c);
+    const ids: string[] = Array.isArray(b.board_ids) ? b.board_ids.map(String) : [];
+    if (!ids.length) throw new HttpError(400, 'Select at least one controller');
+    if (!(await featureEnabled('features.ota'))) throw new HttpError(403, 'Firmware updates are turned off in Platform Settings');
+    const rows = await rt.db.select('firmware_releases', { eq: { id: p(c, 'id') }, limit: 1 });
+    if (!rows.length || (rows[0] as any).deleted_at) throw new HttpError(404, 'Release not found');
+    const rel: any = rows[0];
+    if (rel.status !== 'published') throw new HttpError(409, 'Publish this release before assigning it');
+    const url = rt.store ? await rt.store.signedUrl(rel.r2_key, 600) : null;
+    if (!url) throw new HttpError(503, 'Firmware storage is not configured');
+    const origin = new URL(c.req.url).origin;
+    const absolute = /^https?:\/\//.test(url) ? url : `${origin}${url.startsWith('/') ? '' : '/'}${url}`;
+    const catalog = await rt.db.select('board_catalog');
+    const results: any[] = [];
+    for (const boardId of ids) {
+      const boards = await rt.db.select('user_boards', { eq: { id: boardId }, isNull: ['deleted_at'], limit: 1 });
+      if (!boards.length) { results.push({ board_id: boardId, ok: false, reason: 'Controller not found' }); continue; }
+      const board: any = boards[0];
+      const cat: any = (catalog as any[]).find((x: any) => x.id === board.catalog_board_id);
+      const compatible = (rel.board_models || []).includes(board.catalog_board_id)
+        || (cat && (rel.board_models || []).includes(cat.chip_family));
+      if (!compatible) { results.push({ board_id: boardId, name: board.name, ok: false, reason: 'Not compatible with this release' }); continue; }
+      await rt.db.insert('device_firmware_history', {
+        tenant_id: board.tenant_id, user_board_id: board.id, firmware_release_id: rel.id,
+        from_version: board.firmware_version, to_version: rel.version, status: 'queued', progress: 0,
+        bytes_total: rel.size_bytes, initiated_by: ctx.profileId,
+      });
+      const t = deviceTopics(board.tenant_id, board.device_id);
+      await rt.mqtt.publish({ topic: t.command, payload: {
+        schema_version: 1, command_id: crypto.randomUUID(), device_id: board.device_id,
+        component_id: 'board', action: 'update_firmware', url: absolute,
+        sha256: rel.sha256, size_bytes: rel.size_bytes, version: rel.version,
+        expires_at: Math.floor(Date.now() / 1000) + 600,
+      }, qos: 1 });
+      emit(board.tenant_id, 'firmware.ota.started', { board_id: board.id, version: rel.version });
+      results.push({ board_id: boardId, name: board.name, ok: true });
+    }
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.firmware.deploy', entity_type: 'firmware_release', entity_id: rel.id,
+      after: { version: rel.version, controllers: results.filter((r) => r.ok).length } }).catch(() => {});
+    return c.json({ queued: results.filter((r) => r.ok).length, results });
+  });
+
+  // ==========================================================================
+  // Owner Console — Board library (custom definitions, validated GPIO)
+  // ==========================================================================
+  const CAPABILITY_KEYS = ['gpio', 'adc', 'pwm', 'i2c', 'spi', 'uart', 'touch', 'rtc', 'usb_jtag', 'flash', 'psram'];
+  const normalizePins = (raw: any) => {
+    if (!Array.isArray(raw)) throw new HttpError(400, 'Provide a list of GPIO rows');
+    if (!raw.length) throw new HttpError(400, 'A board needs at least one GPIO row');
+    if (raw.length > 60) throw new HttpError(400, 'A board cannot have more than 60 GPIO rows');
+    const seen = new Set<number>();
+    return raw.map((x: any) => {
+      const gpio = Number(x.gpio);
+      if (!Number.isInteger(gpio) || gpio < 0 || gpio > 48) throw new HttpError(400, `GPIO ${x.gpio} must be a whole number from 0 to 48`);
+      if (seen.has(gpio)) throw new HttpError(400, `GPIO ${gpio} is listed more than once`);
+      seen.add(gpio);
+      const functions: string[] = Array.isArray(x.functions)
+        ? x.functions.map((f: unknown) => String(f)).filter((f: string) => CAPABILITY_KEYS.includes(f)) : [];
+      const adcChannels: string[] = Array.isArray(x.adc_channels) ? x.adc_channels.map((v: unknown) => String(v)) : [];
+      const inputOnly = !!x.input_only;
+      const exposed = x.exposed !== false;
+      const restricted = !!x.restricted || !!x.boot_strapping || !!x.flash_connected || !!x.psram_connected || !exposed;
+      if (inputOnly && functions.some((f) => ['pwm', 'spi', 'uart'].includes(f))) {
+        throw new HttpError(400, `GPIO ${gpio} is input-only and cannot be assigned PWM, SPI or UART output`);
+      }
+      if (functions.includes('adc') && !adcChannels.length) {
+        throw new HttpError(400, `GPIO ${gpio} is marked ADC but has no ADC channel`);
+      }
+      if (adcChannels.length && !functions.includes('adc')) functions.push('adc');
+      return {
+        board_id: '', gpio, header_label: String(x.header_label || `GPIO${gpio}`).slice(0, 40),
+        side: x.side ? String(x.side).slice(0, 20) : null,
+        header_pin: Number.isInteger(Number(x.header_pin)) && x.header_pin !== null && x.header_pin !== '' ? Number(x.header_pin) : null,
+        functions, adc_channels: adcChannels, adc_bits: adcChannels.length ? 12 : null,
+        input_only: inputOnly, exposed,
+        boot_strapping: !!x.boot_strapping, usb_jtag: !!x.usb_jtag,
+        flash_connected: !!x.flash_connected, psram_connected: !!x.psram_connected,
+        touch_channel: x.touch_channel ? String(x.touch_channel).slice(0, 20) : null,
+        rtc_gpio: !!x.rtc_gpio, restricted,
+        restriction_note: x.restriction_note ? String(x.restriction_note).slice(0, 200)
+          : (x.boot_strapping ? 'Boot-strapping pin: state affects startup' : x.flash_connected ? 'Connected to internal flash' : x.psram_connected ? 'Connected to PSRAM' : !exposed ? 'Not broken out on this board' : null),
+        notes: x.notes ? String(x.notes).slice(0, 200) : null,
+      };
+    });
+  };
+  const boardPayload = (b: any) => Object.fromEntries([
+    'manufacturer', 'model', 'variant', 'chip_family', 'chip_variant', 'revision', 'summary',
+    'image_url', 'pinout_url', 'doc_source_url', 'capabilities', 'active',
+  ].filter((k) => k in b).map((k) => [k, b[k]]));
+  app.post('/api/owner/boards', async (c) => {
+    const ctx = await ownerOnly(c);
+    const b = await body(c);
+    const model = String(b.model || '').trim();
+    const manufacturer = String(b.manufacturer || '').trim();
+    const chipFamily = String(b.chip_family || '').trim();
+    if (!model || !manufacturer || !chipFamily) throw new HttpError(400, 'Board name, manufacturer and ESP32 variant are required');
+    const catalog = await rt.db.select('board_catalog');
+    const knownFamilies = [...new Set((catalog as any[]).map((x: any) => String(x.chip_family)).filter(Boolean))];
+    if (!knownFamilies.includes(chipFamily)) throw new HttpError(400, `Unknown ESP32 variant. Choose one already documented in the catalog: ${knownFamilies.join(', ')}`);
+    if ((catalog as any[]).some((x: any) => x.model.toLowerCase() === model.toLowerCase()
+      && String(x.manufacturer).toLowerCase() === manufacturer.toLowerCase())) {
+      throw new HttpError(409, 'A board with this name and manufacturer already exists');
+    }
+    const pins = normalizePins(b.pins);
+    const id = `owner.${randomHex(6)}`;
+    const payload: any = {
+      id, manufacturer, model, variant: b.variant || null, chip_family: chipFamily,
+      chip_variant: b.chip_variant || null, revision: b.revision || null, category: 'custom',
+      image_url: b.image_url || null, pinout_url: b.pinout_url || null,
+      doc_source_url: b.doc_source_url || null,
+      summary: b.summary ? String(b.summary).slice(0, 500) : 'Owner-supplied board. Pin information comes from the manufacturer documentation.',
+      connectivity: {}, attributes: { pin_status: 'owner_supplied', catalog_version: 1 },
+      capabilities: b.capabilities || {}, active: b.active !== false, is_custom: true,
+    };
+    await rt.db.insert('board_catalog', payload);
+    await rt.db.insert('board_catalog_versions', { board_id: id, version: 1,
+      changelog: 'Owner supplied pin map', published: false });
+    await rt.db.insert('board_catalog_pins', pins.map((x) => ({ ...x, board_id: id })));
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.board.create', entity_type: 'board_catalog', entity_id: id,
+      after: { model, manufacturer, chip_family: chipFamily, pins: pins.length } }).catch(() => {});
+    return c.json({ id, pin_count: pins.length }, 201);
+  });
+  app.get('/api/owner/boards/:id/pins', async (c) => {
+    await ownerOnly(c);
+    const rows = await rt.db.select('board_catalog_pins', { eq: { board_id: p(c, 'id') }, order: { column: 'gpio' } });
+    return c.json(rows);
+  });
+  app.put('/api/owner/boards/:id/pins', async (c) => {
+    const ctx = await ownerOnly(c);
+    const b = await body(c);
+    const rows = await rt.db.select('board_catalog', { eq: { id: p(c, 'id') }, limit: 1 });
+    if (!rows.length) throw new HttpError(404, 'Board not found');
+    if (!(rows[0] as any).is_custom && String((rows[0] as any).category) !== 'custom') {
+      throw new HttpError(409, 'Verified manufacturer pin maps are read-only. Create a custom board instead.');
+    }
+    const pins = normalizePins(b.pins);
+    await rt.db.remove('board_catalog_pins', { board_id: p(c, 'id') });
+    await rt.db.insert('board_catalog_pins', pins.map((x) => ({ ...x, board_id: p(c, 'id') })));
+    if (b.capabilities) await rt.db.update('board_catalog', { id: p(c, 'id') }, { capabilities: b.capabilities });
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.board.pins', entity_type: 'board_catalog', entity_id: p(c, 'id'),
+      after: { pin_count: pins.length } }).catch(() => {});
+    return c.json({ ok: true, pin_count: pins.length });
+  });
+  app.post('/api/owner/boards/:id/archive', async (c) => {
+    const ctx = await ownerOnly(c);
+    const rows = await rt.db.select('board_catalog', { eq: { id: p(c, 'id') }, limit: 1 });
+    if (!rows.length) throw new HttpError(404, 'Board not found');
+    const active = !(rows[0] as any).active;
+    await rt.db.update('board_catalog', { id: p(c, 'id') },
+      { active, archived_at: active ? null : new Date().toISOString() });
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: active ? 'platform.board.restore' : 'platform.board.archive',
+      entity_type: 'board_catalog', entity_id: p(c, 'id'), after: {} }).catch(() => {});
+    return c.json({ ok: true, active });
+  });
+  app.delete('/api/owner/boards/:id', async (c) => {
+    const ctx = await ownerOnly(c);
+    const confirm = String(c.req.query('confirm') || (await body(c).catch(() => ({} as any))).confirm || '');
+    if (confirm !== 'DELETE') throw new HttpError(400, 'Type DELETE to confirm');
+    const rows = await rt.db.select('board_catalog', { eq: { id: p(c, 'id') }, limit: 1 });
+    if (!rows.length) throw new HttpError(404, 'Board not found');
+    if (!(rows[0] as any).is_custom && String((rows[0] as any).category) !== 'custom') {
+      throw new HttpError(409, 'Verified manufacturer boards cannot be deleted');
+    }
+    const used = await rt.db.select('user_boards', { eq: { catalog_board_id: p(c, 'id') }, limit: 1 });
+    if (used.length) throw new HttpError(409, 'Controllers still use this board. Archive it instead.');
+    await rt.db.remove('board_catalog', { id: p(c, 'id') });
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.board.delete', entity_type: 'board_catalog', entity_id: p(c, 'id'), after: {} }).catch(() => {});
+    return c.json({ ok: true });
+  });
+  app.post('/api/board-catalog/validate-gpio', async (c) => {
+    await actor(c);
+    const b = await body(c);
+    const boardId = String(b.board_id || ''), gpio = Number(b.gpio);
+    const capability = String(b.capability || 'gpio');
+    const rows = await rt.db.select('board_catalog_pins', { eq: { board_id: boardId, gpio }, limit: 1 });
+    if (!rows.length) return c.json({ allowed: false, reason: `GPIO ${gpio} is not documented for this board` });
+    const pin: any = rows[0];
+    if (!pin.exposed) return c.json({ allowed: false, reason: `GPIO ${gpio} is not available on the header` });
+    if (pin.restricted || pin.flash_connected || pin.psram_connected) {
+      return c.json({ allowed: false, reason: pin.restriction_note || `GPIO ${gpio} is reserved by the board` });
+    }
+    if (pin.boot_strapping) return c.json({ allowed: false, reason: `GPIO ${gpio} is a boot-strapping pin` });
+    if (pin.input_only && ['pwm', 'spi', 'uart', 'output'].includes(capability)) {
+      return c.json({ allowed: false, reason: `GPIO ${gpio} is input-only` });
+    }
+    if (!['gpio', 'output'].includes(capability) && !(pin.functions || []).includes(capability)) {
+      return c.json({ allowed: false, reason: `GPIO ${gpio} does not support ${capability.toUpperCase()}` });
+    }
+    return c.json({ allowed: true, pin });
+  });
+
+  // ==========================================================================
+  // Customer Device Setup Wizard — real progress, never a simulated success
+  // ==========================================================================
+  app.get('/api/setup/progress', async (c) => {
+    const ctx = await context(c, 'devices.manage');
+    const raw = String(c.req.query('token') || '');
+    if (!raw) throw new HttpError(400, 'A pairing token is required');
+    const hash = await sha256Hex(raw);
+    const rows = await rt.db.select('device_pairing_tokens', {
+      eq: { token_hash: hash, tenant_id: ctx.tenantId }, limit: 1 });
+    if (!rows.length) throw new HttpError(404, 'Pairing token not found');
+    const t: any = rows[0];
+    const boards = t.user_board_id
+      ? await rt.db.select('user_boards', { eq: { id: t.user_board_id, tenant_id: ctx.tenantId }, limit: 1 }) : [];
+    const board: any = boards[0] || null;
+    const expired = new Date(t.expires_at).getTime() <= Date.now();
+    return c.json({
+      claimed: !!t.consumed_at || !!board,
+      expired: expired || !!t.revoked_at,
+      expires_at: t.expires_at,
+      seconds_left: Math.max(0, Math.floor((new Date(t.expires_at).getTime() - Date.now()) / 1000)),
+      board: board ? {
+        id: board.id, name: board.name, device_id: board.device_id,
+        status: board.status, firmware_version: board.firmware_version,
+        firmware_channel: board.firmware_channel, hardware_revision: board.hardware_revision,
+        chip_family: board.chip_family, chip_model: board.chip_model,
+        chip_revision: board.chip_revision, mac_address: board.mac_address,
+        sdk_version: board.sdk_version, fw_build: board.fw_build,
+        uptime_seconds: board.uptime_seconds, rssi: board.rssi,
+        catalog_board_id: board.catalog_board_id, last_seen_at: board.last_seen_at,
+      } : null,
+    });
+  });
+  app.post('/api/setup/cancel', async (c) => {
+    const ctx = await context(c, 'devices.manage');
+    const raw = String((await body(c)).token || '');
+    if (!raw) throw new HttpError(400, 'A pairing token is required');
+    const hash = await sha256Hex(raw);
+    await rt.db.update('device_pairing_tokens', { token_hash: hash, tenant_id: ctx.tenantId },
+      { revoked_at: new Date().toISOString() });
+    return c.json({ ok: true });
+  });
+
+  // ==========================================================================
+  // Owner Console — Authentication & Security (backend-enforced state)
+  // ==========================================================================
+  app.get('/api/owner/auth/security', async (c) => {
+    await ownerOnly(c);
+    const [config, health, accounts, sessions, events, roles, settings] = await Promise.all([
+      rt.auth.config(), rt.auth.health(),
+      rt.db.rpc<any>('rpc_auth_accounts', {}),
+      rt.db.rpc<any>('rpc_auth_all_sessions', {}),
+      rt.db.rpc<any>('rpc_auth_security_events', { p_limit: 100 }),
+      rt.db.rpc<any>('rpc_auth_roles', {}),
+      rt.db.select('platform_settings'),
+    ]);
+    return c.json({
+      config, health, accounts: accounts || [], sessions: sessions || [],
+      events: events || [], roles: roles || { roles: [], permissions: [] },
+      registration_control: {
+        enabled: config.registration_enabled !== 0,
+        note: 'Changing this setting takes effect on the next registration request.',
+      },
+      storage: { backend: rt.storageBackend, r2_configured: rt.storageBackend === 'r2' },
+    });
+  });
+  app.post('/api/owner/auth/sessions/:id/revoke', async (c) => {
+    const ctx = await ownerOnly(c);
+    await rt.db.rpc('rpc_auth_session_revoke_any', { p_session_id: p(c, 'id') });
+    await rt.db.insert('app_security_events', { event_type: 'session_revoked',
+      detail: `Administrator ended session ${p(c, 'id')}` }).catch(() => {});
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.auth.session.revoke', entity_type: 'session', entity_id: p(c, 'id'), after: {} }).catch(() => {});
+    return c.json({ ok: true });
   });
 
   return app;
