@@ -21,6 +21,6 @@ export function loadEnv(bindings?: Record<string, unknown>): Env {
 
 export function signingKey(env: Env): string {
   const k = String(env.SIGNING_KEY || '');
-  if (!/^[0-9a-f]{64}$/.test(k)) throw new Error('Session signing key is not available');
+  if (!/^[0-9a-f]{64}$/.test(k)) throw new Error('Server signing key is not available');
   return k;
 }

@@ -6,13 +6,11 @@ begin
 end $$;
 create or replace function public.current_profile_id()
 returns uuid language sql stable as $$
-  select nullif(nullif(current_setting('request.jwt.claims', true), '')::jsonb->>'sub','')::uuid
+  select null::uuid
 $$;
-comment on function public.current_profile_id is
-  'Reads sub claim from the PostgREST request JWT claims; returns null for anon.';
 
 create table if not exists public.profiles (
-  id            uuid primary key references auth.users(id) on delete cascade,
+  id            uuid primary key,
   email         text not null,
   full_name     text,
   avatar_url    text,
@@ -26,6 +24,7 @@ create table if not exists public.profiles (
   updated_at    timestamptz not null default now()
 );
 create unique index if not exists profiles_email_key on public.profiles (lower(email));
+drop trigger if exists profiles_touch on public.profiles;
 create trigger profiles_touch before update on public.profiles
   for each row execute function public.tg_set_updated_at();
 create table if not exists public.platform_admins (
@@ -53,6 +52,7 @@ create table if not exists public.tenants (
   updated_at                  timestamptz not null default now(),
   archived_at                 timestamptz
 );
+drop trigger if exists tenants_touch on public.tenants;
 create trigger tenants_touch before update on public.tenants
   for each row execute function public.tg_set_updated_at();
 create table if not exists public.permissions (
@@ -93,6 +93,7 @@ create table if not exists public.tenant_members (
 );
 create unique index if not exists tenant_members_unique on public.tenant_members (tenant_id, profile_id);
 create index if not exists tenant_members_profile on public.tenant_members (profile_id) where status = 'active';
+drop trigger if exists tenant_members_touch on public.tenant_members;
 create trigger tenant_members_touch before update on public.tenant_members
   for each row execute function public.tg_set_updated_at();
 create table if not exists public.member_permissions (
@@ -191,27 +192,6 @@ returns boolean language sql stable security definer set search_path = public as
       and r.scope = 'room' and r.target_id = p_room and r.allowed = false
   )
 $$;
-create or replace function public.handle_new_user()
-returns trigger language plpgsql security definer set search_path = public as $$
-declare
-  v_tenant uuid;
-  v_name text;
-  v_slug text;
-begin
-  v_name := coalesce(new.raw_user_meta_data->>'full_name', split_part(new.email, '@', 1));
-  insert into public.profiles (id, email, full_name)
-  values (new.id, new.email, v_name)
-  on conflict (id) do nothing;
-  v_slug := lower(regexp_replace(split_part(new.email, '@', 1), '[^a-zA-Z0-9]+', '-', 'g'))
-            || '-' || substr(replace(new.id::text, '-', ''), 1, 8);
-  insert into public.tenants (name, slug, owner_profile_id, timezone)
-  values (coalesce(new.raw_user_meta_data->>'home_name', v_name || '''s Home'), v_slug, new.id,
-          coalesce(new.raw_user_meta_data->>'timezone', 'UTC'))
-  returning id into v_tenant;
-  insert into public.tenant_members (tenant_id, profile_id, role_key, status, joined_at)
-  values (v_tenant, new.id, 'owner', 'active', now());
-  return new;
-end $$;
 create or replace function public.tg_guard_member_escalation()
 returns trigger language plpgsql security definer set search_path = public as $$
 declare
@@ -228,6 +208,7 @@ begin
   end if;
   return new;
 end $$;
+drop trigger if exists tenant_members_guard on public.tenant_members;
 create trigger tenant_members_guard
   before insert or update of role_key on public.tenant_members
   for each row execute function public.tg_guard_member_escalation();
@@ -251,6 +232,7 @@ create table if not exists public.board_catalog (
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );
+drop trigger if exists board_catalog_touch on public.board_catalog;
 create trigger board_catalog_touch before update on public.board_catalog
   for each row execute function public.tg_set_updated_at();
 create table if not exists public.board_catalog_versions (
@@ -318,6 +300,7 @@ create table if not exists public.user_boards (
 );
 create index if not exists user_boards_tenant on public.user_boards (tenant_id) where deleted_at is null;
 create unique index if not exists user_boards_device_id_key on public.user_boards (device_id);
+drop trigger if exists user_boards_touch on public.user_boards;
 create trigger user_boards_touch before update on public.user_boards
   for each row execute function public.tg_set_updated_at();
 create table if not exists public.device_pairing_tokens (
@@ -386,6 +369,7 @@ create table if not exists public.board_pins (
   unique (tenant_id, user_board_id, gpio)
 );
 create index if not exists board_pins_board on public.board_pins (user_board_id);
+drop trigger if exists user_boards_seed_pins on public.user_boards;
 create trigger user_boards_seed_pins
   after insert on public.user_boards
   for each row execute function public.tg_seed_board_pins();
@@ -485,6 +469,7 @@ create table if not exists public.rooms (
   unique (tenant_id, name)
 );
 create index if not exists rooms_tenant on public.rooms (tenant_id);
+drop trigger if exists rooms_touch on public.rooms;
 create trigger rooms_touch before update on public.rooms
   for each row execute function public.tg_set_updated_at();
 create table if not exists public.device_templates (
@@ -537,6 +522,7 @@ create unique index if not exists devices_tenant_slug
 create index if not exists devices_tenant on public.devices (tenant_id) where deleted_at is null;
 create index if not exists devices_board on public.devices (user_board_id) where deleted_at is null;
 create index if not exists devices_room on public.devices (room_id) where deleted_at is null;
+drop trigger if exists devices_touch on public.devices;
 create trigger devices_touch before update on public.devices
   for each row execute function public.tg_set_updated_at();
 create table if not exists public.sensors (
@@ -579,6 +565,7 @@ create unique index if not exists sensors_tenant_slug
   on public.sensors (tenant_id, slug) where deleted_at is null;
 create index if not exists sensors_tenant on public.sensors (tenant_id) where deleted_at is null;
 create index if not exists sensors_board on public.sensors (user_board_id) where deleted_at is null;
+drop trigger if exists sensors_touch on public.sensors;
 create trigger sensors_touch before update on public.sensors
   for each row execute function public.tg_set_updated_at();
 create table if not exists public.sensor_readings (
@@ -663,6 +650,7 @@ create table if not exists public.automations (
   updated_at    timestamptz not null default now()
 );
 create index if not exists automations_tenant on public.automations (tenant_id);
+drop trigger if exists automations_touch on public.automations;
 create trigger automations_touch before update on public.automations
   for each row execute function public.tg_set_updated_at();
 create table if not exists public.automation_logs (
@@ -834,74 +822,113 @@ alter table public.audit_logs              enable row level security;
 alter table public.notifications           enable row level security;
 alter table public.system_announcements    enable row level security;
 alter table public.usage_counters          enable row level security;
+drop policy if exists profiles_self on public.profiles;
 create policy profiles_self on public.profiles for select
   using (id = current_profile_id() or public.is_platform_admin());
+drop policy if exists profiles_self_update on public.profiles;
 create policy profiles_self_update on public.profiles for update
   using (id = current_profile_id()) with check (id = current_profile_id());
+drop policy if exists platform_admin_only_settings on public.platform_settings;
 create policy platform_admin_only_settings on public.platform_settings for select using (public.is_platform_admin());
+drop policy if exists platform_admin_only_admins on public.platform_admins;
 create policy platform_admin_only_admins on public.platform_admins for select using (public.is_platform_admin());
+drop policy if exists platform_admin_only_usage on public.emqx_usage_snapshots;
 create policy platform_admin_only_usage on public.emqx_usage_snapshots for select using (public.is_platform_admin());
+drop policy if exists platform_admin_only_sync on public.emqx_sync_runs;
 create policy platform_admin_only_sync on public.emqx_sync_runs for select using (public.is_platform_admin());
+drop policy if exists platform_admin_only_audit on public.audit_logs;
 create policy platform_admin_only_audit on public.audit_logs for select
   using (public.is_platform_admin() or (tenant_id is not null and public.is_tenant_member(tenant_id)));
+drop policy if exists catalog_read on public.board_catalog;
 create policy catalog_read on public.board_catalog for select using (true);
+drop policy if exists catalog_versions_read on public.board_catalog_versions;
 create policy catalog_versions_read on public.board_catalog_versions for select using (true);
+drop policy if exists catalog_pins_read on public.board_catalog_pins;
 create policy catalog_pins_read on public.board_catalog_pins for select using (true);
+drop policy if exists permissions_read on public.permissions;
 create policy permissions_read on public.permissions for select using (true);
+drop policy if exists roles_read on public.roles;
 create policy roles_read on public.roles for select using (tenant_id is null or public.is_tenant_member(tenant_id));
+drop policy if exists role_permissions_read on public.role_permissions;
 create policy role_permissions_read on public.role_permissions for select
   using (exists (select 1 from roles r where r.id = role_id and (r.tenant_id is null or public.is_tenant_member(r.tenant_id))));
+drop policy if exists announcements_read on public.system_announcements;
 create policy announcements_read on public.system_announcements for select using (true);
+drop policy if exists device_templates_read on public.device_templates;
 create policy device_templates_read on public.device_templates for select
   using (tenant_id is null or public.is_tenant_member(tenant_id));
+drop policy if exists firmware_read on public.firmware_releases;
 create policy firmware_read on public.firmware_releases for select
   using (tenant_id is null or public.is_tenant_member(tenant_id));
+drop policy if exists tenants_member on public.tenants;
 create policy tenants_member on public.tenants for select
   using (public.is_tenant_member(id) or public.is_platform_admin());
+drop policy if exists members_read on public.tenant_members;
 create policy members_read on public.tenant_members for select
   using (public.is_tenant_member(tenant_id));
+drop policy if exists member_perms_read on public.member_permissions;
 create policy member_perms_read on public.member_permissions for select
   using (public.is_tenant_member(tenant_id));
+drop policy if exists member_rules_read on public.member_access_rules;
 create policy member_rules_read on public.member_access_rules for select
   using (public.is_tenant_member(tenant_id));
+drop policy if exists invitations_read on public.staff_invitations;
 create policy invitations_read on public.staff_invitations for select
   using (public.is_tenant_member(tenant_id) and public.tenant_role(tenant_id) = 'owner');
+drop policy if exists rooms_rw on public.rooms;
 create policy rooms_rw on public.rooms for all
   using (public.is_tenant_member(tenant_id))
   with check (public.has_permission(tenant_id, 'rooms.manage') or public.tenant_role(tenant_id) = 'owner');
+drop policy if exists boards_rw on public.user_boards;
 create policy boards_rw on public.user_boards for all
   using (public.is_tenant_member(tenant_id))
   with check (public.has_permission(tenant_id, 'boards.manage') or public.tenant_role(tenant_id) = 'owner');
+drop policy if exists board_pins_rw on public.board_pins;
 create policy board_pins_rw on public.board_pins for all
   using (public.is_tenant_member(tenant_id))
   with check (public.has_permission(tenant_id, 'boards.manage') or public.tenant_role(tenant_id) = 'owner');
+drop policy if exists pairing_tokens_rw on public.device_pairing_tokens;
 create policy pairing_tokens_rw on public.device_pairing_tokens for all
   using (public.is_tenant_member(tenant_id))
   with check (public.has_permission(tenant_id, 'devices.manage') or public.tenant_role(tenant_id) = 'owner');
+drop policy if exists mqtt_creds_read on public.mqtt_credentials_metadata;
 create policy mqtt_creds_read on public.mqtt_credentials_metadata for select
   using (false);
+drop policy if exists buses_rw on public.shared_buses;
 create policy buses_rw on public.shared_buses for all
   using (public.is_tenant_member(tenant_id))
   with check (public.has_permission(tenant_id, 'devices.manage') or public.tenant_role(tenant_id) = 'owner');
+drop policy if exists allocations_rw on public.exclusive_allocations;
 create policy allocations_rw on public.exclusive_allocations for all
   using (public.is_tenant_member(tenant_id))
   with check (public.has_permission(tenant_id, 'devices.manage') or public.tenant_role(tenant_id) = 'owner');
+drop policy if exists devices_rw on public.devices;
 create policy devices_rw on public.devices for all
   using (public.is_tenant_member(tenant_id))
   with check (public.has_permission(tenant_id, 'devices.manage') or public.tenant_role(tenant_id) = 'owner');
+drop policy if exists sensors_rw on public.sensors;
 create policy sensors_rw on public.sensors for all
   using (public.is_tenant_member(tenant_id))
   with check (public.has_permission(tenant_id, 'devices.manage') or public.tenant_role(tenant_id) = 'owner');
+drop policy if exists readings_read on public.sensor_readings;
 create policy readings_read on public.sensor_readings for select using (public.is_tenant_member(tenant_id));
+drop policy if exists switch_states_read on public.switch_states;
 create policy switch_states_read on public.switch_states for select using (public.is_tenant_member(tenant_id));
+drop policy if exists device_commands_read on public.device_commands;
 create policy device_commands_read on public.device_commands for select using (public.is_tenant_member(tenant_id));
+drop policy if exists configs_read on public.device_configurations;
 create policy configs_read on public.device_configurations for select using (public.is_tenant_member(tenant_id));
+drop policy if exists automations_rw on public.automations;
 create policy automations_rw on public.automations for all
   using (public.is_tenant_member(tenant_id))
   with check (public.has_permission(tenant_id, 'automation.manage') or public.tenant_role(tenant_id) = 'owner');
+drop policy if exists automation_logs_read on public.automation_logs;
 create policy automation_logs_read on public.automation_logs for select using (public.is_tenant_member(tenant_id));
+drop policy if exists fw_history_read on public.device_firmware_history;
 create policy fw_history_read on public.device_firmware_history for select using (public.is_tenant_member(tenant_id));
+drop policy if exists notifications_read on public.notifications;
 create policy notifications_read on public.notifications for select using (public.is_tenant_member(tenant_id));
+drop policy if exists usage_counters_read on public.usage_counters;
 create policy usage_counters_read on public.usage_counters for select using (public.is_tenant_member(tenant_id));
 grant usage on schema public to anon, authenticated, service_role;
 grant select on all tables in schema public to anon, authenticated, service_role;
@@ -916,7 +943,7 @@ grant execute on function public.current_profile_id(), public.is_tenant_member(u
   public.tenant_role(uuid), public.has_permission(uuid,text), public.is_platform_admin(),
   public.can_access_room(uuid,uuid) to anon, authenticated, service_role;
 revoke execute on function public.assign_pin_exclusive(uuid,uuid,integer,text,uuid,text,uuid),
-  public.release_allocations_for_owner(text,uuid), public.handle_new_user(),
+  public.release_allocations_for_owner(text,uuid),
   public.member_id_for(uuid) from public, anon, authenticated;
 grant execute on function public.assign_pin_exclusive(uuid,uuid,integer,text,uuid,text,uuid),
   public.release_allocations_for_owner(text,uuid), public.member_id_for(uuid) to service_role;
@@ -2227,13 +2254,532 @@ begin
   return v;
 end $$;
 
+do $$ begin
+  create schema if not exists extensions;
+  execute 'create extension if not exists pgcrypto with schema extensions';
+exception when others then null; end $$;
+alter table public.profiles drop constraint if exists profiles_id_fkey;
+do $$ begin
+  if exists (select 1 from pg_namespace where nspname='auth') then
+    execute 'drop trigger if exists on_auth_user_created on auth.users';
+  end if;
+exception when others then null; end $$;
+drop function if exists public.handle_new_user();
+
+create table if not exists public.app_users (
+  id                  uuid primary key default gen_random_uuid(),
+  email               text not null unique,
+  password_hash       text not null,
+  password_algo       text not null default 'bcrypt-pepper',
+  password_updated_at timestamptz not null default now(),
+  status              text not null default 'active' check (status in ('active','suspended')),
+  failed_login_count  integer not null default 0,
+  locked_until        timestamptz,
+  last_login_at       timestamptz,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
+);
+create unique index if not exists app_users_email_lower on public.app_users (lower(email));
+create table if not exists public.app_sessions (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references public.app_users(id) on delete cascade,
+  token_hash    text not null unique,
+  created_at    timestamptz not null default now(),
+  last_seen_at  timestamptz not null default now(),
+  expires_at    timestamptz not null,
+  revoked_at    timestamptz,
+  ip            text,
+  user_agent    text
+);
+create index if not exists app_sessions_active on public.app_sessions (user_id) where revoked_at is null;
+create index if not exists app_sessions_expiry on public.app_sessions (expires_at);
+create table if not exists public.app_login_attempts (
+  scope_key         text primary key,
+  attempts          integer not null default 0,
+  window_started_at timestamptz not null default now(),
+  locked_until      timestamptz,
+  updated_at        timestamptz not null default now()
+);
+create table if not exists public.app_recovery_codes (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.app_users(id) on delete cascade,
+  code_hash  text not null unique,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  used_at    timestamptz
+);
+create index if not exists app_recovery_codes_user on public.app_recovery_codes (user_id);
+create table if not exists public.app_auth_config (
+  key        text primary key,
+  value      integer not null,
+  updated_at timestamptz not null default now()
+);
+insert into public.app_auth_config (key, value) values
+ ('login_max_attempts',5), ('login_window_seconds',900), ('login_lockout_seconds',900),
+ ('session_ttl_hours',168), ('session_idle_hours',72), ('max_sessions_per_user',10),
+ ('password_min_length',10), ('bcrypt_cost',12), ('recovery_code_count',8),
+ ('recovery_code_ttl_hours',720)
+on conflict (key) do nothing;
+create table if not exists public.app_roles (
+  key         text primary key,
+  description text not null,
+  rank        integer not null default 100
+);
+insert into public.app_roles (key, description, rank) values
+ ('platform_owner','Full platform administration',0),
+ ('platform_admin','Platform administration',10),
+ ('customer','Standard customer account',100)
+on conflict (key) do nothing;
+create table if not exists public.app_permissions (
+  key   text primary key,
+  label text not null
+);
+insert into public.app_permissions (key, label) values
+ ('owner.console','Access the Owner Console'),
+ ('owner.customers','Manage customer accounts'),
+ ('owner.settings','Manage platform settings'),
+ ('owner.security','Manage authentication security'),
+ ('account.manage','Manage own account')
+on conflict (key) do nothing;
+create table if not exists public.app_role_permissions (
+  role_key       text not null references public.app_roles(key) on delete cascade,
+  permission_key text not null references public.app_permissions(key) on delete cascade,
+  primary key (role_key, permission_key)
+);
+insert into public.app_role_permissions (role_key, permission_key)
+select r.key, p.key from public.app_roles r cross join public.app_permissions p
+where r.key in ('platform_owner','platform_admin')
+   or (r.key = 'customer' and p.key = 'account.manage')
+on conflict do nothing;
+create table if not exists public.app_user_roles (
+  user_id    uuid not null references public.app_users(id) on delete cascade,
+  role_key   text not null references public.app_roles(key),
+  granted_at timestamptz not null default now(),
+  granted_by uuid references public.app_users(id),
+  primary key (user_id, role_key)
+);
 create table if not exists public.app_user_credentials (
-  user_id uuid primary key references auth.users(id) on delete cascade,
-  email text not null unique,
-  password_hash text not null,
+  user_id uuid primary key, password_hash text not null,
   created_at timestamptz not null default now()
 );
-alter table public.app_user_credentials enable row level security;
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created after insert on auth.users
-  for each row execute function public.handle_new_user();
+insert into public.app_users (id, email, password_hash, password_algo, status, created_at)
+select p.id, lower(p.email),
+       coalesce(c.password_hash, ''),
+       case when c.password_hash is null then 'recovery-required'
+            when split_part(c.password_hash, '$', 2) ~ '^[0-9]+$'
+                 and split_part(c.password_hash, '$', 2)::integer > 100000 then 'recovery-required'
+            else 'pbkdf2-legacy' end,
+       'active', p.created_at
+from public.profiles p
+left join public.app_user_credentials c on c.user_id = p.id
+where not exists (select 1 from public.app_users a where a.id = p.id)
+on conflict (id) do nothing;
+drop table if exists public.app_user_credentials;
+insert into public.app_user_roles (user_id, role_key)
+select u.id, 'customer' from public.app_users u
+where not exists (select 1 from public.app_user_roles r where r.user_id = u.id)
+on conflict do nothing;
+do $$ declare v_id uuid; begin
+  if not exists (select 1 from public.platform_admins)
+     and not exists (select 1 from public.app_user_roles where role_key = 'platform_owner') then
+    select u.id into v_id from public.app_users u
+      join public.profiles p on p.id = u.id
+      order by u.created_at, u.id limit 1;
+    if v_id is not null then
+      delete from public.app_user_roles where user_id = v_id;
+      insert into public.app_user_roles (user_id, role_key) values (v_id, 'platform_owner');
+      insert into public.platform_admins (profile_id, level) values (v_id, 'owner') on conflict do nothing;
+    end if;
+  end if;
+end $$;
+insert into public.app_user_roles (user_id, role_key)
+select a.profile_id, 'platform_admin' from public.platform_admins a
+where exists (select 1 from public.app_users u where u.id = a.profile_id)
+on conflict do nothing;
+create or replace function public.is_platform_admin_for(p_actor uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.platform_admins a where a.profile_id = p_actor)
+      or exists (select 1 from public.app_user_roles r
+                 where r.user_id = p_actor and r.role_key in ('platform_owner','platform_admin'))
+$$;
+create or replace function public.rpc_auth_hash_secret(p_secret text)
+returns text language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_schema text; v_cost integer; v_hash text;
+begin
+  select n.nspname into v_schema from pg_proc f join pg_namespace n on n.oid = f.pronamespace
+    where f.proname = 'gen_salt' limit 1;
+  if v_schema is null then
+    raise exception 'Enable the pgcrypto extension in Supabase to use password authentication' using errcode = '42501';
+  end if;
+  select value into v_cost from public.app_auth_config where key = 'bcrypt_cost';
+  v_cost := least(greatest(coalesce(v_cost, 12), 4), 15);
+  execute format('select %I.crypt($1, %I.gen_salt(''bf'', $2))', v_schema, v_schema)
+    using p_secret, v_cost into v_hash;
+  return v_hash;
+end $$;
+create or replace function public.rpc_auth_verify_secret(p_secret text, p_hash text)
+returns boolean language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_schema text; v_ok boolean;
+begin
+  if p_secret is null or p_hash is null or p_hash = '' then return false; end if;
+  select n.nspname into v_schema from pg_proc f join pg_namespace n on n.oid = f.pronamespace
+    where f.proname = 'crypt' limit 1;
+  if v_schema is null then
+    raise exception 'Enable the pgcrypto extension in Supabase to use password authentication' using errcode = '42501';
+  end if;
+  execute format('select %I.crypt($1, $2) = $2', v_schema) using p_secret, p_hash into v_ok;
+  return coalesce(v_ok, false);
+end $$;
+create or replace function public.rpc_auth_register(p_email text, p_secret text, p_meta jsonb default '{}'::jsonb)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_id uuid; v_email text; v_name text; v_slug text; v_tenant uuid; v_role text; v_hash text;
+begin
+  perform pg_advisory_xact_lock(727814633901);
+  v_email := lower(btrim(coalesce(p_email, '')));
+  if v_email !~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' then
+    raise exception 'Enter a valid email address' using errcode = '22023';
+  end if;
+  if exists (select 1 from public.app_users where lower(email) = v_email)
+     or exists (select 1 from public.profiles where lower(email) = v_email) then
+    raise exception 'An account with this email already exists' using errcode = '23505';
+  end if;
+  if p_secret is null or length(p_secret) < 16 then
+    raise exception 'Password is required' using errcode = '22023';
+  end if;
+  v_id := gen_random_uuid();
+  v_name := coalesce(nullif(p_meta->>'full_name', ''), split_part(v_email, '@', 1));
+  v_hash := public.rpc_auth_hash_secret(p_secret);
+  insert into public.app_users (id, email, password_hash, password_algo)
+  values (v_id, v_email, v_hash, 'bcrypt-pepper');
+  insert into public.profiles (id, email, full_name, timezone)
+  values (v_id, v_email, v_name, coalesce(nullif(p_meta->>'timezone', ''), 'UTC'));
+  v_slug := lower(regexp_replace(split_part(v_email, '@', 1), '[^a-zA-Z0-9]+', '-', 'g'))
+            || '-' || substr(replace(v_id::text, '-', ''), 1, 8);
+  insert into public.tenants (name, slug, owner_profile_id, timezone)
+  values (coalesce(nullif(p_meta->>'home_name', ''), v_name || '''s Home'), v_slug, v_id,
+          coalesce(nullif(p_meta->>'timezone', ''), 'UTC'))
+  returning id into v_tenant;
+  insert into public.tenant_members (tenant_id, profile_id, role_key, status, joined_at)
+  values (v_tenant, v_id, 'owner', 'active', now());
+  if not exists (select 1 from public.platform_admins)
+     and not exists (select 1 from public.app_user_roles where role_key = 'platform_owner') then
+    v_role := 'platform_owner';
+    insert into public.app_user_roles (user_id, role_key) values (v_id, 'platform_owner');
+    insert into public.platform_admins (profile_id, level) values (v_id, 'owner');
+  else
+    v_role := 'customer';
+    insert into public.app_user_roles (user_id, role_key) values (v_id, 'customer');
+  end if;
+  return jsonb_build_object('user_id', v_id, 'email', v_email, 'role', v_role, 'tenant_id', v_tenant);
+end $$;
+create or replace function public.rpc_auth_lookup(p_email text)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare v_u public.app_users%rowtype;
+begin
+  select * into v_u from public.app_users
+    where lower(email) = lower(btrim(coalesce(p_email, ''))) limit 1;
+  if not found then return null; end if;
+  return jsonb_build_object('user_id', v_u.id, 'email', v_u.email,
+    'password_hash', v_u.password_hash, 'password_algo', v_u.password_algo,
+    'status', v_u.status, 'locked_until', v_u.locked_until);
+end $$;
+create or replace function public.rpc_auth_guard(p_email text, p_ip text, p_action text, p_scope text default 'login')
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_now timestamptz := now();
+  v_max integer; v_window integer; v_lockout integer;
+  v_keys text[]; v_k text; v_locked timestamptz; v_blocked boolean := false;
+  v_retry integer := 0; v_count integer; v_first timestamptz; v_new_lock timestamptz;
+begin
+  select value into v_max from public.app_auth_config where key = 'login_max_attempts';
+  select value into v_window from public.app_auth_config where key = 'login_window_seconds';
+  select value into v_lockout from public.app_auth_config where key = 'login_lockout_seconds';
+  v_max := greatest(coalesce(v_max, 5), 1);
+  v_window := greatest(coalesce(v_window, 900), 1);
+  v_lockout := greatest(coalesce(v_lockout, 900), 1);
+  v_keys := array[coalesce(p_scope, 'login') || ':e:' || lower(btrim(coalesce(p_email, ''))),
+                  coalesce(p_scope, 'login') || ':i:' || coalesce(nullif(btrim(coalesce(p_ip, '')), ''), 'unknown')];
+  if p_action = 'clear' then
+    delete from public.app_login_attempts where scope_key = any(v_keys);
+    return jsonb_build_object('allowed', true, 'retry_after', 0);
+  end if;
+  foreach v_k in array v_keys loop
+    select locked_until into v_locked from public.app_login_attempts where scope_key = v_k;
+    if found and v_locked is not null and v_locked > v_now then
+      v_blocked := true;
+      v_retry := greatest(v_retry, ceil(extract(epoch from (v_locked - v_now)))::integer);
+    end if;
+  end loop;
+  if v_blocked or p_action = 'check' then
+    return jsonb_build_object('allowed', not v_blocked, 'retry_after', v_retry, 'locked', v_blocked);
+  end if;
+  foreach v_k in array v_keys loop
+    select attempts, window_started_at into v_count, v_first
+      from public.app_login_attempts where scope_key = v_k;
+    if not found or v_first < v_now - (v_window || ' seconds')::interval then
+      v_count := 1; v_first := v_now;
+    else
+      v_count := v_count + 1;
+    end if;
+    v_new_lock := case when v_count >= v_max
+      then v_now + (v_lockout || ' seconds')::interval else null end;
+    insert into public.app_login_attempts (scope_key, attempts, window_started_at, locked_until, updated_at)
+    values (v_k, v_count, v_first, v_new_lock, v_now)
+    on conflict (scope_key) do update set
+      attempts = excluded.attempts, window_started_at = excluded.window_started_at,
+      locked_until = excluded.locked_until, updated_at = excluded.updated_at;
+    if v_new_lock is not null then
+      v_blocked := true; v_retry := greatest(v_retry, v_lockout);
+    end if;
+  end loop;
+  return jsonb_build_object('allowed', not v_blocked, 'retry_after', v_retry, 'locked', v_blocked);
+end $$;
+create or replace function public.rpc_auth_session_create(p_user_id uuid, p_token_hash text, p_ip text, p_user_agent text)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_ttl integer; v_max integer; v_expires timestamptz; v_id uuid;
+begin
+  select value into v_ttl from public.app_auth_config where key = 'session_ttl_hours';
+  select value into v_max from public.app_auth_config where key = 'max_sessions_per_user';
+  v_ttl := greatest(coalesce(v_ttl, 168), 1);
+  v_max := greatest(coalesce(v_max, 10), 1);
+  v_expires := now() + (v_ttl || ' hours')::interval;
+  delete from public.app_sessions where user_id = p_user_id
+    and (expires_at <= now() or revoked_at is not null);
+  insert into public.app_sessions (user_id, token_hash, expires_at, ip, user_agent)
+  values (p_user_id, p_token_hash, v_expires,
+          left(coalesce(p_ip, ''), 64), left(coalesce(p_user_agent, ''), 200))
+  returning id into v_id;
+  delete from public.app_sessions where user_id = p_user_id and id in (
+    select id from public.app_sessions where user_id = p_user_id and revoked_at is null
+    order by created_at desc offset v_max
+  );
+  update public.app_users set last_login_at = now(), failed_login_count = 0,
+    locked_until = null, updated_at = now() where id = p_user_id;
+  return jsonb_build_object('session_id', v_id, 'expires_at', v_expires);
+end $$;
+create or replace function public.rpc_auth_session_resolve(p_token_hash text)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_s public.app_sessions%rowtype; v_u public.app_users%rowtype;
+  v_idle integer; v_role text; v_perms jsonb; v_admin boolean;
+begin
+  select * into v_s from public.app_sessions
+    where token_hash = p_token_hash and revoked_at is null;
+  if not found then return null; end if;
+  select value into v_idle from public.app_auth_config where key = 'session_idle_hours';
+  v_idle := greatest(coalesce(v_idle, 72), 1);
+  if v_s.expires_at <= now() or v_s.last_seen_at < now() - (v_idle || ' hours')::interval then
+    update public.app_sessions set revoked_at = now() where id = v_s.id;
+    return null;
+  end if;
+  select * into v_u from public.app_users where id = v_s.user_id;
+  if not found or v_u.status <> 'active' then
+    update public.app_sessions set revoked_at = now() where id = v_s.id;
+    return null;
+  end if;
+  update public.app_sessions set last_seen_at = now() where id = v_s.id;
+  select coalesce((select role_key from public.app_user_roles where user_id = v_u.id
+    order by case when role_key = 'platform_owner' then 0 when role_key = 'platform_admin' then 1 else 2 end
+    limit 1), 'customer') into v_role;
+  select coalesce(jsonb_agg(distinct rp.permission_key), '[]'::jsonb) into v_perms
+    from public.app_user_roles ur
+    join public.app_role_permissions rp on rp.role_key = ur.role_key
+    where ur.user_id = v_u.id;
+  v_admin := v_role in ('platform_owner','platform_admin') or public.is_platform_admin_for(v_u.id);
+  return jsonb_build_object('user_id', v_u.id, 'email', v_u.email,
+    'session_id', v_s.id, 'expires_at', v_s.expires_at,
+    'role', v_role, 'permissions', v_perms, 'platform_admin', v_admin);
+end $$;
+create or replace function public.rpc_auth_session_revoke(p_token_hash text)
+returns void language sql security definer set search_path = public as $$
+  update public.app_sessions set revoked_at = now()
+  where token_hash = p_token_hash and revoked_at is null;
+$$;
+create or replace function public.rpc_auth_sessions(p_user_id uuid, p_current text default '')
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'created_at', s.created_at,
+    'last_seen_at', s.last_seen_at, 'expires_at', s.expires_at, 'ip', s.ip,
+    'user_agent', s.user_agent, 'current', s.token_hash = p_current)
+    order by s.created_at desc), '[]'::jsonb)
+  from public.app_sessions s
+  where s.user_id = p_user_id and s.revoked_at is null and s.expires_at > now();
+$$;
+create or replace function public.rpc_auth_session_revoke_id(p_user_id uuid, p_session_id uuid)
+returns void language sql security definer set search_path = public as $$
+  update public.app_sessions set revoked_at = now()
+  where id = p_session_id and user_id = p_user_id and revoked_at is null;
+$$;
+create or replace function public.rpc_auth_update_secret(p_user_id uuid, p_hash text, p_keep_token_hash text default '')
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if p_hash is null or p_hash = '' then
+    raise exception 'Invalid password hash' using errcode = '22023';
+  end if;
+  update public.app_users set password_hash = p_hash, password_algo = 'bcrypt-pepper',
+    password_updated_at = now(), updated_at = now() where id = p_user_id;
+  if not found then raise exception 'Account not found' using errcode = 'P0002'; end if;
+  update public.app_sessions set revoked_at = now()
+  where user_id = p_user_id and revoked_at is null
+    and token_hash <> coalesce(p_keep_token_hash, '');
+end $$;
+create or replace function public.rpc_auth_recovery_codes_set(p_user_id uuid, p_hashes jsonb)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_ttl integer; v_count integer; v_item text;
+begin
+  select value into v_ttl from public.app_auth_config where key = 'recovery_code_ttl_hours';
+  v_ttl := greatest(coalesce(v_ttl, 720), 1);
+  delete from public.app_recovery_codes where user_id = p_user_id;
+  v_count := 0;
+  for v_item in select value::text from jsonb_array_elements_text(coalesce(p_hashes, '[]'::jsonb)) loop
+    insert into public.app_recovery_codes (user_id, code_hash, expires_at)
+    values (p_user_id, v_item, now() + (v_ttl || ' hours')::interval)
+    on conflict (code_hash) do nothing;
+    v_count := v_count + 1;
+  end loop;
+  return jsonb_build_object('count', v_count, 'expires_hours', v_ttl);
+end $$;
+create or replace function public.rpc_auth_recovery_redeem(p_email text, p_code_hash text, p_new_hash text)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_user public.app_users%rowtype; v_code public.app_recovery_codes%rowtype;
+begin
+  perform pg_advisory_xact_lock(hashtextextended(lower(btrim(coalesce(p_email, ''))), 727814633902));
+  select * into v_user from public.app_users
+    where lower(email) = lower(btrim(coalesce(p_email, ''))) limit 1;
+  if not found then
+    raise exception 'Invalid or expired recovery code' using errcode = '42501';
+  end if;
+  select * into v_code from public.app_recovery_codes
+  where user_id = v_user.id and code_hash = p_code_hash
+    and used_at is null and expires_at > now()
+  for update;
+  if not found then
+    raise exception 'Invalid or expired recovery code' using errcode = '42501';
+  end if;
+  if p_new_hash is null or p_new_hash = '' then
+    raise exception 'A new password is required' using errcode = '22023';
+  end if;
+  update public.app_recovery_codes set used_at = now() where id = v_code.id;
+  update public.app_users set password_hash = p_new_hash, password_algo = 'bcrypt-pepper',
+    password_updated_at = now(), status = 'active', failed_login_count = 0,
+    locked_until = null, updated_at = now() where id = v_user.id;
+  update public.app_sessions set revoked_at = now()
+    where user_id = v_user.id and revoked_at is null;
+  delete from public.app_recovery_codes where user_id = v_user.id;
+  delete from public.app_login_attempts
+  where scope_key = 'login:e:' || lower(v_user.email)
+     or scope_key = 'recovery:e:' || lower(v_user.email);
+  return jsonb_build_object('ok', true, 'user_id', v_user.id);
+end $$;
+create or replace function public.rpc_auth_config()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_object_agg(key, value), '{}'::jsonb) from public.app_auth_config;
+$$;
+create or replace function public.rpc_auth_config_set(p_key text, p_value integer)
+returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if p_key not in ('login_max_attempts','login_window_seconds','login_lockout_seconds',
+    'session_ttl_hours','session_idle_hours','max_sessions_per_user',
+    'password_min_length','bcrypt_cost','recovery_code_count','recovery_code_ttl_hours') then
+    raise exception 'Unknown authentication setting' using errcode = '22023';
+  end if;
+  if p_value is null or p_value < 1 or p_value > 1000000 then
+    raise exception 'Value out of range' using errcode = '22023';
+  end if;
+  if p_key = 'bcrypt_cost' and (p_value < 4 or p_value > 15) then
+    raise exception 'bcrypt_cost must be between 4 and 15' using errcode = '22023';
+  end if;
+  if p_key = 'password_min_length' and (p_value < 8 or p_value > 128) then
+    raise exception 'password_min_length must be between 8 and 128' using errcode = '22023';
+  end if;
+  insert into public.app_auth_config (key, value, updated_at) values (p_key, p_value, now())
+  on conflict (key) do update set value = excluded.value, updated_at = excluded.updated_at;
+  return public.rpc_auth_config();
+end $$;
+create or replace function public.rpc_auth_platform_permissions(p_actor uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'role', coalesce((select role_key from public.app_user_roles where user_id = p_actor
+      order by case when role_key = 'platform_owner' then 0 when role_key = 'platform_admin' then 1 else 2 end
+      limit 1), 'customer'),
+    'permissions', coalesce((select jsonb_agg(distinct rp.permission_key)
+      from public.app_user_roles ur join public.app_role_permissions rp on rp.role_key = ur.role_key
+      where ur.user_id = p_actor), '[]'::jsonb),
+    'platform_admin', public.is_platform_admin_for(p_actor));
+$$;
+create or replace function public.rpc_auth_accounts()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'user_id', u.id, 'email', u.email, 'status', u.status,
+      'role', coalesce((select role_key from public.app_user_roles r where r.user_id = u.id
+        order by case when role_key = 'platform_owner' then 0 when role_key = 'platform_admin' then 1 else 2 end
+        limit 1), 'customer'),
+      'created_at', u.created_at, 'last_login_at', u.last_login_at,
+      'active_sessions', (select count(*) from public.app_sessions s
+        where s.user_id = u.id and s.revoked_at is null and s.expires_at > now()),
+      'recovery_codes', (select count(*) from public.app_recovery_codes c
+        where c.user_id = u.id and c.used_at is null and c.expires_at > now()))
+    order by u.created_at), '[]'::jsonb)
+  from public.app_users u;
+$$;
+create or replace function public.rpc_auth_account_status(p_user_id uuid, p_status text)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if p_status not in ('active','suspended') then
+    raise exception 'Invalid status' using errcode = '22023';
+  end if;
+  if p_status = 'suspended' and exists (
+    select 1 from public.app_user_roles where user_id = p_user_id and role_key = 'platform_owner'
+  ) then
+    raise exception 'The Platform Owner account cannot be suspended' using errcode = '42501';
+  end if;
+  update public.app_users set status = p_status, updated_at = now() where id = p_user_id;
+  if not found then raise exception 'Account not found' using errcode = 'P0002'; end if;
+  if p_status = 'suspended' then
+    update public.app_sessions set revoked_at = now()
+      where user_id = p_user_id and revoked_at is null;
+  end if;
+end $$;
+create or replace function public.rpc_auth_sessions_revoke_other(p_user_id uuid, p_keep_token_hash text default '')
+returns void language sql security definer set search_path = public as $$
+  update public.app_sessions set revoked_at = now()
+  where user_id = p_user_id and revoked_at is null
+    and token_hash <> coalesce(p_keep_token_hash, '');
+$$;
+create or replace function public.rpc_auth_guard_reset()
+returns void language sql security definer set search_path = public as $$
+  delete from public.app_login_attempts;
+$$;
+create or replace function public.rpc_auth_guard_reset_for(p_email text)
+returns void language sql security definer set search_path = public as $$
+  delete from public.app_login_attempts
+  where scope_key = 'login:e:' || lower(btrim(coalesce(p_email, '')))
+     or scope_key = 'recovery:e:' || lower(btrim(coalesce(p_email, '')));
+$$;
+create or replace function public.rpc_auth_health()
+returns jsonb language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare v_pgcrypto boolean; v_accounts integer; v_sessions integer; v_locked integer;
+begin
+  select exists (select 1 from pg_proc f join pg_namespace n on n.oid = f.pronamespace
+    where f.proname = 'gen_salt') into v_pgcrypto;
+  select count(*) into v_accounts from public.app_users;
+  select count(*) into v_sessions from public.app_sessions
+    where revoked_at is null and expires_at > now();
+  select count(*) into v_locked from public.app_login_attempts where locked_until > now();
+  return jsonb_build_object('pgcrypto', v_pgcrypto, 'accounts', v_accounts,
+    'active_sessions', v_sessions, 'locked_scopes', v_locked);
+end $$;
+alter table public.app_users enable row level security;
+alter table public.app_sessions enable row level security;
+alter table public.app_login_attempts enable row level security;
+alter table public.app_recovery_codes enable row level security;
+alter table public.app_auth_config enable row level security;
+alter table public.app_roles enable row level security;
+alter table public.app_permissions enable row level security;
+alter table public.app_role_permissions enable row level security;
+alter table public.app_user_roles enable row level security;
+revoke all on public.app_users, public.app_sessions, public.app_login_attempts,
+  public.app_recovery_codes, public.app_auth_config, public.app_user_roles
+  from anon, authenticated;
+revoke all on all functions in schema public from public, anon, authenticated;
+grant execute on all functions in schema public to service_role;
+grant usage on schema public to service_role;

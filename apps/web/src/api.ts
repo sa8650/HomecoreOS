@@ -1,26 +1,23 @@
-/** Typed client for the HomecoreOS API (Cloudflare Pages Functions). All calls go through same-origin /api. */
-import { useCallback, useEffect, useRef, useState } from 'react';
+/** Client for the HomecoreOS API. Sessions are HttpOnly cookies; no token is stored in the browser. */
+import { useCallback, useEffect, useState } from 'react';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public detail?: unknown) { super(message); }
 }
 
-let token: string | null = localStorage.getItem('homecoreos_token');
-export function setToken(t: string | null) {
-  token = t;
-  if (t) localStorage.setItem('homecoreos_token', t); else localStorage.removeItem('homecoreos_token');
-}
-export function getToken() { return token; }
+export const UNAUTHORIZED_EVENT = 'homecoreos:unauthorized';
 
 async function request<T = any>(path: string, init: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(init.headers as any) };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(path, { ...init, headers });
+  const res = await fetch(path, { ...init, credentials: 'same-origin', headers });
   const text = await res.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
-    if (res.status === 401 && !path.includes('/auth/')) setToken(null);
+    const publicAuthPaths = ['/api/auth/me', '/api/auth/login', '/api/auth/signup', '/api/auth/recovery/reset'];
+    if (res.status === 401 && !publicAuthPaths.some((p) => path.startsWith(p))) {
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    }
     throw new ApiError(res.status, data?.error || `Request failed (${res.status})`, data?.detail);
   }
   return data as T;
@@ -34,7 +31,7 @@ export const api = {
   del: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'DELETE', body: body === undefined ? undefined : JSON.stringify(body) }),
 };
 
-/** Fetch + refresh on live events (SSE). The event types come from the API. */
+/** Fetch + refresh on live events (SSE). The session cookie is sent by the browser. */
 export function useLiveData<T>(path: string | null, deps: unknown[] = []) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(!!path);
@@ -52,12 +49,11 @@ export function useLiveData<T>(path: string | null, deps: unknown[] = []) {
     return () => { alive = false; };
   }, [path, tick, key]);
   useEffect(() => {
-    if (!path || !token) return;
-    // Fetch-based SSE keeps the JWT in a header (never in a URL/query string).
+    if (!path) return;
     const ctrl = new AbortController();
     (async () => {
       try {
-        const res = await fetch('/api/stream', { headers: { Authorization: `Bearer ${token}` }, signal: ctrl.signal });
+        const res = await fetch('/api/stream', { credentials: 'same-origin', signal: ctrl.signal });
         if (!res.ok || !res.body) return;
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -77,10 +73,10 @@ export function useLiveData<T>(path: string | null, deps: unknown[] = []) {
             } catch { /* ignore */ }
           }
         }
-      } catch { /* aborted or offline: polling-free fallback is the next user action */ }
+      } catch { /* aborted or offline */ }
     })();
     return () => ctrl.abort();
-  }, [path, token]);
+  }, [path]);
   return { data, loading, error, refresh, setData };
 }
 

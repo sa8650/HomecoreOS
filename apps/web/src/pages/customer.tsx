@@ -1118,8 +1118,11 @@ function CustomRoleModal({ permissions, onClose, onDone }: any) {
 export function SettingsPage() {
   const { data, loading, refresh } = useLiveData<any>('/api/settings');
   const usage = useLiveData<any>('/api/usage');
+  const sessions = useLiveData<any>('/api/auth/sessions');
   const { toast, can } = useAuth();
   const [f, setF] = useState<any>(null);
+  const [pw, setPw] = useState({ current_password: '', new_password: '' });
+  const [codes, setCodes] = useState<string[] | null>(null);
   React.useEffect(() => { if (data) setF({ name: data.tenant?.name, timezone: data.tenant?.timezone, address: data.tenant?.address || '', full_name: data.profile?.full_name || '', phone: data.profile?.phone || '' }); }, [data]);
   const exportData = async () => {
     const d = await api.get('/api/export');
@@ -1155,8 +1158,48 @@ export function SettingsPage() {
         </Card>
         <Card title="Data"><p className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>Export your workspace records. Account deletion requires platform-owner assistance so devices can be unclaimed first.</p>
           <button className="btn" onClick={exportData}><Icon.download />Export workspace data</button></Card>
+        <Card title="Account security">
+          <div className="kv" style={{ marginBottom: 14 }}>
+            <dt>Sessions</dt><dd>Secure HttpOnly cookies, verified in the database on every request</dd>
+            <dt>Active sessions</dt><dd>{(sessions.data as any[])?.length ?? 0}</dd>
+          </div>
+          <Field label="Change password" hint="Your other sessions will be signed out.">
+            <div className="form-row">
+              <input className="input" type="password" value={pw.current_password} onChange={(e) => setPw({ ...pw, current_password: e.target.value })} placeholder="Current password" />
+              <input className="input" type="password" value={pw.new_password} onChange={(e) => setPw({ ...pw, new_password: e.target.value })} placeholder="New password (min 10 characters)" />
+            </div>
+          </Field>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+            <button className="btn btn-primary btn-sm" disabled={pw.new_password.length < 10} onClick={async () => {
+              try { await api.post('/api/auth/password', pw); setPw({ current_password: '', new_password: '' }); sessions.refresh(); toast('Password changed'); }
+              catch (e: any) { toast(e.message, 'error'); }
+            }}>Change password</button>
+            <button className="btn btn-sm" onClick={async () => {
+              try { const r = await api.post<any>('/api/auth/recovery/codes', {}); setCodes(r.recovery_codes); toast('New recovery codes generated'); }
+              catch (e: any) { toast(e.message, 'error'); }
+            }}>New recovery codes</button>
+            <button className="btn btn-sm" onClick={async () => {
+              try { await api.post('/api/auth/logout-all', {}); sessions.refresh(); toast('Other sessions signed out'); }
+              catch (e: any) { toast(e.message, 'error'); }
+            }}>Sign out other sessions</button>
+          </div>
+          {!!((sessions.data as any[])?.length) && <div style={{ marginTop: 14 }}>
+            {(sessions.data as any[]).map((s: any) => <div className="list-item" key={s.id}>
+              <div className="icon-box"><Icon.shield /></div>
+              <div className="grow"><div className="title">{s.current ? 'This session' : (s.user_agent || 'Another device')}</div>
+                <div className="meta">{s.ip || 'Unknown IP'} · last seen {timeAgo(s.last_seen_at)} · expires {timeFull(s.expires_at)}</div></div>
+              {!s.current && <button className="btn btn-sm" onClick={async () => {
+                try { await api.del(`/api/auth/sessions/${s.id}`); sessions.refresh(); toast('Session revoked'); }
+                catch (e: any) { toast(e.message, 'error'); }
+              }}>Revoke</button>}
+            </div>)}
+          </div>}
+        </Card>
+        {codes && <Modal title="New recovery codes" onClose={() => setCodes(null)} footer={<button className="btn btn-primary" onClick={() => setCodes(null)}>Done</button>}>
+          <p className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>Each code works once. Store them somewhere safe — they are shown only now.</p>
+          <div className="card" style={{ padding: 14 }}><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }} className="mono">{codes.map((c) => <div key={c}>{c}</div>)}</div></div>
+        </Modal>}
         <Card title="Notification & security"><div className="kv">
-          <dt>Sessions</dt><dd>Signed JWT, verified on every request</dd>
           <dt>Device credentials</dt><dd>Unique per controller; rotate from Controllers</dd>
           <dt>Isolation</dt><dd>Database authorization + API tenant checks + MQTT ACL</dd>
           <dt>Activity log</dt><dd><Link to="/activity" style={{ textDecoration: 'underline' }}>View audit trail</Link></dd>

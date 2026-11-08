@@ -10,7 +10,7 @@ import {
 } from './pages/customer';
 import {
   OwnerOverview, OwnerCustomers, OwnerCustomerDetail, OwnerStaff, OwnerEmqx,
-  OwnerUsage, OwnerBoards, OwnerSettings, OwnerAudit,
+  OwnerUsage, OwnerBoards, OwnerSettings, OwnerAudit, OwnerSecurity,
 } from './pages/owner';
 import { OwnerSetup, OwnerIntegrations, PlatformSettingsLinks } from './pages/platform-setup';
 import { LogOut, ChevronDown, ArrowUpRight } from 'lucide-react';
@@ -52,6 +52,7 @@ const OWNER_NAV = [
     { to: '/owner/settings', label: 'Platform Settings', icon: 'settings' },
     { to: '/owner/settings/integrations', label: 'Integrations', icon: 'link' },
     { to: '/owner/audit', label: 'Audit Logs', icon: 'file' },
+    { to: '/owner/security', label: 'Authentication', icon: 'shield' },
   ] },
 ] as const;
 
@@ -120,18 +121,30 @@ function Shell({ owner, children }: { owner: boolean; children: React.ReactNode 
 }
 
 function AuthPage() {
-  const { signIn, signUp, toast } = useAuth();
-  const [mode, setMode] = useState<'in' | 'up'>('in');
-  const [form, setForm] = useState({ email: '', password: '', full_name: '', home_name: '' });
+  const { signIn, signUp, refresh, toast } = useAuth();
+  const [mode, setMode] = useState<'in' | 'up' | 'recover' | 'codes'>('in');
+  const [form, setForm] = useState({ email: '', password: '', full_name: '', home_name: '', code: '', new_password: '' });
+  const [codes, setCodes] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setBusy(true);
     try {
       if (mode === 'in') await signIn(form.email, form.password);
-      else await signUp(form);
+      else if (mode === 'up') { setCodes(await signUp(form)); setMode('codes'); }
+      else if (mode === 'recover') {
+        await api.post('/api/auth/recovery/reset', {
+          email: form.email, code: form.code, password: form.new_password,
+        });
+        toast('Password updated. Sign in with your new password.');
+        setMode('in'); setForm((f) => ({ ...f, password: '', code: '', new_password: '' }));
+      }
     } catch (err: any) { toast(err.message, 'error'); }
     finally { setBusy(false); }
+  };
+  const copyCodes = async () => {
+    try { await navigator.clipboard.writeText(codes.join('\n')); toast('Recovery codes copied'); }
+    catch { toast('Select and copy the codes manually', 'error'); }
   };
   return (
     <div className="auth-wrap">
@@ -148,22 +161,47 @@ function AuthPage() {
       </div>
       <div className="auth-panel">
         <div className="auth-card">
-          <h1>{mode === 'in' ? 'Sign in to your home' : 'Create your account'}</h1>
-          <p className="lead">{mode === 'in' ? 'Your home workspace and devices are private to your account.' : 'Each account gets an independent home workspace.'}</p>
-          <div className="segmented" style={{ marginBottom: 22 }}>
-            <button className={mode === 'in' ? 'on' : ''} onClick={() => setMode('in')}>Sign in</button>
-            <button className={mode === 'up' ? 'on' : ''} onClick={() => setMode('up')}>Create account</button>
-          </div>
-          <form onSubmit={submit}>
-            {mode === 'up' && <>
-              <div className="field"><label>Full name</label><input className="input" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder="Alex Morgan" /></div>
-              <div className="field"><label>Home name</label><input className="input" value={form.home_name} onChange={(e) => set('home_name', e.target.value)} placeholder="Morgan Residence" /></div>
-            </>}
-            <div className="field"><label>Email</label><input className="input" type="email" required value={form.email} onChange={(e) => set('email', e.target.value)} placeholder="you@example.com" /></div>
-            <div className="field"><label>Password</label><input className="input" type="password" required minLength={10} value={form.password} onChange={(e) => set('password', e.target.value)} placeholder="At least 10 characters" /></div>
-            <button className="btn btn-primary btn-block" disabled={busy}>{busy ? 'Please wait…' : mode === 'in' ? 'Sign in' : 'Create account'}</button>
-          </form>
-          <p className="tiny" style={{ marginTop: 18, textAlign: 'center' }}>Sessions are signed server-side. Tenant isolation is enforced by Supabase database authorization.</p>
+          {mode === 'codes' ? <>
+            <h1>Save your recovery codes</h1>
+            <p className="lead">Each code works once if you lose your password. They are shown only now — store them somewhere safe.</p>
+            <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }} className="mono">
+                {codes.map((c) => <div key={c}>{c}</div>)}
+              </div>
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <button className="btn" onClick={copyCodes}>Copy all codes</button>
+              <button className="btn btn-primary btn-block" onClick={async () => { await refresh(); }}>I saved them — continue</button>
+            </div>
+          </> : <>
+            <h1>{mode === 'in' ? 'Sign in to your home' : mode === 'up' ? 'Create your account' : 'Recover your account'}</h1>
+            <p className="lead">{mode === 'in' ? 'Your home workspace and devices are private to your account.'
+              : mode === 'up' ? 'The first account on a new platform becomes the Platform Owner.'
+              : 'Enter your email, one recovery code and a new password.'}</p>
+            {mode !== 'recover' && <div className="segmented" style={{ marginBottom: 22 }}>
+              <button className={mode === 'in' ? 'on' : ''} onClick={() => setMode('in')}>Sign in</button>
+              <button className={mode === 'up' ? 'on' : ''} onClick={() => setMode('up')}>Create account</button>
+            </div>}
+            <form onSubmit={submit}>
+              {mode === 'up' && <>
+                <div className="field"><label>Full name</label><input className="input" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder="Alex Morgan" /></div>
+                <div className="field"><label>Home name</label><input className="input" value={form.home_name} onChange={(e) => set('home_name', e.target.value)} placeholder="Morgan Residence" /></div>
+              </>}
+              <div className="field"><label>Email</label><input className="input" type="email" required value={form.email} onChange={(e) => set('email', e.target.value)} placeholder="you@example.com" /></div>
+              {mode !== 'recover' && <div className="field"><label>Password</label><input className="input" type="password" required minLength={10} value={form.password} onChange={(e) => set('password', e.target.value)} placeholder="At least 10 characters" /></div>}
+              {mode === 'recover' && <>
+                <div className="field"><label>Recovery code</label><input className="input" required value={form.code} onChange={(e) => set('code', e.target.value)} placeholder="XXXX-XXXX-XXXX-XXXX" /></div>
+                <div className="field"><label>New password</label><input className="input" type="password" required minLength={10} value={form.new_password} onChange={(e) => set('new_password', e.target.value)} placeholder="At least 10 characters" /></div>
+              </>}
+              <button className="btn btn-primary btn-block" disabled={busy}>{busy ? 'Please wait…' : mode === 'in' ? 'Sign in' : mode === 'up' ? 'Create account' : 'Reset password'}</button>
+            </form>
+            <div style={{ marginTop: 18, textAlign: 'center' }}>
+              {mode === 'recover'
+                ? <button className="btn btn-ghost btn-sm" onClick={() => setMode('in')}>Back to sign in</button>
+                : <button className="btn btn-ghost btn-sm" onClick={() => setMode('recover')}>Forgot password? Use a recovery code</button>}
+            </div>
+            <p className="tiny" style={{ marginTop: 12, textAlign: 'center' }}>Passwords are hashed in the database. Sessions use secure HttpOnly cookies and are verified server-side.</p>
+          </>}
         </div>
       </div>
     </div>
@@ -205,6 +243,7 @@ function RoutesView() {
         <Route path="/owner/settings" element={<OwnerSettings />} />
         <Route path="/owner/settings/integrations" element={<OwnerIntegrations />} />
         <Route path="/owner/audit" element={<OwnerAudit />} />
+        <Route path="/owner/security" element={<OwnerSecurity />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Shell>

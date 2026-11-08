@@ -10,6 +10,7 @@ import { EMQX_QUOTAS, WARNING_THRESHOLDS } from '@homecoreos/core';
 import { PlatformSettingsLinks } from './platform-setup';
 
 function useToast() { return useAuth().toast; }
+const human = (v: string) => String(v || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
 export function OwnerOverview() {
   const { data, loading } = useLiveData<any>('/api/owner/overview');
@@ -415,4 +416,121 @@ function EditSettingModal({ setting, onClose, onDone }: any) {
     {invalid && <Notice tone="danger">{kind === 'number' ? 'Enter a valid number.' : 'Invalid JSON.'}</Notice>}
     <p className="tiny">Changes are audited. Credentials are managed in Integrations &amp; Secrets, never here.</p>
   </Modal>;
+}
+
+// ============================================================================
+// Authentication (owner only, backend-verified)
+// ============================================================================
+const AUTH_SETTINGS: { key: string; label: string; unit: string; hint: string }[] = [
+  { key: 'login_max_attempts', label: 'Max failed sign-ins', unit: 'attempts', hint: 'Per email and per IP inside the window' },
+  { key: 'login_window_seconds', label: 'Attempt window', unit: 'seconds', hint: 'How long failed attempts are counted' },
+  { key: 'login_lockout_seconds', label: 'Lockout duration', unit: 'seconds', hint: 'Block further attempts after the limit' },
+  { key: 'session_ttl_hours', label: 'Absolute session lifetime', unit: 'hours', hint: 'Sessions expire even if still active' },
+  { key: 'session_idle_hours', label: 'Idle session timeout', unit: 'hours', hint: 'Inactive sessions are revoked' },
+  { key: 'max_sessions_per_user', label: 'Sessions per account', unit: 'sessions', hint: 'Oldest sessions are removed first' },
+  { key: 'password_min_length', label: 'Minimum password length', unit: 'characters', hint: 'Minimum 8 characters' },
+  { key: 'bcrypt_cost', label: 'Password hash cost', unit: '4–15', hint: 'bcrypt cost in the database (higher is slower)' },
+  { key: 'recovery_code_count', label: 'Recovery codes per account', unit: 'codes', hint: 'Single-use codes shown once' },
+  { key: 'recovery_code_ttl_hours', label: 'Recovery code lifetime', unit: 'hours', hint: 'Codes expire after this period' },
+];
+
+export function OwnerSecurity() {
+  const { data, loading, refresh } = useLiveData<any>('/api/owner/auth');
+  const { toast } = useAuth();
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [reset, setReset] = useState<{ id: string; email: string; password: string } | null>(null);
+  const [codes, setCodes] = useState<string[] | null>(null);
+  React.useEffect(() => {
+    if (data?.config) setValues(Object.fromEntries(Object.entries(data.config).map(([k, v]) => [k, String(v)])));
+  }, [data]);
+  const save = async () => {
+    try {
+      for (const setting of AUTH_SETTINGS) {
+        const raw = values[setting.key];
+        if (raw !== undefined && String(data?.config?.[setting.key]) !== raw) {
+          await api.post('/api/owner/auth/config', { key: setting.key, value: Number(raw) });
+        }
+      }
+      toast('Authentication settings saved'); refresh();
+    } catch (e: any) { toast(e.message, 'error'); }
+  };
+  const saveOne = async (key: string) => {
+    try { await api.post('/api/owner/auth/config', { key, value: Number(values[key]) }); toast('Setting saved'); refresh(); }
+    catch (e: any) { toast(e.message, 'error'); }
+  };
+  const doAction = async (path: string, payload: any) => {
+    try { await api.post(path, payload); toast('Account updated'); refresh(); }
+    catch (e: any) { toast(e.message, 'error'); }
+  };
+  const health = data?.health || {};
+  const accounts: any[] = data?.accounts || [];
+  return <>
+    <PageHead title="Authentication & Security" desc="Custom database-backed accounts, sessions and rate limits. No third-party identity provider." />
+    {loading ? <Loading rows={4} /> : <>
+      <div className="grid grid-3" style={{ marginBottom: 14 }}>
+        <Card title="Password hashing"><div className="kv">
+          <dt>Status</dt><dd>{health.pgcrypto ? <Badge tone="on">Ready</Badge> : <Badge tone="danger">pgcrypto missing</Badge>}</dd>
+          <dt>Algorithm</dt><dd>bcrypt + server-side HMAC pepper, inside Supabase PostgreSQL</dd>
+        </div></Card>
+        <Card title="Accounts & sessions"><div className="kv">
+          <dt>Accounts</dt><dd>{health.accounts ?? '—'}</dd>
+          <dt>Active sessions</dt><dd>{health.active_sessions ?? '—'}</dd>
+          <dt>Locked scopes</dt><dd>{health.locked_scopes ?? '—'}</dd>
+        </div></Card>
+        <Card title="Login protection" actions={<button className="btn btn-sm" onClick={() => doAction('/api/owner/auth/attempts/reset', {})}>Clear lockouts</button>}>
+          <p className="muted" style={{ fontSize: 12.5 }}>Failed sign-ins are limited per account and per IP. Clear lockouts here if a legitimate user is blocked.</p>
+        </Card>
+      </div>
+      <div className="grid grid-2" style={{ alignItems: 'start' }}>
+        <Card title="Configurable limits" sub="Stored in the database, enforced on every request"
+          actions={<button className="btn btn-primary btn-sm" onClick={save}>Save all</button>}>
+          {AUTH_SETTINGS.map((setting) => <div className="form-row" key={setting.key} style={{ marginBottom: 8, alignItems: 'end' }}>
+            <Field label={setting.label} hint={setting.hint}><input className="input" type="number" min={1} value={values[setting.key] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [setting.key]: e.target.value }))} /></Field>
+            <div style={{ display: 'flex', gap: 6, paddingBottom: 2 }}>
+              <span className="tiny" style={{ minWidth: 58, alignSelf: 'center' }}>{setting.unit}</span>
+              <button className="btn btn-sm" onClick={() => saveOne(setting.key)}>Set</button>
+            </div>
+          </div>)}
+        </Card>
+        <div style={{ display: 'grid', gap: 14 }}>
+          <Card title="Accounts" sub="Password hashes and tokens are never sent to the browser">
+            <DataTable columns={[
+              { key: 'email', label: 'Account' },
+              { key: 'role', label: 'Role', render: (r: any) => human(r.role) },
+              { key: 'status', label: 'Status', render: (r: any) => <StatusBadge status={r.status} /> },
+              { key: 'sessions', label: 'Sessions', render: (r: any) => String(r.active_sessions ?? 0) },
+              { key: 'actions', label: '', render: (r: any) => <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                <button className="btn btn-sm" onClick={() => doAction(`/api/owner/auth/accounts/${r.user_id}/status`, { status: r.status === 'active' ? 'suspended' : 'active' })}>{r.status === 'active' ? 'Suspend' : 'Activate'}</button>
+                <button className="btn btn-sm" onClick={() => setReset({ id: r.user_id, email: r.email, password: '' })}>Reset password</button>
+                <button className="btn btn-sm" onClick={async () => {
+                  try { const r2 = await api.post<any>(`/api/owner/auth/accounts/${r.user_id}/recovery-codes`, {}); setCodes(r2.recovery_codes); refresh(); }
+                  catch (e: any) { toast(e.message, 'error'); }
+                }}>Recovery codes</button>
+              </div> },
+            ]} rows={accounts} empty="No accounts yet" />
+          </Card>
+          <Card title="How access is granted"><div className="kv">
+            <dt>First account</dt><dd>Platform Owner, decided atomically in one database transaction</dd>
+            <dt>Later accounts</dt><dd>Customer, with an independent home workspace</dd>
+            <dt>Sessions</dt><dd>Random token, SHA-256 hash stored, HttpOnly · Secure · SameSite cookie</dd>
+            <dt>Owner Console</dt><dd>Every API call checks role and permissions in the database</dd>
+          </div></Card>
+        </div>
+      </div>
+    </>}
+    {reset && <Modal title="Set a new password" onClose={() => setReset(null)} footer={<>
+      <button className="btn" onClick={() => setReset(null)}>Cancel</button>
+      <button className="btn btn-primary" disabled={reset.password.length < 10} onClick={async () => {
+        try { await api.post(`/api/owner/auth/accounts/${reset.id}/reset-password`, { password: reset.password }); toast('Password reset; all sessions revoked'); setReset(null); refresh(); }
+        catch (e: any) { toast(e.message, 'error'); }
+      }}>Reset password</button>
+    </>}>
+      <Field label="Account"><input className="input" value={reset.email} readOnly /></Field>
+      <Field label="New password" hint="At least 10 characters. All existing sessions will be revoked."><input className="input" type="password" minLength={10} value={reset.password} onChange={(e) => setReset({ ...reset, password: e.target.value })} /></Field>
+    </Modal>}
+    {codes && <Modal title="New recovery codes" onClose={() => setCodes(null)} footer={<button className="btn btn-primary" onClick={() => setCodes(null)}>Done</button>}>
+      <p className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>Give these single-use codes to the account holder. They are shown only once.</p>
+      <div className="card" style={{ padding: 14 }}><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }} className="mono">{codes.map((c) => <div key={c}>{c}</div>)}</div></div>
+    </Modal>}
+  </>;
 }

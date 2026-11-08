@@ -77,10 +77,38 @@ export interface DataClient {
   raw?<T = any>(sql: string, params?: unknown[]): Promise<T[]>;
 }
 
+export interface AuthPrincipal {
+  profileId: string;
+  email: string;
+  sessionId: string;
+  tokenHash: string;
+  expiresAt: string;
+  role: string;
+  permissions: string[];
+  platformAdmin: boolean;
+}
+
+export interface AuthSessionTicket {
+  token: string;
+  expiresAt: string;
+  userId: string;
+  email: string;
+  role: string;
+  recoveryCodes?: string[];
+}
+
 export interface AuthPort {
-  signup(email: string, password: string, meta?: Record<string, string>): Promise<{ token: string; profileId: string }>;
-  login(email: string, password: string): Promise<{ token: string; profileId: string }>;
-  verify(token: string): Promise<{ profileId: string; email?: string; role?: string } | null>;
+  signup(email: string, password: string, meta: Record<string, string>, request: { ip: string; userAgent: string }): Promise<AuthSessionTicket>;
+  login(email: string, password: string, request: { ip: string; userAgent: string }): Promise<AuthSessionTicket>;
+  verify(token: string): Promise<AuthPrincipal | null>;
+  logout(token: string): Promise<void>;
+  changePassword(userId: string, currentPassword: string, newPassword: string, keepTokenHash: string): Promise<void>;
+  recover(email: string, code: string, newPassword: string, request: { ip: string; userAgent: string }): Promise<void>;
+  regenerateRecoveryCodes(userId: string): Promise<string[]>;
+  adminResetPassword(userId: string, newPassword: string): Promise<void>;
+  setConfig(key: string, value: number): Promise<Record<string, number>>;
+  config(): Promise<Record<string, number>>;
+  health(): Promise<any>;
 }
 
 export interface IngressHandler {

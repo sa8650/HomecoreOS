@@ -1,31 +1,44 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Runtime } from './services/runtime';
-import { HttpError, actor, context, ownerOnly, p, body, runtime, auditEvent } from './context';
+import { HttpError, actor, context, ownerOnly, p, body, runtime, auditEvent,
+  SESSION_COOKIE, clearSessionCookie } from './context';
 import { deviceTopics, parseTopic, topic, EMQX_QUOTAS, WARNING_THRESHOLDS } from '@homecoreos/core';
 import { SwitchCommand, TelemetryMessage, StateReport, ConfigAck, OtaProgress } from '@homecoreos/core';
-import { randomHex, randomToken, sha256Hex, hashPassword, verifyPassword, hmacHex } from './crypto';
+import { randomHex, randomToken, sha256Hex, verifyPassword, hmacHex } from './crypto';
 import { testConnection, recordCheck, testStorage, setupStatus } from './config';
 
 export function createApp(rt: Runtime) {
   const app = new Hono<{ Variables: { rt: Runtime } }>();
-  app.use('*', cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-HomecoreOS-Signature', 'X-HomecoreOS-Timestamp'], allowMethods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'] }));
+  app.use('*', cors({ origin: '*', allowHeaders: ['Content-Type', 'X-HomecoreOS-Signature', 'X-HomecoreOS-Timestamp'], allowMethods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'] }));
   app.use('*', async (c, next) => { c.set('rt', rt); await next(); });
-  // Cloudflare Pages Functions have no cron trigger: expire stale commands at
-  // most once a minute on ordinary API traffic (idempotent, provider-agnostic).
   let lastExpiry = 0;
-  app.use('/api/*', async (_c, next) => {
+  app.use('/api/*', async (c, next) => {
+    const method = c.req.method.toUpperCase();
+    const origin = c.req.header('Origin');
+    if (origin && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      let same = false;
+      try { same = new URL(origin).host === new URL(c.req.url).host; } catch { same = false; }
+      if (!same) throw new HttpError(403, 'Cross-origin request rejected');
+    }
     if (Date.now() - lastExpiry > 60_000) {
       lastExpiry = Date.now();
       await rt.db.rpc('rpc_expire_commands', {}).catch(() => {});
     }
     await next();
+    c.header('Cache-Control', 'no-store');
   });
   app.onError((err, c) => {
-    const e = err as HttpError;
+    const e = err as HttpError & { retryAfter?: number };
     const status = e.status && e.status >= 400 && e.status < 600 ? e.status : 500;
     if (status === 500) console.error('[api]', err);
-    return c.json({ error: err.message || 'Internal error', detail: e.detail ?? null }, status as any);
+    if (status === 429 && e.retryAfter) c.header('Retry-After', String(e.retryAfter));
+    if (status === 401) {
+      deleteCookie(c, SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Lax' });
+    }
+    return c.json({ error: status === 500 ? 'Internal error' : (err.message || 'Internal error'),
+      detail: status === 500 ? null : (e.detail ?? null) }, status as any);
   });
   app.notFound((c) => c.json({ error: 'Not found' }, 404));
 
@@ -42,27 +55,67 @@ export function createApp(rt: Runtime) {
 
   app.post('/api/auth/signup', async (c) => {
     const b = await body(c);
-    const r = await rt.auth.signup(String(b.email || '').trim().toLowerCase(), String(b.password || ''), {
-      full_name: String(b.full_name || ''), home_name: String(b.home_name || ''), timezone: String(b.timezone || 'UTC'),
-    });
-    // First account on a fresh database becomes the platform owner, so a new
-    // deployment needs no hand-edited database row or extra bootstrap secret.
-    const admins = await rt.db.select('platform_admins', { limit: 1 }).catch(() => []);
-    if (!admins.length) {
-      await rt.db.insert('platform_admins', { profile_id: r.profileId, level: 'owner' });
-    }
-    return c.json({ token: r.token, profile_id: r.profileId }, 201);
+    const r = await rt.auth.signup(
+      String(b.email || '').trim().toLowerCase(), String(b.password || ''),
+      { full_name: String(b.full_name || ''), home_name: String(b.home_name || ''), timezone: String(b.timezone || 'UTC') },
+      requestInfo(c));
+    setSessionCookie(c, r.token, r.expiresAt);
+    return c.json({ profile_id: r.userId, email: r.email, role: r.role,
+      expires_at: r.expiresAt, recovery_codes: r.recoveryCodes || [] }, 201);
   });
   app.post('/api/auth/login', async (c) => {
     const b = await body(c);
-    const r = await rt.auth.login(String(b.email || '').trim().toLowerCase(), String(b.password || ''));
-    return c.json({ token: r.token, profile_id: r.profileId });
+    const r = await rt.auth.login(String(b.email || '').trim().toLowerCase(), String(b.password || ''), requestInfo(c));
+    setSessionCookie(c, r.token, r.expiresAt);
+    return c.json({ profile_id: r.userId, email: r.email, role: r.role, expires_at: r.expiresAt });
+  });
+  app.post('/api/auth/logout', async (c) => {
+    const token = getCookie(c, SESSION_COOKIE);
+    if (token) await rt.auth.logout(token);
+    clearSessionCookie(c);
+    return c.json({ ok: true });
   });
   app.get('/api/auth/me', async (c) => {
     const a = await actor(c);
     const ctx: any = await rt.db.rpc('rpc_context', { p_actor: a.profileId });
     const profile = await rt.db.select('profiles', { eq: { id: a.profileId }, limit: 1 });
-    return c.json({ profile: profile[0] || null, context: ctx });
+    return c.json({ profile: profile[0] || null, context: ctx,
+      session: { id: a.sessionId, email: a.email, expires_at: a.expiresAt,
+        role: a.role, permissions: a.permissions, platform_admin: a.platformAdmin } });
+  });
+  app.post('/api/auth/password', async (c) => {
+    const a = await actor(c);
+    const b = await body(c);
+    await rt.auth.changePassword(a.profileId, String(b.current_password || ''),
+      String(b.new_password || ''), a.tokenHash);
+    return c.json({ ok: true });
+  });
+  app.get('/api/auth/sessions', async (c) => {
+    const a = await actor(c);
+    return c.json(await rt.db.rpc<any>('rpc_auth_sessions',
+      { p_user_id: a.profileId, p_current: a.tokenHash }));
+  });
+  app.delete('/api/auth/sessions/:id', async (c) => {
+    const a = await actor(c);
+    await rt.db.rpc('rpc_auth_session_revoke_id',
+      { p_user_id: a.profileId, p_session_id: p(c, 'id') });
+    return c.json({ ok: true });
+  });
+  app.post('/api/auth/logout-all', async (c) => {
+    const a = await actor(c);
+    await rt.db.rpc('rpc_auth_sessions_revoke_other',
+      { p_user_id: a.profileId, p_keep_token_hash: a.tokenHash });
+    return c.json({ ok: true });
+  });
+  app.post('/api/auth/recovery/codes', async (c) => {
+    const a = await actor(c);
+    return c.json({ recovery_codes: await rt.auth.regenerateRecoveryCodes(a.profileId) });
+  });
+  app.post('/api/auth/recovery/reset', async (c) => {
+    const b = await body(c);
+    await rt.auth.recover(String(b.email || '').trim().toLowerCase(),
+      String(b.code || ''), String(b.password || ''), requestInfo(c));
+    return c.json({ ok: true });
   });
   app.get('/api/context', async (c) => {
     const ctx = await context(c);
@@ -269,7 +322,7 @@ export function createApp(rt: Runtime) {
     const clientId = `homecoreos-${randomHex(10)}`;
     const username = `d_${randomHex(10)}`;
     const password = randomToken(32);
-    const passwordHash = await hashPassword(password);
+    const passwordHash = await hashDevicePassword(rt, password);
 
     // Provision the real per-device identity in the broker BEFORE claiming, so
     // a failed API call never leaves an unusable device record behind.
@@ -310,7 +363,7 @@ export function createApp(rt: Runtime) {
     const clientId = String(b.client_id || '');
     const password = String(b.password || '');
     const info: any = await rt.db.rpc('rpc_board_from_client', { p_client_id: clientId });
-    if (!info || !(await verifyPassword(password, info.password_hash))) throw new HttpError(401, 'Invalid device credentials');
+    if (!info || !(await verifyDevicePassword(rt, password, info.password_hash))) throw new HttpError(401, 'Invalid device credentials');
     const cfg = await rt.db.select('device_configurations', { eq: { user_board_id: info.board_id }, order: { column: 'version', ascending: false }, limit: 1 });
     return c.json({ config: cfg[0]?.config || null, topics: info.topics });
   });
@@ -321,7 +374,7 @@ export function createApp(rt: Runtime) {
     const boards = await rt.db.select('user_boards', { eq: { id: p(c, 'id'), tenant_id: ctx.tenantId }, limit: 1 });
     if (!boards.length) throw new HttpError(404, 'Board not found');
     const password = randomToken(32);
-    const hash = await hashPassword(password);
+    const hash = await hashDevicePassword(rt, password);
     const cred: any = await rt.db.rpc('rpc_rotate_device_credentials', { p_actor: ctx.profileId,
       p_tenant: ctx.tenantId, p_board: p(c, 'id'), p_password_hash: hash, p_provider_ref: {} });
     const active = await rt.db.select('mqtt_credentials_metadata', { eq: { user_board_id: p(c, 'id'), tenant_id: ctx.tenantId, status: 'active' }, limit: 1 });
@@ -930,11 +983,11 @@ export function createApp(rt: Runtime) {
     }
   };
   const buildStatus = async () => {
-    const [supabase, emqx, storage, health] = await Promise.all([
+    const [supabase, emqx, storage, health, authHealth] = await Promise.all([
       testConnection(rt.env, 'supabase'), testConnection(rt.env, 'emqx'),
-      testStorage(rt.store as any), dbHealth(),
+      testStorage(rt.store as any), dbHealth(), rt.auth.health(),
     ]);
-    return setupStatus({ env: rt.env, db: rt.db, tests: { supabase, emqx }, storage, dbHealth: health });
+    return setupStatus({ env: rt.env, db: rt.db, tests: { supabase, emqx }, storage, dbHealth: health, authHealth });
   };
   app.get('/api/owner/setup', async (c) => {
     await ownerOnly(c);
@@ -962,6 +1015,60 @@ export function createApp(rt: Runtime) {
     return c.json(await testStorage(rt.store as any));
   });
 
+  app.get('/api/owner/auth', async (c) => {
+    await ownerOnly(c);
+    const [config, health, accounts] = await Promise.all([
+      rt.auth.config(), rt.auth.health(), rt.db.rpc<any>('rpc_auth_accounts', {}),
+    ]);
+    return c.json({ config, health, accounts: accounts || [] });
+  });
+  app.post('/api/owner/auth/config', async (c) => {
+    const ctx = await ownerOnly(c);
+    const b = await body(c);
+    const key = String(b.key || ''), value = Number(b.value);
+    if (!Number.isFinite(value)) throw new HttpError(400, 'Invalid value');
+    const config = await rt.auth.setConfig(key, value);
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.auth.config', entity_type: 'configuration', entity_id: key,
+      after: { value } }).catch(() => {});
+    return c.json({ config });
+  });
+  app.post('/api/owner/auth/attempts/reset', async (c) => {
+    const ctx = await ownerOnly(c);
+    const b = await body(c);
+    if (b.email) await rt.db.rpc('rpc_auth_guard_reset_for', { p_email: String(b.email) });
+    else await rt.db.rpc('rpc_auth_guard_reset', {});
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.auth.attempts.reset', entity_type: 'configuration', entity_id: String(b.email || 'all'),
+      after: {} }).catch(() => {});
+    return c.json({ ok: true });
+  });
+  app.post('/api/owner/auth/accounts/:id/status', async (c) => {
+    const ctx = await ownerOnly(c);
+    const status = String((await body(c)).status || '');
+    if (!['active', 'suspended'].includes(status)) throw new HttpError(400, 'Invalid status');
+    try {
+      await rt.db.rpc('rpc_auth_account_status', { p_user_id: p(c, 'id'), p_status: status });
+    } catch (e: any) { throw rpcError(e, 'Could not update the account'); }
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.auth.account.status', entity_type: 'account', entity_id: p(c, 'id'),
+      after: { status } }).catch(() => {});
+    return c.json({ ok: true });
+  });
+  app.post('/api/owner/auth/accounts/:id/reset-password', async (c) => {
+    const ctx = await ownerOnly(c);
+    const password = String((await body(c)).password || '');
+    await rt.auth.adminResetPassword(p(c, 'id'), password);
+    await rt.db.insert('audit_logs', { actor_id: ctx.profileId, actor_type: 'platform_admin',
+      action: 'platform.auth.password.reset', entity_type: 'account', entity_id: p(c, 'id'),
+      after: {} }).catch(() => {});
+    return c.json({ ok: true });
+  });
+  app.post('/api/owner/auth/accounts/:id/recovery-codes', async (c) => {
+    await ownerOnly(c);
+    const codes = await rt.auth.regenerateRecoveryCodes(p(c, 'id'));
+    return c.json({ recovery_codes: codes });
+  });
   app.post('/api/owner/announcements', async (c) => {
     const ctx = await ownerOnly(c);
     const b = await body(c);
@@ -969,6 +1076,7 @@ export function createApp(rt: Runtime) {
     return c.json(rows[0], 201);
   });
   app.get('/api/announcements', async (c) => {
+    await actor(c);
     return c.json(await rt.db.select('system_announcements', { eq: { active: true }, order: { column: 'starts_at', ascending: false }, limit: 10 }));
   });
 
@@ -976,15 +1084,19 @@ export function createApp(rt: Runtime) {
   // INTERNAL: MQTT broker authn/authz + device message ingress
   // ==========================================================================
   app.post('/internal/mqtt/auth', async (c) => {
-    const b = await body(c);
+    const raw = await c.req.text();
+    await verifyInternal(c, raw);
+    const b = JSON.parse(raw);
     const info: any = await rt.db.rpc('rpc_board_from_client', { p_client_id: String(b.clientId || b.client_id || '') });
     if (!info || info.credential_status !== 'active' || info.board_status === 'disabled') return c.json({ ok: false, reason: 'unknown client' }, 401);
     if (info.username !== String(b.username || '')) return c.json({ ok: false, reason: 'username mismatch' }, 401);
-    if (!(await verifyPassword(String(b.password || ''), info.password_hash))) return c.json({ ok: false, reason: 'bad credentials' }, 401);
+    if (!(await verifyDevicePassword(rt, String(b.password || ''), info.password_hash))) return c.json({ ok: false, reason: 'bad credentials' }, 401);
     return c.json({ ok: true, board_id: info.board_id, tenant_id: info.tenant_id });
   });
   app.post('/internal/mqtt/acl', async (c) => {
-    const b = await body(c);
+    const raw = await c.req.text();
+    await verifyInternal(c, raw);
+    const b = JSON.parse(raw);
     const info: any = await rt.db.rpc('rpc_board_from_client', { p_client_id: String(b.clientId || '') });
     if (!info || info.credential_status !== 'active' || info.board_status === 'disabled') return c.json({ allowed: false });
     const tp = String(b.topic || '');
@@ -1013,7 +1125,10 @@ export function createApp(rt: Runtime) {
     const b = JSON.parse(raw);
     return c.json(await handleIngress(rt, b));
   });
-  app.get('/internal/health', async (c) => c.json({ ok: true, provider: rt.mqtt.id, listeners: rt.events.size }));
+  app.get('/internal/health', async (c) => {
+    await verifyInternal(c);
+    return c.json({ ok: true, provider: rt.mqtt.id, listeners: rt.events.size });
+  });
 
   return app;
 }
@@ -1021,6 +1136,48 @@ export function createApp(rt: Runtime) {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+
+async function hashDevicePassword(rt: Runtime, password: string): Promise<string> {
+  return rt.db.rpc<any>('rpc_auth_hash_secret', { p_secret: password });
+}
+
+async function verifyDevicePassword(rt: Runtime, password: string, hash: string): Promise<boolean> {
+  if (String(hash || '').startsWith('pbkdf2$')) return verifyPassword(password, hash);
+  try {
+    return !!(await rt.db.rpc<any>('rpc_auth_verify_secret', { p_secret: password, p_hash: hash }));
+  } catch { return false; }
+}
+
+
+function rpcError(e: any, fallback: string): HttpError {
+  const raw = String(e?.message || '');
+  const known = [
+    'The Platform Owner account cannot be suspended',
+    'Invalid status', 'Account not found', 'Unknown authentication setting',
+    'Value out of range', 'bcrypt_cost must be between 4 and 15',
+    'password_min_length must be between 8 and 128',
+    'Enable the pgcrypto extension in Supabase to use password authentication',
+  ];
+  for (const k of known) if (raw.includes(k)) return new HttpError(400, k);
+  return new HttpError(400, fallback);
+}
+
+function requestInfo(c: any) {
+  return {
+    ip: (String(c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || '').split(',')[0] || '').trim(),
+    userAgent: String(c.req.header('User-Agent') || '').slice(0, 200),
+  };
+}
+
+function setSessionCookie(c: any, token: string, expiresAt: string) {
+  const target = new Date(expiresAt).getTime();
+  const seconds = Number.isFinite(target) ? Math.floor((target - Date.now()) / 1000) : 604800;
+  setCookie(c, SESSION_COOKIE, token, {
+    path: '/', httpOnly: true, secure: true, sameSite: 'Lax',
+    maxAge: Math.max(60, Math.min(60 * 60 * 24 * 30, seconds || 604800)),
+  });
+}
 async function verifyInternal(c: any, raw?: string) {
   const rt = runtime(c);
   const secret = String(rt.env.SIGNING_KEY || '');

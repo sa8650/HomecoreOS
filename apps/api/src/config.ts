@@ -177,8 +177,9 @@ export async function setupStatus(input: {
   tests: { supabase: ConnectionResult; emqx: ConnectionResult };
   storage: { connected: boolean; checkedAt: string; detail: string };
   dbHealth: any;
+  authHealth: any;
 }) {
-  const { env, db, tests, storage, dbHealth } = input;
+  const { env, db, tests, storage, dbHealth, authHealth } = input;
   const configured = (k: string) => Boolean(String((env as any)[k] || '').trim());
   const lastSuccess = (t: string) => getSetting(db, `integration.${t}.last_success`);
   const status = (target: 'supabase' | 'emqx') => {
@@ -215,6 +216,11 @@ export async function setupStatus(input: {
     { id: 'firmware', label: 'Firmware storage ready', required: true, source: 'supabase',
       status: storage.connected ? 'ok' : 'error', detail: storage.detail,
       last_success: storage.connected ? storage.checkedAt : null },
+    { id: 'auth', label: 'Custom authentication ready', required: true, source: 'supabase',
+      status: authHealth?.pgcrypto ? 'ok' : 'error',
+      detail: authHealth?.pgcrypto
+        ? `${authHealth.accounts ?? 0} accounts · ${authHealth.active_sessions ?? 0} active sessions. Password hashing, sessions, roles and permissions are database-backed.`
+        : 'Enable the pgcrypto extension and run supabase/schema.sql in the Supabase SQL Editor.' },
   ];
   return {
     provider: 'supabase', setup_complete: checklist.every((x) => x.status === 'ok'),
@@ -228,7 +234,7 @@ export async function setupStatus(input: {
       'All settings come from Cloudflare Pages → Settings → Variables and Secrets.',
       'No Cloudflare D1 or R2 binding is required.',
       'Sensitive values are encrypted Cloudflare secrets and are never shown again.',
-      'The first account to sign up becomes the platform owner.',
+      'The first registered account becomes the Platform Owner in a single atomic database transaction.',
     ],
   };
 }

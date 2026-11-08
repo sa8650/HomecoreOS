@@ -1,8 +1,8 @@
 node_modules/
 dist/
-.wrangler/
-.config/
 .npm/
+.config/
+.wrangler/
 .env
 .env.local
 *.local
