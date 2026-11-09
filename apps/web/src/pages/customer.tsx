@@ -5,12 +5,10 @@ import { useAuth } from '../state';
 import {
   Badge, Card, CopyButton, DataTable, EmptyState, Field, Icon, Loading, MiniChart, Modal,
   Notice, PageHead, Progress, Skeleton, Stat, StatusBadge, Tabs, fmt, fmtBytes, timeAgo, timeFull,
-  DEVICE_ICONS, SENSOR_ICONS, ROOM_ICONS,
-} from '../components';
+  DEVICE_ICONS, SENSOR_ICONS, ROOM_ICONS, human } from '../components';
 import { DEVICE_TYPES, SENSOR_CATEGORIES, CHIP_FAMILIES, evaluatePin } from '@homecoreos/core';
 
 function useToast() { return useAuth().toast; }
-const human = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
 function ConfirmModal({ title, text, confirmLabel = 'Delete', danger = true, onConfirm, onClose, children }: {
   title: string; text: string; confirmLabel?: string; danger?: boolean; onConfirm: () => Promise<void> | void; onClose: () => void; children?: React.ReactNode;
@@ -1069,7 +1067,15 @@ export function SettingsPage() {
   const [f, setF] = useState<any>(null);
   const [pw, setPw] = useState({ current_password: '', new_password: '' });
   const [codes, setCodes] = useState<string[] | null>(null);
-  React.useEffect(() => { if (data) setF({ name: data.tenant?.name, timezone: data.tenant?.timezone, address: data.tenant?.address || '', full_name: data.profile?.full_name || '', phone: data.profile?.phone || '' }); }, [data]);
+  // The form is filled in from the server once, and then it belongs to the
+  // person using it. Replacing it on every arrival of new data would throw
+  // away anything that had been typed but not yet saved.
+  const [filled, setFilled] = useState(false);
+  React.useEffect(() => {
+    if (!data || filled) return;
+    setF({ name: data.tenant?.name, timezone: data.tenant?.timezone, address: data.tenant?.address || '', full_name: data.profile?.full_name || '', phone: data.profile?.phone || '' });
+    setFilled(true);
+  }, [data, filled]);
   const exportData = async () => {
     const d = await api.get('/api/export');
     const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });

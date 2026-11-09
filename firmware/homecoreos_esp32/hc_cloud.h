@@ -47,7 +47,6 @@ struct FirmwareOffer {
   String version;
   String url;
   String sha256;
-  String signature;
   String notes;
   uint32_t size = 0;
   bool mandatory = false;
@@ -155,7 +154,6 @@ class CloudClient {
     offer.version = String(d["version"] | "");
     offer.url = String(d["url"] | "");
     offer.sha256 = String(d["sha256"] | "");
-    offer.signature = String(d["signature"] | "");
     offer.notes = String(d["notes"] | "");
     offer.size = d["size_bytes"] | 0u;
     offer.mandatory = d["mandatory"] | false;

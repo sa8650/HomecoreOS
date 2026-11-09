@@ -45,7 +45,7 @@ Open **Setup status** (in the owner console) once after every deployment.
 
 Two values are optional and are reported honestly when absent:
 
-- **Firmware signing** (`FW_SIGNING_PUBKEY`) — without it the console says *signing key not configured* and never claims a signature was verified.
+- **Firmware integrity** — the SHA-256 digest of every image. There is no signing key: nothing has to be configured, and the console recomputes the digest from the uploaded bytes before it accepts a package.
 - **EMQX device authentication** — the **Broker** page has a self-check that proves, step by step, that the broker accepts a controller's own credentials and only its own topics.
 
 ---
@@ -137,7 +137,6 @@ The owner console will not:
 
 - claim a firmware release is verified when a check failed — it is stored as a draft with the reasons listed;
 - report a storage round trip as verified when it did not happen;
-- report a signature as valid when no key is configured;
 - invent a pin map for a board that has none;
 - install a release on a controller whose board model it does not support;
 - delete a release while an update is running on a controller.

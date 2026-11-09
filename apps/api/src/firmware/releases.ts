@@ -4,8 +4,11 @@
  * One verified artifact serves both delivery paths: the browser flasher
  * downloads it, and the controller downloads the same bytes over HTTPS. An
  * artifact is only published when its structure, checksum and board
- * compatibility have been verified server-side; the ESP32 verifies the checksum
- * and signature again before it boots into it.
+ * compatibility have been verified server-side; the ESP32 verifies the same
+ * SHA-256 digest again before it boots into it.
+ *
+ * There is no firmware signing. Integrity is the SHA-256 digest, which is
+ * recomputed on upload, on read-back from storage and on the controller.
  */
 import type { Runtime } from '../services/runtime';
 import { HttpError } from '../context';
@@ -18,10 +21,8 @@ import {
 } from '../artifacts/image';
 import { signatureMatches } from '../storage/signed-url';
 import { readArchive, inspectPackage, PackageReport } from '../artifacts/package';
-import { fromB64 } from '../crypto';
 
 export const ALLOWED_CHANNELS = ['stable', 'beta', 'dev'] as const;
-export const SIGNING_ALGORITHMS = ['ecdsa-p256-sha256', 'ed25519'] as const;
 
 /**
  * Where each artifact kind is written in flash.
@@ -202,42 +203,6 @@ export async function createRelease(rt: Runtime, input: UploadInput, actorProfil
 
 /* ------------------------------------------------------- release packages -- */
 
-/**
- * Verify a detached Ed25519 signature over the lowercase hex SHA-256 of an
- * application image, the same message the controller verifies after streaming
- * the download.
- *
- * `publicKeyB64` is the configured signing key (Cloudflare Pages variable
- * `FW_SIGNING_PUBKEY`, base64 of the raw 32-byte key). When no key is configured
- * the result is `null`, which the console shows as "signing key not configured"
- * - it is never reported as a passing check.
- */
-export async function verifyEd25519(
-  signatureB64: string,
-  message: Uint8Array,
-  publicKeyB64: string,
-): Promise<boolean | null> {
-  const key = String(publicKeyB64 || '').trim();
-  if (!key) return null;
-  let raw: Uint8Array;
-  let sig: Uint8Array;
-  try {
-    raw = fromB64(key);
-    sig = fromB64(signatureB64.replace(/\s+/g, ''));
-  } catch {
-    return false;
-  }
-  if (raw.byteLength !== 32 || sig.byteLength !== 64) return false;
-  try {
-    const algorithm = { name: 'Ed25519' } as any;
-    const cryptoKey = await crypto.subtle.importKey('raw', raw as BufferSource, algorithm, false, ['verify']);
-    return await crypto.subtle.verify(algorithm, cryptoKey, sig as BufferSource, message as BufferSource);
-  } catch {
-    // A runtime without Ed25519 (older Node) cannot check the signature.
-    return null;
-  }
-}
-
 export interface PackageUploadInput {
   bytes: Uint8Array;
   status: string;
@@ -252,9 +217,8 @@ export interface PackageUploadInput {
  * for over-the-air updates and the merged USB factory image.
  *
  * Nothing in the ZIP is trusted: the archive is re-read here, every checksum is
- * recomputed, both images are inspected structurally, and the Ed25519 signature
- * is checked against the configured public key. A package that fails any check is
- * stored as a draft with the reasons attached, never as published.
+ * recomputed and both images are inspected structurally. A package that fails
+ * any check is stored as a draft with the reasons attached, never as published.
  */
 /** Channel values the table accepts. An unknown value falls back to stable. */
 export function normaliseChannel(value: unknown): 'stable' | 'beta' | 'dev' {
@@ -358,7 +322,6 @@ export async function createPackageRelease(
   rt: Runtime,
   input: PackageUploadInput,
   actorProfileId: string,
-  signingPublicKey: string,
 ) {
   const entries = readArchive(input.bytes);
   const catalog = await rt.db.select<any>('board_catalog', { eq: { active: true } });
@@ -382,20 +345,6 @@ export async function createPackageRelease(
     throw new HttpError(409, `Version ${report.version} already exists in the ${channel} channel. Publish a new version, or archive the old release first.`);
   }
 
-  // Signature outcome: verified true/false when a key is configured, null when not.
-  const signatureOk = report.signature.present
-    ? await verifyEd25519(
-        String(report.signature.value || ''),
-        new TextEncoder().encode(report.app.sha256),
-        signingPublicKey,
-      )
-    : null;
-  if (report.signature.present && signatureOk === false) {
-    report.problems.push('The Ed25519 signature does not match the application image and the configured public key.');
-    report.checks.push({ id: 'signature-match', label: 'Signature matches the image', ok: false, detail: 'verification failed' });
-  } else if (signatureOk === true) {
-    report.checks.push({ id: 'signature-match', label: 'Signature matches the image', ok: true, detail: 'Ed25519 signature verified with the configured public key' });
-  }
   const verified = report.problems.length === 0;
   const wanted = String(input.status || 'draft');
   const status = wanted === 'published' && verified ? 'published' : 'draft';
@@ -464,9 +413,6 @@ export async function createPackageRelease(
     artifact_kind: 'app',
     flash_offset: flashOffsetFor('app'),
     ota_eligible: true,
-    signature: report.signature.present ? report.signature.value : null,
-    signature_alg: report.signature.present ? report.signature.algorithm : null,
-    signed_by_key: report.signature.publicKey,
   }, [appKey, factoryKey]);
   const factoryRows = await insertRelease(rt, {
     ...common,
@@ -479,8 +425,6 @@ export async function createPackageRelease(
     artifact_kind: 'factory',
     flash_offset: flashOffsetFor('factory'),
     ota_eligible: false,
-    signature: null,
-    signature_alg: null,
   }, [appKey, factoryKey]);
 
   await rt.db.insert('audit_logs', {
@@ -491,7 +435,6 @@ export async function createPackageRelease(
       version: report.version, channel, status,
       app: { sha256: report.app.sha256, size: report.app.bytes.byteLength },
       factory: { sha256: report.factory.sha256, size: report.factory.bytes.byteLength },
-      signature: { present: report.signature.present, verified: signatureOk },
       boards: boardModels, problems: report.problems,
     },
   }).catch(() => {});
@@ -503,7 +446,6 @@ export async function createPackageRelease(
     channel,
     name: input.name || report.name,
     board_models: boardModels,
-    signature: { present: report.signature.present, algorithm: report.signature.algorithm, verified: signatureOk },
     checks: report.checks,
     problems: report.problems,
     releases: [
@@ -529,14 +471,13 @@ async function storeVerified(rt: Runtime, key: string, bytes: Uint8Array, expect
 
 /**
  * Issue an OTA command for one controller. Compatibility, publication state and
- * signature presence are all checked here; the controller then re-verifies the
- * bytes it receives.
+ * artifact validation are all checked here; the controller then re-verifies the
+ * SHA-256 of the bytes it receives.
  */
 export async function queueOta(rt: Runtime, input: {
   releaseId: string;
   boardId: string;
   ip: string;
-  allowUnsigned: boolean;
 }): Promise<Record<string, unknown>> {
   const releases = await rt.db.select<any>('firmware_releases', { eq: { id: input.releaseId }, limit: 1 });
   const release = releases[0];
@@ -546,9 +487,6 @@ export async function queueOta(rt: Runtime, input: {
     throw new HttpError(409, 'A factory image can only be installed over USB, not over the air');
   }
   if (!release.artifact_verified) throw new HttpError(409, 'This release has not passed artifact validation');
-  if (!release.signature && !input.allowUnsigned) {
-    throw new HttpError(409, 'This release has no signature and signing is required');
-  }
   const boards = await rt.db.select<any>('user_boards', { eq: { id: input.boardId }, isNull: ['deleted_at'], limit: 1 });
   const board = boards[0];
   if (!board) throw new HttpError(404, 'Controller not found');
@@ -575,7 +513,6 @@ export async function queueOta(rt: Runtime, input: {
     release_id: release.id,
     version: release.version,
     sha256: release.sha256,
-    signature: release.signature,
     size_bytes: release.size_bytes,
     board_id: board.id,
     device_id: board.device_id,
@@ -589,7 +526,6 @@ export async function queueOta(rt: Runtime, input: {
       action: 'update_firmware',
       version: release.version,
       sha256: release.sha256,
-      signature: release.signature || '',
       size_bytes: release.size_bytes,
       expires_at: Math.floor(Date.now() / 1000) + 900,
     },
@@ -662,8 +598,6 @@ export async function firmwareCheck(rt: Runtime, device: DeviceRecord, origin: s
     notes: latest.notes,
     size_bytes: latest.size_bytes,
     sha256: latest.sha256,
-    signature: latest.signature,
-    signature_alg: latest.signature_alg,
     mandatory: !!latest.mandatory,
     url: `${origin}/api/device/firmware-download?release=${encodeURIComponent(String(latest.id))}`,
     installed: running,
@@ -673,7 +607,7 @@ export async function firmwareCheck(rt: Runtime, device: DeviceRecord, origin: s
 /**
  * Install package handed to the customer console: version, size, checksum and an
  * expiring download path. Nothing here is trusted after the fact - the download
- * route re-checks the release state, the signature and the digest.
+ * route re-checks the release state and the digest.
  */
 export async function installPackage(rt: Runtime, releaseId: string, _origin: string) {
   const releases = await rt.db.select<any>('firmware_releases', { eq: { id: releaseId }, limit: 1 });
@@ -693,8 +627,6 @@ export async function installPackage(rt: Runtime, releaseId: string, _origin: st
     chip_id: release.chip_family_target ? CHIP_IDS[release.chip_family_target] ?? null : null,
     size_bytes: Number(release.size_bytes || 0),
     sha256: release.sha256,
-    signature_present: !!release.signature,
-    signature_alg: release.signature_alg,
     ota_eligible: !!release.ota_eligible,
     // Read from the record, not guessed from the artifact kind: the browser
     // installer writes these bytes to exactly this address, so the stored value is

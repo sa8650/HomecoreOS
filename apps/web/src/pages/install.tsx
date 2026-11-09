@@ -28,7 +28,7 @@ type Catalog = {
   install: Array<{
     id: string; version: string; name: string; notes: string | null; channel: string;
     artifact_kind: string; chip_family: string; chip_id: number | null;
-    size_bytes: number; sha256: string; signature_present: boolean; signature_alg: string | null;
+    size_bytes: number; sha256: string;
     flash_offset: number; published_at: string; url: string;
   }>;
   usb_installer: { flash_size_mb: number; requires_https: boolean; requires_chrome_or_edge: boolean; note: string };
@@ -127,7 +127,6 @@ function UsbInstallModal({ pkg, onClose }: { pkg: Catalog['install'][number]; on
           <dt>Chip</dt><dd>{pkg.chip_family}</dd>
           <dt>Size</dt><dd>{fmtBytes(pkg.size_bytes)}</dd>
           <dt>Checksum</dt><dd className="mono tiny" style={{ wordBreak: 'break-all' }}>{pkg.sha256}</dd>
-          <dt>Signature</dt><dd>{pkg.signature_present ? <Badge tone="on" icon="shieldOk">{pkg.signature_alg}</Badge> : <Badge tone="warn">Unsigned build</Badge>}</dd>
         </div>
         <div className="tiny" style={{ marginTop: 10 }}>{mode.detail}</div>
         <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -216,7 +215,7 @@ function OtaModal({ controller, onClose, onDone }: { controller: ControllerEntry
     {latest?.notes && <div style={{ marginTop: 12 }}><h4 style={{ fontSize: 13, marginBottom: 4 }}>What changed in {latest.version}</h4>
       <p className="tiny" style={{ lineHeight: 1.7 }}>{latest.notes}</p></div>}
     <div style={{ marginTop: 14 }}><Notice tone="info" title="How the update runs">
-      The controller downloads the image over HTTPS, checks the SHA-256{latest?.signature_present ? ' and the detached signature' : ''}, writes it to the inactive slot and reboots into it. If it cannot connect after the update it returns to the version running now.
+      The controller downloads the image over HTTPS, checks the SHA-256, writes it to the inactive slot and reboots into it. If it cannot connect after the update it returns to the version running now.
     </Notice></div>
     {controller.status !== 'online' && <div style={{ marginTop: 12 }}><Notice tone="warn" title="The controller is not online">
       An update waits until the controller connects. Power and Wi-Fi must be available for the download to finish.

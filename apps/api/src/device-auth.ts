@@ -89,7 +89,3 @@ export async function resetPairingFailures(rt: Runtime, ip: string) {
 export function originOf(c: any): string {
   return new URL(c.req.url).origin;
 }
-
-export function absoluteUrl(origin: string, path: string): string {
-  return /^https?:\/\//.test(path) ? path : `${origin}${path.startsWith('/') ? '' : '/'}${path}`;
-}

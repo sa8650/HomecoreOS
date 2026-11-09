@@ -22,8 +22,8 @@
  *  - local safety rules and actuator control never depend on the network;
  *  - a command is ignored after its expiry and only acted on once;
  *  - a configuration update is validated first and applied atomically;
- *  - firmware is updated in the inactive slot, checksummed and signature-checked,
- *    and the previous image is restored when the new one fails its health check.
+ *  - firmware is updated in the inactive slot, checksum-verified, and the
+ *    previous image is restored when the new one fails its health check.
  */
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -40,7 +40,6 @@
 #include "hc_mqtt.h"
 #include "hc_ota.h"
 #include "hc_portal.h"
-#include "hc_signature.h"
 #include "hc_state.h"
 #include "hc_time.h"
 #include "hc_wifi.h"
@@ -278,7 +277,6 @@ void handleCommand(const char *payload) {
     OtaRequest request;
     request.url = String(d["url"] | "");
     request.sha256 = String(d["sha256"] | "");
-    request.signature = String(d["signature"] | "");
     request.version = String(d["version"] | "");
     request.size = d["size_bytes"] | 0u;
     String error;
@@ -429,7 +427,6 @@ void checkForFirmware() {
   OtaRequest request;
   request.url = offer.url;
   request.sha256 = offer.sha256;
-  request.signature = offer.signature;
   request.version = offer.version;
   request.size = offer.size;
   String error;
@@ -461,7 +458,6 @@ void reportPresence() {
   d["wifi_state"] = wifi.phaseName();
   d["boot_count"] = bootCount;
   d["unsupported_sensors"] = (uint32_t)model.unsupportedCount;
-  d["signing"] = signingConfigured() ? kSigningAlg : "not_configured";
   publishDoc(TopicKind::Availability, d);
   lastPresenceMs = millis();
 }

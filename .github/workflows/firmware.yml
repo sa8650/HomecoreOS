@@ -1,10 +1,13 @@
 name: Firmware
 # Compiles the ESP32-S3 (N16R8) controller image and publishes one release ZIP
-# holding the OTA application image, the merged USB factory image, manifest.json,
-# SHA256SUMS.txt and - when a signing key is configured - a detached Ed25519
-# signature. Nothing is deployed from here: Cloudflare Pages keeps deploying the
-# site through the existing GitHub integration, and the owner uploads the ZIP in
-# Owner Console -> Firmware Management -> Upload release package.
+# holding the OTA application image, the merged USB factory image, manifest.json
+# and SHA256SUMS.txt. Nothing is deployed from here: Cloudflare Pages keeps
+# deploying the site through the existing GitHub integration, and the owner
+# uploads the ZIP in Owner Console -> Firmware Management -> Upload release.
+#
+# There is no signing step. Integrity is enforced with the SHA-256 of each
+# image, which the Owner Console recomputes on upload and the controller
+# verifies before it boots an update.
 on:
   workflow_dispatch:
     inputs:
@@ -53,16 +56,13 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       # The version, the API origin and the TLS trust anchors are compiled in from
-      # a generated header. HC_FW_PUBKEY is the Ed25519 public key the controller
-      # uses to verify an update; leave it unset and the firmware reports
-      # "signing key not configured" instead of trusting anything.
+      # a generated header. There is no signing key: update integrity is enforced
+      # with the SHA-256 of the image.
       - name: Generate the build header
         run: node scripts/firmware/hc_build.mjs
         env:
           HC_FW_VERSION: ${{ env.VERSION }}
           HC_API_BASE: https://homecoreos.pages.dev
-          HC_FW_PUBKEY: ${{ vars.HC_FW_PUBKEY }}
-          HC_FW_SIGNING_ALG: ${{ vars.HC_FW_SIGNING_ALG || 'none' }}
 
       - uses: arduino/setup-arduino-cli@v2
 
@@ -78,28 +78,15 @@ jobs:
         run: arduino-cli compile --fqbn "$FQBN" --build-path "$RUNNER_TEMP/build" "$SKETCH"
 
       # One script builds the merged image, the manifest, the checksums and the
-      # ZIP, so the same code runs locally and here. A signing key is only written
-      # from the FW_SIGNING_KEY secret when it is configured.
+      # ZIP, so the same code runs locally and here.
       - name: Build the release package
         run: |
           set -euo pipefail
-          KEY_ARGS=""
-          if [ -n "${FW_SIGNING_KEY:-}" ]; then
-            KEY_FILE="$RUNNER_TEMP/signing-key.pem"
-            printf '%s' "$FW_SIGNING_KEY" > "$KEY_FILE"
-            KEY_ARGS="--sign-key $KEY_FILE"
-          else
-            echo "::notice::FW_SIGNING_KEY is not set, so the release is unsigned. The console will report 'signing key not configured'."
-          fi
           node scripts/firmware/hc_package.mjs \
             --build "$RUNNER_TEMP/build" \
             --out "$RUNNER_TEMP/release/homecoreos-$VERSION.zip" \
             --version "$VERSION" \
-            --channel "$CHANNEL" \
-            $KEY_ARGS
-          rm -f "$RUNNER_TEMP/signing-key.pem"
-        env:
-          FW_SIGNING_KEY: ${{ secrets.FW_SIGNING_KEY }}
+            --channel "$CHANNEL"
 
       - name: Verify the package the way the server will
         run: |
@@ -109,24 +96,62 @@ jobs:
           shasum -a 256 -c homecoreos-$VERSION.zip.sha256
           python3 - <<'PY'
           import json, struct, zipfile, hashlib, sys, os
+
+          APP_DESC_MAGIC = 0xABCD5432
+          APP_DESC_OFFSET = 0x20
+          DROM_LOAD_ADDR = 0x3F400020
+
+          def has_app_descriptor(b):
+              """True when the image carries the ESP application descriptor.
+
+              The descriptor is not at a fixed file offset. ESP-IDF links it into
+              the .flash.appdesc section, the first thing in the DROM segment, and
+              the MMU mapping header in front of it takes the first 0x20 bytes. The
+              IROM segment is normally emitted first, so the descriptor usually
+              sits well past offset 0x20 of the file.
+              """
+              segments = []
+              cursor = 24
+              while cursor + 8 <= len(b):
+                  addr, length = struct.unpack_from('<II', b, cursor)
+                  if length == 0 or cursor + 8 + length > len(b):
+                      break
+                  segments.append((addr, cursor + 8))
+                  cursor += 8 + length
+              drom = next((s for s in segments if s[0] == DROM_LOAD_ADDR), None)
+              if drom is None:
+                  drom = next((s for s in segments
+                               if s[1] + APP_DESC_OFFSET + 4 <= len(b)
+                               and struct.unpack_from('<I', b, s[1] + APP_DESC_OFFSET)[0] == APP_DESC_MAGIC), None)
+              if drom is not None:
+                  off = drom[1] + APP_DESC_OFFSET
+                  if off + 4 <= len(b) and struct.unpack_from('<I', b, off)[0] == APP_DESC_MAGIC:
+                      return True
+              return len(b) >= APP_DESC_OFFSET + 4 and struct.unpack_from('<I', b, APP_DESC_OFFSET)[0] == APP_DESC_MAGIC
+
           path = [f for f in os.listdir('.') if f.endswith('.zip')][0]
           z = zipfile.ZipFile(path)
           assert z.testzip() is None, "the ZIP is corrupt"
           names = set(z.namelist())
           assert 'manifest.json' in names, "manifest.json is missing"
+          assert 'homecoreos-ota.bin' in names, "homecoreos-ota.bin is missing"
+          assert 'homecoreos-factory.bin' in names, "homecoreos-factory.bin is missing"
+          assert not any(n.endswith('.sig') for n in names), "the package must not contain a signature file"
           m = json.loads(z.read('manifest.json'))
           app = z.read(m['artifacts']['app']['file'])
           usb = z.read(m['artifacts']['factory']['file'])
           assert hashlib.sha256(app).hexdigest() == m['artifacts']['app']['sha256'], "app checksum mismatch"
           assert hashlib.sha256(usb).hexdigest() == m['artifacts']['factory']['sha256'], "usb checksum mismatch"
+          assert m['artifacts']['app']['flash_offset'] == 0x10000, "the app image must be flashed at 0x10000"
+          assert m['artifacts']['factory']['flash_offset'] == 0, "the factory image must be flashed at 0x0"
           assert app[0] == 0xE9, "app image has no ESP32 magic"
           assert (app[12] | (app[13] << 8)) == 9, "app image does not target ESP32-S3"
-          assert struct.unpack_from('<I', app, 0x20)[0] == 0xABCD5432, "app descriptor missing"
+          assert has_app_descriptor(app), "app descriptor missing"
           assert usb[0] == 0xE9, "no bootloader at 0x0 in the USB image"
           assert usb[0x8000:0x8002] == b'\xaa\x50', "no partition table at 0x8000"
           assert usb[0x10000:0x10000 + len(app)] == app, "the USB image carries a different application"
           assert b'hcver:' + m['version'].encode() in app, "the image is not stamped with the release version"
-          print(f"package ok: {m['version']} ({m['signature']['state']}), app {len(app)} B, usb {len(usb)} B, {len(names)} files")
+          print(f"package ok: {m['version']}, app {len(app)} B, usb {len(usb)} B, {len(names)} files")
           PY
 
       - uses: actions/upload-artifact@v4
@@ -147,15 +172,15 @@ jobs:
 
             **Download `homecoreos-${{ env.VERSION }}.zip` and upload it in the Owner Console:**
 
-            1. Open the Owner Console → Firmware Management → Upload release package.
-            2. Choose this ZIP. The console checks the manifest, both images, the checksums and the signature before it stores anything.
+            1. Open the Owner Console → Firmware Management → Upload release.
+            2. Choose this ZIP. The console checks the manifest, both images and the checksums before it stores anything.
             3. Review the checks, then publish.
 
             The ZIP contains:
 
-            - `homecoreos-${{ env.VERSION }}-app.bin` — application image, used for wireless OTA updates.
-            - `homecoreos-${{ env.VERSION }}-usb.bin` — merged USB factory image for the in-browser installer and recovery.
-            - `manifest.json`, `SHA256SUMS.txt` — versions, sizes and checksums (and the signature when one is configured).
+            - `homecoreos-ota.bin` — application image, used for wireless OTA updates and USB installs at `0x10000`.
+            - `homecoreos-factory.bin` — merged USB factory image for the in-browser installer and recovery, written at `0x0`.
+            - `manifest.json`, `SHA256SUMS.txt` — versions, sizes, flash offsets and SHA-256 checksums.
 
             The `.zip.sha256` file lets you confirm the download:
             `shasum -a 256 -c homecoreos-${{ env.VERSION }}.zip.sha256`

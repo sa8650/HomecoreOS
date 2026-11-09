@@ -28,8 +28,25 @@ export interface RequestContext extends Actor {
   member: any;
 }
 
+/**
+ * Whether the session cookie may carry the Secure flag.
+ *
+ * A Secure cookie is only stored by a browser over HTTPS, so marking it Secure
+ * on a plain-HTTP request makes the session silently unusable there. Cloudflare
+ * Pages serves the console over HTTPS, so production always gets the Secure
+ * flag; a local HTTP origin does not, which keeps the console usable while
+ * developing. HttpOnly and SameSite are unconditional.
+ */
+export function secureCookie(c: Context): boolean {
+  const url = c?.req?.url || '';
+  if (/^https:/i.test(url)) return true;
+  const proto = (c?.req?.header?.('X-Forwarded-Proto') || '').split(',')[0]?.trim() || '';
+  if (proto) return proto.toLowerCase() === 'https';
+  return false;
+}
+
 export function clearSessionCookie(c: Context) {
-  deleteCookie(c, SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Lax' });
+  deleteCookie(c, SESSION_COOKIE, { path: '/', secure: secureCookie(c), sameSite: 'Lax' });
 }
 
 export async function actor(c: Context): Promise<Actor> {

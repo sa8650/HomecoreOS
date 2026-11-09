@@ -183,7 +183,6 @@ If a step fails, the run page shows the exact line. Nothing has been published a
    | Checksums match the files | Nothing was altered after the build |
    | Board compatibility | The models named exist in the board catalog |
    | Hardware configuration | The build is for 16 MB flash |
-   | Detached signature | Signed with your key, or honestly reported as unsigned |
 
 5. If every check passes, the release is stored and — when you chose it — published. If a check fails, the release is saved as a **draft** only and the dialog lists every reason. Fix the cause in a new build; never edit the ZIP by hand.
 
@@ -196,7 +195,7 @@ The ZIP holds two images, and the console keeps them apart:
 
 1. Open the release and click **Assign**.
 2. Tick the compatible controllers, or choose **all compatible controllers**, and send.
-3. Each controller downloads the image over HTTPS from the private bucket, verifies the SHA-256 (and the Ed25519 signature when a key is configured), writes it to the inactive slot, reboots, and only reports success once it reconnects and states the new version.
+3. Each controller downloads the image over HTTPS from the private bucket, verifies the SHA-256, writes it to the inactive slot, reboots, and only reports success once it reconnects and states the new version.
 4. **Update history** shows queued, downloading, installing, verifying, successful, failed and rolled-back results exactly as controllers report them. Nothing is simulated, and a failed report is never shown as a success.
 
 ### Step 4 — Managing releases
@@ -206,17 +205,20 @@ The ZIP holds two images, and the console keeps them apart:
 - **Download** gives you the stored bytes back; the server re-verifies the checksum first.
 - **Delete** removes metadata and the stored file. Type `DELETE` to confirm. A release with an update in progress cannot be deleted.
 
-### Optional — sign releases (Ed25519)
+### Firmware integrity — no signing keys
 
-Signing is optional, and the console never pretends it is on. Two values, both optional:
+Firmware releases are **not signed**, and no key has to be configured anywhere. Integrity
+comes from the SHA-256 digest of every image:
 
-| Where | Name | What it is |
-| --- | --- | --- |
-| GitHub → **Settings → Secrets and variables → Actions → Secrets** | `FW_SIGNING_KEY` | The Ed25519 **private** key, PEM, PKCS#8 (`-----BEGIN PRIVATE KEY-----`). Used only by the Firmware workflow to sign the image digest. |
-| GitHub → **Settings → Secrets and variables → Actions → Variables** | `HC_FW_PUBKEY` | The base64 (44 characters, ends in `=`) of the raw 32-byte **public** key. Compiled into the firmware. |
-| Cloudflare Pages → **Settings → Variables and Secrets** | `FW_SIGNING_PUBKEY` | The same base64 public key as a plain variable. Lets the console verify a package at upload time. |
+- GitHub Actions computes the digest of each image and writes it into `manifest.json`
+  and `SHA256SUMS.txt`;
+- the Owner Console recomputes the digest from the uploaded bytes and refuses a package
+  whose digest does not match;
+- the controller recomputes the digest of the image it downloads before it boots it.
 
-Generate the pair once, on a machine you trust, and keep the private key only in GitHub. Without these values the firmware reports `signing key not configured`, the console says `Unsigned · signing key not configured`, and nothing claims a signature was verified. Controllers still verify the SHA-256 of every download.
+There is no `FW_SIGNING_KEY`, no `FW_SIGNING_PUBKEY`, no `HC_FW_PUBKEY` and no `.sig`
+file. If you added any of those to GitHub, Cloudflare Pages or your environment, delete
+them: nothing reads them.
 
 ### Device connection (Customer Console)
 
@@ -247,7 +249,6 @@ Use **Appearance** in the top bar of either console to choose **Use system setti
 
 - One private **Cloudflare R2 bucket** and its native **`FIRMWARE_BUCKET` binding** under **Settings → Functions → R2 bucket bindings**.
 - Seven encrypted Cloudflare Pages secrets and `NODE_VERSION=20`.
-- Optionally one plain Pages variable, `FW_SIGNING_PUBKEY`, and the matching GitHub values `FW_SIGNING_KEY` (secret) and `HC_FW_PUBKEY` (variable), if you want signed firmware releases.
 
 ## You do NOT need any of these
 
@@ -277,6 +278,6 @@ Use **Appearance** in the top bar of either console to choose **Use system setti
 | Firmware test fails with a missing-object or permission error | Confirm the bucket still exists in the same Cloudflare account, that its name is selected in the binding, and that the binding is attached to the deployed environment. Redeploy, then test again. |
 | Firmware upload says storage is not configured | Attach the `FIRMWARE_BUCKET` binding and redeploy, or use the private Supabase Storage fallback. The console will still report the binding as **missing** until the round-trip test passes. |
 | Storage test passes but a package upload fails | Read the checklist in the dialog. The usual causes are a still-zipped folder instead of the release ZIP, a version that already exists on that channel, or an edited file whose checksum no longer matches `manifest.json`. |
-| The dialog says the signature is invalid | The ZIP was signed with a different key than `FW_SIGNING_PUBKEY`, or the image was modified after signing. Rebuild and upload again. |
+| The dialog says the checksum does not match | The ZIP was modified after GitHub Actions built it, or it was uploaded from somewhere other than the build. Download the release again from GitHub Actions and upload it unchanged. |
 | A controller stays on the old version after an update | Open the controller's update history: it shows the stage that failed and the reason the controller itself reported. A controller that cannot reconnect on the new image returns to the previous one by design. |
 | Devices cannot connect | Use the bare broker hostname and port `8883`, with TLS enabled. No `mqtts://` prefix in `EMQX_BROKER_HOST`. |

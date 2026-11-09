@@ -10,17 +10,14 @@
  *      descriptor) and reads its stamped version from the "hcver:" marker;
  *   3. writes the merged USB factory image: bootloader at 0x0, partition table at
  *      0x8000, OTA data at 0xE000 and the same application at 0x10000;
- *   4. writes manifest.json from the bytes on disk, SHA256SUMS.txt for both images,
- *      and an Ed25519 signature over the application digest when a signing key is
- *      supplied;
+ *   4. writes manifest.json and SHA256SUMS.txt from the bytes on disk;
  *   5. writes one ZIP holding all of it, ready to upload in Firmware Management.
  *
- * A signing key is optional: with `--sign-key <pkcs8.pem>` the package is signed
- * and the signature is verified again before it is written. Without a key the
- * manifest says "unsigned" and the console reports "signing key not configured".
- * Nothing is ever marked as verified on its own.
+ * There is no signing step. The package carries the SHA-256 of each image, and
+ * the Owner Console recomputes and checks those digests when the ZIP is
+ * uploaded. The controller verifies the same digest before it boots an update.
  */
-import { createHash, createPrivateKey, createPublicKey, sign as cryptoSign, verify } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
@@ -28,12 +25,48 @@ const PACKAGE_FORMAT = 1;
 const MAX_APP_BYTES = 3 * 1024 * 1024;
 const MAX_MERGED_BYTES = 8 * 1024 * 1024;
 const BOARD_MODELS = ['espressif.esp32-s3-devkitc-1.n16r8', 'espressif.esp32-s3-devkitc-1.v1.1'];
+const APP_DESC_MAGIC = 0xabcd5432;
+const APP_DESC_OFFSET = 0x20;
+const DROM_LOAD_ADDR = 0x3f400020;
 const FLASH = {
   bootloader: 0x0,
   partitions: 0x8000,
   ota_data: 0xe000,
   app: 0x10000,
 };
+
+/**
+ * The offset of the ESP application descriptor inside the image, or null.
+ *
+ * The descriptor is not at a fixed file offset. ESP-IDF links it into the
+ * `.flash.appdesc` section, which is the first thing in the DROM segment, and
+ * the MMU mapping header in front of it takes the first 0x20 bytes. The IROM
+ * segment is normally emitted first, so the descriptor usually sits well past
+ * offset 0x20 of the file. The segment table is walked to find it and the
+ * magic word confirms the match.
+ */
+function findAppDescriptorOffset(bytes) {
+  const segments = [];
+  let cursor = 24;
+  while (cursor + 8 <= bytes.length) {
+    const addr = bytes.readUInt32LE(cursor);
+    const length = bytes.readUInt32LE(cursor + 4);
+    if (length === 0 || cursor + 8 + length > bytes.length) break;
+    segments.push({ addr, fileOffset: cursor + 8, length });
+    cursor += 8 + length;
+  }
+  const drom = segments.find((s) => s.addr === DROM_LOAD_ADDR)
+    ?? segments.find((s) => s.fileOffset + APP_DESC_OFFSET + 4 <= bytes.length
+      && bytes.readUInt32LE(s.fileOffset + APP_DESC_OFFSET) === APP_DESC_MAGIC);
+  if (drom) {
+    const offset = drom.fileOffset + APP_DESC_OFFSET;
+    if (offset + 4 <= bytes.length && bytes.readUInt32LE(offset) === APP_DESC_MAGIC) return offset;
+  }
+  if (bytes.length >= APP_DESC_OFFSET + 4 && bytes.readUInt32LE(APP_DESC_OFFSET) === APP_DESC_MAGIC) {
+    return APP_DESC_OFFSET;
+  }
+  return null;
+}
 
 function arg(name, fallback = null) {
   const index = process.argv.indexOf(`--${name}`);
@@ -46,7 +79,6 @@ const fail = (message) => {
 
 const buildDir = resolve(arg('build', ''));
 const outFile = resolve(arg('out', 'release.zip'));
-const keyPath = arg('sign-key');
 const notesPath = arg('notes');
 if (!buildDir || !existsSync(buildDir)) fail('pass --build <arduino-cli build directory>');
 
@@ -67,7 +99,10 @@ if (app.length > MAX_APP_BYTES) {
 if (app[0] !== 0xe9) fail('the application image has no ESP32 magic byte');
 const chipId = app[12] | (app[13] << 8);
 if (chipId !== 9) fail(`the image targets chip id ${chipId}; this release is for ESP32-S3 (9)`);
-if (app.readUInt32LE(0x20) !== 0xabcd5432) fail('the application image has no application descriptor');
+// The application descriptor is not at a fixed file offset: ESP-IDF puts it at
+// the start of the DROM segment, 0x20 bytes past the segment header because of
+// the MMU mapping header in front of it. The segment table is walked to find it.
+if (findAppDescriptorOffset(app) === null) fail('the application image has no application descriptor');
 
 // The release version is printed at boot as "hcver:<version>" and lives in the
 // image as a plain string. The IDF descriptor is not used: with this core it
@@ -95,35 +130,14 @@ const merged = Buffer.alloc(mergedLength, 0xff);
 for (const [offset, data] of segments) data.copy(merged, offset);
 if (merged[0x8000] !== 0xaa || merged[0x8001] !== 0x50) fail('the merged image has no partition table at 0x8000');
 
-const appName = `homecoreos-${version}-app.bin`;
-const usbName = `homecoreos-${version}-usb.bin`;
+// The two file names are fixed, so the Owner Console and the installer always
+// know which artifact is which:
+//   homecoreos-ota.bin     - the application image, written at 0x10000
+//   homecoreos-factory.bin - the merged USB image, written at 0x0
+const appName = 'homecoreos-ota.bin';
+const usbName = 'homecoreos-factory.bin';
 writeFileSync(join(buildDir, appName), app);
 writeFileSync(join(buildDir, usbName), merged);
-
-/* -------------------------------------------------------------- signature -- */
-
-let signature = null;
-let publicKey = null;
-if (keyPath) {
-  const pem = readFileSync(keyPath, 'utf8');
-  if (!pem.includes('PRIVATE KEY')) fail(`${keyPath} is not a PEM private key`);
-  const key = createPrivateKey(pem);
-  if (key.asymmetricKeyType !== 'ed25519') {
-    fail(`the signing key is ${key.asymmetricKeyType}; releases are signed with Ed25519`);
-  }
-  const spki = createPublicKey(key).export({ format: 'der', type: 'spki' });
-  // An Ed25519 SPKI ends with the raw 32-byte public key.
-  publicKey = Buffer.from(spki.subarray(spki.length - 32)).toString('base64');
-  // The signed message is the lowercase hex SHA-256 of the application image,
-  // which is exactly what the controller has after streaming the download.
-  const message = Buffer.from(sha256(app), 'utf8');
-  signature = cryptoSign(null, message, key).toString('base64');
-  if (!verify(null, message, createPublicKey(key), Buffer.from(signature, 'base64'))) {
-    fail('the signature does not verify with its own public key');
-  }
-}
-const signatureName = signature ? `${appName}.sig` : null;
-if (signature) writeFileSync(join(buildDir, signatureName), `${signature}\n`);
 
 /* --------------------------------------------------------------- manifest -- */
 
@@ -164,17 +178,6 @@ const manifest = {
       description: 'Bootloader, partition table, OTA data page and the application at their flash offsets. First install and recovery over USB. Never installed over the air.',
     },
   },
-  signature: {
-    state: signature ? 'signed' : 'unsigned',
-    algorithm: signature ? 'ed25519' : null,
-    // Base64 of the raw 32-byte public key. Compile the same value into the
-    // firmware (HC_FW_PUBKEY) so the controller can verify an update itself.
-    public_key: publicKey,
-    signed_file: signature ? appName : null,
-    signature_file: signatureName,
-    value: signature,
-    covers: 'the lowercase hex SHA-256 of the application image, as UTF-8 text',
-  },
   notes,
   built_at: new Date().toISOString(),
   builder: process.env.GITHUB_ACTIONS ? `github-actions:${process.env.GITHUB_RUN_ID || ''}` : 'local',
@@ -186,7 +189,6 @@ const sums = [
   `${sha256(merged)}  ${usbName}`,
   `${sha256(readFileSync(join(buildDir, 'manifest.json')))}  manifest.json`,
 ];
-if (signature) sums.push(`${sha256(Buffer.from(signature))}  ${signatureName}`);
 writeFileSync(join(buildDir, 'SHA256SUMS.txt'), `${sums.join('\n')}\n`);
 
 /* -------------------------------------------------------------------- ZIP -- */
@@ -209,7 +211,7 @@ function crc32(buf) {
   return (crc ^ -1) >>> 0;
 }
 
-const names = ['manifest.json', 'SHA256SUMS.txt', appName, usbName].concat(signatureName ? [signatureName] : []);
+const names = ['manifest.json', 'SHA256SUMS.txt', appName, usbName];
 const entries = names.map((name) => ({ name, data: readFileSync(join(buildDir, name)) }));
 
 const now = new Date();
@@ -272,7 +274,6 @@ writeFileSync(`${outFile}.sha256`, `${zipSha}  ${basename(outFile)}\n`);
 
 console.log(`release package ${outFile}`);
 console.log(`  version    ${version}`);
-console.log(`  app image  ${appName}  ${app.length} bytes  ${sha256(app)}`);
-console.log(`  usb image  ${usbName}  ${merged.length} bytes  ${sha256(merged)}`);
-console.log(`  signature  ${signature ? 'ed25519 over the app digest, verified' : 'none - signing key not configured'}`);
+console.log(`  ota image  ${appName}  ${app.length} bytes  ${sha256(app)}  flash_offset 0x${FLASH.app.toString(16)}`);
+console.log(`  factory    ${usbName}  ${merged.length} bytes  ${sha256(merged)}  flash_offset 0x0`);
 console.log(`  zip        ${statSync(outFile).size} bytes  sha256 ${zipSha}`);

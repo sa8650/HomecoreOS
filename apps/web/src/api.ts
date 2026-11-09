@@ -23,13 +23,145 @@ async function request<T = any>(path: string, init: RequestInit = {}): Promise<T
   return data as T;
 }
 
+const inflight = new Map<string, Promise<any>>();
+const cache = new Map<string, { at: number; value: any }>();
+const CACHE_MS = 3000;
+
+/**
+ * Every request that changes something clears the cache, so the console never
+ * shows a value that the server has already moved on from.
+ */
+function invalidateAfterChange() {
+  cache.clear();
+  inflight.clear();
+  // The account details around the console can change too, so they are
+  // fetched again.
+  window.dispatchEvent(new Event('homecoreos:changed'));
+}
+
 export const api = {
   get: <T = any>(p: string) => request<T>(p),
-  post: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
-  patch: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'PATCH', body: JSON.stringify(body) }),
-  put: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'PUT', body: JSON.stringify(body) }),
-  del: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'DELETE', body: body === undefined ? undefined : JSON.stringify(body) }),
+  post: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) })
+    .then((v) => { invalidateAfterChange(); return v; }),
+  patch: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'PATCH', body: JSON.stringify(body) })
+    .then((v) => { invalidateAfterChange(); return v; }),
+  put: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'PUT', body: JSON.stringify(body) })
+    .then((v) => { invalidateAfterChange(); return v; }),
+  del: <T = any>(p: string, body?: unknown) => request<T>(p, { method: 'DELETE', body: body === undefined ? undefined : JSON.stringify(body) })
+    .then((v) => { invalidateAfterChange(); return v; }),
 };
+
+/* ------------------------------------------------------------------ *
+ * A single live-update connection for the whole console.
+ *
+ * Every live-data hook used to open its own server-sent-events stream,
+ * so a page with five hooks opened five connections and aborted all of
+ * them on navigation. One shared connection serves every subscriber and
+ * is opened only while at least one of them is listening.
+ * ------------------------------------------------------------------ */
+
+type LiveListener = () => void;
+
+const liveListeners = new Set<LiveListener>();
+let liveSource: EventSource | null = null;
+let liveRetry: number | null = null;
+let liveRetryDelay = 1000;
+/** Set when the last subscriber leaves, so a page change does not tear the
+ *  connection down and immediately build a new one. */
+let liveIdleTimer: number | null = null;
+
+function startLive() {
+  if (liveSource || typeof EventSource === 'undefined') return;
+  if (liveIdleTimer) { window.clearTimeout(liveIdleTimer); liveIdleTimer = null; }
+  try {
+    liveSource = new EventSource('/api/stream', { withCredentials: true });
+  } catch {
+    // The console still works without live updates; the data simply refreshes
+    // when the page is reloaded or a control is used.
+    return;
+  }
+  liveSource.onmessage = () => {
+    // The server says something changed, so anything already fetched may be
+    // out of date. It is dropped, and each subscriber asks again.
+    cache.clear();
+    window.dispatchEvent(new Event('homecoreos:live'));
+    for (const listener of [...liveListeners]) {
+      try { listener(); } catch { /* a subscriber went away */ }
+    }
+  };
+  liveSource.onerror = () => {
+    // The browser reconnects on its own, but a closed stream does not always
+    // come back, so the connection is rebuilt with a growing delay.
+    if (liveRetry) return;
+    liveRetryDelay = Math.min(liveRetryDelay * 2, 30000);
+    liveRetry = window.setTimeout(() => {
+      liveRetry = null;
+      liveSource?.close();
+      liveSource = null;
+      if (liveListeners.size) startLive();
+    }, liveRetryDelay);
+  };
+  liveSource.onopen = () => { liveRetryDelay = 1000; };
+}
+
+function stopLiveIfIdle() {
+  if (liveListeners.size || !liveSource) return;
+  // A page change replaces one hook with another. Waiting a moment keeps the
+  // single connection alive instead of closing and reopening it.
+  if (liveIdleTimer) window.clearTimeout(liveIdleTimer);
+  liveIdleTimer = window.setTimeout(() => {
+    liveIdleTimer = null;
+    if (liveListeners.size || !liveSource) return;
+    liveSource.close();
+    liveSource = null;
+    if (liveRetry) { window.clearTimeout(liveRetry); liveRetry = null; }
+  }, 1500);
+}
+
+function subscribeLive(listener: LiveListener): () => void {
+  liveListeners.add(listener);
+  startLive();
+  return () => {
+    liveListeners.delete(listener);
+    stopLiveIfIdle();
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Request de-duplication and a short-lived cache.
+ *
+ * Several pages ask for the same resource. Without this, one page visit
+ * sends the same request several times over, and a live event makes every
+ * subscriber refetch. Identical in-flight requests share one response, and
+ * a response is reused for a short moment afterwards.
+ * ------------------------------------------------------------------ */
+
+export function invalidateCache(prefix?: string) {
+  if (!prefix) { cache.clear(); return; }
+  for (const key of [...cache.keys()]) {
+    if (key.startsWith(prefix)) cache.delete(key);
+  }
+}
+
+/**
+ * Fetches a resource, sharing one request between identical callers and
+ * reusing a recent answer.
+ *
+ * `fresh` skips the cache, which is what a control that changes data wants.
+ */
+export async function getCached<T = any>(path: string, fresh = false): Promise<T> {
+  if (!fresh) {
+    const hit = cache.get(path);
+    if (hit && Date.now() - hit.at < CACHE_MS) return hit.value as T;
+    const pending = inflight.get(path);
+    if (pending) return pending as Promise<T>;
+  }
+  const p = request<T>(path)
+    .then((value) => { cache.set(path, { at: Date.now(), value }); return value; })
+    .finally(() => { inflight.delete(path); });
+  inflight.set(path, p);
+  return p as Promise<T>;
+}
 
 /** Fetch + refresh on live events (SSE). The session cookie is sent by the browser. */
 export function useLiveData<T>(path: string | null, deps: unknown[] = []) {
@@ -37,46 +169,33 @@ export function useLiveData<T>(path: string | null, deps: unknown[] = []) {
   const [loading, setLoading] = useState(!!path);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
-  const refresh = useCallback(() => setTick((n) => n + 1), []);
+  /** Counts how many times the page asked for the data to be fetched again.
+   *  A change here means the answer already held is not used. */
+  const [fresh, setFresh] = useState(0);
+  const refresh = useCallback(() => { setFresh((n) => n + 1); setTick((n) => n + 1); }, []);
   const key = JSON.stringify(deps);
+
   useEffect(() => {
     if (!path) { setLoading(false); return; }
     let alive = true;
     setLoading(true);
-    api.get<T>(path).then((d) => { if (alive) { setData(d); setError(null); } })
+    getCached<T>(path, fresh > 0)
+      .then((d) => { if (alive) { setData(d); setError(null); } })
       .catch((e) => { if (alive) setError(e.message); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [path, tick, key]);
+  }, [path, tick, key, fresh]);
+
+  // One shared connection for the whole console. The listener is only
+  // registered while this hook is mounted.
   useEffect(() => {
     if (!path) return;
-    const ctrl = new AbortController();
-    (async () => {
-      try {
-        const res = await fetch('/api/stream', { credentials: 'same-origin', signal: ctrl.signal });
-        if (!res.ok || !res.body) return;
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const parts = buf.split('\n\n');
-          buf = parts.pop() || '';
-          for (const part of parts) {
-            const line = part.split('\n').find((l) => l.startsWith('data: '));
-            if (!line) continue;
-            try {
-              const ev = JSON.parse(line.slice(6));
-              if (ev.type !== 'connected') setTick((n) => n + 1);
-            } catch { /* ignore */ }
-          }
-        }
-      } catch { /* aborted or offline */ }
-    })();
-    return () => ctrl.abort();
+    // The server said something changed, so the answer on screen may be out
+    // of date and is fetched again rather than taken from the cache.
+    const unsubscribe = subscribeLive(() => { setFresh((n) => n + 1); setTick((n) => n + 1); });
+    return unsubscribe;
   }, [path]);
+
   return { data, loading, error, refresh, setData };
 }
 

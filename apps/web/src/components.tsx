@@ -331,6 +331,11 @@ export function DeviceIllustration({ state = 'ready', size = 168 }: {
   );
 }
 
+/** Turns a stored identifier such as `device_type` into readable words. */
+export function human(v: any): string {
+  return String(v ?? '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export function fmt(n: any, digits = 1) {
   if (n === null || n === undefined || n === '') return '—';
   const v = Number(n);

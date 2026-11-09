@@ -36,9 +36,9 @@ const CHANNELS = [
  * Owner Console: upload the release ZIP that GitHub Actions produces.
  *
  * The ZIP is sent to the server unchanged and validated there: the archive is
- * re-read, both images are checked structurally, every checksum is recomputed and
- * the signature is verified with the configured public key. This dialog only shows
- * what came back, step by step, so a failure names the exact reason.
+ * re-read, both images are checked structurally and every checksum is recomputed.
+ * This dialog only shows what came back, step by step, so a failure names the
+ * exact reason.
  */
 function PackageUploadModal({ data, onClose, onDone }: {
   data: OwnerFirmwareOverview; onClose: () => void; onDone: () => void;
@@ -56,7 +56,6 @@ function PackageUploadModal({ data, onClose, onDone }: {
   const [result, setResult] = useState<PackageUploadResult | null>(null);
   const maxBytes = Number(data.limits?.package_max_bytes || 12 * 1024 * 1024);
   const esp32Boards = (data.board_catalog || []).filter((b) => /ESP32-S3/i.test(b.chip_family));
-  const signing = data.signing;
 
   const choose = async (next: File | null) => {
     setError(''); setResult(null); setDigest(''); setFile(next);
@@ -95,7 +94,6 @@ function PackageUploadModal({ data, onClose, onDone }: {
       if (Array.isArray(e?.detail?.problems) && e.detail.problems.length) {
         setResult({
           ok: false, status: 'draft', version: '', channel, name: '', board_models: [],
-          signature: { present: false, algorithm: null, verified: null },
           checks: Array.isArray(e.detail.checks) ? e.detail.checks : [],
           problems: e.detail.problems, releases: [],
         });
@@ -104,7 +102,7 @@ function PackageUploadModal({ data, onClose, onDone }: {
   };
 
   return <Modal title="Upload release package" wide
-    description="Upload the ZIP from GitHub Actions or Releases. The manifest, both images, the checksums and the signature are verified before anything is stored."
+    description="Upload the ZIP from GitHub Actions or Releases. The manifest, both images and the checksums are verified before anything is stored."
     onClose={onClose} footer={<>
       <button className="btn" onClick={onClose} disabled={busy}>{result ? 'Close' : 'Cancel'}</button>
       <button className="btn btn-primary" onClick={upload} disabled={busy || !file}>
@@ -112,17 +110,13 @@ function PackageUploadModal({ data, onClose, onDone }: {
           : <><Icon.cloudUp />{result ? 'Upload again' : 'Upload and validate'}</>}
       </button>
     </>}>
-    {signing && !signing.configured && <Notice tone="warn" title="Signing key not configured">
-      {signing.note}
-    </Notice>}
-
     <div style={{ marginTop: 12 }}>
       <input className="input" type="file" accept=".zip,application/zip"
         onChange={(e) => choose(e.target.files?.[0] || null)} disabled={busy} />
       <div className="tiny" style={{ marginTop: 8 }}>
         Expected inside the ZIP: <code>manifest.json</code>, the OTA image
-        (<code>homecoreos-&lt;version&gt;-app.bin</code>) and the USB image
-        (<code>homecoreos-&lt;version&gt;-usb.bin</code>). Do not unzip or rename anything.
+        (<code>homecoreos-ota.bin</code>) and the USB image
+        (<code>homecoreos-factory.bin</code>). Do not unzip or rename anything.
       </div>
       {file && <div className="card card-pad" style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
         <Icon.box />
@@ -146,11 +140,6 @@ function PackageUploadModal({ data, onClose, onDone }: {
         {result.ok ? <Badge tone="on" icon="check">Every check passed</Badge>
           : <Badge tone="warn" icon="alert">{result.problems.length} check(s) failed</Badge>}
         <Badge tone={result.status === 'published' ? 'on' : 'warn'}>{result.status === 'published' ? 'Published' : 'Saved as draft'}</Badge>
-        {result.signature.present
-          ? <Badge tone={result.signature.verified ? 'on' : result.signature.verified === false ? 'danger' : 'warn'} icon="shieldOk">
-              {result.signature.verified ? 'Signature verified' : result.signature.verified === false ? 'Signature invalid' : 'Signature not checked'}
-            </Badge>
-          : <Badge tone="warn" icon="shieldOk">Unsigned · signing key not configured</Badge>}
       </div>
       <div style={{ display: 'grid', gap: 8 }}>
         {result.checks.map((c) => <div key={c.id} className="check-row"
@@ -391,9 +380,6 @@ function PublishModal({ release, onClose, onDone }: { release: FirmwareRelease; 
         <div><div style={{ fontSize: 13, fontWeight: 600 }}>{c.label}</div><div className="tiny">{c.detail}</div></div>
       </div>)}
     </div>
-    {!release.signature && <Notice tone="warn" title="Unsigned build">
-      Controllers verify the SHA-256 of every download, but a detached signature is what proves the image came from you. Attach one before publishing if signing is enforced in Platform Settings.
-    </Notice>}
     <div style={{ marginTop: 12 }}><Notice tone="info" title={`${compatible} controller model(s) can install this`}>
       Publishing makes the release the latest stable build for those models. Controllers only receive it when someone starts an update from a controller or you send it from here.
     </Notice></div>
@@ -404,7 +390,9 @@ function DeployModal({ release, onClose, onDone }: { release: FirmwareRelease; o
   const toast = useToast();
   const targets = useLiveData<{ controllers: any[]; release: any }>(`/api/owner/firmware/${release.id}/targets`);
   const [selected, setSelected] = useState<string[]>([]);
-  const [all, setAll] = useState(false);
+  // Every compatible controller is offered from the start. The owner unticks
+  // the ones that should be left alone, which is the natural direction.
+  const [all, setAll] = useState(true);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<any>(null);
   const compatible = (targets.data?.controllers || []).filter((c) => c.compatible);
@@ -422,7 +410,10 @@ function DeployModal({ release, onClose, onDone }: { release: FirmwareRelease; o
     onClose={onClose} footer={result ? <button className="btn btn-primary" onClick={onClose}>Done</button> : <>
       <button className="btn" onClick={onClose}>Cancel</button>
       <button className="btn btn-primary" onClick={deploy} disabled={busy || (!all && !selected.length)}>
-        {busy ? <><Icon.loader className="spinner" />Queueing…</> : `Send to ${all ? `${compatible.length} controllers` : `${selected.length || ''} controller${selected.length === 1 ? '' : 's'}`}`}
+        {busy ? <><Icon.loader className="spinner" />Queueing…</>
+          : all ? `Send to ${compatible.length} compatible controller${compatible.length === 1 ? '' : 's'}`
+                : selected.length ? `Send to ${selected.length} controller${selected.length === 1 ? '' : 's'}`
+                : 'Choose a controller'}
       </button></>}>
     {result ? <>
       <div className={`notice ${result.queued ? 'success' : 'warn'}`} style={{ marginBottom: 16 }}>
@@ -491,40 +482,6 @@ function RetireModal({ release, onClose, onDone }: { release: FirmwareRelease; o
   </Modal>;
 }
 
-function SignatureModal({ release, onClose, onDone }: { release: FirmwareRelease; onClose: () => void; onDone: () => void }) {
-  const toast = useToast();
-  const [signature, setSignature] = useState('');
-  const [algorithm, setAlgorithm] = useState(release.signature_alg || 'ecdsa-p256-sha256');
-  const [busy, setBusy] = useState(false);
-  const attach = async () => {
-    setBusy(true);
-    try {
-      await api.post(`/api/owner/firmware/${release.id}/signature`, { signature: signature.trim(), algorithm });
-      toast('Signature attached'); onDone(); onClose();
-    } catch (e: any) { toast(e.message || 'The signature was rejected', 'error'); }
-    finally { setBusy(false); }
-  };
-  return <Modal title="Attach a detached signature" onClose={onClose} footer={<>
-    <button className="btn" onClick={onClose}>Cancel</button>
-    <button className="btn btn-primary" onClick={attach} disabled={busy || signature.trim().length < 40}>
-      <Icon.shieldOk />{busy ? 'Attaching…' : 'Attach signature'}</button>
-  </>}>
-    <Notice tone="info" title="The signature covers the SHA-256 digest">
-      Sign the release digest with the private key that matches the public key compiled into the firmware. Controllers check it before booting the new slot; the private key never leaves your signing machine.
-    </Notice>
-    <div className="code" style={{ margin: '14px 0' }}>SHA-256 {release.sha256}</div>
-    <Field label="Algorithm"><select className="select" value={algorithm} onChange={(e) => setAlgorithm(e.target.value)}>
-      <option value="ecdsa-p256-sha256">ECDSA P-256 / SHA-256</option>
-      <option value="ed25519">Ed25519</option>
-    </select></Field>
-    <Field label="Signature" required hint="Base64 signature of the digest above.">
-      <textarea className="textarea mono" value={signature} onChange={(e) => setSignature(e.target.value)}
-        placeholder="MEUCIQ…" rows={4} />
-    </Field>
-    {release.signature && <div className="tiny">A signature is already attached ({release.signature_alg}); attaching another replaces it.</div>}
-  </Modal>;
-}
-
 function ReleaseDetail({ release, controllers, history, catalog, onClose, onChanged }: {
   release: FirmwareRelease; controllers: OwnerFirmwareOverview['controllers']; history: UpdateHistoryRow[];
   catalog: OwnerFirmwareOverview['board_catalog']; onClose: () => void; onChanged: () => void;
@@ -536,7 +493,6 @@ function ReleaseDetail({ release, controllers, history, catalog, onClose, onChan
   const boardNames = (release.board_models || []).map((id) =>
     catalog.find((b) => b.id === id)?.model || id);
   const rows = useMemo(() => history.filter((h) => h.release_id === release.id), [history, release.id]);
-  const [signing, setSigning] = useState(false);
   const change = async (status: string) => {
     try {
       await api.post(`/api/owner/firmware/${release.id}/status`, { status });
@@ -548,7 +504,6 @@ function ReleaseDetail({ release, controllers, history, catalog, onClose, onChan
     description={release.description || undefined}
     footer={<>
       {release.status !== 'archived' && <button className="btn" onClick={() => change('archived')}><Icon.archive />Archive</button>}
-      <button className="btn" onClick={() => setSigning(true)}><Icon.shieldOk />Signature</button>
       <button className="btn" onClick={onClose}>Close</button>
     </>}>
     <div className="grid grid-2" style={{ alignItems: 'start' }}>
@@ -571,9 +526,6 @@ function ReleaseDetail({ release, controllers, history, catalog, onClose, onChan
           <dt>Downloads</dt><dd>{release.downloads}</dd>
         </div>
         <div className="code" style={{ marginTop: 12, wordBreak: 'break-all' }}>SHA-256 {release.sha256}</div>
-        {release.signature
-          ? <div style={{ marginTop: 10 }}><Badge tone="on" icon="shieldOk">Signed · {release.signature_alg} · {timeAgo(release.signed_at)}</Badge></div>
-          : <div style={{ marginTop: 10 }}><Badge tone="warn" icon="alert">No detached signature</Badge></div>}
       </div>
       <div>
         <h4 style={{ fontSize: 13, marginBottom: 8 }}>Compatibility</h4>
@@ -606,7 +558,6 @@ function ReleaseDetail({ release, controllers, history, catalog, onClose, onChan
       { key: 'status', label: 'Result', render: (h) => <StatusBadge status={h.status} /> },
       { key: 'error', label: 'Detail', render: (h) => <span className="tiny">{h.error || '—'}</span> },
     ]} rows={rows} empty={null} /> : <div className="tiny">No controller has reported an update for this release yet.</div>}
-    {signing && <SignatureModal release={release} onClose={() => setSigning(false)} onDone={onChanged} />}
   </Modal>;
 }
 
@@ -682,7 +633,6 @@ export function OwnerFirmware() {
           <div className="stat-value mono" style={{ fontSize: 22 }}>{latestStable.version}</div>
           <div className="tiny">{latestStable.name} · {fmtBytes(latestStable.size_bytes)} · {timeAgo(latestStable.published_at)}</div>
           <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <Badge tone={latestStable.signature ? 'on' : 'warn'} icon="shieldOk">{latestStable.signature ? 'Signed' : 'Unsigned'}</Badge>
             <Badge tone="on">{latestStable.board_models.length} model(s)</Badge>
           </div>
         </div> : <EmptyState icon="layers" title="Nothing published" text="Publish a release to offer it to controllers and the USB installer." />}
@@ -729,9 +679,8 @@ export function OwnerFirmware() {
             <div className="tiny mono">{r.version} · {r.channel} · {r.artifact_kind === 'factory' ? 'USB' : 'OTA'}</div></div> },
           { key: 'size', label: 'Size', render: (r) => <span className="tiny">{fmtBytes(r.size_bytes)}<br />{r.size_bytes > 3 * 1024 * 1024 ? <Badge tone="danger">Too large</Badge> : null}</span> },
           { key: 'boards', label: 'Models', render: (r) => <span className="tiny">{r.board_models.length}</span> },
-          { key: 'verified', label: 'Validation', render: (r) => <div style={{ display: 'grid', gap: 4 }}>
-            <Badge tone={r.artifact_verified ? 'on' : 'danger'} icon={r.artifact_verified ? 'check' : 'fail'}>{r.artifact_verified ? 'Verified' : 'Failed'}</Badge>
-            <Badge tone={r.signature ? 'on' : 'warn'} icon="shieldOk">{r.signature ? 'Signed' : 'Unsigned'}</Badge></div> },
+          { key: 'verified', label: 'Validation', render: (r) => <Badge tone={r.artifact_verified ? 'on' : 'danger'}
+            icon={r.artifact_verified ? 'check' : 'fail'}>{r.artifact_verified ? 'Verified' : 'Failed'}</Badge> },
           { key: 'deploy', label: 'Installs', render: (r) => <span className="tiny">
             <span style={{ color: 'var(--state-on)' }}>{r.successful} ok</span> · <span style={{ color: 'var(--state-danger)' }}>{r.failed} failed</span> · {r.pending} pending</span> },
           { key: 'status', label: 'Status', render: (r) => <div><StatusBadge status={r.status} />

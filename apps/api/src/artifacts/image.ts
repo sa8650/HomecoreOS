@@ -16,7 +16,18 @@ export const CHIP_IDS: Record<string, number> = {
 };
 
 export const APP_DESC_MAGIC = 0xabcd5432;
+/**
+ * Offset of the application descriptor inside the DROM segment.
+ *
+ * ESP-IDF places `esp_app_desc_t` in the `.flash.appdesc` section, which is the
+ * first thing in the DROM segment. The 0x20 bytes in front of it are the MMU
+ * mapping header, so the descriptor starts 0x20 bytes into that segment.
+ */
 export const APP_DESC_OFFSET = 0x20;
+/** Load address of the DROM/rodata segment, where the descriptor lives. */
+export const DROM_LOAD_ADDR = 0x3f400020;
+/** Load address of the IROM/text segment. */
+export const IROM_LOAD_ADDR = 0x42000020;
 export const IMAGE_CHECKSUM_SEED = 0xef;
 export const MAX_APP_BYTES = 3 * 1024 * 1024;
 
@@ -47,6 +58,71 @@ function readString(bytes: Uint8Array, offset: number, length: number): string {
 }
 
 const VERSION_MARKER = [0x68, 0x63, 0x76, 0x65, 0x72, 0x3a]; // "hcver:"
+
+export interface ImageSegmentInfo {
+  /** Load address of the segment. */
+  addr: number;
+  /** Offset of the segment data within the file. */
+  fileOffset: number;
+  /** Length of the segment data. */
+  length: number;
+}
+
+/**
+ * The segments of an ESP image.
+ *
+ * The file layout is a 24-byte header followed by segments, each of which is an
+ * 8-byte header (4-byte load address, 4-byte length) and then the data. The
+ * walk stops at the first segment that is empty or would run past the end of
+ * the file, exactly as the ROM loader does.
+ */
+export function readSegments(bytes: Uint8Array): ImageSegmentInfo[] {
+  const segments: ImageSegmentInfo[] = [];
+  let cursor = 24;
+  while (cursor + 8 <= bytes.byteLength) {
+    const addr = bytes[cursor]! | (bytes[cursor + 1]! << 8) | (bytes[cursor + 2]! << 16) | (bytes[cursor + 3]! << 24);
+    const length = (bytes[cursor + 4]! | (bytes[cursor + 5]! << 8) | (bytes[cursor + 6]! << 16) | (bytes[cursor + 7]! << 24)) >>> 0;
+    if (length === 0 || cursor + 8 + length > bytes.byteLength) break;
+    segments.push({ addr: addr >>> 0, fileOffset: cursor + 8, length });
+    cursor += 8 + length;
+  }
+  return segments;
+}
+
+/**
+ * The offset of the application descriptor within the file, or null when the
+ * image has no descriptor.
+ *
+ * The descriptor is NOT at a fixed file offset. ESP-IDF puts it at the start
+ * of the DROM segment, 0x20 bytes past the segment header because of the MMU
+ * mapping header that precedes it. The IROM segment normally comes first, so
+ * the descriptor usually sits well past offset 0x20 of the file. The segment is
+ * therefore located by walking the image, and the descriptor is confirmed by
+ * its magic word rather than assumed.
+ */
+export function findAppDescriptorOffset(bytes: Uint8Array): number | null {
+  const segments = readSegments(bytes);
+  // The DROM segment is the one loaded at the flash-mapped rodata address.
+  const drom = segments.find((s) => s.addr === DROM_LOAD_ADDR)
+    // Some images are linked without the standard mapping address, so fall back
+    // to the first segment whose data actually starts with the descriptor.
+    ?? segments.find((s) => s.fileOffset + APP_DESC_OFFSET + 4 <= bytes.byteLength
+      && readUint32LE(bytes, s.fileOffset + APP_DESC_OFFSET) === APP_DESC_MAGIC);
+  if (drom) {
+    const offset = drom.fileOffset + APP_DESC_OFFSET;
+    if (offset + 4 <= bytes.byteLength && readUint32LE(bytes, offset) === APP_DESC_MAGIC) return offset;
+  }
+  // Last resort: the descriptor sits at 0x20 of the file when the image has a
+  // single segment that starts at the DROM address.
+  if (bytes.byteLength >= APP_DESC_OFFSET + 4 && readUint32LE(bytes, APP_DESC_OFFSET) === APP_DESC_MAGIC) {
+    return APP_DESC_OFFSET;
+  }
+  return null;
+}
+
+function readUint32LE(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16) | (bytes[offset + 3]! << 24)) >>> 0;
+}
 
 /**
  * The release version stamped into the image.
@@ -100,15 +176,21 @@ export function inspectAppImage(bytes: Uint8Array): ImageReport {
   if (!report.chipFamily) report.errors.push(`Unknown target chip id ${report.chipId}.`);
 
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (view.getUint32(APP_DESC_OFFSET, true) !== APP_DESC_MAGIC) {
+  // The descriptor is located through the segment table, because its offset
+  // depends on how the image was linked. See findAppDescriptorOffset().
+  const descOffset = findAppDescriptorOffset(bytes);
+  if (descOffset === null || view.getUint32(descOffset, true) !== APP_DESC_MAGIC) {
     report.errors.push('The application descriptor is missing, so this is not an application image.');
     return report;
   }
   const marker = readVersionMarker(bytes);
-  report.appVersion = marker ?? readString(bytes, APP_DESC_OFFSET + 0x10, 32);
+  report.appVersion = marker ?? readString(bytes, descOffset + 0x10, 32);
   report.versionSource = marker ? 'marker' : 'descriptor';
-  report.projectName = readString(bytes, APP_DESC_OFFSET + 0x30, 32);
-  report.idfVersion = readString(bytes, APP_DESC_OFFSET + 0x50, 32);
+  report.projectName = readString(bytes, descOffset + 0x30, 32);
+  // The descriptor layout is ESP-IDF's esp_app_desc_t: the compile time and
+  // the compile date sit between the project name and the IDF version, so
+  // idf_ver is at 0x70 and not at 0x50.
+  report.idfVersion = readString(bytes, descOffset + 0x70, 32);
 
   // Segment walk: each segment is a 4-byte load address, a 4-byte length and the
   // data. The XOR checksum covers the data, seeded with 0xEF.
@@ -152,7 +234,7 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 /**
  * The trailing 32 bytes of an application image are the SHA-256 of everything
  * before them. Comparing that with a freshly computed digest catches a file that
- * was altered after signing or a partial upload.
+ * was altered after the build or a partial upload.
  */
 export async function trailingHashMatches(bytes: Uint8Array): Promise<boolean> {
   if (bytes.byteLength <= 32) return false;

@@ -1,26 +1,44 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './state';
 import { api } from './api';
 import { Icon, PageHead, EmptyState, Loading } from './components';
 import type { IconKey } from './components';
-import {
-  CustomerOverview, RoomsPage, DevicesPage, SwitchesPage, SensorsPage, ControllersPage,
-  BoardLibraryPage, BoardDetailPage, AutomationPage, ActivityPage,
-  StaffPage, SettingsPage,
-} from './pages/customer';
-import {
-  OwnerOverview, OwnerCustomers, OwnerCustomerDetail, OwnerStaff, OwnerEmqx,
-  OwnerUsage, OwnerAudit,
-} from './pages/owner';
-import { OwnerSetup, OwnerIntegrations } from './pages/platform-setup';
-import { OwnerFirmware } from './pages/firmware';
-import { InstallPage } from './pages/install';
-import { OwnerBoards } from './pages/board-admin';
-import { OwnerSettings, OwnerSecurity } from './pages/owner-settings';
-import { SetupWizardPage } from './pages/setup-wizard';
 import { ThemeMenu } from './theme-menu';
 import { getTheme, observeReveals } from './theme';
+
+/* The console has a lot of pages and a person usually visits a few of them.
+   Each page is fetched when it is first needed, so the first screen arrives
+   without the weight of every other page. */
+const CustomerOverview = lazy(() => import('./pages/customer').then((m) => ({ default: m.CustomerOverview })));
+const RoomsPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.RoomsPage })));
+const DevicesPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.DevicesPage })));
+const SwitchesPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.SwitchesPage })));
+const SensorsPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.SensorsPage })));
+const ControllersPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.ControllersPage })));
+const BoardLibraryPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.BoardLibraryPage })));
+const BoardDetailPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.BoardDetailPage })));
+const AutomationPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.AutomationPage })));
+const ActivityPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.ActivityPage })));
+const StaffPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.StaffPage })));
+const SettingsPage = lazy(() => import('./pages/customer').then((m) => ({ default: m.SettingsPage })));
+
+const OwnerOverview = lazy(() => import('./pages/owner').then((m) => ({ default: m.OwnerOverview })));
+const OwnerCustomers = lazy(() => import('./pages/owner').then((m) => ({ default: m.OwnerCustomers })));
+const OwnerCustomerDetail = lazy(() => import('./pages/owner').then((m) => ({ default: m.OwnerCustomerDetail })));
+const OwnerStaff = lazy(() => import('./pages/owner').then((m) => ({ default: m.OwnerStaff })));
+const OwnerEmqx = lazy(() => import('./pages/owner').then((m) => ({ default: m.OwnerEmqx })));
+const OwnerUsage = lazy(() => import('./pages/owner').then((m) => ({ default: m.OwnerUsage })));
+const OwnerAudit = lazy(() => import('./pages/owner').then((m) => ({ default: m.OwnerAudit })));
+
+const OwnerSetup = lazy(() => import('./pages/platform-setup').then((m) => ({ default: m.OwnerSetup })));
+const OwnerIntegrations = lazy(() => import('./pages/platform-setup').then((m) => ({ default: m.OwnerIntegrations })));
+const OwnerFirmware = lazy(() => import('./pages/firmware').then((m) => ({ default: m.OwnerFirmware })));
+const InstallPage = lazy(() => import('./pages/install').then((m) => ({ default: m.InstallPage })));
+const OwnerBoards = lazy(() => import('./pages/board-admin').then((m) => ({ default: m.OwnerBoards })));
+const OwnerSettings = lazy(() => import('./pages/owner-settings').then((m) => ({ default: m.OwnerSettings })));
+const OwnerSecurity = lazy(() => import('./pages/owner-settings').then((m) => ({ default: m.OwnerSecurity })));
+const SetupWizardPage = lazy(() => import('./pages/setup-wizard').then((m) => ({ default: m.SetupWizardPage })));
 
 type NavItem = { to: string; label: string; icon: IconKey };
 type NavGroup = { group: string; items: NavItem[] };
@@ -73,9 +91,18 @@ function Shell({ owner, children }: { owner: boolean; children: React.ReactNode 
   const nav = owner ? OWNER_NAV : CUSTOMER_NAV;
   const [menu, setMenu] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('homecoreos_nav_collapsed') === '1'; } catch { return false; }
+  });
   const navigate = useNavigate();
   const location = useLocation();
   const current = nav.flatMap((g) => g.items).find((i) => i.to === location.pathname);
+
+  const toggleCollapsed = () => setCollapsed((c) => {
+    const next = !c;
+    try { localStorage.setItem('homecoreos_nav_collapsed', next ? '1' : '0'); } catch { /* private mode */ }
+    return next;
+  });
 
   useEffect(() => { setNavOpen(false); setMenu(false); }, [location.pathname]);
   useEffect(() => {
@@ -86,13 +113,16 @@ function Shell({ owner, children }: { owner: boolean; children: React.ReactNode 
   return (
     <>
       <a className="skip-link" href="#main-content">Skip to main content</a>
-      <div className={`app-shell ${navOpen ? 'nav-open' : ''}`}>
+      <div className={`app-shell ${navOpen ? 'nav-open' : ''} ${collapsed ? 'nav-collapsed' : ''}`}>
         {navOpen && <div className="nav-scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />}
         <aside className="sidebar" aria-label="Main navigation">
           <div className="sidebar-brand">
             <div className="brand-mark">HC</div>
-            <div><div className="brand-name">HomecoreOS</div>
+            <div className="brand-text"><div className="brand-name">HomecoreOS</div>
               <div className="brand-sub">{owner ? 'Platform owner' : 'Home console'}</div></div>
+            <button className="btn btn-ghost btn-icon nav-collapse" onClick={toggleCollapsed}
+              aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+              aria-pressed={collapsed} title={collapsed ? 'Expand navigation' : 'Collapse navigation'}><Icon.list /></button>
           </div>
           <nav>
             {nav.map((g) => (
@@ -101,6 +131,7 @@ function Shell({ owner, children }: { owner: boolean; children: React.ReactNode 
                 {g.items.map((i) => {
                   const I = Icon[i.icon];
                   return <NavLink key={i.to} to={i.to} end={i.to === '/' || i.to === '/owner'}
+                    data-label={i.label} title={i.label}
                     className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                     <I /><span>{i.label}</span>
                   </NavLink>;
@@ -117,12 +148,15 @@ function Shell({ owner, children }: { owner: boolean; children: React.ReactNode 
               </button>
             )}
             <div className="workspace-chip">
-              <div className="avatar">{(profile?.full_name || profile?.email || 'U').slice(0, 2).toUpperCase()}</div>
-              <div style={{ minWidth: 0, flex: 1 }}>
+              <button className="avatar chip-avatar" onClick={() => setMenu((m) => !m)}
+                aria-label="Account menu" aria-expanded={menu}>
+                {(profile?.full_name || profile?.email || 'U').slice(0, 2).toUpperCase()}
+              </button>
+              <div className="chip-text" style={{ minWidth: 0, flex: 1 }}>
                 <div className="name">{owner ? 'Platform administration' : (tenant?.name || 'My Home')}</div>
                 <div className="role">{owner ? 'Platform admin' : role}</div>
               </div>
-              <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setMenu((m) => !m)}
+              <button className="btn btn-ghost btn-icon btn-sm chip-toggle" onClick={() => setMenu((m) => !m)}
                 aria-label="Account menu" aria-expanded={menu}><Icon.down /></button>
             </div>
             {menu && (
@@ -146,7 +180,11 @@ function Shell({ owner, children }: { owner: boolean; children: React.ReactNode 
               <ThemeMenu initial={getTheme()} />
             </div>
           </header>
-          <main className="content" id="main-content"><div className="content-inner">{children}</div></main>
+          <main className="content" id="main-content"><div className="content-inner">
+            {/* A page that has not been fetched yet shows a brief placeholder
+                instead of an empty screen. */}
+            <Suspense fallback={<Loading rows={4} />}>{children}</Suspense>
+          </div></main>
         </div>
       </div>
     </>

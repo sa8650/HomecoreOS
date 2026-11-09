@@ -4,12 +4,10 @@ import { api, useLiveData } from '../api';
 import { useAuth } from '../state';
 import {
   Badge, Card, DataTable, EmptyState, Field, Icon, Loading, MiniChart, Modal, Notice,
-  PageHead, Progress, Skeleton, Stat, StatusBadge, fmt, fmtBytes, timeAgo, timeFull,
-} from '../components';
+  PageHead, Progress, Skeleton, Stat, StatusBadge, fmt, fmtBytes, timeAgo, timeFull, human } from '../components';
 import { EMQX_QUOTAS, WARNING_THRESHOLDS } from '@homecoreos/core';
 
 function useToast() { return useAuth().toast; }
-const human = (v: string) => String(v || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
 export function OwnerOverview() {
   const { data, loading } = useLiveData<any>('/api/owner/overview');

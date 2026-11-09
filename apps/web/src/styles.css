@@ -124,12 +124,29 @@ h1, h2, h3, h4, p { margin: 0; }
   transition: opacity var(--move) var(--ease), transform var(--move) var(--ease); }
 .reveal.is-visible { opacity: 1; transform: none; }
 
+/* Scrollbars — the sidebar and the page scroll, and an unstyled scrollbar is
+   painted in the browser's own grey, which reads as a grey panel over a dark
+   surface and hides the navigation text behind it. */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--r-full);
+  border: 3px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--text-3); background-clip: content-box; }
+*::-webkit-scrollbar-corner { background: transparent; }
+:root[data-theme="dark"] *::-webkit-scrollbar-thumb { background: #4A4A4A; background-clip: content-box; }
+:root[data-theme="dark"] *::-webkit-scrollbar-thumb:hover { background: #6A6A6A; background-clip: content-box; }
+
 /* Layout shell */
 .app-shell { display: flex; height: 100dvh; overflow: hidden; background: var(--workspace); }
 .sidebar { width: 248px; flex: 0 0 248px; background: var(--sidebar); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; padding: var(--sp-300) var(--sp-100) var(--sp-100);
   overflow-y: auto; transition: width var(--move) var(--ease), background var(--tone) var(--ease); }
 .sidebar-brand { display: flex; align-items: center; gap: var(--sp-100); padding: 0 var(--sp-75) var(--sp-300); }
+.sidebar-brand .nav-collapse { margin-left: auto; opacity: .55; flex: none; align-self: flex-start; margin-top: 2px; }
+.sidebar-brand .nav-collapse:hover { opacity: 1; }
+/* In the collapsed rail the button stays, so the rail can be widened again. */
+.app-shell.nav-collapsed .sidebar-brand .nav-collapse { display: inline-flex; margin-left: 0; align-self: center; margin-top: 0; }
 .brand-mark { width: 32px; height: 32px; border-radius: var(--r-8); background: var(--accent);
   color: var(--accent-text); display: grid; place-items: center; font-weight: 700; font-size: 13px;
   letter-spacing: -.04em; flex: none; }
@@ -155,6 +172,38 @@ h1, h2, h3, h4, p { margin: 0; }
 .workspace-chip .name { font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .workspace-chip .role { font-size: 11px; color: var(--text-3); text-transform: capitalize; }
 .sidebar-toggle { display: none; }
+.nav-collapse { display: inline-flex; }
+
+/* Collapsed sidebar — the same navigation, reduced to icons. The labels are
+   hidden rather than removed, so they remain available to a screen reader. */
+.app-shell.nav-collapsed .sidebar { width: 68px; flex: 0 0 68px; padding-left: var(--sp-75); padding-right: var(--sp-75); position: relative; }
+/* In the collapsed rail the brand sits above the button, so neither hides the
+   other and both stay reachable. */
+.app-shell.nav-collapsed .sidebar-brand { flex-direction: column; gap: var(--sp-100);
+  padding-bottom: var(--sp-200); justify-content: center; padding-left: 0; padding-right: 0; }
+.app-shell.nav-collapsed .brand-text,
+.app-shell.nav-collapsed .nav-group-label,
+.app-shell.nav-collapsed .nav-item span:not(.badge-count),
+.app-shell.nav-collapsed .workspace-chip .chip-text { position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.app-shell.nav-collapsed .nav-item { justify-content: center; padding: 0; }
+.app-shell.nav-collapsed .nav-item .badge-count { display: none; }
+.app-shell.nav-collapsed .workspace-chip { justify-content: center; padding-left: 0; padding-right: 0; overflow: hidden; }
+.app-shell.nav-collapsed .sidebar-foot { padding-left: 0; padding-right: 0; }
+/* The account chip does not fit into the rail. The initials become the button
+   that opens the same account menu. */
+.app-shell.nav-collapsed .workspace-chip .chip-toggle { display: none; }
+.app-shell.nav-collapsed .workspace-chip { background: transparent; border: 1px solid var(--border); }
+.app-shell.nav-collapsed .avatar { width: 32px; height: 32px; border: none; cursor: pointer; }
+/* The account menu opens beside the rail rather than inside it. */
+.app-shell.nav-collapsed .sidebar-foot > .card { position: absolute; left: calc(100% + 10px);
+  bottom: 8px; width: 180px; margin: 0; z-index: 60; box-shadow: var(--shadow-lg); }
+/* A tooltip for the collapsed rail, so the icons stay understandable. */
+.app-shell.nav-collapsed .nav-item { position: relative; }
+.app-shell.nav-collapsed .nav-item:hover::before { content: attr(data-label); position: absolute; left: calc(100% + 10px);
+  top: 50%; transform: translateY(-50%); background: var(--surface-4); color: var(--text); font-size: 12px;
+  font-weight: 600; padding: 5px 9px; border-radius: var(--r-6); white-space: nowrap; z-index: 60;
+  box-shadow: var(--shadow-md); pointer-events: none; border: 1px solid var(--border); }
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--workspace); }
 .topbar { height: 64px; flex: none; background: var(--surface); border-bottom: 1px solid var(--border);
@@ -297,11 +346,11 @@ table.tbl tbody tr:hover { background: var(--surface-2); }
 .row-actions { display: flex; gap: var(--sp-50); justify-content: flex-end; flex-wrap: wrap; }
 
 /* Composed loading / empty / error / success states */
-.state-panel { padding: var(--sp-500) var(--sp-200); text-align: center; color: var(--text-2);
+.state-panel { padding: var(--sp-400) var(--sp-300); text-align: center; color: var(--text-2);
   display: flex; flex-direction: column; align-items: center; gap: var(--sp-100); }
-.state-art { width: 56px; height: 56px; border-radius: var(--r-16); background: var(--surface-3);
+.state-art { width: 52px; height: 52px; border-radius: var(--r-16); background: var(--surface-3);
   display: grid; place-items: center; color: var(--text-3); }
-.state-art svg { width: 26px; height: 26px; }
+.state-art svg { width: 24px; height: 24px; }
 .state-panel h4 { font-size: 16px; color: var(--text); font-weight: 700; }
 .state-panel p { font-size: 13px; max-width: 440px; line-height: 20px; }
 .state-actions { margin-top: var(--sp-50); display: flex; gap: var(--sp-75); flex-wrap: wrap; justify-content: center; }
@@ -309,11 +358,15 @@ table.tbl tbody tr:hover { background: var(--surface-2); }
 .state-success .state-art { background: var(--state-on-bg); color: var(--state-on);
   animation: pop-in var(--move) var(--ease); }
 @keyframes pop-in { from { transform: scale(.82); opacity: 0; } }
-.empty { padding: var(--sp-500) var(--sp-200); text-align: center; color: var(--text-2); }
+.empty { padding: var(--sp-400) var(--sp-300); text-align: center; color: var(--text-2); }
 .empty-icon { width: 42px; height: 42px; border-radius: var(--r-12); background: var(--surface-3);
   display: grid; place-items: center; margin: 0 auto var(--sp-100); color: var(--text-3); }
 .empty h4 { font-size: 14px; color: var(--text); font-weight: 700; margin-bottom: var(--sp-50); }
 .empty p { font-size: 12px; max-width: 420px; margin: 0 auto var(--sp-200); }
+/* A card that holds nothing but an empty state does not need the card's own
+   padding on top of the state's padding. */
+.card > .state-panel:only-child,
+.card > .empty:only-child { margin: calc(var(--sp-200) * -1); }
 .skeleton { background: var(--surface-3); position: relative; overflow: hidden; }
 .skeleton::after { content: ''; position: absolute; inset: 0;
   background: linear-gradient(90deg, transparent, var(--surface-4), transparent);
@@ -581,6 +634,7 @@ table.tbl tbody tr:hover { background: var(--surface-2); }
   .app-shell.nav-open .sidebar { transform: none; }
   .nav-scrim { position: fixed; inset: 0; z-index: 45; background: rgba(12, 25, 34, .45); }
   .sidebar-toggle { display: inline-flex; }
+  .nav-collapse { display: none; }
   .content { padding: var(--sp-200); }
   .topbar { padding: 0 var(--sp-200); }
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }

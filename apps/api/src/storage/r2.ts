@@ -34,15 +34,6 @@ export function r2Binding(env: Record<string, unknown>): R2BucketBinding | null 
   return null;
 }
 
-/** Binding name actually present, for dashboard diagnostics. */
-export function r2BindingName(env: Record<string, unknown>): string | null {
-  for (const name of R2_BINDING_NAMES) {
-    const value = env[name];
-    if (value && typeof value === 'object' && typeof (value as any).put === 'function') return name;
-  }
-  return null;
-}
-
 function validKey(key: string) {
   if (!/^[A-Za-z0-9._\-/]+$/.test(key) || key.includes('..') || key.startsWith('/')) {
     throw new Error('Invalid object key');

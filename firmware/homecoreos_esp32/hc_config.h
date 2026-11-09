@@ -2,9 +2,12 @@
 /**
  * HomecoreOS controller configuration surface.
  *
- * Build-time values (cloud endpoint, trust anchors, signing key) are injected by
- * the firmware build workflow into a generated header. Nothing secret is ever
- * compiled into the image: only public certificates and a public signing key.
+ * Build-time values (cloud endpoint, trust anchors) are injected by the firmware
+ * build workflow into a generated header. Nothing secret is ever compiled into
+ * the image: only public TLS certificates and the public API origin.
+ *
+ * There is no firmware signing key. Update integrity is enforced with the
+ * SHA-256 digest of the image, which the controller verifies itself.
  */
 #include <Arduino.h>
 
@@ -32,12 +35,6 @@
 #ifndef HOMECOREOS_CA_MQTT_PEM
 #  define HOMECOREOS_CA_MQTT_PEM ""
 #endif
-#ifndef HOMECOREOS_FW_SIGNING_PUBKEY
-#  define HOMECOREOS_FW_SIGNING_PUBKEY ""
-#endif
-#ifndef HOMECOREOS_FW_SIGNING_ALG
-#  define HOMECOREOS_FW_SIGNING_ALG "none"
-#endif
 #ifndef HOMECOREOS_MQTT_PORT
 #  define HOMECOREOS_MQTT_PORT 8883
 #endif
@@ -55,8 +52,6 @@ constexpr const char *kVersionBanner = "hcver:" HOMECOREOS_FW_VERSION;
 constexpr const char *kApiBase = HOMECOREOS_API_BASE;
 constexpr const char *kBoardId = HOMECOREOS_BOARD_ID;
 constexpr const char *kHardwareConfig = HOMECOREOS_HW_CONFIG;
-constexpr const char *kSigningAlg = HOMECOREOS_FW_SIGNING_ALG;
-constexpr const char *kSigningPublicKey = HOMECOREOS_FW_SIGNING_PUBKEY;
 constexpr const char *kCaApi = HOMECOREOS_CA_API_PEM;
 constexpr const char *kCaMqtt = HOMECOREOS_CA_MQTT_PEM;
 
@@ -106,8 +101,5 @@ inline const char *otaStateName(OtaState s) {
 }
 
 inline bool cloudConfigured() { return kApiBase[0] != '\0'; }
-inline bool signingConfigured() {
-  return kSigningPublicKey[0] != '\0' && strcmp(kSigningAlg, "none") != 0;
-}
 
 }  // namespace hc

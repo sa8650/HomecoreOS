@@ -14,6 +14,10 @@
  * The manifest and the checksums are checked again after decoding, and the
  * release is re-inspected from its bytes, so a hand-edited manifest cannot make
  * the console publish something the controller would reject.
+ *
+ * There is no signing step. A package is valid when its manifest names the two
+ * images, both SHA-256 digests match the bytes in the archive, and both images
+ * are structurally sound.
  */
 import { HttpError } from '../context';
 import {
@@ -25,7 +29,6 @@ export const MAX_ARCHIVE_BYTES = 12 * 1024 * 1024;
 export const MAX_ARCHIVE_ENTRIES = 24;
 export const MAX_ENTRY_BYTES = MAX_MERGED_BYTES;
 export const MAX_TOTAL_UNPACKED = 16 * 1024 * 1024;
-const SIGNATURE_MAX_BYTES = 512;
 const MANIFEST_MAX_BYTES = 64 * 1024;
 
 /* ------------------------------------------------------------------ ZIP ---- */
@@ -283,14 +286,6 @@ export interface ReleaseManifest {
     app?: { file: string; size: number; sha256: string; flash_offset?: number };
     factory?: { file: string; size: number; sha256: string; flash_offset?: number };
   };
-  signature?: {
-    state?: string;
-    algorithm?: string | null;
-    public_key?: string | null;
-    signed_file?: string | null;
-    signature_file?: string | null;
-    value?: string | null;
-  };
   notes?: string;
 }
 
@@ -312,15 +307,6 @@ export interface PackageReport {
   hardware: Record<string, unknown>;
   app: { file: string; bytes: Uint8Array; sha256: string; offset: number; version: string };
   factory: { file: string; bytes: Uint8Array; sha256: string; offset: number };
-  signature: {
-    present: boolean;
-    algorithm: string | null;
-    value: string | null;
-    publicKey: string | null;
-    signedFile: string | null;
-    verified: boolean | null;
-    problems: string[];
-  };
   problems: string[];
   checks: { id: string; label: string; ok: boolean; detail: string }[];
 }
@@ -473,48 +459,7 @@ export async function inspectPackage(entries: ArchiveEntry[], knownBoards: Set<s
   record('hardware', 'Hardware configuration', !Number.isFinite(flashMb) || flashMb === 16,
     `flash ${Number.isFinite(flashMb) ? `${flashMb} MB` : 'not stated'}, PSRAM ${String(hardware.psram || 'not stated')}`);
 
-  // Signature: presence is reported honestly, and a declared signature must match
-  // the file it claims to cover. The console cannot verify Ed25519 with the
-  // public key unless one is configured, so `verified` stays null ("unchecked")
-  // rather than being reported as valid.
-  const sig = manifest.signature || {};
-  const sigProblems: string[] = [];
-  const sigEntry = sig.signature_file ? byName.get(String(sig.signature_file).toLowerCase()) : undefined;
-  let sigValue = String(sig.value || '').trim();
-  if (!sigValue && sigEntry) {
-    if (sigEntry.bytes.byteLength > SIGNATURE_MAX_BYTES) sigProblems.push('The signature file is too large to be an Ed25519 signature.');
-    else sigValue = new TextDecoder().decode(sigEntry.bytes).trim();
-  }
-  let signaturePresent = false;
-  let signatureAlg: string | null = null;
-  if (sig.value || sigEntry || sig.state === 'signed') {
-    signaturePresent = true;
-    signatureAlg = String(sig.algorithm || '');
-    if (signatureAlg !== 'ed25519') sigProblems.push(`The package declares signature algorithm "${signatureAlg || 'none'}"; releases accept ed25519.`);
-    if (!sigValue) sigProblems.push('The package is marked signed but carries no signature value.');
-    if (sig.signed_file && String(sig.signed_file).toLowerCase() !== String(declared.app?.file || '').toLowerCase()) {
-      sigProblems.push('The signature covers a file that is not the application image.');
-    }
-    if (sigValue) {
-      try {
-        const raw = Uint8Array.from(atob(sigValue.replace(/\s+/g, '')), (ch) => ch.charCodeAt(0));
-        if (raw.byteLength !== 64) sigProblems.push(`An Ed25519 signature is 64 bytes; this one is ${raw.byteLength}.`);
-      } catch {
-        sigProblems.push('The signature is not valid base64.');
-      }
-    }
-  } else if (String(sig.state || '') && !['unsigned', 'none'].includes(String(sig.state))) {
-    sigProblems.push(`Unknown signature state "${String(sig.state)}".`);
-  }
-  problems.push(...sigProblems);
-  record('signature', 'Detached signature', sigProblems.length === 0,
-    sigProblems.length ? sigProblems.join(' ')
-      : signaturePresent ? `ed25519 signature over ${String(sig.signed_file || declared.app?.file)}` : 'unsigned package - the controller will report "signing key not configured"');
-
   if (!app) problems.push('The package has no OTA application image; wireless updates need one.');
-  if (!app || !factory) {
-    // Fall back to placeholder values so the caller can still show the problems.
-  }
 
   return {
     version,
@@ -527,15 +472,6 @@ export async function inspectPackage(entries: ArchiveEntry[], knownBoards: Set<s
     hardware,
     app: app as PackageReport['app'],
     factory: factory as PackageReport['factory'],
-    signature: {
-      present: signaturePresent,
-      algorithm: signatureAlg,
-      value: sigValue || null,
-      publicKey: sig.public_key ? String(sig.public_key) : null,
-      signedFile: sig.signed_file ? String(sig.signed_file) : null,
-      verified: null,
-      problems: sigProblems,
-    },
     problems,
     checks,
   };

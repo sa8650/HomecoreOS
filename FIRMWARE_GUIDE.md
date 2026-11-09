@@ -35,7 +35,7 @@ There are three moments in the life of a firmware release:
    | Generate the build header | Writes the version, API address and the two TLS trust anchors into the firmware | seconds |
    | Install the ESP32 core and libraries | Downloads the compiler toolchain | 2–4 min |
    | Compile the controller image | Builds the ESP32-S3 image | 1–2 min |
-   | Build the release package | Merges the USB image, writes the manifest, checksums, signature and the ZIP | seconds |
+   | Build the release package | Merges the USB image, writes the manifest, checksums and the ZIP | seconds |
    | Verify the package the way the server will | Re-reads the ZIP exactly as the Owner Console does | seconds |
 
 8. When the run finishes green, open it and download **`homecoreos-<version>.zip`** from the **Artifacts** section at the bottom. The same file is attached to the entry on the repository's **Releases** page, next to `homecoreos-<version>.zip.sha256`.
@@ -46,17 +46,19 @@ A red run means nothing was published. The failing step shows the exact error; t
 
 | File | What it is | Used for |
 | --- | --- | --- |
-| `manifest.json` | Version, channel, board models, hardware configuration, filenames, sizes, checksums, signature | Read by the Owner Console to validate the package |
-| `homecoreos-<version>-app.bin` | The application image | Wireless OTA updates, and USB updates at `0x10000` (`flash_offset` `65536`) |
-| `homecoreos-<version>-usb.bin` | Bootloader + partition table + OTA data + the same application | First USB install and recovery, written from `0x0` (`flash_offset` `0`) |
+| `manifest.json` | Version, channel, board models, hardware configuration, filenames, sizes, checksums and flash offsets | Read by the Owner Console to validate the package |
+| `homecoreos-ota.bin` | The application image | Wireless OTA updates, and USB updates at `0x10000` (`flash_offset` `65536`) |
+| `homecoreos-factory.bin` | Bootloader + partition table + OTA data + the same application | First USB install and recovery, written from `0x0` (`flash_offset` `0`) |
 | `SHA256SUMS.txt` | Checksums of the files above | `sha256sum -c` on any computer, or a manual comparison |
+
+The file names are fixed, so the Owner Console and the browser installer always know
+which artifact is which. There is no signature file and no `.sig` entry.
 
 Every image is recorded in the database with the flash offset it is written at, and the
 two are never the same value: `65536` for an application image and `0` for a factory image.
 `manifest.json` must state the offset for both. A package that declares the wrong offset,
 or none at all, is stored as a draft with the reason shown instead of being corrected
 silently — an application image written at `0x0` would overwrite the bootloader.
-| `homecoreos-<version>-app.bin.sig` | Detached Ed25519 signature | Only present when signing is configured |
 
 Never unzip and re-zip a package, and never edit `manifest.json`: the checksums are checked against the files, so an edited package is refused.
 
@@ -92,7 +94,6 @@ The dialog reports each check separately:
 | Checksums match the files | Nothing was altered after the build |
 | Board compatibility | Every model named exists in the board catalog |
 | Hardware configuration | Built for 16 MB flash |
-| Detached signature | Verified with your key, or honestly reported as unsigned |
 
 If everything passes, the package is stored — both images separately — and published if you asked for it. If anything fails, it is stored as a **draft** and the dialog lists every reason. A draft is never offered to anyone.
 
@@ -132,51 +133,37 @@ The installer refuses to write when the connected chip does not match the releas
 
 ### Option B — download the file
 
-The same page offers **Save the file**, with the version, the compatible models, the size, the checksum and whether the build is signed. Use it if you want to flash with another tool, or keep a copy for a controller without internet access.
+The same page offers **Save the file**, with the version, the compatible models, the size and the checksum. Use it if you want to flash with another tool, or keep a copy for a controller without internet access.
 
 ### Wireless update (after pairing)
 
 1. Open **Firmware → Your controllers**.
 2. A controller with a newer release shows **`<version>` available**. Click **Update to `<version>`**.
-3. The controller downloads the image over HTTPS, verifies the SHA-256 and the signature, writes it to the inactive slot and reboots.
+3. The controller downloads the image over HTTPS, verifies the SHA-256, writes it to the inactive slot and reboots.
 4. It reports each stage (downloading, installing, verifying) and only reports **success** after it reconnects and states the new version. If it cannot connect on the new image, it goes back to the previous one.
 
 A controller must be online and paired for this. Nothing is reported as installed while it is offline.
 
 ---
 
-## 4. Signing (optional)
+## 4. Integrity — the SHA-256 digest
 
-Without a key pair, firmware is still checksum-protected, and every screen says so honestly:
+Releases are **not signed**. Integrity comes from the SHA-256 digest of every image,
+and it is checked at three independent points:
 
-- the firmware reports `signing key not configured`,
-- the Owner Console shows **Unsigned · signing key not configured**,
-- the controller verifies the SHA-256 of every download but not a signature.
+| Where | What happens |
+| --- | --- |
+| GitHub Actions | Computes the digest of each image and writes it into `manifest.json` and `SHA256SUMS.txt` |
+| Owner Console upload | Recomputes the digest from the uploaded bytes and refuses a package whose digest does not match |
+| The controller | Recomputes the digest of the image it downloads before it boots it |
 
-To sign releases, add these three values once:
+Nothing has to be configured, and there is no key to generate, store or rotate. If you
+previously added `FW_SIGNING_KEY`, `FW_SIGNING_PUBKEY`, `HC_FW_PUBKEY` or
+`HC_FW_SIGNING_ALG` to GitHub, Cloudflare Pages or your environment, delete them:
+nothing reads them any more.
 
-| Where | Name | Kind | Content |
-| --- | --- | --- | --- |
-| GitHub → Settings → Secrets and variables → Actions → **Secrets** | `FW_SIGNING_KEY` | Secret | The Ed25519 **private** key, PEM PKCS#8 (`-----BEGIN PRIVATE KEY-----`) |
-| GitHub → Settings → Secrets and variables → Actions → **Variables** | `HC_FW_PUBKEY` | Variable | Base64 of the raw 32-byte **public** key (44 characters, ends in `=`) |
-| Cloudflare Pages → Settings → Variables and Secrets | `FW_SIGNING_PUBKEY` | Variable | The same base64 public key |
-
-The key pair is generated once, wherever you keep secrets, and the private half never leaves that place:
-
-```sh
-openssl genpkey -algorithm ed25519 -out signing-key.pem
-openssl pkey -in signing-key.pem -pubout -out signing-public.pem
-# base64 of the raw public key, to paste into HC_FW_PUBKEY and FW_SIGNING_PUBKEY:
-tail -c 32 <(openssl pkey -pubin -in signing-public.pem -outform DER) | base64
-```
-
-After the values are set:
-
-- the **Firmware** workflow signs the SHA-256 of the application image and verifies its own signature before writing the ZIP;
-- the Owner Console verifies that signature at upload time and reports **Signature verified** or **Signature invalid** — never "probably fine";
-- the controller verifies the signature itself before installing, because the same public key is compiled into it.
-
-A package signed with a different key, or an image changed after signing, is refused: the release stays a draft with the reason on screen.
+An image that was changed after the build is refused: the release stays a draft and the
+reason is shown on screen.
 
 ---
 
@@ -223,7 +210,7 @@ That is why an application image must stay under 3 MB: the two slots are what ma
 | The upload dialog says *This file is not a ZIP archive* | You selected a `.bin`, or the download was interrupted. Download the ZIP again from the run's Artifacts. |
 | The upload dialog says *manifest.json is missing* | The folder was zipped instead of the files. Use the ZIP exactly as downloaded. |
 | The upload dialog lists checksum problems | A file inside the ZIP was modified. Build again; never edit a package. |
-| The upload dialog says the signature does not match | The package was signed with a different key than `FW_SIGNING_PUBKEY`, or the image was changed. Rebuild with the right key. |
+| The upload dialog says the checksum does not match | The image was changed after the build, or the ZIP came from somewhere other than the GitHub Actions run. Download the release again and upload it unchanged. |
 | *This version already exists in the stable channel* | Versions are unique per channel. Build a new version, or archive the old release first. |
 | The install page cannot open a serial port | Use Chrome or Edge on a desktop, over https, with a data cable. |
 | The controller does not appear after the install | Put it into download mode (hold **BOOT**, tap **RESET**, release **BOOT**) and install again. The read-back check proves the flash contents, not that the board booted. |

@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Runtime } from './services/runtime';
 import { HttpError, actor, context, ownerOnly, p, body, runtime, auditEvent,
-  SESSION_COOKIE, clearSessionCookie } from './context';
+  SESSION_COOKIE, clearSessionCookie, secureCookie } from './context';
 import { deviceTopics, parseTopic, topic, EMQX_QUOTAS, WARNING_THRESHOLDS } from '@homecoreos/core';
 import { SwitchCommand, TelemetryMessage, StateReport, ConfigAck, OtaProgress } from '@homecoreos/core';
 import { randomHex, randomToken, sha256Hex, verifyPassword, hmacHex, fromB64, toHex } from './crypto';
@@ -21,6 +21,103 @@ import {
 } from './firmware/releases';
 import { MAX_ARCHIVE_BYTES } from './artifacts/package';
 
+/**
+ * Turns a database refusal into something a person can act on.
+ *
+ * Without this, adding a room whose name is already taken comes back as
+ * "Internal error", which tells the user nothing. The text of the database
+ * message is never shown: only a message written for the console is returned.
+ */
+function explain(err: any): { status: number; message: string } | null {
+  const raw = String(err?.message || err?.detail || '');
+
+  // The database refuses a value. The text arrives either as a plain message
+  // or wrapped in the reply the database gateway sends.
+  let body = raw;
+  const start = raw.indexOf('{');
+  if (start >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(start));
+      if (parsed && typeof parsed === 'object') {
+        body = [parsed.message, parsed.details, parsed.hint, parsed.code]
+          .filter(Boolean).join(' ');
+      }
+    } catch { /* the text is not a reply body */ }
+  }
+
+  // A value that is already taken.
+  if (/23505|duplicate key value|already exists/i.test(body)) {
+    // The database sometimes explains the clash itself, in words meant for a
+    // person. That explanation is used as it is.
+    const stated = /(GPIO \d+ is already allocated on this board)/.exec(body);
+    if (stated) return { status: 409, message: stated[1]! };
+    const spelled = /([A-Z][A-Za-z ]+? is already [a-z ]+)\s*(?:\||$)/.exec(body);
+    if (spelled) return { status: 409, message: spelled[1]!.trim() };
+
+    // Otherwise the field has to be worked out from the key or the constraint.
+    const detail = /Key \(([^)]+)\)=/.exec(body);
+    const constraint = /constraint "([a-z0-9_]+)"/i.exec(body);
+    // The key lists every column of the constraint; the one that was repeated
+    // is the last one, because the other columns are shared by every row.
+    let column = detail ? (detail[1]?.split(',').pop()?.trim() || '') : '';
+    if (!column && constraint) {
+      // A constraint name reads "<table>_<column...>_key". The columns come
+      // after the table name, so the field that was repeated is the last
+      // word before "_key".
+      const parts = (constraint[1] || '').split('_');
+      const withoutKey = parts[parts.length - 1] === 'key' ? parts.slice(0, -1) : parts;
+      column = withoutKey.length > 1 ? (withoutKey[withoutKey.length - 1] || '') : '';
+    }
+    const label = column.replace(/^.*\./, '').replace(/_/g, ' ');
+    if (/email/i.test(label)) return { status: 409, message: 'An account with this email already exists.' };
+    if (/gpio|pin/i.test(label)) return { status: 409, message: 'That pin is already allocated on this controller.' };
+    if (/name|title|label|slug/i.test(label)) return { status: 409, message: `That ${label} is already in use. Choose a different one.` };
+    if (label) return { status: 409, message: `That ${label} is already in use.` };
+    return { status: 409, message: 'That record already exists.' };
+  }
+
+  // A value that is not allowed by the table.
+  if (/23502|23503|not null value|foreign key/i.test(body)) {
+    if (/foreign key/i.test(body)) return { status: 409, message: 'That record is still in use somewhere else.' };
+    return { status: 400, message: 'A required value is missing.' };
+  }
+
+  // A value that is not one of the allowed choices.
+  if (/23514|check constraint|violates check/i.test(body)) {
+    const constraint = /constraint "([a-z0-9_]+)"/i.exec(body);
+    const name = constraint ? (constraint[1] || '') : '';
+    if (/device_type/.test(name)) return { status: 400, message: 'That device type is not one of the supported types.' };
+    if (/interface/.test(name)) return { status: 400, message: 'That hardware interface is not supported.' };
+    if (/initial_state/.test(name)) return { status: 400, message: 'That starting state is not allowed.' };
+    if (/reported_state/.test(name)) return { status: 400, message: 'That reported state is not allowed.' };
+    if (/category/.test(name)) return { status: 400, message: 'That sensor category is not supported.' };
+    if (/unit/.test(name)) return { status: 400, message: 'That unit is not supported.' };
+    if (/execution/.test(name)) return { status: 400, message: 'That execution mode is not allowed.' };
+    if (/channel/.test(name)) return { status: 400, message: 'That release channel is not allowed.' };
+    if (/status/.test(name)) return { status: 400, message: 'That status is not allowed.' };
+    return { status: 400, message: 'One of the values is not allowed.' };
+  }
+
+  // A value outside the allowed range.
+  if (/22001|22003|value out of range|invalid input value/i.test(body)) {
+    return { status: 400, message: 'One of the values is not allowed.' };
+  }
+
+  // A required value is missing or too long. The database writes the message
+  // in a form a person can read, so it is passed on unchanged.
+  if (/22023/.test(body)) {
+    const message = /A ([a-z ]+) is required/i.exec(body);
+    if (message) return { status: 400, message: `A ${message[1]} is required.` };
+    const tooLong = /A ([a-z ]+) cannot be longer/i.exec(body);
+    if (tooLong) return { status: 400, message: `A ${tooLong[1]} cannot be longer than 200 characters.` };
+    const stated = /^(A [^.]+)\./.exec(body.trim());
+    if (stated) return { status: 400, message: stated[1]! };
+    return { status: 400, message: 'One of the values is not allowed.' };
+  }
+
+  return null;
+}
+
 export function createApp(rt: Runtime) {
   const app = new Hono<{ Variables: { rt: Runtime } }>();
   app.use('*', cors({ origin: '*', allowHeaders: ['Content-Type', 'X-HomecoreOS-Signature', 'X-HomecoreOS-Timestamp'], allowMethods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'] }));
@@ -30,8 +127,18 @@ export function createApp(rt: Runtime) {
     const method = c.req.method.toUpperCase();
     const origin = c.req.header('Origin');
     if (origin && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      // The Origin header names the host the browser is talking to. Behind a
+      // proxy or a dev server the request URL carries the internal host, so
+      // the forwarded host is checked as well; otherwise a legitimate
+      // same-origin request is refused.
       let same = false;
-      try { same = new URL(origin).host === new URL(c.req.url).host; } catch { same = false; }
+      try {
+        const originHost = new URL(origin).host;
+        const requestHost = new URL(c.req.url || '').host;
+        const forwardedHost = (c.req.header('X-Forwarded-Host') || '').split(',')[0]?.trim() || '';
+        const hostHeader = (c.req.header('Host') || '').trim();
+        same = [requestHost, forwardedHost, hostHeader].filter(Boolean).includes(originHost);
+      } catch { same = false; }
       if (!same) throw new HttpError(403, 'Cross-origin request rejected');
     }
     if (Date.now() - lastExpiry > 60_000) {
@@ -43,17 +150,19 @@ export function createApp(rt: Runtime) {
   });
   app.onError((err, c) => {
     const e = err as HttpError & { retryAfter?: number };
-    const status = e.status && e.status >= 400 && e.status < 600 ? e.status : 500;
+    let status = e.status && e.status >= 400 && e.status < 600 ? e.status : 500;
     if (status === 500) console.error('[api]', err);
     if (status === 429 && e.retryAfter) c.header('Retry-After', String(e.retryAfter));
     if (status === 401) {
-      deleteCookie(c, SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Lax' });
+      deleteCookie(c, SESSION_COOKIE, { path: '/', secure: secureCookie(c), sameSite: 'Lax' });
     }
     // An HttpError carries a message written for the person using the console, so
     // it is shown whatever its status. Only an unexpected exception is described
     // generically, because its text may name internals.
     const known = err instanceof HttpError;
-    return c.json({ error: known ? (err.message || 'Request failed') : 'Internal error',
+    const friendly = known ? null : explain(err);
+    if (friendly) status = friendly.status;
+    return c.json({ error: known ? (err.message || 'Request failed') : (friendly ? friendly.message : 'Internal error'),
       detail: known ? (e.detail ?? null) : null }, status as any);
   });
   app.notFound((c) => c.json({ error: 'Not found' }, 404));
@@ -654,7 +763,7 @@ export function createApp(rt: Runtime) {
         latest: latest ? {
           id: latest.id, version: latest.version, notes: latest.notes,
           size_bytes: latest.size_bytes, sha256: latest.sha256,
-          signature_present: !!latest.signature, mandatory: !!latest.mandatory,
+          mandatory: !!latest.mandatory,
           update_available: !!latest.update_available && board.status !== 'unclaimed',
         } : null,
         update: open ? {
@@ -770,9 +879,8 @@ export function createApp(rt: Runtime) {
       if (!latest.update_available) throw new HttpError(409, 'This controller already runs the latest firmware');
       releaseId = String(latest.id);
     }
-    const signingRequired = await featureEnabled('firmware.require_signature', false);
     const plan = await queueOta(rt, {
-      releaseId, boardId: board.id, ip: requestIp(c), allowUnsigned: !signingRequired,
+      releaseId, boardId: board.id, ip: requestIp(c),
     });
     await publishOtaCommand(rt, plan);
     return c.json({
@@ -801,7 +909,7 @@ export function createApp(rt: Runtime) {
       throw new HttpError(409, 'That release is a factory image and can only be installed over USB');
     }
     const plan = await queueOta(rt, {
-      releaseId: String(target.id), boardId, ip: requestIp(c), allowUnsigned: true,
+      releaseId: String(target.id), boardId, ip: requestIp(c),
     });
     await publishOtaCommand(rt, plan);
     emit(ctx.tenantId, 'firmware.rollback.started', { board_id: boardId, version: target.version });
@@ -931,15 +1039,25 @@ export function createApp(rt: Runtime) {
   app.get('/api/stream', async (c) => {
     const ctx = await context(c, 'dashboard.view');
     let unsub: (() => void) | null = null;
+    // The keepalive timer lives outside the stream because `start` runs while
+    // the stream is still being constructed, so the stream cannot be
+    // referenced from inside it.
+    let keep: ReturnType<typeof setInterval> | null = null;
     const stream = new ReadableStream({
       start(controller) {
-        const send = (obj: unknown) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`));
+        const send = (obj: unknown) => {
+          try { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`)); } catch { /* closed */ }
+        };
         send({ type: 'connected', at: new Date().toISOString() });
         unsub = rt.events.subscribe(ctx.tenantId, send);
-        const keep = setInterval(() => { try { controller.enqueue(new TextEncoder().encode(': keepalive\n\n')); } catch {} }, 25000);
-        (stream as any)._keep = keep;
+        keep = setInterval(() => {
+          try { controller.enqueue(new TextEncoder().encode(': keepalive\n\n')); } catch { /* closed */ }
+        }, 25000);
       },
-      cancel() { unsub?.(); clearInterval((stream as any)._keep); },
+      cancel() {
+        unsub?.(); unsub = null;
+        if (keep) { clearInterval(keep); keep = null; }
+      },
     });
     return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' } });
   });
@@ -1445,16 +1563,7 @@ export function createApp(rt: Runtime) {
       rt.db.select('board_catalog', { eq: { active: true }, order: { column: 'model' } }),
       storageStatus(),
     ]);
-    const signingKey = String(rt.env.FW_SIGNING_PUBKEY || '').trim();
     return c.json({ ...(overview || {}), board_catalog: catalog, storage,
-      signing: {
-        configured: /^[A-Za-z0-9+/]{43}=$/.test(signingKey),
-        algorithm: 'ed25519',
-        public_key_suffix: signingKey ? signingKey.slice(-8) : null,
-        note: /^[A-Za-z0-9+/]{43}=$/.test(signingKey)
-          ? 'Packages are checked against this key when they are uploaded.'
-          : 'Add FW_SIGNING_PUBKEY in Cloudflare Pages → Settings → Variables and Secrets to verify release signatures. Until then every package reports "signing key not configured".',
-      },
       limits: {
         max_bytes: MAX_FIRMWARE_BYTES, allowed_extensions: ['.bin'],
         package_max_bytes: MAX_ARCHIVE_BYTES, package_extensions: ['.zip'],
@@ -1525,9 +1634,9 @@ export function createApp(rt: Runtime) {
 
   /**
    * Upload a complete release ZIP produced by GitHub Actions: manifest.json, the
-   * OTA application image, the merged USB factory image, SHA256SUMS.txt and an
-   * optional Ed25519 signature. Both artifacts are stored in one step and the
-   * owner sees exactly which checks passed.
+   * OTA application image, the merged USB factory image and SHA256SUMS.txt. Both
+   * artifacts are stored in one step and the owner sees exactly which checks
+   * passed.
    */
   app.post('/api/owner/firmware/upload-package', async (c) => {
     const ctx = await ownerOnly(c);
@@ -1557,7 +1666,7 @@ export function createApp(rt: Runtime) {
         notes: b.notes ? String(b.notes).slice(0, 4000) : null,
         name: b.name ? String(b.name).slice(0, 120) : null,
         boardModels: boardModels.length ? boardModels : null,
-      }, ctx.profileId, String(rt.env.FW_SIGNING_PUBKEY || ''));
+      }, ctx.profileId);
       emit(ctx.tenantId || 'platform', 'firmware.release.created', {
         id: result.releases[0]?.id, version: result.version, package: true,
       });
@@ -1566,23 +1675,6 @@ export function createApp(rt: Runtime) {
       if (e instanceof HttpError) throw e;
       throw new HttpError(502, `The release package could not be stored: ${String(e?.message || e).slice(0, 200)}`);
     }
-  });
-
-  /** Attach a detached signature over the published digest. */
-  app.post('/api/owner/firmware/:id/signature', async (c) => {
-    const ctx = await ownerOnly(c);
-    const b = await body(c);
-    try {
-      await rt.db.rpc('rpc_firmware_signature_set', {
-        p_id: p(c, 'id'),
-        p_signature: String(b.signature || '').trim(),
-        p_alg: String(b.algorithm || 'ecdsa-p256-sha256'),
-        p_actor: ctx.profileId,
-      });
-    } catch (e: any) {
-      throw rpcError(e, 'The signature could not be attached');
-    }
-    return c.json({ ok: true });
   });
 
   /** Retire a problem release and report the previous stable one as fallback. */
@@ -1606,7 +1698,7 @@ export function createApp(rt: Runtime) {
     const catalog = await rt.db.select<any>('board_catalog');
     const models: string[] = release.board_models || [];
     return c.json({
-      release: { id: release.id, version: release.version, kind: release.artifact_kind, signature: !!release.signature },
+      release: { id: release.id, version: release.version, kind: release.artifact_kind },
       controllers: (boards as any[]).map((board) => {
         const cat = (catalog as any[]).find((x) => x.id === board.catalog_board_id);
         const compatible = models.includes(board.catalog_board_id)
@@ -1721,7 +1813,6 @@ export function createApp(rt: Runtime) {
     const all = b.all_compatible === true;
     const ids: string[] = Array.isArray(b.board_ids) ? b.board_ids.map(String) : [];
     if (!all && !ids.length) throw new HttpError(400, 'Select at least one controller, or all compatible controllers');
-    const signingRequired = await featureEnabled('firmware.require_signature', false);
     const targets = all
       ? (await rt.db.select<any>('user_boards', { isNull: ['deleted_at'] })).map((row) => String(row.id))
       : ids;
@@ -1729,7 +1820,7 @@ export function createApp(rt: Runtime) {
     for (const boardId of targets) {
       try {
         const plan = await queueOta(rt, {
-          releaseId: p(c, 'id'), boardId, ip: requestIp(c), allowUnsigned: !signingRequired,
+          releaseId: p(c, 'id'), boardId, ip: requestIp(c),
         });
         await publishOtaCommand(rt, plan);
         results.push({ board_id: boardId, ok: true, version: plan.version });
@@ -1976,7 +2067,7 @@ function setSessionCookie(c: any, token: string, expiresAt: string) {
   const target = new Date(expiresAt).getTime();
   const seconds = Number.isFinite(target) ? Math.floor((target - Date.now()) / 1000) : 604800;
   setCookie(c, SESSION_COOKIE, token, {
-    path: '/', httpOnly: true, secure: true, sameSite: 'Lax',
+    path: '/', httpOnly: true, secure: secureCookie(c), sameSite: 'Lax',
     maxAge: Math.max(60, Math.min(60 * 60 * 24 * 30, seconds || 604800)),
   });
 }

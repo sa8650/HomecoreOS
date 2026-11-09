@@ -31,9 +31,6 @@ export interface FirmwareRelease {
   checksum_verified: boolean;
   artifact_verified: boolean;
   ota_eligible: boolean;
-  signature: string | null;
-  signature_alg: string | null;
-  signed_at: string | null;
   release_notes: string | null;
   mandatory: boolean;
   downloads: number;
@@ -91,7 +88,6 @@ export interface ControllerEntry {
     notes: string | null;
     size_bytes: number;
     sha256: string;
-    signature_present: boolean;
     mandatory: boolean;
     update_available: boolean;
   } | null;
@@ -125,9 +121,6 @@ export interface OwnerFirmwareOverview {
     max_bytes: number; allowed_extensions: string[];
     package_max_bytes: number; package_extensions: string[];
   };
-  signing: {
-    configured: boolean; algorithm: string; public_key_suffix: string | null; note: string;
-  };
 }
 
 /** Result of POST /api/owner/firmware/upload-package. */
@@ -138,7 +131,6 @@ export interface PackageUploadResult {
   channel: string;
   name: string;
   board_models: string[];
-  signature: { present: boolean; algorithm: string | null; verified: boolean | null };
   checks: Array<{ id: string; label: string; ok: boolean; detail: string }>;
   problems: string[];
   releases: Array<{ id: string | null; kind: 'app' | 'factory'; sha256: string; size_bytes: number }>;
@@ -153,17 +145,24 @@ export interface PublishReadiness {
 /** What the owner still has to do before a release may be published. */
 export function publishReadiness(release: FirmwareRelease | null | undefined): PublishReadiness {
   if (!release) return { ready: false, blockers: ['Choose a release'], checks: [] };
+  // The API records why a package failed in verification_detail.problems.
+  // Showing that reason beats a generic "failed validation" message, which
+  // leaves the owner with no idea what to fix.
+  const problems = Array.isArray(release.verification_detail?.problems)
+    ? release.verification_detail.problems.filter((p): p is string => typeof p === 'string')
+    : [];
+  const artifactDetail = release.artifact_verified
+    ? 'Structure, length and appended SHA-256 match'
+    : (problems.length ? problems.join(' · ') : 'The uploaded image failed validation');
   const checks = [
     { id: 'artifact', label: 'Artifact verified', ok: !!release.artifact_verified,
-      detail: release.artifact_verified ? 'Structure, length and appended SHA-256 match' : 'The uploaded image failed validation' },
+      detail: artifactDetail },
     { id: 'checksum', label: 'Checksum recorded', ok: (release.sha256 || '').length === 64,
       detail: release.sha256 ? `SHA-256 ${release.sha256.slice(0, 16)}…` : 'No checksum' },
     { id: 'boards', label: 'Board compatibility', ok: (release.board_models || []).length > 0,
       detail: (release.board_models || []).length ? `${release.board_models.length} board model(s)` : 'No controller model can install this' },
     { id: 'size', label: 'Fits the OTA slot', ok: (release.size_bytes || 0) > 0 && release.size_bytes <= 3 * 1024 * 1024,
       detail: `${Math.round((release.size_bytes || 0) / 1024)} KB of a 3 MB slot` },
-    { id: 'signature', label: 'Signature attached', ok: !!release.signature,
-      detail: release.signature ? `${release.signature_alg || 'signature'} · ${new Date(release.signed_at || 0).toLocaleDateString()}` : 'Not signed yet' },
   ];
   return { ready: checks.every((c) => c.ok), blockers: checks.filter((c) => !c.ok).map((c) => c.label), checks };
 }

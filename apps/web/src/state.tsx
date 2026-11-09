@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { api, UNAUTHORIZED_EVENT } from './api';
+import { api, UNAUTHORIZED_EVENT, getCached, invalidateCache } from './api';
 
 export interface Session {
   profile: any | null;
@@ -31,9 +31,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string }[]>([]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     try {
-      const me = await api.get<any>('/api/auth/me');
+      // The same request is often made by several parts of the console at
+      // once, so it goes through the shared client and shares one answer.
+      const me = await getCached<any>('/api/auth/me', fresh);
       setSession({
         profile: me.profile,
         tenant: me.context?.tenant || null,
@@ -51,6 +53,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // The account details shown around the console — the name of the home, the
+  // role — change when a setting is saved, so they are fetched again after
+  // any change and when the server reports that something has moved on.
+  useEffect(() => {
+    const reload = () => { void load(true); };
+    window.addEventListener('homecoreos:changed', reload);
+    window.addEventListener('homecoreos:live', reload);
+    return () => {
+      window.removeEventListener('homecoreos:changed', reload);
+      window.removeEventListener('homecoreos:live', reload);
+    };
+  }, [load]);
   useEffect(() => {
     const off = () => { setSession(EMPTY); setSignedIn(false); };
     window.addEventListener(UNAUTHORIZED_EVENT, off);
@@ -58,6 +73,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
+    invalidateCache();
     await api.post('/api/auth/login', { email, password });
     await load();
   }, [load]);
@@ -67,6 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const signOut = useCallback(async () => {
     try { await api.post('/api/auth/logout'); } catch { /* session already gone */ }
+    invalidateCache();
     setSession(EMPTY);
     setSignedIn(false);
   }, []);

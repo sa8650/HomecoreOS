@@ -63,8 +63,14 @@ inline String b64Encode(const uint8_t *data, size_t len) {
 }
 
 inline bool hexToBytes(const char *hex, uint8_t *out, size_t outCap, size_t *outLen) {
+  if (!hex) return false;
   size_t n = 0;
-  for (size_t i = 0; hex[i] && hex[i + 1]; i += 2) {
+  size_t i = 0;
+  for (; hex[i]; i += 2) {
+    // An odd number of digits is a malformed string, not a shorter one. Stopping
+    // at the terminator would silently drop the last nibble, so the string is
+    // refused instead.
+    if (!hex[i + 1]) return false;
     auto nibble = [](char c) -> int {
       if (c >= '0' && c <= '9') return c - '0';
       if (c >= 'a' && c <= 'f') return c - 'a' + 10;

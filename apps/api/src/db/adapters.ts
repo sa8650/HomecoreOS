@@ -50,7 +50,7 @@ export class SupabaseRestAdapter implements DataClient {
   private async request(path: string, init: RequestInit): Promise<any> {
     const res = await fetch(`${this.base}${path}`, { ...init, headers: this.headers(init.headers as any) });
     const text = await res.text();
-    if (!res.ok) throw new Error(`Supabase ${res.status}: ${text.slice(0, 400)}`);
+    if (!res.ok) throw new Error(`Supabase ${res.status}: ${describeFailure(text)}`);
     return text ? JSON.parse(text) : null;
   }
   async select<T = any>(table: string, o: SelectOpts = {}): Promise<T[]> {
@@ -95,7 +95,13 @@ export class SupabaseRestAdapter implements DataClient {
     await this.request(`/${ident(table)}?${p}`, { method: 'DELETE' });
   }
   async rpc<T = any>(name: string, args: Record<string, unknown> = {}): Promise<T> {
-    return this.request(`/rpc/${ident(name)}`, { method: 'POST', body: JSON.stringify(args) });
+    // JSON.stringify drops properties whose value is undefined. PostgREST then
+    // looks for a function overload with fewer parameters, does not find one
+    // and answers 404, so an argument that is simply absent must still be sent
+    // as null.
+    const body: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(args)) body[k] = v === undefined ? null : v;
+    return this.request(`/rpc/${ident(name)}`, { method: 'POST', body: JSON.stringify(body) });
   }
 }
 
@@ -105,4 +111,26 @@ function encodeValue(v: unknown): string {
   if (typeof v === 'number') return String(v);
   const s = String(v);
   return /[,()\\]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
+}
+
+/**
+ * Describes a failed request in a short form.
+ *
+ * The reply from the database gateway can be long, and the part that explains
+ * the failure is at the end of it. Keeping the code and the message and
+ * dropping the long detail makes the cause visible without hiding anything
+ * important.
+ */
+function describeFailure(text: string): string {
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      const code = parsed.code ? String(parsed.code) : '';
+      const message = parsed.message ? String(parsed.message) : '';
+      const hint = parsed.hint ? String(parsed.hint) : '';
+      const parts = [code, message, hint].filter(Boolean);
+      if (parts.length) return parts.join(' | ');
+    }
+  } catch { /* the reply is not a structured body */ }
+  return text.slice(0, 400);
 }

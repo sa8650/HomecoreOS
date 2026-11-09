@@ -8,8 +8,8 @@
  *
  *  - the image is written to the *inactive* OTA slot; the running firmware is
  *    untouched until the new one is verified and selected;
- *  - the release SHA-256 is enforced while streaming, and when a signing key is
- *    configured the manifest signature must verify over that digest;
+ *  - the release SHA-256 is enforced while streaming, so a corrupted or
+ *    substituted image is rejected before it is ever written;
  *  - "installed" is published when the slot is verified and selected. "success"
  *    is published only after the new image boots and reconnects (see main);
  *  - any error aborts the update, keeps the running image and is reported.
@@ -22,15 +22,14 @@
 #include "esp_ota_ops.h"
 
 #include "hc_config.h"
+#include "hc_digest.h"
 #include "hc_https.h"
-#include "hc_signature.h"
 
 namespace hc {
 
 struct OtaRequest {
   String url;
   String sha256;
-  String signature;
   String version;
   uint32_t size = 0;
 };
@@ -54,10 +53,6 @@ class OtaEngine {
     if (!req.url.startsWith("https://")) { error = "refusing a non-HTTPS firmware URL"; return false; }
     if (req.sha256.length() != 64) { error = "the release digest is missing"; return false; }
     if (!HttpsClient::apiTrusted()) { error = "no certificate is configured for the download host"; return false; }
-    if (signingConfigured() && !verifyDigestSignature(req.sha256.c_str(), req.signature.c_str())) {
-      error = "the release signature is missing or invalid";
-      return false;
-    }
     const esp_partition_t *slot = esp_ota_get_next_update_partition(nullptr);
     if (!slot) { error = "no inactive OTA slot is available"; return false; }
     if (req.size && req.size > slot->size) { error = "the image does not fit in the OTA slot"; return false; }
@@ -187,10 +182,6 @@ class OtaEngine {
     const String actual = Sha256::hex(digest);
     if (!actual.equalsIgnoreCase(request_.sha256)) {
       fail("the downloaded image does not match the release checksum");
-      return;
-    }
-    if (signingConfigured() && !verifyDigestSignature(actual.c_str(), request_.signature.c_str())) {
-      fail("the downloaded image is not signed for this controller");
       return;
     }
     if (!Update.end(true)) { fail(String("could not finalise the update: ") + Update.errorString()); return; }
