@@ -16,12 +16,16 @@
 
 #include "hc_config.h"
 #include "hc_image.h"
+#include "hc_lifecycle.h"
 #include "hc_time.h"
 
 namespace hc {
 
 class SetupPortal {
  public:
+  /** Checks the PIN typed on the portal. Supplied by the sketch, which owns the lockout state. */
+  using PinCheckFn = PinResult (*)(const String &pin);
+
   struct SavedCredentials {
     String ssid;
     String password;
@@ -29,8 +33,16 @@ class SetupPortal {
     bool valid = false;
   };
 
-  void begin(const String &apSuffix) {
-    WiFi.mode(WIFI_AP);
+  void setPinCheck(PinCheckFn fn) { pinCheck_ = fn; }
+
+  /**
+   * Opens the portal. The station keeps its connection (AP+STA), so a Wi-Fi change
+   * does not cut the cloud link before the new details are known to work.
+   * bypassPin is set only when a person pressed the BOOT button on the controller.
+   */
+  void begin(const String &apSuffix, bool bypassPin = false) {
+    WiFi.mode(WIFI_AP_STA);
+    bypassPin_ = bypassPin;
     const String ssid = String("HomecoreOS-Setup-") + apSuffix;
     WiFi.softAP(ssid.c_str());
     dns_.start(53, "*", WiFi.softAPIP());
@@ -51,9 +63,12 @@ class SetupPortal {
     dns_.stop();
     WiFi.softAPdisconnect(true);
     started_ = false;
+    bypassPin_ = false;
   }
 
   bool active() const { return started_; }
+  bool pinBypassed() const { return bypassPin_; }
+  uint32_t lastActivityMs() const { return lastActivityMs_; }
 
   void tick() {
     if (!started_) return;
@@ -75,19 +90,35 @@ class SetupPortal {
     String deviceId;
     String wifiState;
     String mac;
-    bool hasWifi;
-    bool paired;
-    uint32_t secondsLeftForCode;
+    bool hasWifi = false;
+    bool paired = false;
+    bool pinRequired = false;
+    uint32_t secondsLeftForCode = 0;
   };
   StatusSource source;
 
  private:
   void handleSave() {
+    touch();
     String ssid = server_.arg("ssid");
     String password = server_.arg("password");
     String code = server_.arg("code");
+    const String pin = server_.arg("pin");
     code.trim();
     ssid.trim();
+    // A paired controller only changes Wi-Fi for someone who knows the setup PIN.
+    // The BOOT-button session is local, physical access, and skips the check.
+    if (source.pinRequired && !bypassPin_ && pinCheck_) {
+      const PinResult r = pinCheck_(pin);
+      if (r == PinResult::Locked) {
+        sendPage(messagePage("Too many attempts", "Wait ten minutes, then try the setup PIN again."));
+        return;
+      }
+      if (r == PinResult::Rejected) {
+        sendPage(messagePage("Setup PIN not accepted", "The setup PIN did not match, or no PIN is set yet. A PIN is set from the HomecoreOS console; go back and try again."));
+        return;
+      }
+    }
     if (ssid.length() == 0) {
       sendPage(messagePage("Wi-Fi network required", "Choose your home Wi-Fi network and try again."));
       return;
@@ -104,6 +135,7 @@ class SetupPortal {
   }
 
   void handleStatus() {
+    touch();
     JsonDocument doc;
     doc["firmware_version"] = source.firmwareVersion;
     doc["device_id"] = source.deviceId;
@@ -111,13 +143,19 @@ class SetupPortal {
     doc["mac"] = source.mac;
     doc["has_wifi"] = source.hasWifi;
     doc["paired"] = source.paired;
+    doc["pin_required"] = source.pinRequired && !bypassPin_;
     doc["code_seconds_left"] = source.secondsLeftForCode;
     String body;
     serializeJson(doc, body);
     server_.send(200, "application/json", body);
   }
 
-  void sendPage(const String &html) { server_.send(200, "text/html; charset=utf-8", html); }
+  void sendPage(const String &html) {
+    touch();
+    server_.send(200, "text/html; charset=utf-8", html);
+  }
+
+  void touch() { lastActivityMs_ = millis(); }
 
   static String shell(const String &title, const String &body) {
     String html = F("<!doctype html><html lang=en><meta charset=utf-8>"
@@ -157,8 +195,14 @@ class SetupPortal {
     body += F("<form method=POST action=/save>");
     body += F("<label for=ssid>Home Wi-Fi network</label><input id=ssid name=ssid maxlength=32 required autocomplete=off>");
     body += F("<label for=password>Wi-Fi password</label><input id=password name=password type=password maxlength=64 autocomplete=off>");
-    body += F("<label for=code>Six-digit pairing code</label><input id=code name=code class=code inputmode=numeric "
-             "pattern='[0-9]{6}' maxlength=6 placeholder='000000' autocomplete=one-time-code>");
+    if (source.pinRequired && !bypassPin_) {
+      body += F("<label for=pin>Setup PIN</label><input id=pin name=pin type=password inputmode=numeric "
+               "maxlength=12 autocomplete=off>");
+    }
+    if (!source.paired) {
+      body += F("<label for=code>Six-digit pairing code</label><input id=code name=code class=code inputmode=numeric "
+               "pattern='[0-9]{6}' maxlength=6 placeholder='000000' autocomplete=one-time-code>");
+    }
     body += F("<button type=submit>Save and connect</button></form>");
     body += F("<p class=muted>Firmware ");
     body += source.firmwareVersion;
@@ -181,7 +225,9 @@ class SetupPortal {
   WebServer server_{80};
   DNSServer dns_;
   bool started_ = false;
+  bool bypassPin_ = false;
   uint32_t lastActivityMs_ = 0;
+  PinCheckFn pinCheck_ = nullptr;
   SavedCredentials saved_;
 };
 

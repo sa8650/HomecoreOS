@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, useLiveData, useAction } from '../api';
+import { ControllerManagement } from './controller-management';
 import { useAuth } from '../state';
 import {
   Badge, Card, CopyButton, DataTable, EmptyState, Field, Icon, Loading, MiniChart, Modal,
@@ -564,7 +565,6 @@ export function ControllersPage() {
   const toast = useToast();
   const [unclaim, setUnclaim] = useState<any>(null);
   const [confirmText, setConfirmText] = useState('');
-  const [rotated, setRotated] = useState<any>(null);
   const { can } = useAuth();
   return <>
     <PageHead title="Controllers" desc="Registered ESP32 boards, their per-device MQTT identity and configuration sync status." actions={<Link className="btn btn-primary" to="/setup"><Icon.plus />Add Controller</Link>} />
@@ -579,21 +579,15 @@ export function ControllersPage() {
         { key: 'last', label: 'Last seen', render: (b: any) => timeAgo(b.last_seen_at) },
         { key: 'actions', label: '', render: (b: any) => <div className="row-actions">
           <Link className="btn btn-ghost btn-icon btn-sm" title="Pin manager" to={`/boards/${b.id}`} aria-label="Pin manager"><Icon.sliders /></Link>
-          {can('devices.configure') &&<button className="btn btn-ghost btn-icon btn-sm" title="Rotate credentials" onClick={async () => { try { setRotated(await api.post(`/api/boards/${b.id}/rotate-credentials`)); toast('Credentials rotated'); } catch (e: any) { toast(e.message, 'error'); } }} aria-label="Rotate credentials"><Icon.refresh /></button>}
-          {can('devices.manage') &&<button className="btn btn-ghost btn-icon btn-sm" title="Unclaim" onClick={() => { setUnclaim(b); setConfirmText(''); }} aria-label="Delete"><Icon.trash /></button>}
+          {can('devices.manage') && b.status !== 'unclaimed' && <button className="btn btn-ghost btn-icon btn-sm" title="Disconnect" onClick={() => { setUnclaim(b); setConfirmText(''); }} aria-label="Disconnect"><Icon.trash /></button>}
         </div> },
       ]} rows={data || []} empty={<EmptyState icon="cpu" title="No controllers registered" text="Pair an ESP32 with a one-time token to create your first controller." action={<Link className="btn btn-primary" to="/setup">Start setup wizard</Link>} />} />}
     </Card>
-    {unclaim && <Modal title="Unclaim controller" onClose={() => setUnclaim(null)} footer={<><button className="btn" onClick={() => setUnclaim(null)}>Cancel</button><button className="btn btn-danger" disabled={confirmText !== unclaim.device_id} onClick={async () => {
-      try { await api.del(`/api/boards/${unclaim.id}`, { confirm: confirmText }); toast('Controller unclaimed and credentials revoked'); refresh(); setUnclaim(null); } catch (e: any) { toast(e.message, 'error'); }
-    }}>Unclaim & revoke</button></>}>
-      <Notice tone="danger">This revokes the device's MQTT identity and releases all its GPIO assignments. Ownership transfer requires this explicit unclaim followed by a reset.</Notice>
+    {unclaim && <Modal title="Disconnect controller?" onClose={() => setUnclaim(null)} footer={<><button className="btn" onClick={() => setUnclaim(null)}>Cancel</button><button className="btn btn-danger" disabled={confirmText !== unclaim.device_id} onClick={async () => {
+      try { await api.del(`/api/boards/${unclaim.id}`, { confirm: confirmText }); toast('Controller disconnected. Its old credentials are revoked.'); refresh(); setUnclaim(null); } catch (e: any) { toast(e.message, 'error'); }
+    }}>Disconnect now</button></>}>
+      <Notice tone="danger">Takes effect at once, even if the controller is offline. Its old MQTT identity is revoked. It returns to pairing mode the next time it reaches HomecoreOS. Its Wi-Fi is kept. Re-pair it to bring it back.</Notice>
       <Field label={`Type ${unclaim.device_id} to confirm`}><input className="input mono" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} /></Field>
-    </Modal>}
-    {rotated && <Modal title="New device credentials" onClose={() => setRotated(null)} footer={<button className="btn" onClick={() => setRotated(null)}>Done</button>}>
-      <Notice tone="warn">Shown once. Update the firmware/NVS on the physical board; the old password is no longer valid.</Notice>
-      <div className="kv" style={{ marginTop: 14 }}><dt>Username</dt><dd className="mono">{rotated.username}</dd><dt>Password</dt><dd className="mono" style={{ wordBreak: 'break-all' }}>{rotated.password}</dd></div>
-      <div style={{ marginTop: 12 }}><CopyButton value={`${rotated.username}:${rotated.password}`} label="Copy credentials" /></div>
     </Modal>}
   </>;
 }
@@ -779,7 +773,7 @@ export function BoardDetailPage() {
   const [fn, setFn] = useState<'output' | 'input' | 'adc' | 'pwm'>('output');
   const [pin, setPin] = useState<any>(null);
   const [bus, setBus] = useState<any>(null);
-  const [tab, setTab] = useState('pins');
+  const [tab, setTab] = useState('controller');
   const [config, setConfig] = useState<any>(null);
   const { can } = useAuth();
   const board = data?.board;
@@ -799,7 +793,8 @@ export function BoardDetailPage() {
         <Stat label="Available GPIO" value={pins.filter((p: any) => p.state === 'available').length} icon="check" />
         <Stat label="Config" value={`v${board.config_version}`} foot={`Applied v${board.applied_config_version}`} icon="file" />
       </div>
-      <Tabs value={tab} onChange={setTab} items={[{ id: 'pins', label: 'GPIO Pin Manager' }, { id: 'buses', label: `Shared buses (${(data?.buses || []).length})` }, { id: 'components', label: 'Components' }]} />
+      <Tabs value={tab} onChange={setTab} items={[{ id: 'controller', label: 'Controller' }, { id: 'pins', label: 'GPIO Pin Manager' }, { id: 'buses', label: `Shared buses (${(data?.buses || []).length})` }, { id: 'components', label: 'Components' }]} />
+      {tab === 'controller' && <ControllerManagement board={board} onChanged={refresh} />}
       {tab === 'pins' && <Card title="Physical pin map" sub="Pin ownership is scoped to THIS board instance" actions={
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><span className="tiny">Validate against</span>
           <select className="select" style={{ width: 150 }} value={fn} onChange={(e) => setFn(e.target.value as any)}><option value="output">Digital output</option><option value="input">Digital input</option><option value="adc">ADC input</option><option value="pwm">PWM output</option></select></div>}>
@@ -1152,7 +1147,7 @@ export function SettingsPage() {
           <div className="card" style={{ padding: 14 }}><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }} className="mono">{codes.map((c) => <div key={c}>{c}</div>)}</div></div>
         </Modal>}
         <Card title="Notification & security"><div className="kv">
-          <dt>Device credentials</dt><dd>Unique per controller; rotate from Controllers</dd>
+          <dt>Device credentials</dt><dd>Unique per controller; Disconnect revokes them and re-pairing issues new ones</dd>
           <dt>Isolation</dt><dd>Database authorization + API tenant checks + MQTT ACL</dd>
           <dt>Activity log</dt><dd><Link to="/activity" style={{ textDecoration: 'underline' }}>View audit trail</Link></dd>
         </div></Card>

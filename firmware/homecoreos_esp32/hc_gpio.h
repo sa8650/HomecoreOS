@@ -17,7 +17,7 @@ enum class PinVerdict : uint8_t { Ok, Reserved, OutOfRange, InputOnly };
 
 inline const char *verdictName(PinVerdict v) {
   switch (v) {
-    case PinVerdict::Reserved: return "reserved by flash/PSRAM";
+    case PinVerdict::Reserved: return "reserved by flash/PSRAM or the BOOT button";
     case PinVerdict::OutOfRange: return "does not exist on this chip";
     case PinVerdict::InputOnly: return "input-only pin";
     default: return "ok";
@@ -53,9 +53,12 @@ inline bool gpioReservedByMemory(int gpio) {
 #endif
 }
 
+/** GPIO0 is the BOOT button (physical Wi-Fi and factory reset) and a strapping pin. */
+inline bool gpioReservedByBoard(int gpio) { return gpio == 0; }
+
 inline PinVerdict checkOutputPin(int gpio) {
   if (gpio < 0 || gpio > maxGpioForChip()) return PinVerdict::OutOfRange;
-  if (gpioReservedByMemory(gpio)) return PinVerdict::Reserved;
+  if (gpioReservedByMemory(gpio) || gpioReservedByBoard(gpio)) return PinVerdict::Reserved;
 #if defined(CONFIG_IDF_TARGET_ESP32)
   if (gpio >= 34 && gpio <= 39) return PinVerdict::InputOnly;
 #endif
@@ -64,7 +67,7 @@ inline PinVerdict checkOutputPin(int gpio) {
 
 inline PinVerdict checkInputPin(int gpio) {
   if (gpio < 0 || gpio > maxGpioForChip()) return PinVerdict::OutOfRange;
-  if (gpioReservedByMemory(gpio)) return PinVerdict::Reserved;
+  if ((gpioReservedByMemory(gpio) || gpioReservedByBoard(gpio))) return PinVerdict::Reserved;
   return PinVerdict::Ok;
 }
 

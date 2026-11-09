@@ -1,0 +1,24 @@
+# systemd unit for the HomecoreOS platform bridge.
+# Install: copy this file to /etc/systemd/system/, put the settings in
+# /etc/homecoreos/bridge.env (see bridge.env.example, mode 0600), then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now homecoreos-bridge
+# Before enabling, run:  node verify_bridge.mjs  (with the same environment).
+[Unit]
+Description=HomecoreOS platform bridge (MQTT to HomecoreOS API)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=homecoreos
+WorkingDirectory=/opt/homecoreos/scripts/bridge
+EnvironmentFile=/etc/homecoreos/bridge.env
+ExecStart=/usr/bin/node platform_bridge.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

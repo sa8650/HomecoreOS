@@ -18,6 +18,7 @@
 
 #include "hc_config.h"
 #include "hc_time.h"
+#include "hc_topic.h"
 
 namespace hc {
 
@@ -31,20 +32,23 @@ struct Identity {
   String password;
   String broker;
   uint16_t port = HOMECOREOS_MQTT_PORT;
+  // Set by the server when the code is accepted. Sent back in the registration
+  // report so the platform can match it to the accepted code and this controller.
+  String controllerId;
+  String homeId;
+  String pairingSessionId;
   bool complete() const {
     return deviceId.length() && tenantId.length() && clientId.length() &&
            username.length() && password.length() && broker.length();
   }
+  bool registrationComplete() const {
+    return controllerId.length() && homeId.length() && pairingSessionId.length();
+  }
   void clear() {
     deviceId = tenantId = clientId = username = password = broker = "";
+    controllerId = homeId = pairingSessionId = "";
     port = HOMECOREOS_MQTT_PORT;
   }
-};
-
-struct InboundMessage {
-  char topic[64] = {0};
-  char *payload = nullptr;
-  size_t length = 0;
 };
 
 class MqttLink {
@@ -120,6 +124,33 @@ class MqttLink {
 
   bool connected() const { return connected_; }
 
+  /**
+   * Consecutive broker refusals for this identity (bad username/password or not
+   * authorised). A revoked identity is refused on every attempt, so the caller
+   * treats a run of these as "this controller was disconnected from the platform".
+   * Transport failures and outages are not counted.
+   */
+  uint32_t authRefusals() const { return authRefusals_; }
+
+  /**
+   * Publishes at QoS 1 and waits (up to timeoutMs) for the broker's PUBACK. Used
+   * before an action that erases this identity: the platform must hear the
+   * confirmation while the session still exists.
+   */
+  bool publishConfirmed(TopicKind kind, const char *payload, uint32_t timeoutMs) {
+    if (!client_ || !connected_) return false;
+    const char *topic = topicFor(kind);
+    if (!topic[0]) return false;
+    const int id = esp_mqtt_client_publish(client_, topic, payload, (int)strlen(payload), 1, 0);
+    if (id < 0) return false;
+    const uint32_t start = millis();
+    while (ackedMsgId_ != id) {
+      if (millis() - start > timeoutMs || !connected_) return false;
+      delay(10);
+    }
+    return true;
+  }
+
   String publish(TopicKind kind, const char *payload, int qos = 1) {
     if (!client_ || !connected_) return "mqtt offline";
     const char *topic = topicFor(kind);
@@ -152,8 +183,12 @@ class MqttLink {
 
   void handle(esp_event_base_t, int32_t id, esp_mqtt_event_handle_t event) {
     switch ((esp_mqtt_event_id_t)id) {
+      case MQTT_EVENT_PUBLISHED:
+        ackedMsgId_ = event->msg_id;
+        break;
       case MQTT_EVENT_CONNECTED:
         connected_ = true;
+        authRefusals_ = 0;
         connectedAtMs_ = millis();
         if (!subscribed_) {
           esp_mqtt_client_subscribe(client_, commandTopic_, 1);
@@ -171,6 +206,12 @@ class MqttLink {
         break;
       case MQTT_EVENT_ERROR:
         lastError_ = millis();
+        if (event && event->error_handle &&
+            event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+          const int rc = event->error_handle->connect_return_code;
+          // 4 = bad username or password, 5 = not authorised.
+          if (rc == 4 || rc == 5) ++authRefusals_;
+        }
         break;
       default:
         break;
@@ -182,25 +223,25 @@ class MqttLink {
     const int total = event->total_data_len;
     const int offset = event->current_data_offset;
     if (!event->topic || !event->topic_len) return;
-    if (total > (int)kMaxPayloadBytes) return;
     if (offset == 0) {
       scratchLen_ = 0;
-      copyTopic(event->topic, event->topic_len);
+      // A message is dropped whole when its topic or payload cannot be held. It is
+      // never delivered truncated, because a truncated topic would match nothing.
+      skipping_ = total > (int)kMaxPayloadBytes || !inbound_.set(event->topic, (size_t)event->topic_len);
+      if (skipping_) Serial.println("[homecoreos][mqtt] inbound message too large for its buffer; dropped");
+    }
+    if (skipping_) {
+      if (offset + event->data_len >= total) skipping_ = false;
+      return;
     }
     if (scratchLen_ + (size_t)event->data_len >= sizeof(scratch_)) return;
     memcpy(scratch_ + scratchLen_, event->data, (size_t)event->data_len);
     scratchLen_ += (size_t)event->data_len;
     if ((int)scratchLen_ >= total || total <= event->data_len) {
       scratch_[scratchLen_] = 0;
-      if (messageHandler_) messageHandler_(scratchTopic_, scratch_, scratchLen_);
+      if (messageHandler_ && inbound_.valid()) messageHandler_(inbound_.c_str(), scratch_, scratchLen_);
       scratchLen_ = 0;
     }
-  }
-
-  void copyTopic(const char *topic, int length) {
-    const size_t n = (size_t)length < sizeof(scratchTopic_) - 1 ? (size_t)length : sizeof(scratchTopic_) - 1;
-    memcpy(scratchTopic_, topic, n);
-    scratchTopic_[n] = 0;
   }
 
   esp_mqtt_client_handle_t client_ = nullptr;
@@ -210,6 +251,8 @@ class MqttLink {
   uint32_t connectedAtMs_ = 0;
   uint32_t lastError_ = 0;
   uint32_t lastPublishOk_ = 0;
+  uint32_t authRefusals_ = 0;
+  volatile int ackedMsgId_ = -1;
   MessageHandler messageHandler_ = nullptr;
   LinkHandler connectedHandler_ = nullptr;
   char brokerUrl_[160] = {0};
@@ -219,7 +262,8 @@ class MqttLink {
   char telemetryTopic_[96] = {0};
   char availabilityTopic_[96] = {0};
   char scratch_[kMaxPayloadBytes] = {0};
-  char scratchTopic_[64] = {0};
+  InboundTopic inbound_;
+  bool skipping_ = false;
   size_t scratchLen_ = 0;
 };
 

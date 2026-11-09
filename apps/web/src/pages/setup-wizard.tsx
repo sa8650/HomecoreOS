@@ -8,9 +8,16 @@ import {
   Icon, Loading, Notice, PageHead, Progress, StatusBadge, SuccessState, timeFull,
 } from '../components';
 
+/** Server-side stage of one pairing session. Success is only 'completed'. */
+type PairingStage = 'pending' | 'accepted' | 'reporting' | 'completed' | 'expired' | 'failed' | 'cancelled';
+
 type PairingProgress = {
-  id: string; claimed: boolean; expired: boolean; revoked: boolean; locked: boolean;
+  id: string; stage: PairingStage; failure_reason: string | null; registered_at: string | null;
+  claimed: boolean; expired: boolean; revoked: boolean; locked: boolean;
   failed_attempts: number; remaining_attempts: number; expires_at: string; seconds_left: number;
+  /** Why pairing is stuck, from the platform's own checks (bridge, broker, controller). */
+  diagnosis?: { code: string; title: string; text: string } | null;
+  onboarding_seconds_left: number | null;
   board: null | {
     id: string; name: string; device_id: string; status: string; online: boolean;
     firmware_version?: string; catalog_board_id?: string; chip_model?: string; chip_family?: string;
@@ -37,6 +44,17 @@ function StageLine({ state, title, detail }: { state: 'waiting' | 'active' | 'do
   </div>;
 }
 
+/** What the person can do about each failure. Shown instead of a generic message. */
+const FAILURE_TEXT: Record<string, { title: string; text: string }> = {
+  onboarding_timeout: {
+    title: 'The controller did not finish connecting',
+    text: 'The code was accepted, but the controller did not confirm its registration within 10 minutes. Check that it is powered, near your router and that its Wi-Fi details are right, then start again.',
+  },
+};
+
+/** Which stage each line of the live status is at, in order. */
+const STAGE_ORDER: PairingStage[] = ['pending', 'accepted', 'reporting', 'completed'];
+
 export function SetupWizardPage() {
   const catalog = useLiveData<any[]>('/api/board-catalog');
   const boards = useLiveData<any[]>('/api/boards');
@@ -58,7 +76,12 @@ export function SetupWizardPage() {
     && `${b.model} ${b.manufacturer} ${b.chip_family}`.toLowerCase().includes(boardSearch.toLowerCase()));
   const canManage = can('devices.manage');
   const claimedBoard = progress?.board;
-  const online = !!claimedBoard?.online && claimedBoard?.status === 'online';
+  // Success means the backend confirmed the registration (stage 'completed').
+  // A reporting or online flag alone is not enough.
+  const online = progress?.stage === 'completed';
+  const stage: PairingStage | null = progress?.stage ?? null;
+  const failed = stage === 'failed';
+  const accepted = !!progress?.claimed;
 
   const issue = async () => {
     setBusy(true); setPollError(''); setProgress(null);
@@ -93,12 +116,15 @@ export function SetupWizardPage() {
         const r = await api.get<PairingProgress>(`/api/pairing/progress?session=${encodeURIComponent(session.id)}`);
         if (!alive) return;
         setProgress(r); setSeconds(r.seconds_left); setPollError('');
-        if (r.claimed && r.board?.online) {
+        if (r.stage === 'completed') {
           done = true;
           boards.refresh();
           setStep(3);
           return;
         }
+        // An unaccepted code that ran out, or a cancelled code, will not change again.
+        // A failed session keeps polling: a late but valid registration still completes it.
+        if (r.stage === 'expired' || r.stage === 'cancelled') done = true;
       } catch (e: any) {
         if (alive) setPollError(e.message || 'Could not check the pairing state.');
       }
@@ -120,33 +146,59 @@ export function SetupWizardPage() {
     await issue();
   };
 
-  const expired = !!progress?.expired || (!!session && seconds <= 0);
-  const illustration = online ? 'done' : step === 2 ? (progress?.claimed ? 'cloud' : 'scanning') : step === 1 ? 'ready' : 'wifi';
+  // 'expired' is the server's verdict for a code nobody used. After acceptance the code's
+  // countdown is meaningless, so it is never treated as expiry.
+  const expired = stage === 'expired';
+  const illustration = online ? 'done' : failed ? 'scanning' : step === 2 ? (accepted ? 'cloud' : 'scanning') : step === 1 ? 'ready' : 'wifi';
+  const seenByBackend = !!claimedBoard?.last_seen_at;
 
-  const stages = useMemo(() => [
-    { key: 'code', title: 'Pairing code created',
-      state: session ? 'done' : 'active' as const,
-      detail: session ? `Valid until ${timeFull(progress?.expires_at || '')}` : 'Not created yet' },
-    { key: 'wifi', title: 'Controller joined your Wi-Fi',
-      state: claimedBoard ? 'done' : step === 2 ? 'active' : 'waiting' as const,
-      detail: claimedBoard ? 'The controller reached HomecoreOS over the internet' : 'Happens on the controller after you save the network details' },
-    { key: 'redeem', title: 'Pairing code accepted',
-      state: progress?.claimed ? 'done' : progress?.failed_attempts ? 'failed' : step === 2 ? 'active' : 'waiting' as const,
-      detail: progress?.claimed ? 'The code was used once and is now invalid'
-        : progress?.failed_attempts ? `${progress.failed_attempts} rejected attempt(s), ${progress.remaining_attempts} left on this code`
-          : 'Waiting for the controller to submit the code' },
-    { key: 'identity', title: 'Private credentials issued',
-      state: progress?.claimed ? 'done' : 'waiting' as const,
-      detail: progress?.claimed ? 'The controller has its own MQTT identity for this home' : 'Issued by the server when the code is redeemed' },
-    { key: 'online', title: 'Reporting to your home',
-      state: online ? 'done' : expired ? 'failed' : step === 2 ? 'active' : 'waiting' as const,
-      detail: online ? 'The controller confirmed it is online' : expired ? 'The pairing code expired before a connection was confirmed'
-        : 'Waiting for a real status report from the controller' },
-  ], [session, claimedBoard, progress, online, expired, step]);
+  // One line per real stage. Each line only changes when the server says so.
+  const stages = useMemo(() => {
+    const idx = stage ? STAGE_ORDER.indexOf(stage) : -1;
+    const at = (s: PairingStage) => idx >= STAGE_ORDER.indexOf(s);
+    const lineFor = (done: boolean, active: boolean) => done ? 'done' as const : active ? 'active' as const : 'waiting' as const;
+    return [
+      { key: 'code', title: 'Pairing code created',
+        state: session ? 'done' as const : 'active' as const,
+        detail: session ? `Valid until ${timeFull(progress?.expires_at || '')}` : 'Not created yet' },
+      { key: 'accepted', title: 'Code accepted, controller credentials issued',
+        state: accepted ? 'done' as const : progress?.failed_attempts ? 'failed' as const : lineFor(false, step === 2),
+        detail: accepted ? 'The code was used once and the controller received its own identity for this home'
+          : progress?.failed_attempts ? `${progress.failed_attempts} rejected attempt(s), ${progress.remaining_attempts} left on this code`
+            : 'Waiting for the controller to submit the code' },
+      { key: 'connecting', title: 'Connecting to your home over MQTT',
+        state: seenByBackend || at('reporting') ? 'done' as const : lineFor(false, accepted && !failed),
+        detail: seenByBackend ? 'The controller connected to the platform' : 'The controller is joining Wi-Fi and the platform' },
+      { key: 'reporting', title: 'Waiting for the controller report',
+        state: at('completed') ? 'done' as const : failed ? 'failed' as const : lineFor(false, at('reporting') && !online),
+        detail: at('completed') ? 'The controller reported its identity to the platform'
+          : failed ? 'No valid report arrived in time'
+            : 'Waiting for the controller to say who it is and which home it belongs to' },
+      { key: 'confirm', title: 'Confirming registration',
+        state: online ? 'done' as const : failed ? 'failed' as const : 'waiting' as const,
+        detail: online ? 'The platform saved the controller and acknowledged it'
+          : 'The platform saves the controller only after a valid report' },
+      { key: 'added', title: 'Added to your home',
+        state: online ? 'done' as const : 'waiting' as const,
+        detail: online ? 'The controller is part of your home' : 'Shown here once registration is confirmed' },
+    ];
+  }, [session, progress, claimedBoard, accepted, seenByBackend, stage, step, online, failed]);
+
+  const percent = online ? 100 : failed ? 100 : accepted ? (seenByBackend ? 70 : 45) : session ? 15 : 0;
+  const statusLabel = online ? 'Added'
+    : failed ? 'Needs attention'
+      : expired ? 'Code expired'
+        : stage === 'cancelled' ? 'Cancelled'
+          : stage === 'reporting' ? 'Waiting for report'
+            : accepted ? 'Connecting to MQTT'
+              : 'Waiting for the controller';
+  const failureInfo = FAILURE_TEXT[progress?.failure_reason || ''] || (failed ? {
+    title: 'The controller did not finish connecting', text: 'Start again with a new code.',
+  } : null);
 
   return <>
     <PageHead title="Add a controller" eyebrow="Device setup"
-      desc="Install the firmware over USB, choose your Wi-Fi on the controller and pair it with one six-digit code. Nothing is called connected until the controller says so."
+      desc="Choose the board, join the controller to your Wi-Fi and pair it with one six-digit code. Nothing is called connected until the controller says so."
       actions={<Link className="btn" to="/firmware"><Icon.download />Firmware & updates<Icon.next /></Link>} />
 
     <div className="stepper" aria-label="Setup progress">
@@ -165,15 +217,13 @@ export function SetupWizardPage() {
         {step === 0 && <>
           <h2 className="text-h6">1. Get your controller ready</h2>
           <p className="muted" style={{ margin: '8px 0 20px', fontSize: 13 }}>
-            A new controller needs its firmware written once over USB. If yours is already running HomecoreOS, skip to the pairing code.
+            Pick the board and name it, then pair it. A new controller needs its firmware first: that is installed from the Firmware page, not here.
           </p>
           <div className="wizard-illustration" style={{ marginBottom: 20 }}><DeviceIllustration state="ready" /></div>
-          <Field label="Write the firmware (first time only)" hint="Chrome or Edge on a computer with a USB data cable.">
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <Link className="btn" to="/firmware"><Icon.usb />Open the USB installer</Link>
-              <Link className="btn btn-ghost" to="/firmware"><Icon.info />What happens during the install</Link>
-            </div>
-          </Field>
+          <Notice tone="info" title="Firmware is not installed here">
+            If the controller has no firmware yet, install it from the Firmware page first, then come back.{' '}
+            <Link className="btn btn-sm" to="/firmware" style={{ marginLeft: 8 }}><Icon.usb />Open Firmware</Link>
+          </Notice>
           <div className="divider" />
           <Field label="Which board is it?" hint="Boards with a verified pin map can be added.">
             <div className="search" style={{ marginBottom: 8 }}><Icon.search />
@@ -230,7 +280,10 @@ export function SetupWizardPage() {
           <div className="card card-pad" style={{ marginBottom: 16, textAlign: 'center' }}>
             <div className="tiny" style={{ marginBottom: 4 }}>Your one-time pairing code</div>
             <div className="mono" style={{ fontSize: 38, letterSpacing: 9, fontWeight: 700 }}>{session.code}</div>
-            <div className="tiny" style={{ marginTop: 6 }}>{seconds > 0 ? `Expires in ${countdown(seconds)}` : 'Expired — create a new code'}</div>
+            <div className="tiny" style={{ marginTop: 6 }}>{accepted
+              ? (progress?.onboarding_seconds_left != null ? `Code used. Waiting up to ${countdown(progress.onboarding_seconds_left)} for the controller to report` : 'Code used')
+              : expired ? 'Expired — create a new code'
+                : seconds > 0 ? `Expires in ${countdown(seconds)}` : 'Expired — create a new code'}</div>
             <div style={{ marginTop: 8, display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
               <CopyButton value={session.code} label="Copy code" />
               <button className="btn btn-sm" onClick={restart} disabled={busy}><Icon.refresh />New code</button>
@@ -248,17 +301,21 @@ export function SetupWizardPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <strong style={{ fontSize: 13 }}>Live status</strong>
               <span className="status-live"><span className="dot pulse" style={{ color: 'var(--accent)' }} />
-                {online ? 'Connected' : expired ? 'Stopped' : 'Checking every few seconds'}</span>
+                {statusLabel}</span>
             </div>
-            <Progress value={online ? 100 : claimedBoard ? 80 : 15}
-              tone={expired ? 'danger' : online ? 'on' : 'warn'} />
+            <Progress value={percent}
+              tone={failed || expired ? 'danger' : online ? 'on' : 'warn'} />
             {stages.map(({ key, ...stage }) => <StageLine key={key} {...stage as any} />)}
           </div>
+          {!online && !expired && !failed && progress?.diagnosis && <div style={{ marginBottom: 12 }}><Notice tone="warn" title={progress.diagnosis.title}>{progress.diagnosis.text}</Notice></div>}
           {pollError && <div className="notice danger" style={{ marginBottom: 12 }}><Icon.fail />{pollError}</div>}
-          {expired && !online && <div style={{ marginBottom: 12 }}><ErrorState title="The pairing code expired"
-            text="Nothing was paired. Ask for a new code and enter it on the controller's setup page; your Wi-Fi details stay saved on the controller."
+          {expired && <div style={{ marginBottom: 12 }}><ErrorState title="The pairing code expired"
+            text="Nothing was paired. Create a new code and enter it on the controller's setup page; your Wi-Fi details stay saved on the controller."
             onRetry={restart} /></div>}
-          {progress?.locked && !online && <div style={{ marginBottom: 12 }}><Notice tone="danger" title="Too many wrong codes">
+          {failed && failureInfo && <div style={{ marginBottom: 12 }}><ErrorState title={failureInfo.title}
+            text={`${failureInfo.text} This page keeps checking, so a late connection is still picked up.`}
+            onRetry={restart} /></div>}
+          {progress?.locked && !accepted && <div style={{ marginBottom: 12 }}><Notice tone="danger" title="Too many wrong codes">
             This code was locked after several incorrect attempts. Create a new code and try again.</Notice></div>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn" onClick={() => setStep(1)}><Icon.back />Back</button>
@@ -285,8 +342,8 @@ export function SetupWizardPage() {
                 <dt>Last seen</dt><dd>{claimedBoard?.last_seen_at ? timeFull(claimedBoard.last_seen_at) : 'Just now'}</dd>
               </div>
             </Card>
-          </> : <ErrorState title="A connection has not been confirmed yet"
-            text="The code was used, but the controller has not reported that it is online. Check that it is powered and near your router, then wait a moment."
+          </> : <ErrorState title={failureInfo?.title || 'Registration is not confirmed yet'}
+            text={failureInfo?.text || 'The controller has not finished registering. Keep this page open, or check that it is powered and near your router.'}
             onRetry={() => setStep(2)} />}
           <div className="divider" />
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

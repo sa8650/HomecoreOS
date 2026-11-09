@@ -25,6 +25,22 @@ export const SwitchCommand = z.object({
   expires_at: z.number().int().positive(),
   config_version: z.number().int().optional(),
 });
+
+/** Board-level actions a console can send to a controller. */
+export const BOARD_ACTIONS = ['reboot', 'open_setup', 'reset_wifi', 'unpair', 'factory_reset', 'set_setup_pin'] as const;
+export type BoardActionT = typeof BOARD_ACTIONS[number];
+
+export const BoardCommand = z.object({
+  schema_version: z.literal(1),
+  command_id: z.string().uuid(),
+  device_id: z.string().min(1),
+  action: z.enum(BOARD_ACTIONS),
+  // Only for set_setup_pin: SHA-256 of "<device id>:<PIN>". The PIN itself never leaves the browser
+  // and is never stored by the platform. The controller salts and stores its own hash.
+  pin_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  expires_at: z.number().int().positive(),
+});
+
 export type SwitchCommandT = z.infer<typeof SwitchCommand>;
 
 export const CommandAck = z.object({

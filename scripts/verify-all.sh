@@ -62,9 +62,15 @@ if command -v g++ >/dev/null 2>&1; then
 
   run "Firmware headers" bash -c \
     'g++ -std=c++17 -I scripts/firmware/arduino-shim -I firmware/homecoreos_esp32 scripts/firmware/verify_firmware_headers.cpp -o /tmp/hc_headers_test && /tmp/hc_headers_test'
+  run "MQTT topic handling" bash -c \
+    'g++ -std=c++17 -Wall -Wextra -I firmware/homecoreos_esp32 scripts/firmware/verify_mqtt_topics.cpp -o /tmp/hc_topics_test && /tmp/hc_topics_test'
+  run "Controller lifecycle rules" bash -c \
+    'g++ -std=c++17 -Wall -Wextra -I firmware/homecoreos_esp32 scripts/firmware/verify_lifecycle.cpp -o /tmp/hc_lifecycle_test && /tmp/hc_lifecycle_test'
 else
   skip_suite "Firmware SHA-256" "no g++ available"
   skip_suite "Firmware headers" "no g++ available"
+  skip_suite "MQTT topic handling" "no g++ available"
+  skip_suite "Controller lifecycle rules" "no g++ available"
 fi
 
 # --------------------------------------------------------- the types and build --

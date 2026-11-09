@@ -35,8 +35,10 @@
 
 #include "hc_cloud.h"
 #include "hc_config.h"
+#include "hc_digest.h"
 #include "hc_gpio.h"
 #include "hc_https.h"
+#include "hc_lifecycle.h"
 #include "hc_mqtt.h"
 #include "hc_ota.h"
 #include "hc_portal.h"
@@ -74,12 +76,22 @@ uint32_t lastConfigPollMs = 0;
 uint32_t lastCommandAckMs = 0;
 uint32_t lastStateReportMs = 0;
 uint32_t lastFirmwareCheckMs = 0;
+uint32_t lastRegistrationMs = 0;
+// True once the platform has acknowledged this controller's registration in this
+// connection. Reset on every (re)connect, so a lost acknowledgement is simply retried.
+bool registrationAcked = false;
 uint32_t healthySinceMs = 0;
+// Connectivity recovery state. Pairing is never touched by these.
+PinGuard pinGuard;
+bool portalIsFallback = false;
+uint32_t lastFallbackOpenMs = 0;
+uint32_t noInternetSince = 0;
 uint32_t commandIds[kCommandCacheSize];
 size_t commandIdCount = 0;
 
 void markStateDirty();
 void publishConfigAck(uint32_t version, const char *status, const char *error = nullptr);
+void startPortal(bool bypassPin = false, bool fallback = false);
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -92,6 +104,9 @@ void loadIdentity() {
   identity.password = nvs.getString(kNvsMqttPass, "");
   identity.broker = nvs.getString(kNvsBroker, "");
   identity.port = (uint16_t)nvs.getUShort(kNvsBrokerPort, HOMECOREOS_MQTT_PORT);
+  identity.controllerId = nvs.getString(kNvsControllerId, "");
+  identity.homeId = nvs.getString(kNvsHomeId, "");
+  identity.pairingSessionId = nvs.getString(kNvsPairingSession, "");
 }
 
 void saveIdentity() {
@@ -102,6 +117,9 @@ void saveIdentity() {
   nvs.putString(kNvsMqttPass, identity.password);
   nvs.putString(kNvsBroker, identity.broker);
   nvs.putUShort(kNvsBrokerPort, identity.port);
+  nvs.putString(kNvsControllerId, identity.controllerId);
+  nvs.putString(kNvsHomeId, identity.homeId);
+  nvs.putString(kNvsPairingSession, identity.pairingSessionId);
 }
 
 void clearIdentity() {
@@ -113,6 +131,9 @@ void clearIdentity() {
   nvs.remove(kNvsMqttPass);
   nvs.remove(kNvsBroker);
   nvs.remove(kNvsBrokerPort);
+  nvs.remove(kNvsControllerId);
+  nvs.remove(kNvsHomeId);
+  nvs.remove(kNvsPairingSession);
 }
 
 void loadConfiguration() {
@@ -163,6 +184,27 @@ String publishDoc(TopicKind kind, JsonDocument &doc) {
   return mqtt.publish(kind, publishBuffer, 1);
 }
 
+/** What the console shows: link state and the reason for the last failure. No secrets. */
+bool setupPinSet();
+
+void addConnectivity(JsonDocument &d) {
+  JsonObject c = d["connectivity"].to<JsonObject>();
+  JsonObject w = c["wifi"].to<JsonObject>();
+  w["state"] = wifi.phaseName();
+  w["ssid"] = wifi.ssid();
+  w["rssi"] = wifi.rssi();
+  w["ip"] = wifi.online() ? WiFi.localIP().toString() : String();
+  w["last_error"] = wifiFailureName(wifi.lastFailure());
+  w["fallback_ap"] = portal.active() && portalIsFallback;
+  JsonObject m = c["mqtt"].to<JsonObject>();
+  m["state"] = mqtt.connected() ? "connected" : "disconnected";
+  m["last_error"] = mqtt.authRefusals() >= kAuthRefusalLimit ? "credentials_refused" : "";
+  if (mqtt.connected()) c["internet"] = true;
+  JsonObject p = c["pairing"].to<JsonObject>();
+  p["state"] = !identity.complete() ? "unpaired" : (identity.registrationComplete() ? "paired" : "pending");
+  c["setup_pin_set"] = setupPinSet();
+}
+
 void publishAvailability(const char *status) {
   JsonDocument d;
   d["schema_version"] = 1;
@@ -170,7 +212,34 @@ void publishAvailability(const char *status) {
   d["status"] = status;
   d["firmware_version"] = OtaEngine::runningVersion();
   d["timestamp"] = epochNow();
+  addConnectivity(d);
   publishDoc(TopicKind::Availability, d);
+}
+
+/**
+ * Registration report: says which accepted code this controller is, in which home.
+ * Sent on the availability topic (the one this device may publish to). It is repeated
+ * until the platform acknowledges it, and the platform treats repeats as harmless.
+ * A controller paired before this release has no session to report; it must be paired again.
+ */
+void publishRegistration() {
+  if (!identity.registrationComplete()) {
+    Serial.println("[homecoreos] registration: this controller has no pairing session; pair it again");
+    lastRegistrationMs = millis();
+    return;
+  }
+  JsonDocument d;
+  d["schema_version"] = 1;
+  d["type"] = "registration";
+  d["device_id"] = identity.deviceId;
+  d["controller_id"] = identity.controllerId;
+  d["home_id"] = identity.homeId;
+  d["pairing_session_id"] = identity.pairingSessionId;
+  d["firmware_version"] = OtaEngine::runningVersion();
+  d["status"] = "online";
+  d["timestamp"] = epochNow();
+  publishDoc(TopicKind::Availability, d);
+  lastRegistrationMs = millis();
 }
 
 void publishConfigAck(uint32_t version, const char *status, const char *error) {
@@ -255,6 +324,152 @@ uint32_t hashCommandId(const char *uuid) {
   return h ? h : 1u;
 }
 
+// ---------------------------------------------------------------------------
+// Board-level actions (open_setup, reset_wifi, unpair, factory_reset, set_setup_pin)
+// ---------------------------------------------------------------------------
+/**
+ * Acknowledges a board action. A destructive action sends its confirmation and waits
+ * for the broker's PUBACK before it erases anything: the platform must hear the ack
+ * while this identity still exists. Returns false if the ack was not delivered.
+ */
+bool sendBoardAck(const char *commandId, bool confirmed, const char *error, bool waitForBroker) {
+  JsonDocument d;
+  d["schema_version"] = 1;
+  d["type"] = "command_ack";
+  d["device_id"] = identity.deviceId;
+  d["command_id"] = commandId;
+  d["status"] = confirmed ? "confirmed" : "failed";
+  if (error && error[0]) d["error"] = error;
+  const size_t n = serializeJson(d, publishBuffer, sizeof(publishBuffer));
+  if (n == 0 || n >= sizeof(publishBuffer)) return false;
+  if (waitForBroker) return mqtt.publishConfirmed(TopicKind::State, publishBuffer, kAckWaitMs);
+  return publishDoc(TopicKind::State, d).isEmpty();
+}
+
+bool setupPinSet() {
+  return nvs.isKey(kNvsPinSalt) && nvs.isKey(kNvsPinHash);
+}
+
+/** SHA-256 of a text, as lower-case hex. */
+String sha256Hex(const String &text) {
+  hc::Sha256 sha;
+  sha.update((const uint8_t *)text.c_str(), text.length());
+  hc::Digest out;
+  if (!sha.finish(out)) return String();
+  return hc::Sha256::hex(out);
+}
+
+/** Digest the console computes for a PIN: SHA-256 of "<device id>:<PIN>". */
+String pinDigestFor(const String &pin) { return sha256Hex(identity.deviceId + ":" + pin); }
+
+/** Stored form: SHA-256 of "<salt>:<pin digest>". The PIN and its digest are never stored. */
+String storedPinFor(const String &salt, const String &pinDigest) { return sha256Hex(salt + ":" + pinDigest); }
+
+void persistPinLock() {
+  // A lock survives a reboot: the count is persisted as the threshold while locked.
+  const uint32_t value = pinGuard.locked(millis()) ? hc::kPinMaxFailures : pinGuard.failures;
+  nvs.putUInt(kNvsPinFails, value);
+}
+
+/** Portal hook: checks the PIN typed on the local portal. Wrong tries are counted and persisted. */
+hc::PinResult checkSetupPin(const String &pin) {
+  if (!setupPinSet()) return hc::PinResult::Rejected;
+  const String salt = nvs.getString(kNvsPinSalt, "");
+  const String stored = nvs.getString(kNvsPinHash, "");
+  const String candidate = storedPinFor(salt, pinDigestFor(pin));
+  const bool matches = candidate.length() == stored.length() &&
+                       hc::sameDigest(candidate.c_str(), stored.c_str(), stored.length());
+  const hc::PinResult result = pinGuard.attempt(millis(), matches);
+  persistPinLock();
+  return result;
+}
+
+void setSetupPin(const String &pinHash) {
+  uint8_t raw[16];
+  esp_fill_random(raw, sizeof(raw));
+  char salt[sizeof(raw) * 2 + 1];
+  for (size_t i = 0; i < sizeof(raw); ++i) snprintf(salt + i * 2, 3, "%02x", raw[i]);
+  nvs.putString(kNvsPinSalt, salt);
+  nvs.putString(kNvsPinHash, storedPinFor(salt, pinHash));
+  pinGuard = hc::PinGuard();
+  persistPinLock();
+}
+
+void clearSetupPin() {
+  nvs.remove(kNvsPinSalt);
+  nvs.remove(kNvsPinHash);
+  nvs.remove(kNvsPinFails);
+  pinGuard = hc::PinGuard();
+}
+
+/** Forgets the saved Wi-Fi network. Pairing is kept. */
+void clearWifiCredentials() {
+  nvs.remove(kNvsWifiSsid);
+  nvs.remove(kNvsWifiPass);
+  wifi.forget();
+}
+
+/** Factory reset: pairing, Wi-Fi, configuration, PIN and any pending code. */
+void clearEverything() {
+  clearIdentity();
+  configStore.clear(nvs);
+  nvs.remove(kNvsPendingCode);
+  nvs.remove(kNvsPendingCodeAt);
+  clearWifiCredentials();
+  clearSetupPin();
+  pendingCode = "";
+  pendingCodeAt = 0;
+}
+
+void handleBoardAction(const char *action, const char *commandId, JsonDocument &d) {
+  if (strcmp(action, "open_setup") == 0) {
+    // The portal opens over the live connection (AP+STA). Confirmed once it is up.
+    startPortal(false, false);
+    sendBoardAck(commandId, portal.active(), portal.active() ? nullptr : "the setup network could not start", false);
+    return;
+  }
+  if (strcmp(action, "reset_wifi") == 0) {
+    if (!sendBoardAck(commandId, true, nullptr, true)) {
+      Serial.println("[homecoreos] reset_wifi: the platform did not receive the confirmation; nothing changed");
+      return;
+    }
+    clearWifiCredentials();
+    startPortal(false, false);  // paired: the setup PIN is required to save new Wi-Fi details
+    return;
+  }
+  if (strcmp(action, "unpair") == 0) {
+    if (!sendBoardAck(commandId, true, nullptr, true)) {
+      Serial.println("[homecoreos] unpair: the platform did not receive the confirmation; still paired");
+      return;
+    }
+    clearIdentity();
+    configStore.clear(nvs);
+    esp_restart();  // boots into pairing mode, keeping the Wi-Fi network
+    return;
+  }
+  if (strcmp(action, "factory_reset") == 0) {
+    if (!sendBoardAck(commandId, true, nullptr, true)) {
+      Serial.println("[homecoreos] factory_reset: the platform did not receive the confirmation; nothing changed");
+      return;
+    }
+    clearEverything();
+    esp_restart();
+    return;
+  }
+  if (strcmp(action, "set_setup_pin") == 0) {
+    const char *hash = d["pin_hash"] | "";
+    const String digest = String(hash);
+    if (digest.length() != 64) {
+      sendBoardAck(commandId, false, "the setup PIN is missing or malformed", false);
+      return;
+    }
+    setSetupPin(digest);
+    sendBoardAck(commandId, true, nullptr, false);
+    publishAvailability("online");  // report setup_pin_set straight away
+    return;
+  }
+}
+
 void handleCommand(const char *payload) {
   JsonDocument d;
   if (deserializeJson(d, payload)) return;
@@ -300,6 +515,11 @@ void handleCommand(const char *payload) {
     publishCommandAck(commandId, componentId, false, true, "confirmed");
     return;
   }
+  if (strcmp(action, "open_setup") == 0 || strcmp(action, "reset_wifi") == 0 || strcmp(action, "unpair") == 0 ||
+      strcmp(action, "factory_reset") == 0 || strcmp(action, "set_setup_pin") == 0) {
+    handleBoardAction(action, commandId, d);
+    return;
+  }
   if (strcmp(action, "set_state") != 0 && strcmp(action, "pulse") != 0) return;
 
   const bool requested = d["value"] | false;
@@ -320,10 +540,29 @@ void handleCommand(const char *payload) {
   }
 }
 
+/** The platform's answer to a registration report. It is never applied as configuration. */
+void handleRegistrationAck(const char *payload) {
+  JsonDocument d;
+  if (deserializeJson(d, payload)) return;
+  const char *type = d["type"] | "";
+  if (strcmp(type, "registration_ack") != 0) return;
+  const String controller = String(d["controller_id"] | "");
+  const String session = String(d["pairing_session_id"] | "");
+  if (controller != identity.controllerId || session != identity.pairingSessionId) return;
+  if (!registrationAcked) Serial.println("[homecoreos] registration acknowledged by the platform");
+  registrationAcked = true;
+}
+
 void onMqttMessage(const char *topic, const char *payload, size_t length) {
   (void)length;
   if (!topic || !payload) return;
   if (strcmp(topic, mqtt.topicFor(TopicKind::Config)) == 0) {
+    // Exact JSON token the platform writes for an acknowledgement. The handler below
+    // still checks the controller and session identifiers before it accepts one.
+    if (strstr(payload, "\"type\":\"registration_ack\"")) {
+      handleRegistrationAck(payload);
+      return;
+    }
     applyConfigurationDocument(String(payload), true);
     return;
   }
@@ -364,6 +603,8 @@ void attemptPairing() {
     nvs.remove(kNvsPendingCodeAt);
     pendingCode = "";
     pairingAttempts = 0;
+    registrationAcked = false;
+    lastRegistrationMs = 0;
     Serial.printf("[homecoreos] paired as %s\n", identity.deviceId.c_str());
     if (!outcome.configJson.isEmpty()) applyConfigurationDocument(outcome.configJson, true);
     if (!mqtt.start(identity)) {
@@ -456,6 +697,7 @@ void reportPresence() {
   d["mem"]["min_free_internal"] = mem.minFreeInternal;
   d["mem"]["free_psram"] = mem.freePsram;
   d["wifi_state"] = wifi.phaseName();
+  addConnectivity(d);
   d["boot_count"] = bootCount;
   d["unsupported_sensors"] = (uint32_t)model.unsupportedCount;
   publishDoc(TopicKind::Availability, d);
@@ -484,15 +726,88 @@ void fillHardware() {
   hardware.uptimeS = (uint32_t)(millis() / 1000UL);
 }
 
-void startPortal() {
+void startPortal(bool bypassPin, bool fallback) {
+  if (portal.active()) portal.stop();
   portal.source.firmwareVersion = OtaEngine::runningVersion();
   portal.source.deviceId = identity.deviceId;
   portal.source.wifiState = wifi.phaseName();
   portal.source.mac = WiFi.macAddress();
   portal.source.hasWifi = wifi.hasCredentials();
-  portal.source.paired = !identity.deviceId.isEmpty();
-  portal.begin(apSuffixFromMac());
+  portal.source.paired = identity.complete();
+  // A paired controller changes Wi-Fi only with the setup PIN (or the BOOT button).
+  portal.source.pinRequired = identity.complete();
+  portal.begin(apSuffixFromMac(), bypassPin);
+  portalIsFallback = fallback;
+  if (fallback) lastFallbackOpenMs = millis();
   phase = Phase::AwaitingProvisioning;
+}
+
+/** Opens or closes the temporary fallback AP, and ends owner sessions that were left idle. */
+void updateConnectivityPolicy() {
+  const uint32_t now = millis();
+  if (wifi.online() && !mqtt.connected()) {
+    if (!noInternetSince) noInternetSince = now;
+  } else {
+    noInternetSince = 0;
+  }
+  if (portal.active() && !portalIsFallback && now - portal.lastActivityMs() > kOwnerPortalIdleMs) {
+    Serial.println("[homecoreos][portal] setup page idle; closing it");
+    portal.stop();
+  }
+  hc::FallbackInputs in;
+  in.nowMs = now;
+  in.paired = identity.complete();
+  in.hasWifiCreds = wifi.hasCredentials();
+  in.wifiOnline = wifi.online();
+  in.mqttUp = mqtt.connected();
+  in.consecutiveWifiFailures = wifi.consecutiveFailures();
+  in.lastFailure = wifi.lastFailure();
+  in.noInternetMs = noInternetSince ? now - noInternetSince : 0;
+  in.portalOpen = portal.active();
+  in.portalIsFallback = portalIsFallback;
+  in.lastFallbackOpenMs = lastFallbackOpenMs;
+  switch (hc::decideFallback(in)) {
+    case hc::FallbackAction::Open:
+      Serial.printf("[homecoreos] Wi-Fi recovery: %s; opening the temporary setup network\n",
+                    wifiFailureName(wifi.lastFailure()));
+      startPortal(false, true);
+      break;
+    case hc::FallbackAction::Close:
+      Serial.println("[homecoreos] cloud link restored; closing the temporary setup network");
+      portal.stop();
+      portalIsFallback = false;
+      break;
+    default:
+      break;
+  }
+}
+
+/** Physical recovery: hold BOOT for 3 s (Wi-Fi reset) or 10 s (factory reset), act on release. */
+void serviceBootButton() {
+  static bool down = false;
+  static uint32_t downAt = 0;
+  const bool pressed = digitalRead(kBootButtonPin) == LOW;
+  if (pressed && !down) {
+    down = true;
+    downAt = millis();
+    return;
+  }
+  if (pressed || !down) return;
+  down = false;
+  switch (hc::buttonActionOnRelease(millis() - downAt)) {
+    case hc::ButtonAction::WifiReset:
+      Serial.println("[homecoreos] BOOT held: resetting Wi-Fi; setup network opened without the PIN for this session");
+      clearWifiCredentials();
+      startPortal(true, false);
+      break;
+    case hc::ButtonAction::FactoryReset:
+      Serial.println("[homecoreos] BOOT held: factory reset");
+      clearEverything();
+      esp_restart();
+      break;
+    default:
+      break;
+  }
 }
 
 void servicePortal() {
@@ -501,7 +816,7 @@ void servicePortal() {
   const SetupPortal::SavedCredentials saved = portal.takeSaved();
   nvs.putString(kNvsWifiSsid, saved.ssid);
   nvs.putString(kNvsWifiPass, saved.password);
-  if (saved.code.length() == 6) {
+  if (saved.code.length() == 6 && !identity.complete()) {
     pendingCode = saved.code;
     pendingCodeAt = seconds();
     nvs.putString(kNvsPendingCode, pendingCode);
@@ -562,7 +877,14 @@ void setup() {
   const String ssid = nvs.getString(kNvsWifiSsid, "");
   const String pass = nvs.getString(kNvsWifiPass, "");
   wifi.seed((uint32_t)ESP.getEfuseMac(), 0);
+  // The ESP32 has no real-time clock. Without SNTP the wall clock stays at 1970, so TLS
+  // certificate validity checks fail for both the API and the broker. The SNTP client
+  // runs in the background and syncs once Wi-Fi is up; hc::clockSynced() reports it.
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
   wifi.begin(ssid, pass);
+  pinMode(kBootButtonPin, INPUT_PULLUP);
+  pinGuard.restore(nvs.getUInt(kNvsPinFails, 0), millis());
+  portal.setPinCheck(&checkSetupPin);
 
   loadIdentity();
   runtime.setIdentity(identity.deviceId);
@@ -580,7 +902,8 @@ void setup() {
   if (identity.complete()) {
     if (!mqtt.start(identity)) Serial.println("[homecoreos] MQTT failed to start");
     phase = Phase::Connecting;
-  } else if (!wifi.hasCredentials() || !cloudConfigured()) {
+  } else {
+    // Not paired: pairing mode. The saved Wi-Fi (if any) keeps connecting underneath.
     startPortal();
   }
 
@@ -592,10 +915,8 @@ void loop() {
 
   // 1. Connectivity state machines (never block).
   wifi.tick();
-  if (wifi.exhausted() && !portal.active() && WiFi.getMode() != WIFI_AP) {
-    Serial.println("[homecoreos] Wi-Fi kept failing; opening the setup portal");
-    startPortal();
-  }
+  updateConnectivityPolicy();
+  serviceBootButton();
 
   if (portal.active()) {
     servicePortal();
@@ -630,6 +951,14 @@ void loop() {
   }
 
   // 4. Cloud link.
+  if (identity.complete() && mqtt.authRefusals() >= kAuthRefusalLimit && wifi.online()) {
+    // The platform refuses this identity every time: it was disconnected from the
+    // account. Return to pairing mode and keep the Wi-Fi network.
+    Serial.println("[homecoreos] the platform refused this controller's identity; returning to pairing mode");
+    clearIdentity();
+    configStore.clear(nvs);
+    esp_restart();
+  }
   if (wifi.online() && identity.complete()) {
     if (!mqtt.connected()) {
       phase = Phase::Connecting;
@@ -640,12 +969,15 @@ void loop() {
     } else {
       if (phase != Phase::Online) {
         phase = Phase::Online;
+        registrationAcked = false;
         publishAvailability("online");
+        publishRegistration();
         publishState();
         publishTelemetry(true);
         lastPresenceMs = 0;
         lastConfigPollMs = 0;
       }
+      if (!registrationAcked && millis() - lastRegistrationMs > kRegistrationRetryMs) publishRegistration();
       if (millis() - lastPresenceMs > kPresenceReportMs) reportPresence();
       if (millis() - lastTelemetryMs > 15000UL) publishTelemetry(false);
       if (millis() - lastStateReportMs > 60000UL) publishState();

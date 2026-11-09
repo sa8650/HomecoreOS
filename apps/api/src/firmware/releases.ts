@@ -12,7 +12,7 @@
  */
 import type { Runtime } from '../services/runtime';
 import { HttpError } from '../context';
-import { randomHex } from '../crypto';
+import { hmacHex, randomHex } from '../crypto';
 import { deviceTopics } from '@homecoreos/core';
 import type { DeviceRecord } from '../device-auth';
 import { authenticateDevice } from '../device-auth';
@@ -553,10 +553,30 @@ export async function deviceDownload(rt: Runtime, c: any): Promise<Response> {
   const releaseId = String(c.req.query('release') || '');
   const releases = await rt.db.select<any>('firmware_releases', { eq: { id: releaseId }, limit: 1 });
   const release = releases[0];
-  if (!release || release.status !== 'published') throw new HttpError(404, 'Release not available');
-  const latest = await rt.db.rpc<any>('rpc_firmware_latest', { p_board: device.board_id }).catch(() => null);
-  if (!latest || String(latest.id) !== String(release.id)) {
+  if (!release || release.status !== 'published' || release.deleted_at) throw new HttpError(404, 'Release not available');
+  if (release.artifact_kind !== 'app' || !release.ota_eligible) {
+    throw new HttpError(403, 'That release cannot be installed over the air');
+  }
+  // A controller may download the release it is the latest offer for, or a
+  // release the console has queued for this controller in an open update. The
+  // second case is how a paired controller is restored to an earlier release.
+  // Both require a release that lists this controller's model.
+  const boards = await rt.db.select<any>('user_boards', { eq: { id: device.board_id }, limit: 1 });
+  const catalogId = boards[0]?.catalog_board_id ?? null;
+  const catalogRows = catalogId
+    ? await rt.db.select<any>('board_catalog', { eq: { id: catalogId }, limit: 1 })
+    : [];
+  if (!releaseFitsBoard(release, catalogId, catalogRows[0]?.chip_family ?? null)) {
     throw new HttpError(403, 'That release is not offered to this controller');
+  }
+  const latest = await rt.db.rpc<any>('rpc_firmware_latest', { p_board: device.board_id }).catch(() => null);
+  const isLatest = !!latest && String(latest.id) === String(release.id);
+  if (!isLatest) {
+    const queued = await rt.db.select<any>('device_firmware_history', {
+      eq: { user_board_id: device.board_id, firmware_release_id: release.id },
+      in: { status: ['queued', 'downloading'] }, limit: 1,
+    });
+    if (!queued.length) throw new HttpError(403, 'That release is not offered to this controller');
   }
   const data = await rt.store?.get(release.r2_key);
   if (!data) throw new HttpError(404, 'The firmware object is missing from storage');
@@ -625,6 +645,7 @@ export async function installPackage(rt: Runtime, releaseId: string, _origin: st
     artifact_kind: release.artifact_kind,
     chip_family: release.chip_family_target || image.chipFamily || release.chip_family,
     chip_id: release.chip_family_target ? CHIP_IDS[release.chip_family_target] ?? null : null,
+    board_models: release.board_models || [],
     size_bytes: Number(release.size_bytes || 0),
     sha256: release.sha256,
     ota_eligible: !!release.ota_eligible,
@@ -642,19 +663,31 @@ export async function installPackage(rt: Runtime, releaseId: string, _origin: st
 }
 
 /**
- * Latest published stable release for a board model.
+ * Every published, not-deleted release, newest first, across all channels.
  *
- * `kind` separates the two USB paths: an application image is written at the
- * application offset and keeps the existing bootloader and partition table, while
- * a factory image covers the whole flash layout for a first install or recovery.
+ * This is the one visibility rule for firmware: a release is shown to a signed-in
+ * user when the owner has published it. Drafts, archived and deleted rows never
+ * leave the server. Rows are filtered in the query and again here, so a row that
+ * fails either check cannot reach the console.
  */
-export async function latestForBoard(rt: Runtime, boardId: string | null, kind: 'app' | 'factory' = 'app') {
-  const rows = await rt.db.select<any>('firmware_releases', { eq: { status: 'published' }, isNull: ['deleted_at'] });
-  const found = (rows as any[])
-    .filter((r) => r.channel === 'stable' && r.artifact_kind === kind)
-    .filter((r) => !boardId || (r.board_models || []).includes(boardId))
-    .sort((a, b) => String(b.published_at || '').localeCompare(String(a.published_at || '')));
-  return found[0] || null;
+export async function publishedReleases(rt: Runtime): Promise<any[]> {
+  const rows = await rt.db.select<any>('firmware_releases', {
+    eq: { status: 'published' }, isNull: ['deleted_at'], order: { column: 'published_at', ascending: false },
+  });
+  return (rows as any[])
+    .filter((r) => r.status === 'published' && !r.deleted_at)
+    .filter((r) => /^[0-9a-f]{64}$/.test(String(r.sha256 || '')));
+}
+
+/**
+ * Whether a release is offered for a catalog board. The release lists catalog
+ * board ids; a chip family listed in place of a board id also matches, the same
+ * rule `rpc_firmware_latest` applies to over-the-air offers.
+ */
+export function releaseFitsBoard(release: any, boardId: string | null, chipFamily: string | null): boolean {
+  const models: string[] = Array.isArray(release?.board_models) ? release.board_models : [];
+  if (boardId && models.includes(boardId)) return true;
+  return !!chipFamily && models.includes(chipFamily);
 }
 
 /**
@@ -699,7 +732,6 @@ export async function serveSignedDownload(rt: Runtime, env: any, key: string, ex
   if (!Number.isFinite(expiresAt) || expiresAt * 1000 < Date.now()) {
     throw new HttpError(410, 'This download link has expired. Reload the firmware page for a new one.');
   }
-  const { hmacHex } = await import('../crypto');
   const expected = await hmacHex(secret, `${key}\n${expiresAt}`);
   if (!signatureMatches(expected, sig)) throw new HttpError(403, 'This download link is not valid');
   if (!rt.store) throw new HttpError(503, 'Firmware storage is not configured');

@@ -100,7 +100,12 @@ class CloudClient {
     out.identity.password = String(d["mqtt"]["password"] | "");
     out.identity.broker = String(d["mqtt"]["host"] | "");
     out.identity.port = (uint16_t)(d["mqtt"]["port"] | HOMECOREOS_MQTT_PORT);
-    if (!out.identity.complete()) { out.error = "The server response was incomplete"; out.retryable = true; return out; }
+    out.identity.controllerId = String(d["controller_id"] | "");
+    out.identity.homeId = String(d["home_id"] | "");
+    out.identity.pairingSessionId = String(d["pairing_session_id"] | "");
+    if (!out.identity.complete() || !out.identity.registrationComplete()) {
+      out.error = "The server response was incomplete"; out.retryable = true; return out;
+    }
     if (d["config"].is<JsonObject>()) serializeJson(d["config"], out.configJson);
     out.paired = true;
     return out;

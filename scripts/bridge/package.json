@@ -1,0 +1,17 @@
+{
+  "name": "homecoreos-platform-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Forwards controller MQTT messages to the HomecoreOS API. See DEPLOYMENT.md.",
+  "type": "module",
+  "main": "platform_bridge.mjs",
+  "scripts": {
+    "start": "node platform_bridge.mjs"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

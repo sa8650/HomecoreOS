@@ -62,6 +62,8 @@ constexpr uint32_t kOtaIdleTimeoutMs = 20000;
 constexpr uint32_t kConfigPollMs = 5 * 60 * 1000;
 constexpr uint32_t kPresenceReportMs = 60 * 1000;
 constexpr uint32_t kOtaHealthConfirmMs = 45 * 1000;
+/** Registration is re-sent this often until the platform acknowledges it. */
+constexpr uint32_t kRegistrationRetryMs = 10 * 1000;
 constexpr size_t kMaxComponents = 24;
 constexpr size_t kMaxRules = 12;
 constexpr size_t kCommandCacheSize = 8;
@@ -85,6 +87,17 @@ constexpr const char *kNvsPendingCodeAt = "pend_at";
 constexpr const char *kNvsOtaState = "ota_state";
 constexpr const char *kNvsOtaVersion = "ota_ver";
 constexpr const char *kNvsBootOk = "boot_ok";
+constexpr const char *kNvsControllerId = "controller_id";
+constexpr const char *kNvsHomeId = "home_id";
+constexpr const char *kNvsPairingSession = "pair_session";
+// Setup PIN: a per-device salt and a salted digest. The PIN itself is never stored.
+constexpr const char *kNvsPinSalt = "pin_salt";
+constexpr const char *kNvsPinHash = "pin_hash";
+constexpr const char *kNvsPinFails = "pin_fails";
+constexpr uint32_t kAuthRefusalLimit = 5;     // refusals in a row before this identity is treated as revoked
+constexpr uint32_t kOwnerPortalIdleMs = 15UL * 60UL * 1000UL;
+constexpr uint32_t kAckWaitMs = 5000;        // how long an unpair/reset ack waits for the broker's PUBACK
+constexpr uint8_t kBootButtonPin = 0;  // ESP32-S3 BOOT button (active low, internal pull-up)
 
 /** Persisted view of the last OTA attempt so a reboot loop is detectable. */
 enum class OtaState : uint8_t { None = 0, Downloading = 1, Applied = 2, Confirmed = 3, Failed = 4, RolledBack = 5 };

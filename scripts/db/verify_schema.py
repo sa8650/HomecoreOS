@@ -530,6 +530,7 @@ def main():
         )
         r = cur.fetchone()[0]
         assert r["board_id"], r
+        state["REDEEM"] = r
         cur.execute(
             "select consumed_at is not null, revoked_at is null from public.device_pairing_tokens where id=%s",
             (state["PAIRING"],),
@@ -581,6 +582,163 @@ def main():
         raise AssertionError("an unknown pairing code was accepted")
 
     check("an unknown pairing code is refused", pairing_wrong_code)
+
+    # ------------------------------------------------- registration report
+    print("\n--- registration ---")
+
+    def registration_confirm():
+        r = state["REDEEM"]
+        cur.execute(
+            "select public.rpc_confirm_registration(%s,%s,%s::jsonb)",
+            (r["board_id"], state["PAIRING"], j({"firmware_version": "3.1.4"})),
+        )
+        out = cur.fetchone()[0]
+        assert out["registered"] is True and out["first_time"] is True, out
+        cur.execute("select status from public.user_boards where id=%s", (r["board_id"],))
+        assert cur.fetchone()[0] == "online", "the controller was not marked online"
+
+    check("a valid registration report confirms the controller", registration_confirm)
+
+    def registration_duplicate():
+        r = state["REDEEM"]
+        cur.execute("select count(*) from public.audit_logs where action='device.registered' and entity_id=%s",
+                    (str(r["board_id"]),))
+        before = cur.fetchone()[0]
+        cur.execute(
+            "select public.rpc_confirm_registration(%s,%s,%s::jsonb)",
+            (r["board_id"], state["PAIRING"], j({"firmware_version": "3.1.4"})),
+        )
+        out = cur.fetchone()[0]
+        assert out["first_time"] is False, "a repeated report was counted as a new registration"
+        cur.execute("select count(*) from public.audit_logs where action='device.registered' and entity_id=%s",
+                    (str(r["board_id"]),))
+        assert cur.fetchone()[0] == before, "a repeated report wrote a second registration audit entry"
+
+    check("a repeated registration report is idempotent", registration_duplicate)
+
+    def registration_wrong_session():
+        r = state["REDEEM"]
+        other = "00000000-0000-4000-8000-000000000001"
+        try:
+            cur.execute("select public.rpc_confirm_registration(%s,%s,%s::jsonb)",
+                        (r["board_id"], other, j({})))
+        except Exception:
+            conn.rollback()
+            return
+        raise AssertionError("a report for a session this controller does not own was accepted")
+
+    check("a report for another session is refused", registration_wrong_session)
+
+    def progress_completed():
+        cur.execute("select public.rpc_pairing_progress(%s,%s,%s)",
+                    (state["OWNER"]["user_id"], state["OWNER"]["tenant_id"], state["PAIRING"]))
+        out = cur.fetchone()[0]
+        assert out["stage"] == "completed", f"stage is {out['stage']}, expected completed"
+        assert out["expired"] is False, "a completed pairing is reported as expired"
+
+    check("pairing progress reaches completed only after the registration", progress_completed)
+
+    # ------------------------------------------- disconnect and re-pair
+    print("\n--- disconnect and re-pair ---")
+
+    def disconnect_needs_confirmation():
+        r = state["REDEEM"]
+        try:
+            cur.execute("select public.rpc_unregister_board(%s,%s,%s,%s)",
+                        (state["OWNER"]["user_id"], state["OWNER"]["tenant_id"], r["board_id"], "wrong"))
+        except Exception:
+            return
+        raise AssertionError("a disconnect was accepted without the controller ID")
+
+    check("disconnect requires the controller ID to be typed", disconnect_needs_confirmation)
+
+    def disconnect_revokes():
+        r = state["REDEEM"]
+        cur.execute("select public.rpc_unregister_board(%s,%s,%s,%s)",
+                    (state["OWNER"]["user_id"], state["OWNER"]["tenant_id"], r["board_id"], r["device_id"]))
+        out = cur.fetchone()[0]
+        assert out["status"] == "unclaimed" and out["credentials_revoked"] == 1, out
+        cur.execute("select count(*) from public.mqtt_credentials_metadata where user_board_id=%s and status='active'",
+                    (r["board_id"],))
+        assert cur.fetchone()[0] == 0, "the old MQTT identity is still active"
+        cur.execute("select public.rpc_board_from_client(%s)", ("client-paired-1",))
+        assert cur.fetchone()[0] is None, "a disconnected controller still resolves to an identity"
+
+    check("disconnect revokes the old MQTT identity", disconnect_revokes)
+
+    def repair_same_record():
+        r = state["REDEEM"]
+        code = hashlib.sha256(b"code-repair").hexdigest()
+        cur.execute("select public.rpc_pairing_issue(%s,%s,%s,%s,%s,%s::jsonb)",
+                    (state["OWNER"]["user_id"], state["OWNER"]["tenant_id"], code, "session-repair", "10.0.0.5",
+                     j({"user_board_id": str(r["board_id"]), "ttl_seconds": 300})))
+        session = cur.fetchone()[0]["id"]
+        cur.execute("select public.rpc_pairing_redeem(%s,%s,%s,%s,%s,%s,%s::jsonb,%s)",
+                    (code, "x", r["device_id"], "client-repaired-1", "user-repaired-1", "hash2", j({}), "10.0.0.6"))
+        out = cur.fetchone()[0]
+        assert out["board_id"] == str(r["board_id"]) and out["repaired"] is True, out
+        cur.execute("select count(*) from public.user_boards where device_id=%s", (r["device_id"],))
+        assert cur.fetchone()[0] == 1, "re-pairing created a duplicate controller"
+        cur.execute("select count(*) from public.mqtt_credentials_metadata where user_board_id=%s and status='active'",
+                    (r["board_id"],))
+        assert cur.fetchone()[0] == 1, "re-pairing did not issue exactly one active identity"
+        cur.execute("select public.rpc_board_from_client(%s)", ("client-repaired-1",))
+        assert cur.fetchone()[0] is not None, "the new identity does not resolve"
+        state["REPAIR_SESSION"] = session
+
+    check("a re-pair code restores the same controller record with a new identity", repair_same_record)
+
+    def repair_other_device_refused():
+        code = hashlib.sha256(b"code-repair-2").hexdigest()
+        r = state["REDEEM"]
+        cur.execute("select public.rpc_unregister_board(%s,%s,%s,%s)",
+                    (state["OWNER"]["user_id"], state["OWNER"]["tenant_id"], r["board_id"], r["device_id"]))
+        cur.execute("select public.rpc_pairing_issue(%s,%s,%s,%s,%s,%s::jsonb)",
+                    (state["OWNER"]["user_id"], state["OWNER"]["tenant_id"], code, "session-repair-2", "10.0.0.7",
+                     j({"user_board_id": str(r["board_id"]), "ttl_seconds": 300})))
+        try:
+            cur.execute("select public.rpc_pairing_redeem(%s,%s,%s,%s,%s,%s,%s::jsonb,%s)",
+                        (code, "x", "hcd-someone-else", "client-other", "user-other", "hash3", j({}), "10.0.0.8"))
+        except Exception:
+            return
+        raise AssertionError("a re-pair code was accepted by a different controller")
+
+
+    def board_ack_failed_keeps_claim():
+        r = state["REDEEM"]
+        cur.execute("insert into device_commands (tenant_id,user_board_id,component_type,action,payload,status,expires_at)"
+                    " values ((select tenant_id from user_boards where id=%s),%s,'board','factory_reset','{}','published',now()+interval '1 minute')"
+                    " returning id", (r["board_id"], r["board_id"]))
+        cmd = cur.fetchone()[0]
+        cur.execute("select public.rpc_ack_board_command(%s,%s::jsonb)",
+                    (r["board_id"], j({"command_id": str(cmd), "status": "failed", "error": "flash erase failed"})))
+        out = cur.fetchone()[0]
+        assert out["matched"] and out["status"] == "failed" and out["released"] is False, out
+        cur.execute("select status from user_boards where id=%s", (r["board_id"],))
+        assert cur.fetchone()[0] != "unclaimed", "a failed reset released the controller"
+
+    check("a failed board-command ack keeps the controller claimed", board_ack_failed_keeps_claim)
+
+    def confirmed_factory_reset_releases():
+        r = state["REDEEM"]
+        cur.execute("insert into device_commands (tenant_id,user_board_id,component_type,action,payload,status,expires_at)"
+                    " values ((select tenant_id from user_boards where id=%s),%s,'board','factory_reset','{}','published',now()+interval '1 minute')"
+                    " returning id", (r["board_id"], r["board_id"]))
+        cmd = cur.fetchone()[0]
+        cur.execute("select public.rpc_ack_board_command(%s,%s::jsonb)",
+                    (r["board_id"], j({"command_id": str(cmd), "status": "confirmed"})))
+        out = cur.fetchone()[0]
+        assert out["released"] is True, out
+        cur.execute("select status from user_boards where id=%s", (r["board_id"],))
+        assert cur.fetchone()[0] == "unclaimed", "a confirmed factory reset did not release the controller"
+        cur.execute("select count(*) from mqtt_credentials_metadata where user_board_id=%s and status='active'", (r["board_id"],))
+        assert cur.fetchone()[0] == 0, "credentials survived a confirmed factory reset"
+        cur.execute("select public.rpc_ack_board_command(%s,%s::jsonb)",
+                    (r["board_id"], j({"command_id": str(cmd), "status": "confirmed"})))
+        assert cur.fetchone()[0]["matched"] is False, "a replayed ack was accepted"
+
+    check("a confirmed factory-reset ack releases the controller once", confirmed_factory_reset_releases)
+    check("a re-pair code cannot be used by a different controller", repair_other_device_refused)
 
     # ---------------------------------------------------------- telemetry
     print("\n--- telemetry ---")

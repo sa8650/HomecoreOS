@@ -48,6 +48,8 @@ export async function issuePairingSession(rt: Runtime, input: {
   catalogBoardId: string | null;
   boardName: string | null;
   homeName: string | null;
+  /** Set for a re-pair: the existing, unclaimed controller record this code may restore. */
+  userBoardId?: string | null;
 }): Promise<IssuedCode> {
   if (!rt.env.SIGNING_KEY) throw new HttpError(503, 'The server signing key is not available');
   const code = generatePairingCode();
@@ -63,11 +65,20 @@ export async function issuePairingSession(rt: Runtime, input: {
       board_name: input.boardName,
       home_name: input.homeName,
       ttl_seconds: CODE_TTL_SECONDS,
+      ...(input.userBoardId ? { user_board_id: input.userBoardId } : {}),
     },
   }).catch((e: any) => {
     const message = String(e?.message || '');
-    if (/42901|rate limit|Too many open/i.test(message)) {
-      throw new HttpError(429, 'Too many pairing codes. Finish or cancel the current one first.');
+    // Two limits share the same error code. Say which one applies, so the person knows
+    // whether to cancel an open setup or to wait.
+    if (/Too many open/i.test(message)) {
+      throw new HttpError(429, 'Too many pairing codes are open. Finish or cancel a current setup first.');
+    }
+    if (/rate limit/i.test(message)) {
+      throw new HttpError(429, 'Too many controllers were added recently. Try again in a little while.');
+    }
+    if (/42901/.test(message)) {
+      throw new HttpError(429, 'Too many pairing codes. Try again in a little while.');
     }
     if (/disabled for this workspace/i.test(message)) {
       throw new HttpError(403, 'Adding controllers is turned off for this home');
@@ -134,7 +145,16 @@ export async function redeemPairingCode(rt: Runtime, input: {
     return { status: 429, body: { error: 'Too many attempts on this code. Create a new one.' } };
   }
 
-  const deviceId = `hcd-${randomHex(6)}`;
+  // A re-pair code is bound to one existing controller record. That record keeps its
+  // device ID; only its broker identity is new. A fresh code gets a new device ID.
+  let deviceId = `hcd-${randomHex(6)}`;
+  if (session.user_board_id) {
+    const records = await rt.db.select<any>('user_boards', { eq: { id: session.user_board_id }, limit: 1 });
+    if (!records.length || !records[0].device_id || records[0].deleted_at) {
+      return { status: 410, body: { error: 'That controller record no longer exists. Create a new code from the Controllers page.' } };
+    }
+    deviceId = String(records[0].device_id);
+  }
   const clientId = `hcc-${randomHex(8)}`;
   const username = `hu-${randomHex(8)}`;
   const password = randomToken(32);
@@ -198,6 +218,11 @@ export async function redeemPairingCode(rt: Runtime, input: {
       board_id: boardId,
       tenant_id: tenantId,
       device_id: deviceId,
+      // The controller reports these back over MQTT so the platform can match the
+      // report to this exact accepted code and this exact controller.
+      controller_id: boardId,
+      home_id: tenantId,
+      pairing_session_id: String(session.id),
       mqtt: {
         host: String(rt.env.EMQX_BROKER_HOST || ''),
         port: Number(rt.env.EMQX_TLS_PORT || 8883),

@@ -5,7 +5,7 @@ import type { Runtime } from './services/runtime';
 import { HttpError, actor, context, ownerOnly, p, body, runtime, auditEvent,
   SESSION_COOKIE, clearSessionCookie, secureCookie } from './context';
 import { deviceTopics, parseTopic, topic, EMQX_QUOTAS, WARNING_THRESHOLDS } from '@homecoreos/core';
-import { SwitchCommand, TelemetryMessage, StateReport, ConfigAck, OtaProgress } from '@homecoreos/core';
+import { SwitchCommand, BoardCommand, BOARD_ACTIONS, TelemetryMessage, StateReport, ConfigAck, OtaProgress } from '@homecoreos/core';
 import { randomHex, randomToken, sha256Hex, verifyPassword, hmacHex, fromB64, toHex } from './crypto';
 import { testConnection, recordCheck, testStorage, setupStatus } from './config';
 import {
@@ -15,11 +15,12 @@ import {
 import { issuePairingSession, redeemPairingCode } from './firmware/pairing';
 import {
   ALLOWED_CHANNELS, APP_FLASH_OFFSET, FACTORY_FLASH_OFFSET,
-  createPackageRelease, createRelease, customerDownload, deviceDownload, firmwareCheck,
-  installPackage, latestForBoard, normalizeBoardModels, publishOtaCommand, queueOta,
+  createPackageRelease, createRelease, customerDownload, deviceDownload, firmwareCheck, flashOffsetFor,
+  installPackage, normalizeBoardModels, publishedReleases, publishOtaCommand, queueOta, releaseFitsBoard,
   serveSignedDownload, type UploadInput,
 } from './firmware/releases';
 import { MAX_ARCHIVE_BYTES } from './artifacts/package';
+import { CHIP_IDS } from './artifacts/image';
 
 /**
  * Turns a database refusal into something a person can act on.
@@ -353,6 +354,80 @@ export function createApp(rt: Runtime) {
     emit(ctx.tenantId, 'board.updated', { id: p(c, 'id') });
     return c.json(rows[0] || null);
   });
+  /**
+   * Board-level controller actions: reboot, open_setup, reset_wifi, unpair,
+   * factory_reset, set_setup_pin. The record is only changed by the device's
+   * confirmed ack (see handleIngress), never by sending the command.
+   */
+  app.post('/api/boards/:id/command', async (c) => {
+    const ctx = await context(c, 'devices.manage');
+    const id = p(c, 'id');
+    const b = await body(c);
+    const action = String(b.action || '');
+    if (!(BOARD_ACTIONS as readonly string[]).includes(action)) throw new HttpError(400, 'Unsupported controller action');
+    const boards = await rt.db.select('user_boards', { eq: { id, tenant_id: ctx.tenantId }, isNull: ['deleted_at'], limit: 1 });
+    const board: any = boards[0];
+    if (!board) throw new HttpError(404, 'Controller not found');
+    if (board.status === 'unclaimed') throw new HttpError(409, 'This controller is not paired. Re-pair it first.');
+    // A command needs a live session to acknowledge it. Offline controllers are not
+    // changed remotely; use Disconnect (immediate, platform side) and re-pair instead.
+    if (board.status !== 'online') {
+      throw new HttpError(409, 'The controller is offline. It must be online to receive this action. Use Disconnect and re-pair if it cannot come back.');
+    }
+    let pinHash: string | undefined;
+    if (action === 'set_setup_pin') {
+      pinHash = String(b.pin_hash || '');
+      if (!/^[0-9a-f]{64}$/.test(pinHash)) throw new HttpError(400, 'The setup PIN hash is missing or malformed');
+    }
+    const issued: any = await rt.db.rpc('rpc_issue_command', {
+      p_actor: ctx.profileId, p_tenant: ctx.tenantId, p_board: id, p_component_id: null,
+      // The PIN hash travels only in the MQTT message, never into the stored command row.
+      p_data: { action, component_type: 'board', idempotency_key: b.idempotency_key || null, payload: {} },
+    });
+    if (issued.idempotent) return c.json(issued);
+    const cmd = issued.command;
+    const msg = BoardCommand.parse({
+      schema_version: 1, command_id: cmd.id, device_id: board.device_id, action,
+      ...(pinHash ? { pin_hash: pinHash } : {}),
+      expires_at: Math.floor(new Date(cmd.expires_at).getTime() / 1000),
+    });
+    try {
+      await rt.mqtt.publish({ topic: topic(ctx.tenantId, board.device_id, 'command'), payload: msg, qos: 1 });
+      await rt.db.rpc('rpc_mark_command_published', { p_command: cmd.id, p_topic: topic(ctx.tenantId, board.device_id, 'command') });
+      emit(ctx.tenantId, 'board.command', { id, command_id: cmd.id, action });
+      return c.json({ command: cmd, status: 'published', note: 'Waiting for the controller to confirm.' }, 202);
+    } catch (e: any) {
+      await rt.db.update('device_commands', { id: cmd.id }, { status: 'failed', error: e.message });
+      throw new HttpError(502, `Command could not be delivered: ${e.message}`);
+    }
+  });
+
+  /** Re-pair an unclaimed controller: a fresh pairing code bound to the same record. */
+  app.post('/api/boards/:id/repair', async (c) => {
+    const ctx = await context(c, 'devices.manage');
+    const id = p(c, 'id');
+    const boards = await rt.db.select('user_boards', { eq: { id, tenant_id: ctx.tenantId }, isNull: ['deleted_at'], limit: 1 });
+    const board: any = boards[0];
+    if (!board) throw new HttpError(404, 'Controller not found');
+    if (board.status !== 'unclaimed') throw new HttpError(409, 'Disconnect this controller before re-pairing it');
+    await resetPairingFailures(rt, requestIp(c));
+    const issued = await issuePairingSession(rt, {
+      actorProfileId: ctx.profileId,
+      tenantId: ctx.tenantId,
+      sessionId: ctx.sessionId,
+      ip: requestIp(c),
+      catalogBoardId: board.catalog_board_id,
+      boardName: board.name ? String(board.name).slice(0, 60) : null,
+      homeName: null,
+      userBoardId: id,
+    });
+    emit(ctx.tenantId, 'pairing.code.issued', { id: issued.id, user_board_id: id });
+    return c.json({
+      session_id: issued.id, code: issued.code, expires_at: issued.expiresAt, seconds_left: issued.secondsLeft,
+      note: 'Enter this code on the controller. It cannot be recovered afterwards.',
+    }, 201);
+  });
+
   app.delete('/api/boards/:id', async (c) => {
     const ctx = await context(c, 'devices.manage');
     const b = await body(c).catch(() => ({}));
@@ -449,10 +524,12 @@ export function createApp(rt: Runtime) {
     const id = String(c.req.query('session') || '');
     if (!UUID.test(id)) throw new HttpError(404, 'Pairing session not found');
     try {
-      const progress = await rt.db.rpc('rpc_pairing_progress', {
+      const progress: any = await rt.db.rpc('rpc_pairing_progress', {
         p_actor: ctx.profileId, p_tenant: ctx.tenantId, p_id: id,
       });
-      return c.json(progress);
+      const bridge = await readBridgeStatus(rt);
+      const online = progress?.board?.status === 'online';
+      return c.json({ ...progress, diagnosis: pairingDiagnosis(progress?.stage, bridge, online), bridge_state: bridge.state });
     } catch (e: any) {
       if (String(e?.message || '').includes('Pairing session not found')) {
         throw new HttpError(404, 'Pairing session not found');
@@ -532,30 +609,6 @@ export function createApp(rt: Runtime) {
     });
     rt.emit(device.tenant_id, 'firmware.progress', { board_id: device.board_id, ...b });
     return c.json(result);
-  });
-
-  /** Owner-authorised credential rotation. */
-  app.post('/api/boards/:id/rotate-credentials', async (c) => {
-    const ctx = await context(c, 'devices.configure');
-    const boards = await rt.db.select('user_boards', { eq: { id: p(c, 'id'), tenant_id: ctx.tenantId }, limit: 1 });
-    if (!boards.length) throw new HttpError(404, 'Board not found');
-    const password = randomToken(32);
-    const hash = await hashDevicePassword(rt, password);
-    await rt.db.rpc('rpc_rotate_device_credentials', {
-      p_actor: ctx.profileId, p_tenant: ctx.tenantId, p_board: p(c, 'id'),
-      p_password_hash: hash, p_provider_ref: {},
-    });
-    const active = await rt.db.select<any>('mqtt_credentials_metadata', {
-      eq: { user_board_id: p(c, 'id'), tenant_id: ctx.tenantId, status: 'active' }, limit: 1,
-    });
-    await rt.mqtt.rotateDevice({
-      username: active[0]?.username || '', password, clientId: (boards[0] as any).mqtt_client_id,
-    });
-    emit(ctx.tenantId, 'board.credentials.rotated', { id: p(c, 'id') });
-    return c.json({
-      rotated: true, username: active[0]?.username, password,
-      note: 'Shown once. The controller must be re-provisioned if this device is offline.',
-    });
   });
 
   // ==========================================================================
@@ -732,73 +785,143 @@ export function createApp(rt: Runtime) {
   });
 
   // ==========================================================================
-  // Customer firmware: catalogue, update check, download and history
+  // Customer firmware: library, controller actions, downloads and history
   // ==========================================================================
+
+  /**
+   * Firmware library for the signed-in home.
+   *
+   * Every published release is listed for every signed-in member, not only for
+   * homes that already own a matching controller: the owner's published record is
+   * the source of truth. Each release says which owner-listed boards it fits, and
+   * each controller in the home says which of those releases it can take.
+   * Drafts, archived and deleted releases are never returned.
+   */
   app.get('/api/firmware/catalog', async (c) => {
     const ctx = await context(c, 'dashboard.view');
-    const boards = await rt.db.select<any>('user_boards', {
-      eq: { tenant_id: ctx.tenantId }, isNull: ['deleted_at'], order: { column: 'created_at', ascending: false },
+    const [boards, catalog, releases] = await Promise.all([
+      rt.db.select<any>('user_boards', {
+        eq: { tenant_id: ctx.tenantId }, isNull: ['deleted_at'], order: { column: 'created_at', ascending: false },
+      }),
+      rt.db.select<any>('board_catalog', { eq: { active: true }, order: { column: 'model' } }),
+      publishedReleases(rt),
+    ]);
+    const boardById = new Map((catalog as any[]).map((row) => [String(row.id), row]));
+    const chipOf = (catalogId: string | null) => (catalogId ? boardById.get(catalogId)?.chip_family ?? null : null);
+    const fits = (release: any, catalogId: string | null) => releaseFitsBoard(release, catalogId, chipOf(catalogId));
+    const labelOf = (id: string) => {
+      const row = boardById.get(id);
+      return row ? `${row.manufacturer} ${row.model}` : id;
+    };
+
+    const releaseView = (release: any) => ({
+      id: release.id,
+      name: release.name,
+      version: release.version,
+      channel: release.channel,
+      artifact_kind: release.artifact_kind,
+      chip_family: release.chip_family_target || release.chip_family,
+      chip_id: release.chip_family_target ? CHIP_IDS[release.chip_family_target] ?? null : null,
+      flash_offset: Number.isInteger(Number(release.flash_offset ?? NaN))
+        ? Number(release.flash_offset) : flashOffsetFor(release.artifact_kind),
+      size_bytes: Number(release.size_bytes || 0),
+      sha256: release.sha256,
+      notes: release.release_notes || release.description || release.notes || null,
+      mandatory: !!release.mandatory,
+      ota_eligible: !!release.ota_eligible,
+      published_at: release.published_at,
+      board_models: release.board_models || [],
+      board_labels: (release.board_models || []).map(labelOf),
+      owned_controller_ids: (boards as any[]).filter((b) => fits(release, b.catalog_board_id)).map((b) => b.id),
+      download_path: `/api/firmware/download/${release.id}`,
+      install_path: `/api/firmware/${release.id}/install-package`,
     });
-    const catalog = await rt.db.select<any>('board_catalog', { eq: { active: true } });
+
+    const boardTypes = (catalog as any[]).map((row) => ({
+      id: row.id,
+      manufacturer: row.manufacturer,
+      model: row.model,
+      variant: row.variant,
+      chip_family: row.chip_family,
+      chip_variant: row.chip_variant,
+      revision: row.revision,
+      category: row.category,
+      summary: row.summary,
+      flash_mb: row.attributes?.flash_mb ?? null,
+      psram_mb: row.attributes?.psram_mb ?? null,
+      owned_controllers: (boards as any[]).filter((b) => b.catalog_board_id === row.id).length,
+      release_count: (releases as any[]).filter((r) => fits(r, row.id)).length,
+      factory_release_count: (releases as any[]).filter((r) => r.artifact_kind === 'factory' && fits(r, row.id)).length,
+    }));
+
     const controllers = [];
-    for (const board of boards) {
-      const latest = await rt.db.rpc<any>('rpc_firmware_latest', { p_board: board.id }).catch(() => null);
-      const history = await rt.db.select<any>('device_firmware_history', {
-        eq: { user_board_id: board.id }, order: { column: 'started_at', ascending: false }, limit: 5,
-      });
+    for (const board of boards as any[]) {
+      const catalogId: string | null = board.catalog_board_id ?? null;
+      const installed: string | null = board.firmware_version || null;
+      const [latest, history, rollback] = await Promise.all([
+        rt.db.rpc<any>('rpc_firmware_latest', { p_board: board.id }).catch(() => null),
+        rt.db.select<any>('device_firmware_history', {
+          eq: { user_board_id: board.id }, order: { column: 'started_at', ascending: false }, limit: 10,
+        }),
+        rt.db.rpc<any>('rpc_firmware_rollback_target', {
+          p_board: board.id, p_actor: ctx.profileId, p_tenant: ctx.tenantId,
+        }).catch(() => null),
+      ]);
+      const compatible = (releases as any[]).filter((r) => fits(r, catalogId));
+      const app = compatible.filter((r) => r.artifact_kind === 'app' && r.ota_eligible);
+      const open = (history as any[]).find((h) => OPEN_FIRMWARE_STATES.includes(h.status));
       const lastSuccess = (history as any[]).find((h) => h.status === 'success');
-      const open = (history as any[]).find((h) =>
-        ['queued', 'downloading', 'installing', 'verifying'].includes(h.status));
-      const boardCatalog = (catalog as any[]).find((x) => x.id === board.catalog_board_id);
+      const lastFailure = (history as any[]).find((h) => h.status === 'failed' || h.status === 'rolled_back');
       controllers.push({
         id: board.id,
         name: board.name,
         device_id: board.device_id,
         status: board.status,
+        online: board.status === 'online',
         last_seen_at: board.last_seen_at,
-        catalog_board_id: board.catalog_board_id,
-        board_label: boardCatalog ? `${boardCatalog.manufacturer} ${boardCatalog.model}` : null,
-        chip_family: boardCatalog?.chip_family || board.chip_family || null,
-        installed_version: board.firmware_version || null,
+        catalog_board_id: catalogId,
+        board_label: boardById.get(catalogId ?? '') ? labelOf(catalogId!) : null,
+        chip_family: boardById.get(catalogId ?? '')?.chip_family || board.chip_family || null,
+        installed_version: installed,
         latest: latest ? {
           id: latest.id, version: latest.version, notes: latest.notes,
           size_bytes: latest.size_bytes, sha256: latest.sha256,
           mandatory: !!latest.mandatory,
           update_available: !!latest.update_available && board.status !== 'unclaimed',
         } : null,
-        update: open ? {
-          id: open.id, status: open.status, progress: open.progress,
-          error: open.error, started_at: open.started_at, to_version: open.to_version,
+        // Application images this controller can take over the air or over USB.
+        update_candidates: app.map((r) => ({
+          ...releaseView(r), is_installed: r.version === installed,
+        })),
+        // Earlier application images, offered for a wireless restore.
+        restore_candidates: app.filter((r) => r.version !== installed).map(releaseView),
+        // Full factory images, offered for a USB restore or a USB reinstall.
+        usb_restore_candidates: compatible.filter((r) => r.artifact_kind === 'factory').map(releaseView),
+        suggested_restore: rollback ? {
+          id: rollback.id, version: rollback.version, size_bytes: rollback.size_bytes,
+          requires_usb_reinstall: !!rollback.requires_usb_reinstall,
         } : null,
+        active_update: open ? {
+          id: open.id, status: open.status, progress: open.progress, error: open.error,
+          started_at: open.started_at, to_version: open.to_version,
+        } : null,
+        history: (history as any[]).map((h) => ({
+          id: h.id, status: h.status, from_version: h.from_version, to_version: h.to_version,
+          progress: h.progress, error: h.error, started_at: h.started_at, finished_at: h.finished_at,
+          source: h.source,
+        })),
         last_success_at: lastSuccess?.finished_at || null,
-        last_failure: (history as any[]).find((h) => h.status === 'failed' || h.status === 'rolled_back') || null,
+        last_failure: lastFailure ? {
+          id: lastFailure.id, status: lastFailure.status, error: lastFailure.error,
+          finished_at: lastFailure.finished_at, to_version: lastFailure.to_version,
+        } : null,
       });
     }
-    const installable: any[] = [];
-    const seen = new Set<string>();
-    for (const board of boards) {
-      const boardId = String(board.catalog_board_id || '');
-      if (!boardId || seen.has(boardId)) continue;
-      seen.add(boardId);
-      for (const kind of ['app', 'factory'] as const) {
-        const release = await latestForBoard(rt, boardId, kind);
-        if (!release) continue;
-        const pkg = await installPackage(rt, String(release.id), originOf(c));
-        if (!installable.some((x) => x.id === pkg.id)) installable.push(pkg);
-      }
-    }
-    const rollback: Record<string, unknown> = {};
-    for (const board of boards) {
-      const target = await rt.db.rpc<any>('rpc_firmware_rollback_target', {
-        p_board: board.id, p_actor: ctx.profileId, p_tenant: ctx.tenantId,
-      }).catch(() => null);
-      rollback[board.id] = target
-        ? { available: true, version: target.version, sha256: target.sha256, size_bytes: target.size_bytes }
-        : { available: false, version: null, reason: 'No earlier signed release has been installed on this controller' };
-    }
+
     return c.json({
-      controllers: controllers.map((entry: any) => ({ ...entry, rollback: rollback[entry.id] })),
-      install: installable,
+      board_types: boardTypes,
+      releases: (releases as any[]).map(releaseView),
+      controllers,
       usb_installer: {
         flash_size_mb: 16,
         requires_https: true,
@@ -808,20 +931,14 @@ export function createApp(rt: Runtime) {
     });
   });
 
-  /** Expiring install package for the in-browser flasher (customer session). */
+  /**
+   * Install package for one published release: a short-lived signed path for the
+   * browser flasher. Any signed-in member may read a published release.
+   */
   app.post('/api/firmware/:id/install-package', async (c) => {
-    const ctx = await context(c, 'devices.manage');
+    await context(c, 'dashboard.view');
     const releaseId = p(c, 'id');
     if (!UUID.test(releaseId)) throw new HttpError(404, 'Firmware release not found');
-    const releases = await rt.db.select<any>('firmware_releases', { eq: { id: releaseId }, limit: 1 });
-    const release = releases[0];
-    if (!release || release.deleted_at) throw new HttpError(404, 'Firmware release not found');
-    const boards = await rt.db.select<any>('user_boards', {
-      eq: { tenant_id: ctx.tenantId }, isNull: ['deleted_at'],
-    });
-    if (!(boards as any[]).some((b) => (release.board_models || []).includes(b.catalog_board_id))) {
-      throw new HttpError(403, 'This release is not offered for your controllers');
-    }
     return c.json(await installPackage(rt, releaseId, originOf(c)));
   });
 
@@ -834,22 +951,18 @@ export function createApp(rt: Runtime) {
     return serveSignedDownload(rt, rt.env, key, String(c.req.query('expires') || ''), String(c.req.query('sig') || ''));
   });
 
-  /** Direct download of a published release for a signed-in customer. */
+  /** Direct download of a published release. Any signed-in member may read it. */
   app.get('/api/firmware/download/:id', async (c) => {
-    const ctx = await context(c, 'devices.manage');
+    await context(c, 'dashboard.view');
     const releaseId = p(c, 'id');
     if (!UUID.test(releaseId)) throw new HttpError(404, 'Firmware release not found');
-    const releases = await rt.db.select<any>('firmware_releases', { eq: { id: releaseId }, limit: 1 });
-    if (!releases.length) throw new HttpError(404, 'Firmware release not found');
-    const boards = await rt.db.select<any>('user_boards', {
-      eq: { tenant_id: ctx.tenantId }, isNull: ['deleted_at'],
-    });
-    if (!(boards as any[]).some((b) => ((releases[0] as any).board_models || []).includes(b.catalog_board_id))) {
-      throw new HttpError(403, 'This release is not offered for your controllers');
-    }
     return customerDownload(rt, releaseId);
   });
 
+  /**
+   * Wireless update of one paired controller. Without a release id the newest
+   * compatible release is used; with one, that exact published release is queued.
+   */
   app.post('/api/firmware/update', async (c) => {
     const ctx = await context(c, 'devices.manage');
     if (!(await featureEnabled('features.ota'))) {
@@ -858,30 +971,22 @@ export function createApp(rt: Runtime) {
     const b = await body(c);
     const boardId = String(b.board_id || '');
     if (!boardId) throw new HttpError(400, 'Choose a controller');
-    const boards = await rt.db.select<any>('user_boards', {
-      eq: { id: boardId, tenant_id: ctx.tenantId }, isNull: ['deleted_at'], limit: 1,
-    });
-    if (!boards.length) throw new HttpError(404, 'Controller not found');
-    const board = boards[0];
+    const board = await requireOwnedBoard(rt, ctx.tenantId, boardId);
     if (board.status === 'unclaimed' || board.status === 'disabled') {
       throw new HttpError(409, 'This controller must be paired and online before it can be updated');
     }
-    const openUpdate = await rt.db.select<any>('device_firmware_history', {
-      eq: { user_board_id: board.id }, limit: 1,
-    }).then((rows) => rows.filter((r: any) =>
-      ['queued', 'downloading', 'installing', 'verifying'].includes(r.status)));
-    if (openUpdate.length) throw new HttpError(409, 'An update is already running on this controller');
+    await assertNoOpenUpdate(rt, board.id);
 
     let releaseId = b.release_id ? String(b.release_id) : '';
+    if (releaseId && !UUID.test(releaseId)) throw new HttpError(400, 'Choose a firmware release');
     if (!releaseId) {
       const latest = await rt.db.rpc<any>('rpc_firmware_latest', { p_board: board.id });
       if (!latest) throw new HttpError(409, 'No compatible firmware release is available for this controller');
       if (!latest.update_available) throw new HttpError(409, 'This controller already runs the latest firmware');
       releaseId = String(latest.id);
     }
-    const plan = await queueOta(rt, {
-      releaseId, boardId: board.id, ip: requestIp(c),
-    });
+    await assertNotInstalled(rt, releaseId, board);
+    const plan = await queueOta(rt, { releaseId, boardId: board.id, ip: requestIp(c) });
     await publishOtaCommand(rt, plan);
     return c.json({
       queued: true,
@@ -892,28 +997,38 @@ export function createApp(rt: Runtime) {
     }, 202);
   });
 
-  /** Owner-controlled rollback of one controller to a previous stable release. */
+  /**
+   * Wireless restore of one paired controller to an earlier published release.
+   *
+   * This is the over-the-air rollback the firmware supports. It restores the
+   * application only and is not a recovery image: a controller that no longer
+   * boots must be restored over USB with a factory image. Without a release id the
+   * previous successful release is used; with one, that published release is used.
+   */
   app.post('/api/firmware/rollback', async (c) => {
     const ctx = await context(c, 'devices.configure');
     const b = await body(c);
     const boardId = String(b.board_id || '');
-    const boards = await rt.db.select<any>('user_boards', {
-      eq: { id: boardId, tenant_id: ctx.tenantId }, isNull: ['deleted_at'], limit: 1,
-    });
-    if (!boards.length) throw new HttpError(404, 'Controller not found');
-    const target = await rt.db.rpc<any>('rpc_firmware_rollback_target', {
-      p_board: boardId, p_actor: ctx.profileId, p_tenant: ctx.tenantId,
-    });
-    if (!target) throw new HttpError(409, 'No previous stable release is available for this controller');
-    if (target.requires_usb_reinstall) {
-      throw new HttpError(409, 'That release is a factory image and can only be installed over USB');
+    const board = await requireOwnedBoard(rt, ctx.tenantId, boardId);
+    await assertNoOpenUpdate(rt, board.id);
+
+    let releaseId = b.release_id ? String(b.release_id) : '';
+    if (releaseId && !UUID.test(releaseId)) throw new HttpError(400, 'Choose a firmware release');
+    if (!releaseId) {
+      const target = await rt.db.rpc<any>('rpc_firmware_rollback_target', {
+        p_board: boardId, p_actor: ctx.profileId, p_tenant: ctx.tenantId,
+      });
+      if (!target) throw new HttpError(409, 'No previous stable release is available for this controller');
+      if (target.requires_usb_reinstall) {
+        throw new HttpError(409, 'That release is a factory image and can only be installed over USB');
+      }
+      releaseId = String(target.id);
     }
-    const plan = await queueOta(rt, {
-      releaseId: String(target.id), boardId, ip: requestIp(c),
-    });
+    await assertNotInstalled(rt, releaseId, board);
+    const plan = await queueOta(rt, { releaseId, boardId, ip: requestIp(c) });
     await publishOtaCommand(rt, plan);
-    emit(ctx.tenantId, 'firmware.rollback.started', { board_id: boardId, version: target.version });
-    return c.json({ queued: true, version: target.version, from_version: target.installed }, 202);
+    emit(ctx.tenantId, 'firmware.rollback.started', { board_id: boardId, version: plan.version });
+    return c.json({ queued: true, version: plan.version, from_version: board.firmware_version }, 202);
   });
 
   app.get('/api/firmware/history', async (c) => {
@@ -1142,8 +1257,14 @@ export function createApp(rt: Runtime) {
     await ownerOnly(c);
     const settings = (await rt.db.select('platform_settings')).filter((x: any) => x.key.startsWith('mqtt.'));
     const health = await rt.mqtt.health();
+    const bridge = await readBridgeStatus(rt);
+    const ingress = await readSetting(rt, 'mqtt.ingress');
+    const registration = await readSetting(rt, 'mqtt.last_registration');
     const configured = (k: string) => Boolean(String((rt.env as any)[k] || '').trim());
-    return c.json({ settings: {
+    return c.json({ bridge, ingress, last_registration: registration,
+      rest_api: { reachable: health.connected, detail: health.detail, checked_at: health.checkedAt,
+        note: 'The Deployment API answering proves only that REST works. It says nothing about the bridge or controllers.' },
+      settings: {
       ...Object.fromEntries(settings.map((x: any) => [x.key, x.value])),
       'mqtt.deployment_endpoint': rt.env.EMQX_API_BASE || null,
       'mqtt.broker_host': rt.env.EMQX_BROKER_HOST || null,
@@ -1512,7 +1633,33 @@ export function createApp(rt: Runtime) {
     const raw = await c.req.text();
     await verifyInternal(c, raw);
     const b = JSON.parse(raw);
-    return c.json(await handleIngress(rt, b));
+    const result: any = await handleIngress(rt, b);
+    if (!result?.ignored) {
+      const kind = String(b.topic || '').split('/').pop() || '';
+      await writeSetting(rt, 'mqtt.ingress', { last_accepted_at: new Date().toISOString(), last_topic_kind: kind });
+    }
+    return c.json(result);
+  });
+  /** Heartbeat from the platform bridge: its real broker connection and counters. */
+  app.post('/internal/bridge/heartbeat', async (c) => {
+    const raw = await c.req.text();
+    await verifyInternal(c, raw);
+    const b = JSON.parse(raw || '{}');
+    const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : null);
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0);
+    await writeSetting(rt, 'mqtt.bridge', {
+      heartbeat_at: new Date().toISOString(),
+      started_at: str(b.started_at, 40),
+      connected: b.connected === true,
+      subscribed: b.subscribed === true,
+      received: num(b.received), forwarded: num(b.forwarded), dropped: num(b.dropped),
+      last_message_at: str(b.last_message_at, 40),
+      last_forward_ok_at: str(b.last_forward_ok_at, 40),
+      last_error: str(b.last_error, 300),
+      last_error_at: str(b.last_error_at, 40),
+      version: str(b.version, 32),
+    });
+    return c.json({ ok: true });
   });
   app.post('/internal/ingest', async (c) => {
     const raw = await c.req.text();
@@ -2042,6 +2189,36 @@ export function createApp(rt: Runtime) {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Firmware states in which a controller is still busy with an install. */
+const OPEN_FIRMWARE_STATES = ['queued', 'downloading', 'installing', 'verifying'];
+
+/** The controller that belongs to this home, or a 404. */
+async function requireOwnedBoard(rt: Runtime, tenantId: string, boardId: string) {
+  if (!UUID.test(boardId)) throw new HttpError(404, 'Controller not found');
+  const boards = await rt.db.select<any>('user_boards', {
+    eq: { id: boardId, tenant_id: tenantId }, isNull: ['deleted_at'], limit: 1,
+  });
+  if (!boards.length) throw new HttpError(404, 'Controller not found');
+  return boards[0];
+}
+
+/** One controller runs one install at a time. */
+async function assertNoOpenUpdate(rt: Runtime, boardId: string) {
+  const open = await rt.db.select<any>('device_firmware_history', {
+    eq: { user_board_id: boardId }, in: { status: OPEN_FIRMWARE_STATES }, limit: 1,
+  });
+  if (open.length) throw new HttpError(409, 'An update is already running on this controller');
+}
+
+/** Refuses to queue the version a controller already runs. */
+async function assertNotInstalled(rt: Runtime, releaseId: string, board: any) {
+  if (!UUID.test(releaseId)) return;
+  const rows = await rt.db.select<any>('firmware_releases', { eq: { id: releaseId }, limit: 1 });
+  if (rows[0] && board.firmware_version && rows[0].version === board.firmware_version) {
+    throw new HttpError(409, `This controller already runs ${board.firmware_version}`);
+  }
+}
+
 function rpcError(e: any, fallback: string): HttpError {
   const raw = String(e?.message || '');
   if (/invalid input syntax for type uuid/.test(raw)) return new HttpError(404, fallback);
@@ -2071,6 +2248,67 @@ function setSessionCookie(c: any, token: string, expiresAt: string) {
     maxAge: Math.max(60, Math.min(60 * 60 * 24 * 30, seconds || 604800)),
   });
 }
+/** The bridge sends a heartbeat every 30 s. Older than this, the bridge is treated as not running. */
+export const BRIDGE_STALE_MS = 90_000;
+
+async function writeSetting(rt: Runtime, key: string, value: Record<string, unknown>) {
+  const updated_at = new Date().toISOString();
+  try {
+    const rows = await rt.db.update('platform_settings', { key }, { value, updated_at });
+    if (!rows?.length) await rt.db.insert('platform_settings', { key, value, updated_at });
+  } catch (e: any) {
+    console.error('[bridge] could not record', key, String(e?.message || e).slice(0, 200));
+  }
+}
+
+async function readSetting(rt: Runtime, key: string): Promise<any> {
+  const rows = await rt.db.select<any>('platform_settings', { eq: { key }, limit: 1 });
+  return rows[0]?.value ?? null;
+}
+
+/** What the platform has actually observed from the bridge. Never inferred from the REST API. */
+export async function readBridgeStatus(rt: Runtime) {
+  const v = await readSetting(rt, 'mqtt.bridge');
+  if (!v || !v.heartbeat_at) {
+    return { state: 'never', heartbeat_at: null, age_seconds: null, mqtt_connected: false, subscribed: false,
+      received: 0, forwarded: 0, dropped: 0, last_message_at: null, last_forward_ok_at: null,
+      last_error: null, last_error_at: null, started_at: null };
+  }
+  const age = Date.now() - Date.parse(String(v.heartbeat_at));
+  const fresh = Number.isFinite(age) && age <= BRIDGE_STALE_MS;
+  return {
+    state: fresh ? 'running' : 'stale',
+    heartbeat_at: v.heartbeat_at, age_seconds: Number.isFinite(age) ? Math.round(age / 1000) : null,
+    mqtt_connected: fresh && v.connected === true, subscribed: fresh && v.subscribed === true,
+    received: Number(v.received) || 0, forwarded: Number(v.forwarded) || 0, dropped: Number(v.dropped) || 0,
+    last_message_at: v.last_message_at || null, last_forward_ok_at: v.last_forward_ok_at || null,
+    last_error: v.last_error ? String(v.last_error).slice(0, 300) : null, last_error_at: v.last_error_at || null,
+    started_at: v.started_at || null,
+  };
+}
+
+/** Explains a stalled pairing from observed facts only: which link is the one not carrying messages. */
+export function pairingDiagnosis(stage: string | null | undefined, bridge: any, controllerOnline: boolean) {
+  if (!stage || stage === 'completed' || stage === 'cancelled' || stage === 'expired') return null;
+  if (bridge.state === 'never') {
+    return { code: 'bridge_never_started', title: 'The platform bridge has not reported yet',
+      text: 'Controller messages reach HomecoreOS only through the platform bridge, a separate always-on service. It has never reported to this server. Ask the administrator to start it (DEPLOYMENT.md, Platform bridge).' };
+  }
+  if (bridge.state === 'stale') {
+    return { code: 'bridge_stale', title: 'The platform bridge has stopped reporting',
+      text: `The bridge last reported ${bridge.age_seconds ?? '?'} seconds ago. Controller messages are not reaching HomecoreOS. Ask the administrator to check the bridge service.` };
+  }
+  if (!bridge.mqtt_connected) {
+    return { code: 'bridge_disconnected', title: 'The platform bridge is not connected to the MQTT broker',
+      text: bridge.last_error ? `Last bridge error: ${bridge.last_error}` : 'The bridge is running but has no broker connection. Check the broker address and the bridge credentials.' };
+  }
+  if (!controllerOnline) {
+    return { code: 'controller_silent', title: 'No message from the controller has arrived yet',
+      text: 'The platform bridge is connected, but this controller has not reached HomecoreOS. Open its local page (http://<controller-name>.local, or its IP address) and check the Wi-Fi and MQTT status there.' };
+  }
+  return null;
+}
+
 async function verifyInternal(c: any, raw?: string) {
   const rt = runtime(c);
   const secret = String(rt.env.SIGNING_KEY || '');
@@ -2097,9 +2335,76 @@ async function publishConfig(rt: Runtime, tenantId: string, boardId: string) {
   rt.emit(tenantId, 'config.published', { board_id: boardId, version: cfg[0].version });
 }
 
+/**
+ * Registration report from a freshly paired controller.
+ *
+ * The controller sends this on its availability topic after it connects. It is
+ * accepted only when the controller, its home and its pairing session all match the
+ * record that redeemed the code, and the confirmation is idempotent: a repeated or
+ * late report changes nothing new but is still acknowledged, so the controller can
+ * stop retrying. The acknowledgement goes to the controller's config topic with a
+ * type the controller handles itself; it is never applied as configuration.
+ */
+async function handleRegistration(rt: Runtime, info: any, clean: any) {
+  const sessionId = String(clean.pairing_session_id || '');
+  if (!UUID.test(sessionId)) return { ignored: true, reason: 'registration has no pairing session' };
+  if (String(clean.controller_id || '') !== String(info.board_id)) {
+    return { ignored: true, reason: 'controller id does not match the authenticated device' };
+  }
+  if (String(clean.home_id || '') !== String(info.tenant_id)) {
+    return { ignored: true, reason: 'home id does not match the authenticated device' };
+  }
+  let result: any;
+  try {
+    result = await rt.db.rpc('rpc_confirm_registration', {
+      p_board: info.board_id,
+      p_session: sessionId,
+      p_payload: { firmware_version: clean.firmware_version ?? null },
+    });
+  } catch (e: any) {
+    return { ignored: true, reason: 'registration rejected', detail: String(e?.message || '').slice(0, 200) };
+  }
+  if (result?.first_time) rt.emit(String(info.tenant_id), 'controller.registered', { board_id: info.board_id });
+  await writeSetting(rt, 'mqtt.last_registration', { at: new Date().toISOString(), board_id: info.board_id });
+  let ackSent = true;
+  try {
+    await rt.mqtt.publish({
+      topic: info.topics.config,
+      payload: JSON.stringify({
+        schema_version: 1, type: 'registration_ack', controller_id: info.board_id,
+        home_id: info.tenant_id, pairing_session_id: sessionId, registered: true,
+      }),
+      qos: 1,
+    });
+  } catch {
+    // The controller keeps reporting until it hears the acknowledgement, and a repeat is safe.
+    ackSent = false;
+  }
+  return { ok: true, registered: true, first_time: !!result?.first_time, ack_sent: ackSent };
+}
+
 /** All device-originated messages pass through here. Tenant comes from the DB. */
+/** Keep only the fields the console shows. Free text is length-limited; nothing secret is stored. */
+export function sanitizeConnectivity(raw: any) {
+  const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : null);
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null);
+  const w = raw.wifi || {};
+  const m = raw.mqtt || {};
+  const p = raw.pairing || {};
+  return {
+    updated_at: new Date().toISOString(),
+    wifi: { state: str(w.state, 24), ssid: str(w.ssid, 64), rssi: num(w.rssi), ip: str(w.ip, 45),
+      last_error: str(w.last_error, 120), fallback_ap: w.fallback_ap === true },
+    mqtt: { state: str(m.state, 24), last_error: str(m.last_error, 120), reconnects: num(m.reconnects) },
+    pairing: { state: str(p.state, 24) },
+    setup_pin_set: raw.setup_pin_set === true,
+    internet: typeof raw.internet === 'boolean' ? raw.internet : null,
+  };
+}
+
 export async function handleIngress(rt: Runtime, msg: any) {
-  const clientId = String(msg.clientId || msg.client_id || '');
+  // EMQX rule and webhook payloads use lower-case `clientid`; accept every spelling.
+  const clientId = String(msg.clientId || msg.client_id || msg.clientid || '');
   const tp = String(msg.topic || '');
   const parsed = parseTopic(tp);
   if (!parsed) return { ignored: true, reason: 'invalid topic' };
@@ -2118,6 +2423,10 @@ export async function handleIngress(rt: Runtime, msg: any) {
   delete clean.tenant_id; delete clean.tenantId;
   if (clean.device_id && clean.device_id !== info.device_id) {
     return { ignored: true, reason: 'payload device_id does not match authenticated device' };
+  }
+  if (clean.type === 'registration') {
+    if (parsed.kind !== 'availability') return { ignored: true, reason: 'registration must use the availability topic' };
+    return handleRegistration(rt, info, clean);
   }
   const boardId = info.board_id;
   const tenantId = info.tenant_id;
@@ -2141,9 +2450,20 @@ export async function handleIngress(rt: Runtime, msg: any) {
   }
   if (parsed.kind === 'availability') {
     const online = clean.status !== 'offline' && clean.availability !== 'offline';
-    await rt.db.update('user_boards', { id: boardId }, { status: online ? 'online' : 'offline', last_seen_at: new Date().toISOString() });
+    const patch: Record<string, unknown> = { status: online ? 'online' : 'offline', last_seen_at: new Date().toISOString() };
+    if (clean.connectivity && typeof clean.connectivity === 'object') patch.connectivity = sanitizeConnectivity(clean.connectivity);
+    await rt.db.update('user_boards', { id: boardId }, patch);
     rt.emit(tenantId, 'board.availability', { board_id: boardId, online });
     return { ok: true, online };
+  }
+  if (clean.type === 'command_ack') {
+    // A board-level action finished on the controller. Unpair and factory reset release
+    // the platform record only here, on a confirmed ack.
+    const r: any = await rt.db.rpc('rpc_ack_board_command', { p_board: boardId, p_payload: {
+      command_id: String(clean.command_id || ''), status: clean.status === 'confirmed' ? 'confirmed' : 'failed',
+      error: clean.error ? String(clean.error).slice(0, 300) : null } });
+    if (r.matched) rt.emit(tenantId, r.released ? 'board.unclaimed' : 'board.command.acked', { board_id: boardId, ...r });
+    return r;
   }
   if (clean.type === 'config_ack' || clean.config_version !== undefined && clean.status === 'applied' && !clean.command_id) {
     const v = ConfigAck.safeParse(clean);

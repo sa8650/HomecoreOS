@@ -796,8 +796,16 @@ create index if not exists pairing_token_open on public.device_pairing_tokens (e
   where consumed_at is null and revoked_at is null;
 create index if not exists pairing_open on public.device_pairing_tokens (tenant_id)
   where consumed_at is null;
+-- Onboarding after acceptance. The code's five-minute lifetime ends at acceptance;
+-- registration of the accepted controller is tracked here, separately.
+alter table public.device_pairing_tokens add column if not exists registration_confirmed_at timestamptz;
+alter table public.device_pairing_tokens add column if not exists registration_reports integer not null default 0;
+alter table public.device_pairing_tokens add column if not exists last_report_at timestamptz;
 
 -- The MQTT credentials of a controller. The password is stored only as a hash.
+-- Last connectivity report from the controller (Wi-Fi, MQTT, setup state). Shown in the console.
+alter table public.user_boards add column if not exists connectivity jsonb not null default '{}'::jsonb;
+
 create table if not exists public.mqtt_credentials_metadata (
   id             uuid primary key default gen_random_uuid(),
   tenant_id      uuid not null references public.tenants(id) on delete cascade,
@@ -2370,7 +2378,7 @@ end $$;
 create or replace function public.rpc_pairing_issue(
   p_actor uuid, p_tenant uuid, p_code_hmac text, p_session text, p_ip text, p_data jsonb
 ) returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_id uuid; v_board text; v_open int; v_limit int; v_ttl int; v_recent int; v_rate int;
+declare v_id uuid; v_board text; v_open int; v_limit int; v_ttl int; v_recent int; v_rate int; v_repair uuid;
 begin
   perform public.assert_permission(p_actor, p_tenant, 'devices.manage');
   if not exists (select 1 from tenants where id = p_tenant and device_registration_enabled and status = 'active') then
@@ -2380,6 +2388,15 @@ begin
     raise exception 'A pairing code digest is required' using errcode = '22023';
   end if;
   v_board := p_data->>'catalog_board_id';
+  -- Re-pair: the code is bound to one existing controller that was disconnected.
+  v_repair := nullif(p_data->>'user_board_id', '')::uuid;
+  if v_repair is not null then
+    select catalog_board_id into v_board from user_boards
+      where id = v_repair and tenant_id = p_tenant and deleted_at is null and status = 'unclaimed';
+    if not found then
+      raise exception 'Only a disconnected controller in this home can be re-paired' using errcode = '22023';
+    end if;
+  end if;
   if v_board is not null and not exists (select 1 from board_catalog where id = v_board and active) then
     raise exception 'Unknown board catalog entry' using errcode = '22023';
   end if;
@@ -2399,9 +2416,13 @@ begin
   v_ttl := coalesce((p_data->>'ttl_seconds')::int,
                     (select value::int from platform_settings where key = 'pairing.code_ttl_seconds'), 300);
   insert into device_pairing_tokens (tenant_id, token_hash, code_hmac, board_name, catalog_board_id,
-                                     created_by, created_by_session, created_ip, home_name, expires_at)
-  values (p_tenant, p_code_hmac, p_code_hmac, p_data->>'board_name', v_board,
-          p_actor, p_session, p_ip, p_data->>'home_name', now() + (v_ttl || ' seconds')::interval)
+                                     created_by, created_by_session, created_ip, home_name, expires_at,
+                                     user_board_id)
+  values (p_tenant, p_code_hmac, p_code_hmac,
+          case when v_repair is null then p_data->>'board_name'
+               else (select name from user_boards where id = v_repair) end,
+          v_board, p_actor, p_session, p_ip, p_data->>'home_name', now() + (v_ttl || ' seconds')::interval,
+          v_repair)
   returning id into v_id;
   perform public.log_audit(p_tenant, p_actor, 'pairing.code.issue', 'pairing_token', v_id::text, null,
                            jsonb_build_object('board',v_board,'ttl_seconds',v_ttl));
@@ -2419,27 +2440,66 @@ begin
 end $$;
 
 -- How far the pairing has got, for the customer console.
+-- How long a controller has, after its code is accepted, to report its registration.
+-- This is separate from the code's five-minute lifetime and never extends it.
+create or replace function public.pairing_onboarding_seconds() returns integer
+language sql immutable as $$ select 600 $$;
+
+-- Stages: pending -> accepted -> reporting -> completed, with expired, failed and
+-- cancelled as the terminal alternatives. Only an unaccepted code can expire.
 create or replace function public.rpc_pairing_progress(p_actor uuid, p_tenant uuid, p_id uuid)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare t device_pairing_tokens%rowtype; b user_boards%rowtype; v_online boolean;
+declare
+  t device_pairing_tokens%rowtype;
+  b user_boards%rowtype;
+  v_online boolean := false;
+  v_stage text;
+  v_reason text := null;
+  v_onboarding_ends timestamptz := null;
 begin
   perform public.assert_member(p_actor, p_tenant);
   select * into t from device_pairing_tokens where id = p_id and tenant_id = p_tenant;
   if not found then raise exception 'Pairing session not found' using errcode = 'HC404'; end if;
-  if t.user_board_id is not null then
-    select * into b from user_boards where id = t.user_board_id;
-    v_online := coalesce(b.status = 'online' and b.last_seen_at > now() - interval '3 minutes', false);
+  -- Always assigned (a null row when no controller exists yet), so b is never read unassigned.
+  select * into b from user_boards where id = t.user_board_id;
+  v_online := coalesce(b.status = 'online' and b.last_seen_at > now() - interval '3 minutes', false);
+
+  if t.revoked_at is not null then
+    v_stage := 'cancelled';
+  elsif t.consumed_at is null then
+    v_stage := case when t.expires_at <= now() then 'expired' else 'pending' end;
+  elsif t.registration_confirmed_at is not null then
+    v_stage := 'completed';
+  else
+    v_onboarding_ends := t.consumed_at + make_interval(secs => public.pairing_onboarding_seconds());
+    if now() >= v_onboarding_ends then
+      v_stage := 'failed';
+      v_reason := 'onboarding_timeout';
+    elsif b.last_seen_at is not null then
+      v_stage := 'reporting';
+    else
+      v_stage := 'accepted';
+    end if;
   end if;
+
   return jsonb_build_object(
     'id', t.id,
+    'stage', v_stage,
+    'failure_reason', v_reason,
     'claimed', t.consumed_at is not null,
-    'expired', t.expires_at <= now() or t.revoked_at is not null,
+    'expired', v_stage = 'expired',
     'revoked', t.revoked_at is not null,
     'locked', t.locked_until is not null and t.locked_until > now(),
     'failed_attempts', t.failed_attempts,
     'remaining_attempts', greatest(0, 5 - t.failed_attempts),
     'expires_at', t.expires_at,
-    'seconds_left', greatest(0, floor(extract(epoch from (t.expires_at - now())))::int),
+    'seconds_left', case when t.consumed_at is null
+      then greatest(0, floor(extract(epoch from (t.expires_at - now())))::int) else 0 end,
+    'accepted_at', t.consumed_at,
+    'onboarding_expires_at', v_onboarding_ends,
+    'onboarding_seconds_left', case when v_onboarding_ends is null then null
+      else greatest(0, floor(extract(epoch from (v_onboarding_ends - now())))::int) end,
+    'registered_at', t.registration_confirmed_at,
     'board', case when b.id is null then null else jsonb_build_object(
       'id', b.id, 'name', b.name, 'device_id', b.device_id, 'status', b.status,
       'online', v_online, 'firmware_version', b.firmware_version,
@@ -2449,6 +2509,51 @@ begin
       'hardware_revision', b.hardware_revision, 'last_seen_at', b.last_seen_at,
       'rssi', b.rssi, 'config_version', b.config_version,
       'config_sync_status', b.config_sync_status) end);
+end $$;
+
+-- Registration of an accepted controller, reported by the controller over MQTT and
+-- forwarded by the platform bridge. Idempotent: a repeated or delayed report confirms
+-- nothing new. A report is accepted only for the session this exact controller
+-- redeemed, so a different device cannot register itself with someone else's code.
+create or replace function public.rpc_confirm_registration(p_board uuid, p_session uuid, p_payload jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  t device_pairing_tokens%rowtype;
+  b user_boards%rowtype;
+  v_first boolean;
+begin
+  select * into t from device_pairing_tokens where id = p_session for update;
+  if not found or t.consumed_board_id is distinct from p_board then
+    raise exception 'Pairing session does not belong to this controller' using errcode = '42501';
+  end if;
+  if t.revoked_at is not null then
+    raise exception 'Pairing session was cancelled' using errcode = '42501';
+  end if;
+  select * into b from user_boards where id = p_board for update;
+  if not found or b.deleted_at is not null then
+    raise exception 'Controller not found' using errcode = '42501';
+  end if;
+
+  v_first := t.registration_confirmed_at is null;
+  update device_pairing_tokens
+    set registration_reports = registration_reports + 1,
+        last_report_at = now(),
+        registration_confirmed_at = coalesce(registration_confirmed_at, now())
+    where id = t.id;
+
+  if v_first then
+    update user_boards
+      set status = 'online', last_seen_at = now(), provisioned_at = coalesce(provisioned_at, now())
+      where id = p_board;
+    perform public.log_audit(b.tenant_id, null, 'device.registered', 'board', p_board::text, null,
+                             jsonb_build_object('pairing_session', p_session,
+                                                'firmware_version', p_payload->>'firmware_version'),
+                             'device');
+  end if;
+
+  return jsonb_build_object('registered', true, 'first_time', v_first,
+                            'board_id', p_board, 'home_id', b.tenant_id,
+                            'pairing_session_id', p_session);
 end $$;
 
 -- Redeem a pairing code. Everything that matters is atomic:
@@ -2461,6 +2566,7 @@ create or replace function public.rpc_pairing_redeem(
 ) returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   t device_pairing_tokens%rowtype;
+  b user_boards%rowtype;
   v_board_id uuid;
   v_existing uuid;
 begin
@@ -2485,6 +2591,31 @@ begin
   if not exists (select 1 from tenants x where x.id = t.tenant_id and x.status = 'active'
                  and x.device_registration_enabled) then
     raise exception 'This workspace cannot add controllers right now' using errcode = '42501';
+  end if;
+  if t.user_board_id is not null then
+    -- Re-pair of a disconnected controller: same record, new identity, old one already revoked.
+    select * into b from user_boards where id = t.user_board_id for update;
+    if not found or b.deleted_at is not null or b.status <> 'unclaimed' or b.tenant_id <> t.tenant_id then
+      raise exception 'This controller is already connected. Create a new pairing code.' using errcode = '42501';
+    end if;
+    if b.device_id <> p_device_id then
+      raise exception 'This pairing code belongs to a different controller' using errcode = '42501';
+    end if;
+    update mqtt_credentials_metadata set status = 'revoked', revoked_at = now()
+      where user_board_id = b.id and status = 'active';
+    update user_boards set mqtt_client_id = p_client_id, status = 'provisioning',
+        provisioned_at = now(), connectivity = '{}'::jsonb, updated_at = now()
+      where id = b.id;
+    insert into mqtt_credentials_metadata (tenant_id, user_board_id, username, password_hash, provider, provider_ref, status)
+    values (b.tenant_id, b.id, p_username, p_password_hash, 'emqx', coalesce(p_provider_ref, '{}'::jsonb), 'active');
+    update device_pairing_tokens
+      set consumed_at = now(), consumed_ip = p_ip, consumed_board_id = b.id, user_board_id = b.id
+      where id = t.id;
+    perform public.bump_board_config(b.id);
+    perform public.log_audit(b.tenant_id, t.created_by, 'device.repair', 'board', b.id::text, null,
+                             jsonb_build_object('device_id', p_device_id), 'device');
+    return jsonb_build_object('board_id', b.id, 'tenant_id', b.tenant_id, 'device_id', p_device_id,
+                              'reused_credentials', false, 'repaired', true);
   end if;
   select id into v_existing from user_boards where device_id = p_device_id;
   if v_existing is null then
@@ -2514,6 +2645,78 @@ begin
                            jsonb_build_object('device_id', p_device_id, 'catalog_board_id', t.catalog_board_id), 'device');
   return jsonb_build_object('board_id', v_board_id, 'tenant_id', t.tenant_id,
                             'device_id', p_device_id, 'reused_credentials', false);
+end $$;
+
+-- Release a controller from its home: its identity is revoked at once and it is
+-- marked unclaimed. Devices, GPIO assignments and history stay, so a re-pair restores them.
+-- Called by the API after the controller confirmed an unpair, or after an owner disconnects it.
+create or replace function public.rpc_release_board(p_board uuid, p_reason text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare b user_boards%rowtype; v_revoked int;
+begin
+  select * into b from user_boards where id = p_board for update;
+  if not found or b.deleted_at is not null then
+    raise exception 'Controller not found' using errcode = '42501';
+  end if;
+  update mqtt_credentials_metadata set status = 'revoked', revoked_at = now()
+    where user_board_id = b.id and status = 'active';
+  get diagnostics v_revoked = row_count;
+  update user_boards set status = 'unclaimed', connectivity = '{}'::jsonb, updated_at = now()
+    where id = b.id;
+  update device_commands set status = 'expired', error = 'controller was disconnected'
+    where user_board_id = b.id and status in ('queued', 'published');
+  perform public.log_audit(b.tenant_id, null, 'device.unclaim', 'board', b.id::text, null,
+                           jsonb_build_object('reason', p_reason, 'credentials_revoked', v_revoked), 'device');
+  return jsonb_build_object('board_id', b.id, 'device_id', b.device_id, 'status', 'unclaimed',
+                            'credentials_revoked', v_revoked);
+end $$;
+
+-- Owner-initiated disconnect. The owner must type the controller ID to confirm.
+create or replace function public.rpc_unregister_board(p_actor uuid, p_tenant uuid, p_board uuid, p_confirm text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare b user_boards%rowtype;
+begin
+  perform public.assert_permission(p_actor, p_tenant, 'devices.manage');
+  select * into b from user_boards where id = p_board and tenant_id = p_tenant and deleted_at is null;
+  if not found then raise exception 'Controller not found' using errcode = '42501'; end if;
+  if p_confirm is distinct from b.device_id then
+    raise exception 'Type the controller ID to confirm' using errcode = '22023';
+  end if;
+  return public.rpc_release_board(p_board, 'owner');
+end $$;
+
+-- Board-level command acknowledgement (reboot, open_setup, reset_wifi, unpair,
+-- factory_reset, set_setup_pin). The controller sends this on its state topic
+-- over its authenticated session, and only after the action has actually
+-- happened on the device. Unpair and factory_reset release the platform record
+-- only on status 'confirmed'; a 'failed' ack or an expired command leaves the
+-- controller claimed.
+create or replace function public.rpc_ack_board_command(p_board uuid, p_payload jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_cmd device_commands%rowtype; v_status text; v_released jsonb := null;
+begin
+  v_status := p_payload->>'status';
+  if v_status not in ('confirmed','failed') then
+    raise exception 'Unknown command status' using errcode = '22023';
+  end if;
+  select * into v_cmd from device_commands
+    where id = (p_payload->>'command_id')::uuid and user_board_id = p_board
+      and component_type = 'board' and status in ('queued','published')
+    for update;
+  if not found then
+    return jsonb_build_object('matched', false);
+  end if;
+  update device_commands set
+      status = case when v_status = 'confirmed' then 'acknowledged' else 'failed' end,
+      acknowledged_at = now(),
+      error = case when v_status = 'failed' then left(coalesce(p_payload->>'error', 'failed on controller'), 300) end
+    where id = v_cmd.id;
+  if v_status = 'confirmed' and v_cmd.action in ('unpair','factory_reset') then
+    v_released := public.rpc_release_board(p_board, v_cmd.action);
+  end if;
+  return jsonb_build_object('matched', true, 'command_id', v_cmd.id, 'action', v_cmd.action,
+    'status', case when v_status='confirmed' then 'acknowledged' else 'failed' end,
+    'released', v_released is not null);
 end $$;
 
 -- A wrong code cannot be attributed to a row, so failures are counted per
@@ -2707,9 +2910,11 @@ begin
   if not public.is_platform_admin_for(p_actor) then
     perform public.assert_permission(p_actor, p_tenant, 'devices.configure');
   end if;
+  -- The tenant is checked on the row being selected. Naming `b` here would read
+  -- the still-empty variable, which made every customer's rollback target NULL.
   select * into b from public.user_boards
     where id = p_board and deleted_at is null
-      and (public.is_platform_admin_for(p_actor) or b.tenant_id = p_tenant);
+      and (public.is_platform_admin_for(p_actor) or user_boards.tenant_id = p_tenant);
   if not found then return null; end if;
   if b.catalog_board_id is not null then
     select * into c from public.board_catalog where id = b.catalog_board_id;

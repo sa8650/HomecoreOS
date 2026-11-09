@@ -146,6 +146,30 @@ export function OwnerStaff() {
 // ============================================================================
 // EMQX management — read-only status; credentials live in Cloudflare Pages secrets
 // ============================================================================
+/** Facts from the bridge's own heartbeat and from accepted controller messages. */
+function BridgeFacts({ data }: { data: any }) {
+  const b = data?.bridge || {};
+  const ing = data?.ingress || null;
+  const reg = data?.last_registration || null;
+  const row = (label: string, value: React.ReactNode) => <div className="metric-row" style={{ marginBottom: 8 }}><span>{label}</span><span className="v" style={{ textAlign: 'right' }}>{value}</span></div>;
+  if (!data) return <p className="tiny">Loading…</p>;
+  const runState = b.state === 'running' ? <Badge tone="on">Running · heartbeat {b.age_seconds ?? 0} s ago</Badge>
+    : b.state === 'stale' ? <Badge tone="danger">Not reporting · last heartbeat {b.age_seconds} s ago</Badge>
+      : <Badge tone="danger">Never reported</Badge>;
+  const brokerState = b.mqtt_connected && b.subscribed ? <Badge tone="on">Connected and subscribed</Badge>
+    : b.state === 'running' ? <Badge tone="danger">Not connected to the broker</Badge>
+      : <Badge tone="danger">Unknown: the bridge is not reporting</Badge>;
+  return <>
+    {row('Bridge process', runState)}
+    {row('Bridge to the MQTT broker', brokerState)}
+    {b.last_error && row('Last bridge error', <span className="tiny" style={{ color: 'var(--danger, #d33)' }}>{b.last_error}{b.last_error_at ? ` · ${timeAgo(b.last_error_at)}` : ''}</span>)}
+    {row('Messages received by the bridge', `${b.received ?? 0} received · ${b.forwarded ?? 0} forwarded · ${b.dropped ?? 0} dropped`)}
+    {row('Last controller message accepted by HomecoreOS', ing?.last_accepted_at ? timeAgo(ing.last_accepted_at) : 'Never')}
+    {row('Last controller registration confirmed', reg?.at ? timeAgo(reg.at) : 'Never')}
+    {!b.state || b.state !== 'running' ? <Notice tone="warn">Controllers cannot finish pairing while the bridge is not running. Start it as a supervised service (DEPLOYMENT.md, section 3A).</Notice> : null}
+  </>;
+}
+
 export function OwnerEmqx() {
   const { data, loading, refresh } = useLiveData<any>('/api/owner/emqx/settings');
   const toast = useToast();
@@ -180,13 +204,16 @@ export function OwnerEmqx() {
           <dt>WSS port</dt><dd className="mono">{val('wss_port')}</dd>
           <dt>WebSocket endpoint</dt><dd className="mono">{val('wss_host')}</dd>
           <dt>Provider</dt><dd>{data?.provider || 'EMQX Cloud Serverless'}</dd>
-          <dt>Broker status</dt><dd>{data?.health?.connected ? <Badge tone="on">Connected</Badge> : <Badge tone="danger">Unavailable</Badge>}</dd>
-          <dt>Last sync</dt><dd>{s['mqtt.last_sync_at'] ? timeAgo(s['mqtt.last_sync_at']) : 'Never'}</dd>
+          <dt>Last usage sync</dt><dd>{s['mqtt.last_sync_at'] ? timeAgo(s['mqtt.last_sync_at']) : 'Never'}</dd>
         </div>
       </Card>
       <div style={{ display: 'grid', gap: 14 }}>
-        <Card title="Connection status"><HealthRow ok={data?.health?.connected} label={data?.health?.detail} foot={data?.health?.checked_at ? timeFull(data.health.checked_at) : undefined} />
-          {data?.health?.clientCount != null && <div className="metric-row" style={{ marginTop: 10 }}><span>Active client connections</span><span className="v">{data.health.clientCount}</span></div>}</Card>
+        <Card title="Platform bridge and broker" sub="Each line is reported by the component it describes. The REST check below is not proof of MQTT.">
+          <BridgeFacts data={data} />
+        </Card>
+        <Card title="Deployment API (REST only)" sub="Shows that the website can call EMQX's management API. It says nothing about the bridge or controllers.">
+          <HealthRow ok={data?.health?.connected} label={data?.health?.detail} foot={data?.health?.checked_at ? timeFull(data.health.checked_at) : undefined} />
+          {data?.health?.clientCount != null && <div className="metric-row" style={{ marginTop: 10 }}><span>Client connections at EMQX (all clients, including the bridge)</span><span className="v">{data.health.clientCount}</span></div>}</Card>
         <Card title="Provisioning strategy"><div className="kv">
           <dt>Authentication</dt><dd>Built-in database, one user per device</dd>
           <dt>Authorization</dt><dd>Per-username allow rules + deny-all fallback</dd>

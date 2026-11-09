@@ -1,11 +1,14 @@
 /**
  * Customer Console — firmware for a home's controllers.
  *
- * Two ways to install, both built from the same published release:
- *   A. over USB in this browser (recommended first install or recovery), and
- *   B. over the air from a paired controller that is already online.
+ * Every write to a controller is done here, and only here:
+ *   - Update and Restore: the controller downloads an app image over HTTPS and
+ *     reports its own progress.
+ *   - Fresh install: a factory image written over USB in this browser with
+ *     esptool-js. It is the only path that can recover a controller that no
+ *     longer boots.
  *
- * Progress shown here is only what the browser transfer or the controller itself
+ * Progress shown is only what the browser transfer or the controller itself
  * reports. Nothing advances on a timer.
  */
 import React, { useEffect, useMemo, useState } from 'react';
@@ -13,42 +16,80 @@ import { Link } from 'react-router-dom';
 import { api, useLiveData } from '../api';
 import { useAuth } from '../state';
 import {
-  Badge, Card, CopyButton, DeviceIllustration, EmptyState, ErrorState, Field, Icon, Loading,
+  Badge, Card, CopyButton, DeviceIllustration, EmptyState, ErrorState, Icon, Loading,
   Modal, Notice, PageHead, Progress, StatusBadge, fmtBytes, timeAgo, timeFull,
 } from '../components';
-import type { ControllerEntry } from '../firmware';
 import {
   USB_STEPS, espWebToolsUrl, fetchPackage, flashOverSerial, imageChipId, installModeLabel,
   serialSupported, verifyImage,
 } from '../installer';
 import type { InstallProgress } from '../installer';
 
+/* ---------------------------------------------------------------- types -- */
+
+/** One published release as the customer console receives it. */
+type Release = {
+  id: string; name: string; version: string; channel: string; artifact_kind: string;
+  chip_family: string; chip_id: number | null; flash_offset: number; size_bytes: number; sha256: string;
+  notes: string | null; mandatory: boolean; ota_eligible: boolean; published_at: string | null;
+  board_models: string[]; board_labels: string[]; owned_controller_ids: string[];
+  download_path: string; install_path: string;
+};
+
+type BoardType = {
+  id: string; manufacturer: string; model: string; variant: string | null; chip_family: string;
+  summary: string | null; flash_mb: number | null; psram_mb: number | null;
+  owned_controllers: number; release_count: number; factory_release_count: number;
+};
+
+/** A controller in this home, as the catalogue reports it. */
+type Controller = {
+  id: string; name: string; device_id: string; status: string; online: boolean; last_seen_at: string | null;
+  catalog_board_id: string | null; board_label: string | null; chip_family: string | null;
+  installed_version: string | null;
+  latest: { id: string; version: string; notes: string | null; size_bytes: number; sha256: string;
+    mandatory: boolean; update_available: boolean } | null;
+  restore_candidates: Release[];
+  active_update: { id: string; status: string; progress: number | null; error: string | null;
+    started_at: string; to_version: string | null } | null;
+  last_success_at: string | null;
+  last_failure: { id: string; status: string; error: string | null; finished_at: string | null; to_version: string | null } | null;
+};
+
 type Catalog = {
-  controllers: ControllerEntry[];
-  install: Array<{
-    id: string; version: string; name: string; notes: string | null; channel: string;
-    artifact_kind: string; chip_family: string; chip_id: number | null;
-    size_bytes: number; sha256: string;
-    flash_offset: number; published_at: string; url: string;
-  }>;
-  usb_installer: { flash_size_mb: number; requires_https: boolean; requires_chrome_or_edge: boolean; note: string };
+  board_types: BoardType[];
+  releases: Release[];
+  controllers: Controller[];
 };
 
-type PairingSession = {
-  id: string; claimed: boolean; expired: boolean; revoked: boolean; locked: boolean;
-  failed_attempts: number; remaining_attempts: number; expires_at: string; seconds_left: number;
-  board: null | { id: string; name: string; status: string; online: boolean; firmware_version: string | null };
+/** Install package for one factory or app release, from POST install-package. */
+type InstallPackage = {
+  id: string; version: string; name: string; notes: string | null; channel: string;
+  artifact_kind: string; chip_family: string; chip_id: number | null; size_bytes: number;
+  sha256: string; flash_offset: number; published_at: string | null; url: string;
 };
 
-function countdown(seconds: number) {
-  const s = Math.max(0, seconds);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+const OPEN_STATES = ['queued', 'downloading', 'installing', 'verifying'];
+
+/** Release channel, shown as a badge tone. */
+function channelTone(channel: string): 'on' | 'warn' | '' {
+  return channel === 'stable' ? 'on' : channel === 'beta' ? 'warn' : '';
 }
 
-// ---------------------------------------------------------------------------
-// Option A — USB installation in the browser
-// ---------------------------------------------------------------------------
-function UsbInstallModal({ pkg, onClose }: { pkg: Catalog['install'][number]; onClose: () => void }) {
+function boardName(t: { manufacturer: string; model: string; variant: string | null }) {
+  return `${t.manufacturer} ${t.model}${t.variant ? ` ${t.variant}` : ''}`;
+}
+
+/** Opens a factory image for USB installation. The server signs the URL. */
+async function prepareUsb(release: Release): Promise<InstallPackage> {
+  return api.post<InstallPackage>(release.install_path, {});
+}
+
+/* -------------------------------------------- fresh install over USB -- */
+
+// Writes a factory image with esptool-js (Web Serial). The same modal serves
+// new controllers, recovery, and the library.
+function UsbInstallModal({ pkg, onClose }: { pkg: InstallPackage; onClose: () => void }) {
   const toast = useAuth().toast;
   const [phase, setPhase] = useState<'intro' | 'ready' | 'downloading' | 'flashing' | 'done' | 'failed'>('intro');
   const [progress, setProgress] = useState<InstallProgress | null>(null);
@@ -62,6 +103,7 @@ function UsbInstallModal({ pkg, onClose }: { pkg: Catalog['install'][number]; on
   };
   const supported = serialSupported();
   const mode = installModeLabel(pkg.artifact_kind);
+  const webTools = useMemo(() => ({ script: espWebToolsUrl() }), []);
 
   const download = async () => {
     setError(''); setPhase('downloading'); setProgress({ written: 0, total: pkg.size_bytes, percent: 0, phase: 'Downloading the release' });
@@ -98,8 +140,6 @@ function UsbInstallModal({ pkg, onClose }: { pkg: Catalog['install'][number]; on
       setError(e.message || 'The controller did not accept the firmware.'); setPhase('failed'); log(e.message, 'error');
     }
   };
-
-  const webTools = useMemo(() => ({ script: espWebToolsUrl() }), []);
 
   return <Modal title={`Install ${pkg.version} over USB`} wide onClose={onClose}
     description={`${mode.label} · ${fmtBytes(pkg.size_bytes)} · version ${pkg.version}`}
@@ -170,238 +210,176 @@ function UsbInstallModal({ pkg, onClose }: { pkg: Catalog['install'][number]; on
   </Modal>;
 }
 
-// ---------------------------------------------------------------------------
-// Option B — wireless update on one controller
-// ---------------------------------------------------------------------------
-function OtaModal({ controller, onClose, onDone }: { controller: ControllerEntry; onClose: () => void; onDone: () => void }) {
+
+/* --------------------------------------------------- wireless restore -- */
+
+/**
+ * Wireless restore: the controller fetches an earlier app image it has run before
+ * or any other compatible app image, through the same update path as an update.
+ * It cannot recover a controller that no longer boots, so that case is routed to
+ * a USB fresh install with a factory image.
+ */
+function RestoreModal({ controller, onClose, onDone, onUsbRecovery }: {
+  controller: Controller; onClose: () => void; onDone: () => void;
+  onUsbRecovery: () => void;
+}) {
   const toast = useAuth().toast;
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [started, setStarted] = useState(false);
-  const latest = controller.latest;
-  const start = async () => {
-    setBusy(true); setError('');
+  const restore = async (release: Release) => {
+    setBusy(release.id); setError('');
     try {
-      await api.post('/api/firmware/update', { board_id: controller.id });
-      setStarted(true); onDone();
-      toast('Update queued. The controller reports its own progress.');
-    } catch (e: any) { setError(e.message || 'The update could not be queued.'); }
-    finally { setBusy(false); }
+      await api.post('/api/firmware/rollback', { board_id: controller.id, release_id: release.id });
+      toast(`Restore to ${release.version} queued. The controller reports its own progress.`);
+      onDone(); onClose();
+    } catch (e: any) { setError(e.message || 'The restore could not be queued.'); }
+    finally { setBusy(null); }
   };
-  const rollback = async () => {
-    setBusy(true); setError('');
-    try {
-      await api.post('/api/firmware/rollback', { board_id: controller.id });
-      setStarted(true); onDone();
-      toast('Rollback queued to the previous stable build.');
-    } catch (e: any) { setError(e.message || 'The rollback could not be queued.'); }
-    finally { setBusy(false); }
-  };
-  return <Modal title={`Wireless update · ${controller.name}`} onClose={onClose}
-    footer={started ? <button className="btn btn-primary" onClick={onClose}>Close</button> : <>
-      <button className="btn" onClick={onClose}>Cancel</button>
-      <button className="btn btn-primary" onClick={start} disabled={busy || !latest?.update_available}>
-        {busy ? <><Icon.loader className="spinner" />Queueing…</> : <><Icon.download />Install {latest?.version}</>}</button>
-    </>}>
+  const busyNow = !!controller.active_update;
+  return <Modal title={`Restore · ${controller.name}`} wide onClose={onClose}
+    description={`Installed now: ${controller.installed_version || 'not reported'}`}
+    footer={<button className="btn" onClick={onClose}>Close</button>}>
     {error && <div className="notice danger" style={{ marginBottom: 16 }}><Icon.fail />{error}</div>}
-    <div className="kv">
-      <dt>Installed now</dt><dd className="mono">{controller.installed_version || 'Not reported'}</dd>
-      <dt>Available</dt><dd className="mono">{latest?.version || 'None'}</dd>
-      <dt>Size</dt><dd>{latest ? fmtBytes(latest.size_bytes) : '—'}</dd>
-      <dt>Checksum</dt><dd className="mono tiny" style={{ wordBreak: 'break-all' }}>{latest?.sha256 || '—'}</dd>
-      <dt>Connection</dt><dd><StatusBadge status={controller.status} /> · seen {timeAgo(controller.last_seen_at)}</dd>
-      <dt>Previous success</dt><dd>{controller.last_success_at ? timeFull(controller.last_success_at) : 'None recorded'}</dd>
+    {busyNow && <div style={{ marginBottom: 12 }}><Notice tone="warn" title="An update is already running">
+      Wait for it to finish before starting a restore.
+    </Notice></div>}
+    <Notice tone="info" title="Wireless restore">
+      Restores an application image that this controller can take over the air. The controller checks the SHA-256, writes the inactive slot and reboots into it. If it cannot connect afterwards it returns to the version it runs now.
+    </Notice>
+    <div style={{ marginTop: 14 }}>
+      {controller.restore_candidates.length === 0
+        ? <EmptyState icon="layers" title="No other application image is available"
+          text="The owner has not published another compatible application image for this controller." />
+        : <div style={{ display: 'grid', gap: 8 }}>
+          {controller.restore_candidates.map((r) => <div key={r.id} className="list-item" style={{ padding: '8px 0' }}>
+            <span className="icon-box"><Icon.layers /></span>
+            <span className="grow">
+              <span className="title mono">{r.version}</span>{' '}
+              <Badge tone={channelTone(r.channel)}>{r.channel}</Badge>{r.mandatory && <> <Badge tone="warn">Mandatory</Badge></>}
+              <span className="meta" style={{ display: 'block' }}>{fmtBytes(r.size_bytes)} · {r.published_at ? timeFull(r.published_at) : 'Not dated'}</span>
+            </span>
+            <button className="btn btn-sm" disabled={busyNow || busy !== null} onClick={() => restore(r)}>
+              {busy === r.id ? <><Icon.loader className="spinner" />Queueing…</> : <><Icon.retry />Restore</>}
+            </button>
+          </div>)}
+        </div>}
     </div>
-    {latest?.notes && <div style={{ marginTop: 12 }}><h4 style={{ fontSize: 13, marginBottom: 4 }}>What changed in {latest.version}</h4>
-      <p className="tiny" style={{ lineHeight: 1.7 }}>{latest.notes}</p></div>}
-    <div style={{ marginTop: 14 }}><Notice tone="info" title="How the update runs">
-      The controller downloads the image over HTTPS, checks the SHA-256, writes it to the inactive slot and reboots into it. If it cannot connect after the update it returns to the version running now.
-    </Notice></div>
-    {controller.status !== 'online' && <div style={{ marginTop: 12 }}><Notice tone="warn" title="The controller is not online">
-      An update waits until the controller connects. Power and Wi-Fi must be available for the download to finish.
-    </Notice></div>}
-    {controller.last_failure && <div style={{ marginTop: 12 }}><Notice tone="danger" title="Last failure">
-      {controller.last_failure.error || 'The controller reported a failed attempt.'} ({timeAgo(controller.last_failure.finished_at)})
-    </Notice></div>}
-    {controller.rollback?.available && <div className="divider" />}
-    {controller.rollback?.available && <div>
-      <h4 style={{ fontSize: 13, marginBottom: 4 }}>Go back to {controller.rollback.version}</h4>
-      <p className="tiny" style={{ marginBottom: 8 }}>Only an earlier signed build that already ran on this controller can be restored.</p>
-      <button className="btn btn-sm" onClick={rollback} disabled={busy}><Icon.retry />Roll back</button>
-    </div>}
+    <div className="divider" />
+    <h4 style={{ fontSize: 13, marginBottom: 4 }}>The controller no longer starts?</h4>
+    <p className="tiny" style={{ marginBottom: 8 }}>
+      A wireless restore needs a controller that still runs. Connect it by USB and install a factory image instead.
+    </p>
+    <button className="btn btn-sm" onClick={onUsbRecovery}><Icon.usb />Fresh install over USB</button>
   </Modal>;
 }
 
-// ---------------------------------------------------------------------------
-// Pairing — six-digit code with a live countdown
-// ---------------------------------------------------------------------------
-function PairingPanel() {
-  const toast = useAuth().toast;
-  const [session, setSession] = useState<{ session_id: string; code: string; seconds_left: number } | null>(null);
-  const [progress, setProgress] = useState<PairingSession | null>(null);
-  const [seconds, setSeconds] = useState(0);
-  const [busy, setBusy] = useState(false);
+/* ------------------------------------------------- factory picker (USB) -- */
+
+/**
+ * Lists the factory images for one board type. Choosing one opens the USB
+ * installer. The list is the only source of what can be installed here.
+ */
+function FactoryPicker({ title, releases, onPick, onClose }: {
+  title: string; releases: Release[]; onPick: (pkg: InstallPackage) => void; onClose: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const boards = useLiveData<any[]>('/api/boards');
-
-  useEffect(() => {
-    if (!session) return;
-    const id = window.setInterval(() => setSeconds((s) => Math.max(0, s - 1)), 1000);
-    return () => window.clearInterval(id);
-  }, [session]);
-
-  useEffect(() => {
-    if (!session) return;
-    let alive = true;
-    const poll = async () => {
-      try {
-        const r = await api.get<PairingSession>(`/api/pairing/progress?session=${encodeURIComponent(session.session_id)}`);
-        if (!alive) return;
-        setProgress(r); setSeconds(r.seconds_left); setError('');
-        if (r.claimed) { boards.refresh(); toast('Controller paired'); return; }
-      } catch (e: any) { if (alive) setError(e.message || 'Could not read the pairing state.'); }
-      if (alive && !progress?.claimed) window.setTimeout(poll, 2500);
-    };
-    void poll();
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.session_id]);
-
-  const issue = async () => {
-    setBusy(true); setError(''); setProgress(null);
-    try {
-      const r = await api.post<any>('/api/pairing/code', {});
-      if (!/^[0-9]{6}$/.test(String(r?.code || ''))) throw new Error('The server did not return a six-digit code.');
-      setSession({ session_id: r.session_id, code: String(r.code), seconds_left: Number(r.seconds_left) || 300 });
-      setSeconds(Number(r.seconds_left) || 300);
-    } catch (e: any) { setError(e.message || 'The code could not be created.'); }
-    finally { setBusy(false); }
+  const pick = async (r: Release) => {
+    setBusy(r.id); setError('');
+    try { onPick(await prepareUsb(r)); }
+    catch (e: any) { setError(e.message || 'The image could not be prepared.'); }
+    finally { setBusy(null); }
   };
-  const cancel = async () => {
-    if (session) await api.post('/api/pairing/cancel', { session_id: session.session_id }).catch(() => {});
-    setSession(null); setProgress(null); setSeconds(0);
-  };
-
-  const claimedBoard = progress?.board;
-  return <Card title="Pair a controller" icon="key"
-    sub="A six-digit code, valid for five minutes and usable once.">
-    {!session ? <>
-      <Notice tone="info" title="When to use this">
-        After the controller has joined your Wi-Fi it shows its setup page. Ask for a code here, type it there, and the controller registers itself with its own credentials.
-      </Notice>
-      <button className="btn btn-primary btn-block" style={{ marginTop: 14 }} onClick={issue} disabled={busy}>
-        {busy ? <><Icon.loader className="spinner" />Creating…</> : <><Icon.key />Get a pairing code</>}</button>
-    </> : <>
-      <div style={{ textAlign: 'center', padding: '6px 0 14px' }}>
-        <div className="mono" style={{ fontSize: 42, letterSpacing: 10, fontWeight: 700 }}>{session.code}</div>
-        <div className="tiny" style={{ marginTop: 6 }}>
-          {seconds > 0 ? `Expires in ${countdown(seconds)}` : 'This code has expired'}
-        </div>
-        <Progress value={Math.max(0, Math.min(100, (seconds / 300) * 100))} tone={seconds > 60 ? 'on' : 'danger'} />
-      </div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-        <CopyButton value={session.code} label="Copy code" />
-        <button className="btn btn-sm" onClick={issue} disabled={busy}><Icon.refresh />New code</button>
-        <button className="btn btn-sm btn-ghost" onClick={cancel}>Cancel</button>
-      </div>
-      {progress?.claimed && claimedBoard
-        ? <div className="notice success" style={{ marginTop: 14 }}><Icon.ok />
-          {claimedBoard.name} registered and is {claimedBoard.status}. The code is no longer valid.</div>
-        : progress?.expired
-          ? <div className="notice warn" style={{ marginTop: 14 }}><Icon.clock />This code expired before a controller used it. Get a new code.</div>
-          : <div className="tiny" style={{ marginTop: 14 }}>
-            Enter this code on the controller's setup page. {progress ? `${progress.remaining_attempts} attempt(s) left on this code.` : ''}
-          </div>}
-      {error && <div className="notice danger" style={{ marginTop: 12 }}><Icon.fail />{error}</div>}
-    </>}
-  </Card>;
+  return <Modal title={title} wide onClose={onClose}
+    description="A factory image writes the whole controller over USB, including its bootloader. Use it for a new controller or one that will not start."
+    footer={<button className="btn" onClick={onClose}>Close</button>}>
+    {error && <div className="notice danger" style={{ marginBottom: 16 }}><Icon.fail />{error}</div>}
+    {!serialSupported() && <div style={{ marginBottom: 12 }}><Notice tone="warn" title="Use Chrome or Edge on a computer">
+      This browser has no Web Serial support, so the installer cannot open the controller's USB port.
+    </Notice></div>}
+    {releases.length === 0
+      ? <EmptyState icon="usb" title="No factory image published" text="An owner has to publish a factory image for this board before it can be installed over USB." />
+      : <div style={{ display: 'grid', gap: 8 }}>
+        {releases.map((r) => <div key={r.id} className="list-item" style={{ padding: '8px 0' }}>
+          <span className="icon-box"><Icon.usb /></span>
+          <span className="grow">
+            <span className="title mono">{r.version}</span>{' '}
+            <Badge tone={channelTone(r.channel)}>{r.channel}</Badge>
+            <span className="meta" style={{ display: 'block' }}>{fmtBytes(r.size_bytes)} · {r.chip_family} · {r.published_at ? timeFull(r.published_at) : 'Not dated'}</span>
+          </span>
+          <button className="btn btn-sm btn-primary" disabled={busy !== null} onClick={() => pick(r)}>
+            {busy === r.id ? <><Icon.loader className="spinner" />Preparing…</> : <><Icon.usb />Install over USB</>}</button>
+        </div>)}
+      </div>}
+  </Modal>;
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+/* --------------------------------------------------------------- page -- */
+
 export function InstallPage() {
   const { data, loading, error, refresh } = useLiveData<Catalog>('/api/firmware/catalog');
   const toast = useAuth().toast;
-  const [usb, setUsb] = useState<Catalog['install'][number] | null>(null);
-  const [ota, setOta] = useState<ControllerEntry | null>(null);
+  const [usb, setUsb] = useState<InstallPackage | null>(null);
+  const [picker, setPicker] = useState<{ title: string; releases: Release[] } | null>(null);
+  const [restoring, setRestoring] = useState<Controller | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const install = data?.install || [];
-  const controllers = data?.controllers || [];
-  const online = controllers.filter((c) => c.status === 'online');
-  const recommended = install.find((p) => p.artifact_kind === 'app') || install[0] || null;
+  const [kind, setKind] = useState<'all' | 'app' | 'factory'>('all');
+  const [query, setQuery] = useState('');
+  const [preparing, setPreparing] = useState<string | null>(null);
+  const [libraryError, setLibraryError] = useState('');
 
-  const update = async (controller: ControllerEntry) => {
+  const boardTypes = data?.board_types || [];
+  const releases = data?.releases || [];
+  const controllers = data?.controllers || [];
+  const anyActive = controllers.some((c) => !!c.active_update);
+
+  // While a controller is working, reload the catalogue so its progress is current.
+  useEffect(() => {
+    if (!anyActive) return;
+    const id = window.setInterval(() => refresh(), 5000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyActive]);
+
+  const factoriesFor = (boardId: string) =>
+    releases.filter((r) => r.artifact_kind === 'factory' && r.board_models.includes(boardId));
+
+  const openFactory = (title: string, list: Release[]) => setPicker({ title, releases: list });
+
+  const update = async (controller: Controller) => {
     setBusy(controller.id);
     try {
       await api.post('/api/firmware/update', { board_id: controller.id });
-      toast(`Update to ${controller.latest?.version} queued`);
+      toast(`Update to ${controller.latest?.version} queued. The controller reports its own progress.`);
       refresh();
     } catch (e: any) { toast(e.message || 'The update could not be queued', 'error'); }
     finally { setBusy(null); }
   };
 
+  const openLibraryUsb = async (release: Release) => {
+    setPreparing(release.id); setLibraryError('');
+    try { setUsb(await prepareUsb(release)); }
+    catch (e: any) { setLibraryError(e.message || 'The image could not be prepared.'); }
+    finally { setPreparing(null); }
+  };
+
+  const libraryRows = releases.filter((r) =>
+    (kind === 'all' || r.artifact_kind === kind) &&
+    (!query || `${r.version} ${r.name} ${r.board_labels.join(' ')}`.toLowerCase().includes(query.toLowerCase())));
+
   return <>
     <PageHead title="Firmware" eyebrow="Home console"
-      desc="Install a published release over USB in this browser, or update a paired controller wirelessly."
+      desc="Update, restore or fresh-install the controllers in this home. Every image comes from a release the owner published."
       actions={<Link className="btn" to="/setup"><Icon.cpu />Add a controller<Icon.next /></Link>} />
 
     {error && <div style={{ marginBottom: 16 }}><ErrorState text={error} onRetry={refresh} /></div>}
 
-    <div className="grid grid-2" style={{ marginBottom: 16, alignItems: 'start' }}>
-      <Card title="Option A · Install over USB in this browser" icon="usb"
-        sub="Recommended for a new controller, or when one needs recovery."
-        actions={recommended ? <Badge tone="on">{recommended.version}</Badge> : <Badge tone="warn">No release</Badge>}>
-        {loading ? <Loading rows={3} /> : !recommended ? <EmptyState icon="usb" title="No release published yet"
-          text="An owner has to publish a firmware release before it can be installed here." />
-          : <>
-            <div className="kv">
-              <dt>Version</dt><dd className="mono">{recommended.version}</dd>
-              <dt>Size</dt><dd>{fmtBytes(recommended.size_bytes)}</dd>
-              <dt>Chip</dt><dd>{recommended.chip_family}</dd>
-              <dt>Checksum</dt><dd className="mono tiny" style={{ wordBreak: 'break-all' }}>{recommended.sha256}</dd>
-              <dt>Type</dt><dd>{installModeLabel(recommended.artifact_kind).label}</dd>
-            </div>
-            {!serialSupported() && <div style={{ marginTop: 12 }}><Notice tone="warn" title="Use Chrome or Edge on a computer">
-              This browser has no Web Serial support, so the in-browser installer cannot open a serial port. You can still download the file below.
-            </Notice></div>}
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
-              <button className="btn btn-primary" onClick={() => setUsb(recommended)}>
-                <Icon.usb />Install over USB</button>
-              <a className="btn" href={`/api/firmware/download/${recommended.id}`}><Icon.download />Download the file</a>
-            </div>
-            <div className="divider" />
-            <details>
-              <summary className="tiny" style={{ cursor: 'pointer' }}>Instructions for a manual install</summary>
-              <ol style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.9, fontSize: 12.5 }}>
-                {USB_STEPS.map((s) => <li key={s.title}><b>{s.title}</b> — {s.detail}</li>)}
-              </ol>
-              <p className="tiny" style={{ marginTop: 8 }}>
-                You never need the Arduino IDE. If you prefer an official tool, open ESP Web Tools and select the file you downloaded.
-              </p>
-              <a className="btn btn-sm" href="https://esphome.github.io/esp-web-tools/" target="_blank" rel="noreferrer">
-                <Icon.external />ESP Web Tools install page</a>
-            </details>
-            {install.length > 1 && <div style={{ marginTop: 12 }}>
-              <h4 style={{ fontSize: 12.5, marginBottom: 6 }}>Other published builds</h4>
-              {install.filter((p) => p.id !== recommended.id).map((p) => <div key={p.id} className="list-item" style={{ padding: '8px 0' }}>
-                <span className="icon-box"><Icon.layers /></span>
-                <span className="grow"><span className="title">{p.version}</span>
-                  <span className="meta">{installModeLabel(p.artifact_kind).label} · {fmtBytes(p.size_bytes)}</span></span>
-                <button className="btn btn-sm" onClick={() => setUsb(p)}>Install</button>
-              </div>)}
-            </div>}
-          </>}
-      </Card>
-
-      <PairingPanel />
-    </div>
-
+    {/* ---------------------------------------------- your controllers */}
     <Card title="Your controllers" icon="circuitry" pad={false}
-      sub={`${online.length} of ${controllers.length} online · wireless updates need a controller that can reach the internet`}>
-      {loading ? <div className="card-pad"><Loading rows={4} shape="table" /></div>
+      sub={`${controllers.filter((c) => c.status === 'online').length} of ${controllers.length} online · wireless updates need a controller that can reach the internet`}>
+      {loading ? <div className="card-pad"><Loading rows={3} shape="table" /></div>
         : !controllers.length ? <div className="card-pad"><EmptyState icon="cpu" title="No controllers paired yet"
-          text="Install the firmware over USB above, then follow the Wi-Fi and pairing steps to add the controller to this home."
+          text="Install a controller over USB from the board list below, then add it to this home with the setup guide."
           action={<Link className="btn btn-primary" to="/setup">Start setup</Link>} /></div>
           : <div className="card-pad" style={{ display: 'grid', gap: 12 }}>
             {controllers.map((c) => <div key={c.id} className="card card-pad" style={{ display: 'grid', gap: 10 }}>
@@ -418,32 +396,117 @@ export function InstallPage() {
                     ? <Badge tone="warn" icon="alert">{c.latest.version} available</Badge>
                     : c.installed_version && c.latest
                       ? <Badge tone="on" icon="check">Up to date</Badge>
-                      : <Badge>No release offered</Badge>}
+                      : <Badge>No update offered</Badge>}
                 </div>
               </div>
-              {c.update && <div>
+
+              {c.active_update && <div>
                 <div className="tiny" style={{ marginBottom: 4 }}>
-                  {c.update.status} · {c.update.progress ?? 0}% {c.update.error ? `· ${c.update.error}` : ''}
+                  {c.active_update.status}{c.active_update.to_version ? ` to ${c.active_update.to_version}` : ''} · {c.active_update.progress ?? 0}%
+                  {c.active_update.error ? ` · ${c.active_update.error}` : ''}
                 </div>
-                <Progress value={c.update.progress || 0}
-                  tone={c.update.status === 'failed' ? 'danger' : c.update.status === 'success' ? 'on' : 'warn'} />
+                <Progress value={c.active_update.progress || 0} tone="warn" />
               </div>}
+
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn btn-sm btn-primary" disabled={!c.latest?.update_available || !!c.update || busy === c.id}
-                  onClick={() => update(c)}>
-                  {busy === c.id ? <><Icon.loader className="spinner" />Queueing…</> : <><Icon.download />Update to {c.latest?.version || 'latest'}</>}
+                <button className="btn btn-sm btn-primary"
+                  disabled={!c.latest?.update_available || !!c.active_update || busy === c.id || !c.online}
+                  onClick={() => update(c)} title={!c.online ? 'The controller must be online to update' : undefined}>
+                  {busy === c.id ? <><Icon.loader className="spinner" />Queueing…</> : <><Icon.download />Update{c.latest?.update_available ? ` to ${c.latest.version}` : ''}</>}
                 </button>
-                <button className="btn btn-sm" onClick={() => setOta(c)}><Icon.info />Details{c.latest?.update_available ? '' : ' and rollback'}</button>
+                <button className="btn btn-sm" disabled={!!c.active_update || c.restore_candidates.length === 0}
+                  onClick={() => setRestoring(c)}>
+                  <Icon.retry />Restore</button>
+                <button className="btn btn-sm" disabled={!c.catalog_board_id}
+                  onClick={() => c.catalog_board_id && openFactory(`Fresh install · ${c.name}`, factoriesFor(c.catalog_board_id))}>
+                  <Icon.usb />Fresh install over USB</button>
                 <Link className="btn btn-sm" to={`/boards/${c.id}`}><Icon.sliders />Pin manager</Link>
               </div>
+
               {c.last_failure && <div className="tiny" style={{ color: 'var(--state-danger)' }}>
-                Last attempt failed {timeAgo(c.last_failure.finished_at)}: {c.last_failure.error || 'no reason reported'}
+                Last attempt to {c.last_failure.to_version || 'a new version'} failed {timeAgo(c.last_failure.finished_at)}: {c.last_failure.error || 'no reason reported'}
               </div>}
             </div>)}
           </div>}
     </Card>
 
+    {/* ------------------------------------------------------ board types */}
+    <div style={{ height: 16 }} />
+    <Card title="Board types" icon="cube" pad={false}
+      sub="Every board the owner has published firmware for. Fresh install writes a factory image over USB.">
+      {loading ? <div className="card-pad"><Loading rows={3} shape="table" /></div>
+        : !boardTypes.length ? <div className="card-pad"><EmptyState icon="cube" title="No board types yet" text="The board catalogue is empty." /></div>
+          : <div className="card-pad" style={{ display: 'grid', gap: 10 }}>
+            {boardTypes.map((t) => <div key={t.id} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className="icon-box"><Icon.circuitry /></span>
+              <span className="grow" style={{ flex: 1, minWidth: 180 }}>
+                <span className="title">{boardName(t)}</span>
+                <span className="meta" style={{ display: 'block' }}>
+                  {t.chip_family}{t.flash_mb ? ` · ${t.flash_mb} MB flash` : ''}{t.psram_mb ? ` · ${t.psram_mb} MB PSRAM` : ''}
+                  {' · '}{t.owned_controllers} in this home · {t.release_count} release{t.release_count === 1 ? '' : 's'}
+                </span>
+              </span>
+              <button className="btn btn-sm" disabled={t.factory_release_count === 0}
+                onClick={() => openFactory(`Fresh install · ${boardName(t)}`, factoriesFor(t.id))}>
+                <Icon.usb />{t.factory_release_count ? 'Fresh install' : 'No factory image'}</button>
+            </div>)}
+          </div>}
+    </Card>
+
+    {/* ----------------------------------------------------------- library */}
+    <div style={{ height: 16 }} />
+    <Card title="Firmware library" icon="archive" pad={false}
+      sub="Published releases. Factory images install over USB; application images update controllers over the air.">
+      <div className="card-pad" style={{ paddingBottom: 0 }}>
+        <div className="filter-bar">
+          <div className="segmented" role="group" aria-label="Filter by image type">
+            {(['all', 'app', 'factory'] as const).map((k) => <button key={k} className={kind === k ? 'on' : ''}
+              onClick={() => setKind(k)}>{k === 'all' ? 'All' : k === 'app' ? 'Application' : 'Factory'}</button>)}
+          </div>
+          <div className="search">
+            <Icon.search />
+            <input className="input" placeholder="Search version or board" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search firmware" />
+          </div>
+        </div>
+        {libraryError && <div className="notice danger" style={{ marginBottom: 12 }}><Icon.fail />{libraryError}</div>}
+      </div>
+      {loading ? <div className="card-pad"><Loading rows={3} shape="table" /></div>
+        : !releases.length ? <div className="card-pad"><EmptyState icon="archive" title="No release published yet"
+          text="An owner has to publish a firmware release before it appears here." /></div>
+          : !libraryRows.length ? <div className="card-pad"><EmptyState icon="search" title="No matching release" text="Try another version or type." /></div>
+            : <div style={{ overflowX: 'auto' }}>
+              <table className="tbl">
+                <thead><tr><th>Version</th><th>Type</th><th>Boards</th><th>Size</th><th>Published</th><th style={{ textAlign: 'right' }}>Actions</th></tr></thead>
+                <tbody>
+                  {libraryRows.map((r) => <tr key={r.id}>
+                    <td><div className="mono" style={{ fontWeight: 700 }}>{r.version}</div>
+                      <div className="tiny"><Badge tone={channelTone(r.channel)}>{r.channel}</Badge>{r.mandatory && <> <Badge tone="warn">Mandatory</Badge></>}</div></td>
+                    <td>{installModeLabel(r.artifact_kind).label}</td>
+                    <td className="tiny">{r.board_labels.join(', ') || '—'}</td>
+                    <td>{fmtBytes(r.size_bytes)}</td>
+                    <td className="tiny">{r.published_at ? timeAgo(r.published_at) : '—'}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        {r.artifact_kind === 'factory'
+                          ? <button className="btn btn-sm" disabled={preparing !== null} onClick={() => openLibraryUsb(r)}>
+                            {preparing === r.id ? <><Icon.loader className="spinner" />Preparing…</> : <><Icon.usb />Install over USB</>}</button>
+                          : <a className="btn btn-sm" href={r.download_path}><Icon.download />Download</a>}
+                      </div>
+                    </td>
+                  </tr>)}
+                </tbody>
+              </table>
+            </div>}
+    </Card>
+
     {usb && <UsbInstallModal pkg={usb} onClose={() => setUsb(null)} />}
-    {ota && <OtaModal controller={ota} onClose={() => setOta(null)} onDone={refresh} />}
+    {picker && <FactoryPicker title={picker.title} releases={picker.releases}
+      onPick={(pkg) => { setPicker(null); setUsb(pkg); }} onClose={() => setPicker(null)} />}
+    {restoring && <RestoreModal controller={restoring} onClose={() => setRestoring(null)} onDone={refresh}
+      onUsbRecovery={() => {
+        const target = restoring;
+        setRestoring(null);
+        if (target.catalog_board_id) openFactory(`Fresh install · ${target.name}`, factoriesFor(target.catalog_board_id));
+      }} />}
   </>;
 }

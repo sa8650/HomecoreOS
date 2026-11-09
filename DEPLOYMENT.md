@@ -52,6 +52,88 @@ There are **no R2 API keys and no `R2_…` secrets**. The binding is configured 
 
 ---
 
+## 3A. Platform ingress bridge and the bridge's EMQX user
+
+Controllers report to HomecoreOS through EMQX, but the website runs on Cloudflare Pages Functions, which cannot hold an MQTT subscription open. A small always-on process, the **platform bridge** (`scripts/bridge/platform_bridge.mjs`), carries device messages from EMQX to the website. **Without the bridge running, a controller can connect and publish, yet pairing never completes and no controller shows online.** This is the single most important deployment requirement for pairing.
+
+What the bridge does: it subscribes to `v1/tenants/+/devices/+/+` (state, telemetry and availability reports only), signs each message with HMAC-SHA256 and posts it to `https://<your-site>/internal/mqtt/event`. Failed sends are retried with backoff. A message the website rejects permanently is dropped and logged. It never publishes to devices.
+
+### 3A.1 Create the bridge user in EMQX
+
+1. In EMQX Cloud, open your deployment → **Authentication** → **Password-Based** → **Built-in Database** (the same place the app creates device users).
+2. Add a user, for example `hc-bridge`, with a long random password. Store the password in your secret store; you will need it in 3A.4.
+3. Open **Authorization** → **Built-in Database** rules for that user (or **Access Control → ACL**) and add exactly these two rules, in this order. EMQX uses the first matching rule:
+   - Allow **subscribe** to `v1/tenants/+/devices/+/+`.
+   - Deny **all** actions on `#`.
+4. Do not make this user a superuser. Do not give it publish rights. A compromised bridge password then cannot command controllers.
+
+The per-device users and ACLs are created automatically by the app when a controller is paired, and the bridge needs no entry for them.
+
+### 3A.2 Derive the signing key
+
+The website signs bridge requests with a key derived from the Supabase service-role key. The bridge must sign with that same derived key, because the website replaces any other signing key it is given. Run this once where the service-role key is available:
+
+```
+cd scripts/bridge && npm install --omit=dev
+SUPABASE_SERVICE_ROLE_KEY=<service role key> node derive_signing_key.mjs
+```
+
+The output is a 64-character hex string. Store it as the bridge's `SIGNING_KEY` secret. Treat it like the service-role key: anyone holding it can post events as the platform.
+
+### 3A.3 Host the bridge
+
+Run it on any machine that stays on and can reach the broker on TLS port 8883 and the website over HTTPS: a small VPS, a container host or an always-on computer. It needs Node.js 20 or newer. Run it under a supervisor (systemd `Restart=always`, or a container with `restart: always`) so it comes back after a reboot.
+
+### 3A.4 Configure and start
+
+| Variable | Value |
+|---|---|
+| `MQTT_URL` | `mqtts://<EMQX_BROKER_HOST>:8883` |
+| `BRIDGE_MQTT_USERNAME` | `hc-bridge` (or the name from 3A.1) |
+| `BRIDGE_MQTT_PASSWORD` | the password from 3A.1 |
+| `HOMECOREOS_API` | the site origin, for example `https://your-site.example` |
+| `SIGNING_KEY` | the derived key from 3A.2 |
+| `MQTT_CA_FILE` | optional path to a PEM CA certificate, only if the broker certificate is not trusted by default |
+| `BRIDGE_QUEUE_MAX` | optional, default `500` messages held in memory |
+
+```
+cd scripts/bridge && npm install --omit=dev
+MQTT_URL=mqtts://<broker-host>:8883 BRIDGE_MQTT_USERNAME=hc-bridge BRIDGE_MQTT_PASSWORD=... \
+HOMECOREOS_API=https://your-site.example SIGNING_KEY=... node platform_bridge.mjs
+```
+
+**Before you start it**, run the operator check with the same values. It proves each link separately: the EMQX Deployment API credentials (if you set them), the bridge account's TLS login and its subscription to the device filter, and that HomecoreOS accepts the bridge's signature.
+
+```
+node verify_bridge.mjs
+```
+
+Every line must say PASS. A FAIL names the link that is broken.
+
+**Run it as a supervised service.** Use the included unit file (`scripts/bridge/homecoreos-bridge.service`, environment in `/etc/homecoreos/bridge.env`, template `bridge.env.example`) or the container file `scripts/bridge/Dockerfile`. Use `Restart=always` or `--restart=always`. Starting it by hand in a terminal is not enough: when the terminal closes, the bridge stops, and no controller message reaches HomecoreOS.
+
+A healthy start logs `connected to broker` and then `subscribed to device ingress`. Every 30 seconds it sends a heartbeat to HomecoreOS with its real broker connection state.
+
+### 3A.5 Verify it
+
+0. Owner Console → **EMQX Management** shows the bridge block: **Bridge process** must read *Running* with a heartbeat a few seconds old, and **Bridge to broker** must read *Connected and subscribed*. The Deployment API line only says REST works; it does not show the bridge.
+
+1. Pair a controller (Customer Console → Add a controller). The wizard should move from **Connecting to your home over MQTT** to **Waiting for the controller report**, then to **Added** within about a minute of the controller joining Wi-Fi.
+2. If it stays on the same stage, read the bridge log:
+   - `API rejected the message; dropped` with status **401** → `SIGNING_KEY` does not match. Re-run 3A.2 with the current service-role key.
+   - `message ignored by the platform` with a reason → the website received the message but did not act on it, for example a registration for a session that is not this controller's. The reason says which check failed.
+   - `API unreachable, will retry` → the site origin is wrong or the host has no outbound HTTPS.
+   - `subscribe failed` → the EMQX rule for `hc-bridge` does not allow `v1/tenants/+/devices/+/+`.
+   - The wizard says **The platform bridge has not reported yet** or **has stopped reporting** → the bridge service is not running, or it cannot reach the site origin. Start or fix it; no controller can finish pairing until it does.
+
+### 3A.6 Limits
+
+- The bridge holds unsent messages in memory only. A restart drops the queue; controllers resend their registration report every 10 seconds until acknowledged, so pairing recovers without operator action.
+- The website identifies a message's device from its topic, not from a client ID, so the EMQX ACL for device users is what keeps one controller from reporting as another. Keep the device ACL rules from the app in place.
+- One bridge instance is enough for the current load. Running two is safe for correctness (registration is idempotent), but each message is then forwarded twice.
+
+---
+
 ## 4. Cloudflare R2 — private bucket + native binding (exact beginner steps)
 
 This is a **bucket plus a Pages binding**. No R2 API token, no Access Key ID, no Secret Access Key, no Account ID and no S3 endpoint are needed anywhere.
@@ -224,8 +306,9 @@ them: nothing reads them.
 
 1. Open **Customer Console → Add a controller**. Choose your verified board model, give it a name, and follow the illustrated steps.
 2. Power the controller, join its temporary `HomecoreOS-Setup-…` Wi-Fi network from a phone or laptop, and enter your home Wi-Fi password **on the controller's own setup page**. The website never sees your Wi-Fi password.
-3. Create a one-time pairing code and paste it into the controller's setup page. The wizard polls the server every two seconds and shows real stages: code created, controller found, private identity registered, and controller online.
-4. The **All set** success screen appears only after the controller actually reports `online` in the database. A timeout, expired code or failed check shows a failure state with **New code**, **Back** and **Cancel setup** — never a false success animation.
+3. Create a one-time pairing code and paste it into the controller's setup page. The wizard polls the server every two seconds and shows the real stages: code accepted and credentials issued, connecting to your home over MQTT, waiting for the controller report, confirming registration, and added.
+4. The **All set** success screen appears only after the platform has confirmed the controller's registration (stage `completed`). The 6-digit code may expire only before it is used. After the code is accepted, the controller has 10 minutes to finish connecting. A timeout or other failure shows the specific reason with **New code**, **Back** and **Cancel setup**. The page keeps checking after a failure, so a late connection is still picked up. The success screen never appears on a timer or on a status that the controller did not confirm.
+4a. Pairing needs the platform bridge (section 3A) to be running. Without it the wizard stops at **Waiting for the controller report**.
 5. When supported by the firmware, the completion screen shows real detected chip model, revision, Wi-Fi address, firmware version, build and SDK version. Fields that the device did not report are labelled **Not reported**.
 6. Open **Controllers** to see the new controller and its live status; then add switches, lights and sensors from **Devices**.
 
@@ -281,3 +364,7 @@ Use **Appearance** in the top bar of either console to choose **Use system setti
 | The dialog says the checksum does not match | The ZIP was modified after GitHub Actions built it, or it was uploaded from somewhere other than the build. Download the release again from GitHub Actions and upload it unchanged. |
 | A controller stays on the old version after an update | Open the controller's update history: it shows the stage that failed and the reason the controller itself reported. A controller that cannot reconnect on the new image returns to the previous one by design. |
 | Devices cannot connect | Use the bare broker hostname and port `8883`, with TLS enabled. No `mqtts://` prefix in `EMQX_BROKER_HOST`. |
+| Wizard stays on **Waiting for the controller report** | The platform bridge is not running, or its `SIGNING_KEY` is wrong. See section 3A.5. |
+| Wizard shows **The controller did not finish connecting** | The controller was paired but never confirmed its registration within 10 minutes. Check its power and Wi-Fi, then create a new code. Controllers paired before the registration update do not report a pairing session and must be paired again. |
+| `Too many pairing codes are open` | Five unused codes are already open for this account. Cancel the open setups, or finish one. |
+| `Too many controllers were added recently` | The home has issued 10 codes in the last hour. Wait, or ask the Platform Owner to raise `pairing.issue_per_hour` in platform settings. |
