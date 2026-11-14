@@ -1,0 +1,430 @@
+.hc-island-scope {
+  --ds-overlay-bg: #ffffff;
+  --ds-border: rgba(15, 23, 42, 0.08);
+  --ds-border-strong: #c6d2e2;
+  --ds-card-hover-bg: #fbfdff;
+  --ds-primary: #1a73e8;
+  --ds-primary-soft: #e8f0fe;
+  --ds-primary-border: #c5dafc;
+  --ds-text-1: #0f172a;
+  --ds-text-2: #475569;
+  --ds-text-3: #64748b;
+  --ds-danger: #dc2626;
+  --ds-danger-bg: rgba(220, 38, 38, 0.08);
+  --ds-shadow-card: 0 1px 3px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.025);
+  --ds-shadow-popover: 0 12px 34px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+
+.dark .hc-island-scope {
+  --ds-overlay-bg: #172032;
+  --ds-border: rgba(226, 232, 240, 0.09);
+  --ds-border-strong: rgba(148, 163, 184, 0.26);
+  --ds-card-hover-bg: #1b2638;
+  --ds-primary: #60a5fa;
+  --ds-primary-soft: rgba(59, 130, 246, 0.16);
+  --ds-primary-border: rgba(96, 165, 250, 0.34);
+  --ds-text-1: #e2e8f0;
+  --ds-text-2: #94a3b8;
+  --ds-text-3: #64748b;
+  --ds-danger: #f87171;
+  --ds-danger-bg: rgba(248, 113, 113, 0.14);
+  --ds-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --ds-shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* Zero-layout-height sticky host centered over the workspace column */
+.dynamic-island-host {
+  position: sticky;
+  top: 0;
+  z-index: 70;
+  height: 0;
+  width: 100%;
+  pointer-events: none;
+}
+
+/* When 2D floor plan is full-screen, keep Dynamic Island centered across the full viewport */
+[data-hc-fullscreen-map="true"] .dynamic-island-host {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 70;
+}
+
+.dynamic-island-anchor {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  z-index: 70;
+  pointer-events: none;
+}
+
+.dynamic-island-track {
+  position: relative;
+  width: 0;
+  height: 0;
+  transform: translateX(var(--island-x, 0px));
+}
+
+.island-shell {
+  position: relative;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--ds-overlay-bg);
+  border: 1px solid var(--ds-border-strong);
+  box-shadow: var(--ds-shadow-card), var(--ds-shadow-popover);
+  pointer-events: auto;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.island-shell[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.island-face-wrap,
+.island-panel-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.island-face {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  min-width: 52px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ds-text-1);
+  border-radius: 999px;
+  cursor: pointer;
+  outline: none;
+}
+
+.island-face:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ds-primary);
+}
+
+.island-face-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ds-primary);
+  box-shadow: 0 0 0 2px var(--ds-overlay-bg);
+  flex-shrink: 0;
+}
+
+.island-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 38px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.island-control,
+.island-sections,
+.ds-theme-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  color: var(--ds-text-2);
+  cursor: pointer;
+  outline: none;
+  flex-shrink: 0;
+  transition: background-color 140ms ease, color 140ms ease, transform 120ms ease;
+}
+
+.island-control:hover,
+.island-sections:hover,
+.ds-theme-toggle:hover {
+  background: var(--ds-card-hover-bg);
+  color: var(--ds-text-1);
+}
+
+.island-control:focus-visible,
+.island-sections:focus-visible,
+.ds-theme-toggle:focus-visible {
+  box-shadow: 0 0 0 2px var(--ds-primary);
+}
+
+.island-control[data-active="true"] {
+  background: var(--ds-primary-soft);
+  color: var(--ds-primary);
+}
+
+/* Mobile-only sidebar nav trigger inside the expanded island */
+@media (min-width: 1024px) {
+  .island-sections {
+    display: none;
+  }
+}
+
+.notification-button {
+  position: relative;
+}
+
+.notification-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ds-primary);
+  box-shadow: 0 0 0 2px var(--ds-overlay-bg);
+  pointer-events: none;
+}
+
+.island-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--ds-border-strong);
+  flex-shrink: 0;
+}
+
+.island-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--ds-primary-soft);
+  border: 1px solid var(--ds-primary-border);
+  color: var(--ds-primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  outline: none;
+  flex-shrink: 0;
+  transition: background-color 140ms ease, border-color 140ms ease, transform 120ms ease;
+}
+
+.island-avatar:hover {
+  border-color: var(--ds-primary);
+}
+
+.island-avatar[data-active="true"] {
+  background: var(--ds-primary);
+  border-color: var(--ds-primary);
+  color: #ffffff;
+}
+
+.island-avatar:focus-visible {
+  box-shadow: 0 0 0 2px var(--ds-overlay-bg), 0 0 0 4px var(--ds-primary);
+}
+
+/* Popover layer directly underneath the pill, clamped to host edges */
+.island-layer {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 75;
+  pointer-events: none;
+}
+
+.island-layer-anchor {
+  transform: translateX(calc(-50% + var(--island-layer-shift, 0px)));
+  pointer-events: none;
+}
+
+.island-layer-anchor > * {
+  pointer-events: auto;
+}
+
+/* Profile Menu Card */
+.island-menu {
+  width: 268px;
+  max-width: calc(100vw - 24px);
+  border-radius: 16px;
+  background: var(--ds-overlay-bg);
+  border: 1px solid var(--ds-border-strong);
+  box-shadow: var(--ds-shadow-popover);
+  color: var(--ds-text-1);
+  padding: 6px;
+}
+
+.island-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+}
+
+.island-menu-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--ds-primary-soft);
+  border: 1px solid var(--ds-primary-border);
+  color: var(--ds-primary);
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.island-menu-identity {
+  min-width: 0;
+  flex: 1;
+}
+
+.island-menu-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--ds-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.island-menu-email {
+  font-size: 11px;
+  color: var(--ds-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.island-menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--ds-border);
+}
+
+.island-menu-section-label {
+  padding: 4px 10px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ds-text-3);
+}
+
+.island-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ds-text-1);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.island-menu-item:hover,
+.island-menu-item:focus-visible {
+  background: var(--ds-card-hover-bg);
+  outline: none;
+}
+
+.island-menu-item[data-selected="true"] {
+  background: var(--ds-primary-soft);
+  color: var(--ds-primary);
+}
+
+.island-menu-item--danger {
+  color: var(--ds-danger);
+}
+
+.island-menu-item--danger:hover,
+.island-menu-item--danger:focus-visible {
+  background: var(--ds-danger-bg);
+  color: var(--ds-danger);
+}
+
+/* Quick Launcher Panel */
+.island-launcher-panel {
+  width: 316px;
+  max-width: calc(100vw - 24px);
+  border-radius: 16px;
+  background: var(--ds-overlay-bg);
+  border: 1px solid var(--ds-border-strong);
+  box-shadow: var(--ds-shadow-popover);
+  color: var(--ds-text-1);
+  padding: 10px;
+}
+
+.island-launcher-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.island-launcher-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 9px 6px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ds-text-2);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.island-launcher-tile:hover,
+.island-launcher-tile:focus-visible {
+  background: var(--ds-card-hover-bg);
+  border-color: var(--ds-border);
+  color: var(--ds-text-1);
+  outline: none;
+}
+
+.island-launcher-tile[data-active="true"] {
+  background: var(--ds-primary-soft);
+  border-color: var(--ds-primary-border);
+  color: var(--ds-primary);
+  font-weight: 600;
+}
+
+/* Floating Notification Popover inside Dynamic Island layer */
+.island-notification-panel {
+  width: min(372px, calc(100vw - 24px));
+  max-height: min(72dvh, 480px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--ds-overlay-bg);
+  border: 1px solid var(--ds-border-strong);
+  box-shadow: var(--ds-shadow-popover);
+  color: var(--ds-text-1);
+}

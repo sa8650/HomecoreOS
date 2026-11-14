@@ -1,0 +1,666 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+
+  /* Floor Plan Blueprint Grid */
+  --hc-floor-grid: rgba(15, 23, 42, 0.045);
+
+  /* ReUI + Radix Nova Semantic Tokens (Soft Light) */
+  --radius: 0.625rem;
+  --background: #f5f7fa;
+  --foreground: #1e293b;
+  --card: #fcfdfe;
+  --card-foreground: #1e293b;
+  --popover: #fcfdfe;
+  --popover-foreground: #1e293b;
+  --primary: #3b76f6;
+  --primary-foreground: #ffffff;
+  --secondary: #eaeff5;
+  --secondary-foreground: #1e293b;
+  --muted: #eaeff5;
+  --muted-foreground: #64748b;
+  --accent: #edf2f7;
+  --accent-foreground: #1e293b;
+  --destructive: #dc4c4c;
+  --destructive-foreground: #b91c1c;
+  --border: rgba(15, 23, 42, 0.08);
+  --input: rgba(15, 23, 42, 0.14);
+  --ring: #3b76f6;
+
+  /* ReUI Extended Semantic Tokens */
+  --success: #16a37a;
+  --success-foreground: #0f765a;
+  --info: #3b76f6;
+  --info-foreground: #2563eb;
+  --warning: #d98218;
+  --warning-foreground: #b45309;
+  --invert: #1e293b;
+  --invert-foreground: #f8fafc;
+  --focus: #8b5cf6;
+  --focus-foreground: #ffffff;
+
+  /* Chart & Sidebar/Topbar Shared Tokens */
+  --chart-1: #3b76f6;
+  --chart-2: #16a37a;
+  --chart-3: #d98218;
+  --chart-4: #64748b;
+  --chart-5: #1e293b;
+  --sidebar: #eef2f6;
+  --sidebar-foreground: #1e293b;
+  --sidebar-primary: #3b76f6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(59, 118, 246, 0.1);
+  --sidebar-accent-foreground: #2563eb;
+  --sidebar-border: rgba(15, 23, 42, 0.08);
+  --sidebar-ring: #3b76f6;
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* Floor Plan Blueprint Grid (Soft Dark) */
+  --hc-floor-grid: rgba(148, 163, 184, 0.075);
+
+  /* ReUI + Radix Nova Semantic Tokens (Soft Dark) */
+  --background: #0f131b;
+  --foreground: #e2e8f0;
+  --card: #171f2c;
+  --card-foreground: #e2e8f0;
+  --popover: #171f2c;
+  --popover-foreground: #e2e8f0;
+  --primary: #5b93f8;
+  --primary-foreground: #ffffff;
+  --secondary: #1e2736;
+  --secondary-foreground: #e2e8f0;
+  --muted: #1b2331;
+  --muted-foreground: #94a3b8;
+  --accent: #202a3b;
+  --accent-foreground: #e2e8f0;
+  --destructive: #f87171;
+  --destructive-foreground: #fca5a5;
+  --border: rgba(226, 232, 240, 0.085);
+  --input: rgba(226, 232, 240, 0.15);
+  --ring: #5b93f8;
+
+  /* ReUI Extended Semantic Tokens (Soft Dark) */
+  --success: #34d399;
+  --success-foreground: #6ee7b7;
+  --info: #5b93f8;
+  --info-foreground: #93c5fd;
+  --warning: #fbbf24;
+  --warning-foreground: #fcd34d;
+  --invert: #1e293b;
+  --invert-foreground: #f8fafc;
+  --focus: #a78bfa;
+  --focus-foreground: #ffffff;
+
+  /* Chart & Sidebar/Topbar Shared Tokens (Soft Dark) */
+  --chart-1: #5b93f8;
+  --chart-2: #34d399;
+  --chart-3: #fbbf24;
+  --chart-4: #94a3b8;
+  --chart-5: #e2e8f0;
+  --sidebar: #141a25;
+  --sidebar-foreground: #e2e8f0;
+  --sidebar-primary: #5b93f8;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(91, 147, 248, 0.16);
+  --sidebar-accent-foreground: #93c5fd;
+  --sidebar-border: rgba(226, 232, 240, 0.085);
+  --sidebar-ring: #5b93f8;
+}
+
+@theme inline {
+  --font-sans: "Geist Variable", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-heading: var(--font-sans);
+  --font-serif: var(--font-sans);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-invert: var(--invert);
+  --color-invert-foreground: var(--invert-foreground);
+  --color-focus: var(--focus);
+  --color-focus-foreground: var(--focus-foreground);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body {
+    @apply bg-background text-foreground font-sans;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  code,
+  pre,
+  kbd,
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.hc-hub-hero-bg,
+.hc-hero-orange {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle, rgba(15, 23, 42, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(244, 152, 98, 0.24), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(244, 152, 98, 0.22), transparent 72%),
+    radial-gradient(ellipse 46% 52% at 50% 0%, rgba(255, 247, 240, 0.85), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.dark .hc-hub-hero-bg,
+.dark .hc-hero-orange {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(234, 128, 72, 0.16), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(234, 128, 72, 0.15), transparent 72%),
+    radial-gradient(ellipse 50% 55% at 50% 0%, rgba(59, 118, 246, 0.08), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.hc-hero-yellow {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle, rgba(15, 23, 42, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(245, 158, 11, 0.24), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(251, 191, 36, 0.23), transparent 72%),
+    radial-gradient(ellipse 46% 52% at 50% 0%, rgba(255, 251, 235, 0.88), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.dark .hc-hero-yellow {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(245, 158, 11, 0.17), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(251, 191, 36, 0.15), transparent 72%),
+    radial-gradient(ellipse 50% 55% at 50% 0%, rgba(245, 158, 11, 0.07), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.hc-hero-green {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle, rgba(15, 23, 42, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(16, 185, 129, 0.23), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(52, 211, 153, 0.21), transparent 72%),
+    radial-gradient(ellipse 46% 52% at 50% 0%, rgba(236, 253, 245, 0.88), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.dark .hc-hero-green {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(16, 185, 129, 0.17), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(52, 211, 153, 0.15), transparent 72%),
+    radial-gradient(ellipse 50% 55% at 50% 0%, rgba(16, 185, 129, 0.07), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.hc-hero-purple {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle, rgba(15, 23, 42, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(139, 92, 246, 0.23), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(167, 139, 250, 0.21), transparent 72%),
+    radial-gradient(ellipse 46% 52% at 50% 0%, rgba(245, 243, 255, 0.9), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.dark .hc-hero-purple {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(139, 92, 246, 0.2), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(167, 139, 250, 0.17), transparent 72%),
+    radial-gradient(ellipse 50% 55% at 50% 0%, rgba(139, 92, 246, 0.09), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.hc-hero-blue {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle, rgba(15, 23, 42, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(59, 130, 246, 0.23), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(56, 189, 248, 0.21), transparent 72%),
+    radial-gradient(ellipse 46% 52% at 50% 0%, rgba(239, 246, 255, 0.9), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.dark .hc-hero-blue {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(59, 130, 246, 0.2), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(56, 189, 248, 0.16), transparent 72%),
+    radial-gradient(ellipse 50% 55% at 50% 0%, rgba(59, 130, 246, 0.09), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.hc-hero-red {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle, rgba(15, 23, 42, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(239, 68, 68, 0.21), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(244, 63, 94, 0.2), transparent 72%),
+    radial-gradient(ellipse 46% 52% at 50% 0%, rgba(254, 242, 242, 0.88), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.dark .hc-hero-red {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(239, 68, 68, 0.18), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(244, 63, 94, 0.16), transparent 72%),
+    radial-gradient(ellipse 50% 55% at 50% 0%, rgba(239, 68, 68, 0.08), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.hc-hero-teal {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle, rgba(15, 23, 42, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(20, 184, 166, 0.22), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(6, 182, 212, 0.2), transparent 72%),
+    radial-gradient(ellipse 46% 52% at 50% 0%, rgba(240, 253, 250, 0.88), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.dark .hc-hero-teal {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(20, 184, 166, 0.17), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(6, 182, 212, 0.15), transparent 72%),
+    radial-gradient(ellipse 50% 55% at 50% 0%, rgba(20, 184, 166, 0.07), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.hc-hero-pink {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle, rgba(15, 23, 42, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(236, 72, 153, 0.21), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(192, 132, 252, 0.19), transparent 72%),
+    radial-gradient(ellipse 46% 52% at 50% 0%, rgba(253, 242, 248, 0.88), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.dark .hc-hero-pink {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(236, 72, 153, 0.17), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(192, 132, 252, 0.15), transparent 72%),
+    radial-gradient(ellipse 50% 55% at 50% 0%, rgba(236, 72, 153, 0.08), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.hc-blueprint-bg {
+  background-color: color-mix(in srgb, var(--background) 92%, #74b8c0);
+  background-image:
+    radial-gradient(ellipse at 50% 25%, color-mix(in srgb, var(--card) 75%, transparent), transparent 70%),
+    linear-gradient(to right, var(--hc-floor-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--hc-floor-grid) 1px, transparent 1px);
+  background-size: 100% 100%, 28px 28px, 28px 28px;
+}
+
+/* PerspectiveGrid smooth multi-color interactive tile styles */
+.tile {
+  min-width: 1px;
+  min-height: 1px;
+  box-sizing: border-box;
+  border: 1px solid rgba(15, 23, 42, 0.065);
+  background-color: transparent;
+  transition:
+    background-color 1.1s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 1.1s ease-out;
+}
+
+.dark .tile {
+  border-color: rgba(226, 232, 240, 0.055);
+}
+
+.tile:hover {
+  transition-duration: 0ms;
+}
+
+.tile:nth-child(7n):hover {
+  background-color: rgba(6, 182, 212, 0.32);
+  box-shadow: inset 0 0 12px rgba(6, 182, 212, 0.28);
+}
+
+.tile:nth-child(7n + 1):hover {
+  background-color: rgba(59, 130, 246, 0.3);
+  box-shadow: inset 0 0 12px rgba(59, 130, 246, 0.25);
+}
+
+.tile:nth-child(7n + 2):hover {
+  background-color: rgba(139, 92, 246, 0.3);
+  box-shadow: inset 0 0 12px rgba(139, 92, 246, 0.25);
+}
+
+.tile:nth-child(7n + 3):hover {
+  background-color: rgba(16, 185, 129, 0.28);
+  box-shadow: inset 0 0 12px rgba(16, 185, 129, 0.24);
+}
+
+.tile:nth-child(7n + 4):hover {
+  background-color: rgba(245, 158, 11, 0.26);
+  box-shadow: inset 0 0 12px rgba(245, 158, 11, 0.22);
+}
+
+.tile:nth-child(7n + 5):hover {
+  background-color: rgba(244, 63, 94, 0.25);
+  box-shadow: inset 0 0 12px rgba(244, 63, 94, 0.2);
+}
+
+.tile:nth-child(7n + 6):hover {
+  background-color: rgba(99, 102, 241, 0.3);
+  box-shadow: inset 0 0 12px rgba(99, 102, 241, 0.24);
+}
+
+/* Soft ambient tint on sparse static tiles for multi-color depth */
+.tile:nth-child(19n) {
+  background-color: rgba(56, 189, 248, 0.045);
+}
+
+.tile:nth-child(23n) {
+  background-color: rgba(167, 139, 250, 0.045);
+}
+
+.tile:nth-child(29n) {
+  background-color: rgba(52, 211, 153, 0.04);
+}
+
+.tile:nth-child(37n) {
+  background-color: rgba(251, 191, 36, 0.035);
+}
+
+@keyframes hc-pulse-ring {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.75;
+  }
+  70% {
+    transform: scale(1.25);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.25);
+    opacity: 0;
+  }
+}
+
+.hc-pulse-ring {
+  animation: hc-pulse-ring 2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}
+
+@keyframes hc-progress-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+.hc-progress-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.hc-progress-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.38),
+    transparent
+  );
+  animation: hc-progress-shimmer 1.35s ease-in-out infinite;
+}
+
+@keyframes hc-fade-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hc-step-enter {
+  animation: hc-fade-slide-up 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes hc-stage-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.22);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+  }
+}
+
+.hc-stage-active {
+  animation: hc-stage-glow 1.8s ease-in-out infinite;
+}
+
+@keyframes hc-boot-press {
+  0%,
+  100% {
+    transform: scale(0.95);
+    opacity: 0.75;
+  }
+  50% {
+    transform: scale(1.18);
+    opacity: 0.25;
+  }
+}
+
+.hc-boot-press {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: hc-boot-press 1.5s ease-in-out infinite;
+}
+
+@keyframes hc-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.hc-caret-blink {
+  animation: hc-caret-blink 1s step-end infinite;
+}
+
+@keyframes hc-fan-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.hc-fan-spin {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: hc-fan-spin 1.6s linear infinite;
+}
+
+@keyframes hc-tv-glow {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.hc-tv-glow {
+  animation: hc-tv-glow 2.4s ease-in-out infinite;
+}
+
+@keyframes hc-ac-wave {
+  0% {
+    opacity: 0.25;
+    transform: translateY(0px);
+  }
+  50% {
+    opacity: 0.9;
+    transform: translateY(3px);
+  }
+  100% {
+    opacity: 0.25;
+    transform: translateY(6px);
+  }
+}
+
+.hc-ac-wave {
+  animation: hc-ac-wave 2s ease-in-out infinite;
+}
+
+@keyframes hc-light-pulse {
+  0%,
+  100% {
+    opacity: 0.52;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+.hc-light-pulse {
+  animation: hc-light-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes hc-ble-wave {
+  0% {
+    transform: scale(0.84);
+    opacity: 0.55;
+  }
+  70% {
+    transform: scale(1.42);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.42);
+    opacity: 0;
+  }
+}
+
+.hc-ble-wave {
+  animation: hc-ble-wave 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.hc-ble-wave-2 {
+  animation: hc-ble-wave 2.6s cubic-bezier(0.22, 1, 0.36, 1) 0.85s infinite;
+}
+
+.hc-ble-wave-3 {
+  animation: hc-ble-wave 2.6s cubic-bezier(0.22, 1, 0.36, 1) 1.7s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hc-pulse-ring,
+  .hc-progress-shimmer::after,
+  .hc-step-enter,
+  .hc-stage-active,
+  .hc-boot-press,
+  .hc-caret-blink,
+  .hc-fan-spin,
+  .hc-tv-glow,
+  .hc-ac-wave,
+  .hc-light-pulse,
+  .hc-ble-wave,
+  .hc-ble-wave-2,
+  .hc-ble-wave-3,
+  .tile {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes hc-avatar-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+  .hc-avatar-float { animation: hc-avatar-float 4s ease-in-out infinite; }
+}

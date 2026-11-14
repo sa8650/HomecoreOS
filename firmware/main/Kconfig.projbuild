@@ -1,0 +1,48 @@
+menu "HomecoreOS Board & Build Configuration"
+
+config HOMECORE_FW_VERSION
+    string "HomecoreOS Firmware Version"
+    default "1.2.0"
+    help
+        Semantic firmware version embedded into device heartbeats, pairing, and MQTT status.
+
+config HOMECORE_BOARD_SLUG
+    string "Target Board Catalog Slug"
+    default "esp32-s3-devkitc-1-n16r8"
+    help
+        Board catalog slug identifying exact hardware pinout, flash, and PSRAM layout.
+
+config HOMECORE_PARTITION_SCHEME
+    string "Partition Scheme Identifier"
+    default "dual_ota_16mb"
+    help
+        Partition table identifier matching the selected partitions CSV.
+
+config HOMECORE_BOOT_BUTTON_GPIO
+    int "BOOT / Recovery Button GPIO"
+    range 0 48
+    default 28 if IDF_TARGET_ESP32C5
+    default 9 if IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32C61 || IDF_TARGET_ESP32H2
+    default 0
+    help
+        Active-low BOOT / Recovery GPIO pin on this development board.
+
+config HOMECORE_FLASH_SIZE_MB
+    int "Target SPI Flash Size (MB)"
+    range 2 64
+    default 16 if IDF_TARGET_ESP32S3
+    default 8 if IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32C61
+    default 4
+    help
+        Configured flash chip capacity in megabytes.
+
+config HOMECORE_PSRAM_SIZE_MB
+    int "Target PSRAM Size (MB)"
+    range 0 32
+    default 8 if IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32C5
+    default 2 if IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32C61
+    default 0
+    help
+        Configured external PSRAM capacity in megabytes (0 if none).
+
+endmenu

@@ -1,0 +1,10 @@
+# Copy to .dev.vars for local wrangler dev (never commit .dev.vars)
+# Only the variables and secrets specified in HomecoreOS Section 11 are permitted.
+
+SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
+EMQX_API_BASE=https://YOUR_DEPLOYMENT.emqxsl.com:8443/api/v5
+EMQX_APP_ID=YOUR_EMQX_APP_ID
+EMQX_APP_SECRET=YOUR_EMQX_APP_SECRET
+EMQX_BROKER_HOST=YOUR_DEPLOYMENT.emqxsl.com
+EMQX_TLS_PORT=8883

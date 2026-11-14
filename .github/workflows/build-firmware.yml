@@ -1,0 +1,379 @@
+name: Build HomecoreOS ESP32 Firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "firmware/**"
+      - ".github/workflows/build-firmware.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Firmware semantic version (e.g. 1.2.0)"
+        required: true
+        default: "1.2.0"
+      channel:
+        description: "Release channel"
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+          - development
+        default: "stable"
+      board_slug:
+        description: "Target board slug or 'all'"
+        required: true
+        default: "all"
+
+jobs:
+  prepare-matrix:
+    name: Resolve Firmware Build Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      version: ${{ steps.set-matrix.outputs.version }}
+      channel: ${{ steps.set-matrix.outputs.channel }}
+    steps:
+      - name: Generate board matrix JSON
+        id: set-matrix
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_BOARD_SLUG: ${{ github.event.inputs.board_slug || '' }}
+          INPUT_VERSION: ${{ github.event.inputs.version || '' }}
+          INPUT_CHANNEL: ${{ github.event.inputs.channel || '' }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          all_boards = [
+              {
+                  "board_slug": "esp32-s3-devkitc-1-n16r8",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3-WROOM-1-N16R8",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_16mb",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "16MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "seeed-xiao-esp32s3",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3R8 (Seeed XIAO)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_8mb",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "8MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "esp32-s3-devkitc-1-v1-0",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3-WROOM-1-N8R8",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_8mb",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "8MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "esp32-c6-devkitc-1",
+                  "chip_family": "esp32c6",
+                  "chip_variant": "ESP32-C6-WROOM-1-N8",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_8mb",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "8MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "esp32-c3-devkitm-1",
+                  "chip_family": "esp32c3",
+                  "chip_variant": "ESP32-C3-MINI-1-N4",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "esp32-devkitc-v4",
+                  "chip_family": "esp32",
+                  "chip_variant": "ESP32-WROOM-32D",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "bootloader_offset": "0x1000",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "40m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "esp32-s2-devkitc-1",
+                  "chip_family": "esp32s2",
+                  "chip_variant": "ESP32-S2-WROVER-N4R2",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "bootloader_offset": "0x1000",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": False,
+                  "supports_ble_wifi_provisioning": False,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "esp32-c5-devkitc-1",
+                  "chip_family": "esp32c5",
+                  "chip_variant": "ESP32-C5-WROOM-1-N8R8",
+                  "idf_version": "v5.5.2",
+                  "partition_scheme": "dual_ota_8mb",
+                  "bootloader_offset": "0x2000",
+                  "flash_size": "8MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "esp32-c61-devkitc-1",
+                  "chip_family": "esp32c61",
+                  "chip_variant": "ESP32-C61-WROOM-1-N8R2",
+                  "idf_version": "v5.5.2",
+                  "partition_scheme": "dual_ota_8mb",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "8MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "esp8684-devkitm-1",
+                  "chip_family": "esp32c2",
+                  "chip_variant": "ESP8684-H4 (ESP32-C2)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "60m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "esp32-h2-devkitm-1",
+                  "chip_family": "esp32h2",
+                  "chip_variant": "ESP32-H2-MINI-1-N4",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "64m",
+                  "supports_wifi": False,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": False,
+                  "max_ota_bytes": 1966080,
+              },
+          ]
+
+          event_name = os.environ.get("EVENT_NAME", "").strip()
+          board_input = os.environ.get("INPUT_BOARD_SLUG", "").strip()
+          run_number = os.environ.get("RUN_NUMBER", "1").strip() or "1"
+          raw_version = os.environ.get("INPUT_VERSION", "").strip() or f"1.2.{run_number}"
+          version = raw_version.lstrip("vV").strip()
+          if not version:
+              print("ERROR: Firmware version resolved to empty string.", file=sys.stderr)
+              sys.exit(1)
+          channel = os.environ.get("INPUT_CHANNEL", "").strip() or "stable"
+
+          if event_name != "workflow_dispatch" or not board_input or board_input == "all":
+              selected = all_boards
+          else:
+              selected = [b for b in all_boards if b["board_slug"] == board_input]
+              if not selected:
+                  print(f"ERROR: Unknown board_slug '{board_input}'.", file=sys.stderr)
+                  sys.exit(1)
+
+          payload = json.dumps({"include": selected}, separators=(",", ":"))
+          print(f"Resolved {len(selected)} board build target(s) for v{version} ({channel}): {[b['board_slug'] for b in selected]}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"matrix={payload}\n")
+              fh.write(f"version={version}\n")
+              fh.write(f"channel={channel}\n")
+          PY
+
+  build-board-matrix:
+    name: Build ${{ matrix.board_slug }} (${{ matrix.chip_family }})
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build ESP-IDF firmware (${{ matrix.board_slug }})
+        uses: espressif/esp-idf-ci-action@v1
+        env:
+          HOMECORE_FW_VERSION: ${{ needs.prepare-matrix.outputs.version }}
+        with:
+          esp_idf_version: ${{ matrix.idf_version }}
+          target: ${{ matrix.chip_family }}
+          path: firmware
+          # IMPORTANT: espressif/esp-idf-ci-action wraps command inside single quotes: /bin/bash -c '... && command'.
+          # Keep ZERO single quotes anywhere in this command block to prevent shell syntax errors.
+          command: |
+            set -eu
+            HOMECORE_FW_VERSION="${{ needs.prepare-matrix.outputs.version }}"
+            export HOMECORE_FW_VERSION
+            if [ -z "${HOMECORE_FW_VERSION}" ]; then
+              echo "ERROR: HOMECORE_FW_VERSION is empty; refusing to build firmware." >&2
+              exit 1
+            fi
+            echo "Building ${{ matrix.board_slug }} (${{ matrix.chip_family }}) with requested HOMECORE_FW_VERSION=${HOMECORE_FW_VERSION}"
+            rm -rf sdkconfig sdkconfig.version build
+            python3 scripts/verify_firmware_image.py --write-sdkconfig-version "${HOMECORE_FW_VERSION}" --out sdkconfig.version
+            SDKCFG="sdkconfig.defaults;boards/${{ matrix.board_slug }}.sdkconfig;sdkconfig.version"
+            idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" set-target "${{ matrix.chip_family }}"
+            idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" build
+            python3 scripts/verify_firmware_image.py \
+              --verify-build \
+              --version "${HOMECORE_FW_VERSION}" \
+              --target "${{ matrix.chip_family }}" \
+              --board "${{ matrix.board_slug }}" \
+              --partition-scheme "${{ matrix.partition_scheme }}" \
+              --flash-size "${{ matrix.flash_size }}" \
+              --max-ota-bytes "${{ matrix.max_ota_bytes }}" \
+              --image build/homecoreos.bin \
+              --sdkconfig sdkconfig \
+              --partition-table build/partition_table/partition-table.bin
+            cd build
+            esptool.py --chip "${{ matrix.chip_family }}" merge_bin -o homecoreos-usb-factory.bin "@flash_args"
+
+      - name: Package release archive & SHA-256 manifest
+        id: package
+        shell: bash
+        run: |
+          set -eu
+          VERSION="${{ needs.prepare-matrix.outputs.version }}"
+          CHANNEL="${{ needs.prepare-matrix.outputs.channel }}"
+          BOARD_SLUG="${{ matrix.board_slug }}"
+          if [ -z "${VERSION}" ]; then
+            echo "ERROR: Firmware release version is empty." >&2
+            exit 1
+          fi
+          DIST_DIR="${{ github.workspace }}/firmware-dist/${BOARD_SLUG}"
+          mkdir -p "${DIST_DIR}"
+
+          USB_BIN="homecoreos-${BOARD_SLUG}-usb-factory.bin"
+          OTA_BIN="homecoreos-${BOARD_SLUG}-ota.bin"
+          cp firmware/build/homecoreos-usb-factory.bin "${DIST_DIR}/${USB_BIN}"
+          cp firmware/build/homecoreos.bin "${DIST_DIR}/${OTA_BIN}"
+
+          USB_SHA=$(sha256sum "${DIST_DIR}/${USB_BIN}" | awk '{print $1}')
+          OTA_SHA=$(sha256sum "${DIST_DIR}/${OTA_BIN}" | awk '{print $1}')
+          USB_SIZE=$(stat -c%s "${DIST_DIR}/${USB_BIN}")
+          OTA_SIZE=$(stat -c%s "${DIST_DIR}/${OTA_BIN}")
+
+          cat > "${DIST_DIR}/manifest.json" <<EOF
+          {
+            "name": "HomecoreOS Firmware",
+            "version": "${VERSION}",
+            "channel": "${CHANNEL}",
+            "chip_family": "${{ matrix.chip_family }}",
+            "chip_variant": "${{ matrix.chip_variant }}",
+            "target_board_slug": "${BOARD_SLUG}",
+            "partition_scheme": "${{ matrix.partition_scheme }}",
+            "supports_wifi": ${{ matrix.supports_wifi }},
+            "supports_ble": ${{ matrix.supports_ble }},
+            "supports_ble_wifi_provisioning": ${{ matrix.supports_ble_wifi_provisioning }},
+            "idf_version": "${{ matrix.idf_version }}",
+            "release_notes": "Automated ESP-IDF ${{ matrix.idf_version }} CI build for ${BOARD_SLUG} (commit ${GITHUB_SHA::7}). Includes merged USB factory binary (0x0) and OTA application binary (0x20000).",
+            "compatible_board_slugs": ["${BOARD_SLUG}"],
+            "files": [
+              {
+                "file_type": "usb_factory",
+                "file_name": "${USB_BIN}",
+                "sha256": "${USB_SHA}",
+                "file_size_bytes": ${USB_SIZE},
+                "flash_address": "0x0",
+                "flash_mode": "${{ matrix.flash_mode }}",
+                "flash_freq": "${{ matrix.flash_freq }}",
+                "flash_size": "${{ matrix.flash_size }}"
+              },
+              {
+                "file_type": "ota_app",
+                "file_name": "${OTA_BIN}",
+                "sha256": "${OTA_SHA}",
+                "file_size_bytes": ${OTA_SIZE},
+                "flash_address": "0x20000"
+              }
+            ]
+          }
+          EOF
+
+          python3 "${{ github.workspace }}/firmware/scripts/verify_firmware_image.py" \
+            --verify-package \
+            --version "${VERSION}" \
+            --target "${{ matrix.chip_family }}" \
+            --board "${BOARD_SLUG}" \
+            --partition-scheme "${{ matrix.partition_scheme }}" \
+            --bootloader-offset "${{ matrix.bootloader_offset }}" \
+            --usb-bin "${DIST_DIR}/${USB_BIN}" \
+            --ota-bin "${DIST_DIR}/${OTA_BIN}" \
+            --manifest "${DIST_DIR}/manifest.json"
+
+          cd "${DIST_DIR}"
+          ZIP_NAME="homecoreos-${BOARD_SLUG}-v${VERSION}.zip"
+          zip -9 "${ZIP_NAME}" manifest.json "${USB_BIN}" "${OTA_BIN}"
+          echo "zip_path=${DIST_DIR}/${ZIP_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "zip_name=${ZIP_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload HomecoreOS Firmware Release Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.zip_name }}
+          path: ${{ steps.package.outputs.zip_path }}
+          retention-days: 90

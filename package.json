@@ -1,0 +1,26 @@
+{
+  "name": "homecoreos",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/worker",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace=apps/web run dev",
+    "dev:worker": "npm --workspace=apps/worker run dev",
+    "build": "npm --workspace=packages/shared run build && npm --workspace=apps/web run build && npm --workspace=apps/worker run build",
+    "typecheck": "npm --workspace=packages/shared run typecheck && npm --workspace=apps/web run typecheck && npm --workspace=apps/worker run typecheck",
+    "lint": "eslint apps packages",
+    "test": "npm --workspace=packages/shared run test && npm --workspace=apps/worker run test && npm --workspace=apps/web run test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "eslint": "^9.20.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "globals": "^15.15.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.0"
+  }
+}
