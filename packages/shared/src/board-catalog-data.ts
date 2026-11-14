@@ -28,6 +28,20 @@ export interface CatalogBoardSeed extends BoardProfileSpec {
   board_layout: BoardLayoutSpec;
 }
 
+/**
+ * Stored as the revision of a board whose maker publishes no hardware
+ * revision. The column is required, and a guessed "v1.0" would read like a
+ * fact from the maker.
+ */
+export const BOARD_REVISION_UNSPECIFIED = "unspecified";
+
+/** The hardware revision to show, or null when the maker does not state one. */
+export function displayBoardRevision(revision: string | null | undefined): string | null {
+  const value = (revision ?? "").trim();
+  if (!value || value.toLowerCase() === BOARD_REVISION_UNSPECIFIED) return null;
+  return value;
+}
+
 export function normalizeChipFamily(raw: string | null | undefined): ChipFamily | null {
   if (!raw) return null;
   const cleaned = raw.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -124,7 +138,13 @@ function buildDefinitionsFromHeaders(
   leftPins: BoardHeaderPin[],
   rightPins: BoardHeaderPin[],
   soc: SocPinProfile,
-  extraPins: Array<{ pin: number; note?: string; reservedReason?: string }> = []
+  extraPins: Array<{
+    pin: number;
+    note?: string;
+    reservedReason?: string;
+    /** Manufacturer pad name when the pin is broken out away from the headers. */
+    name?: string;
+  }> = []
 ): GpioPinDefinition[] {
   const byPin = new Map<number, GpioPinDefinition>();
 
@@ -154,7 +174,7 @@ function buildDefinitionsFromHeaders(
         pinDefForSoc({
           pin: extra.pin,
           soc,
-          boardPinName: `GPIO${extra.pin}`,
+          boardPinName: extra.name ?? `GPIO${extra.pin}`,
           headerSide: null,
           headerPosition: null,
           boardNote: extra.note ?? null,
@@ -1377,6 +1397,24 @@ const RAW_VERIFIED_BOARD_CATALOG: CatalogBoardSeed[] = [
     gpio_definitions: buildDefinitionsFromHeaders(ESP32_H2_J1, ESP32_H2_J3, ESP32_H2_SOC),
   },
 ];
+
+/**
+ * Building blocks of the verified catalog, shared with sibling catalog modules
+ * (the Seeed Studio XIAO reference profiles) so every board profile is derived
+ * from the same SoC pin rules.
+ */
+export type BoardCatalogSocPinProfile = SocPinProfile;
+export const BOARD_CATALOG_BUILDERS = {
+  headerPin: hp,
+  buildDefinitionsFromHeaders,
+  soc: {
+    esp32c3: ESP32_C3_SOC,
+    esp32c5: ESP32_C5_SOC,
+    esp32c6: ESP32_C6_SOC,
+    xiaoEsp32s3: XIAO_ESP32_S3_SOC,
+  },
+  xiaoEsp32s3Headers: { left: XIAO_S3_LEFT, right: XIAO_S3_RIGHT },
+} as const;
 
 export const VERIFIED_BOARD_CATALOG: CatalogBoardSeed[] = RAW_VERIFIED_BOARD_CATALOG.map(
   (b) => ({

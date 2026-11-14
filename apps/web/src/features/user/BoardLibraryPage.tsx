@@ -3,8 +3,6 @@ import {
   SUPPORTED_CHIP_FAMILIES,
   buildEsp32S3N16R8PinMap,
   chipFamilyLabel,
-  resolveBoardHardwareSpecs,
-  supportsBleProvisioningForBoard,
   validateBoardProfileSpec,
   type BoardProfileSpec,
   type ChipFamily,
@@ -16,12 +14,10 @@ import {
   RiBookmarkLine,
   RiCpuLine,
   RiDeleteBinLine,
-  RiExternalLinkLine,
-  RiShieldCheckLine,
 } from "@remixicon/react";
 import { toast } from "sonner";
-import { BoardVectorSvg } from "@/components/boards/BoardVectorSvg";
-import { InteractiveBoardPinout } from "@/components/boards/InteractiveBoardPinout";
+import { BoardDetailsDialog } from "@/components/boards/BoardDetailsDialog";
+import { BoardLibraryCard } from "@/components/boards/BoardLibraryCard";
 import { apiFetch, ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";
@@ -35,14 +31,6 @@ import { PageHeroHeader } from "@/components/shared/PageHeroHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { MagicCard } from "@/components/ui/magic-card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -280,20 +268,6 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
 
   const savedIds = new Set(myCatalog.map((b) => b.id));
 
-  const formatFirmwareBadge = (b: BoardProfileItem) => {
-    const st = b.firmware_status ?? "catalog_only";
-    if (st === "firmware_supported") {
-      return <Badge variant="success-light" size="xs">Firmware Supported</Badge>;
-    }
-    if (st === "build_pending") {
-      return <Badge variant="warning-light" size="xs">Build Pending</Badge>;
-    }
-    if (st === "unsupported") {
-      return <Badge variant="destructive-light" size="xs">Unsupported</Badge>;
-    }
-    return <Badge variant="secondary" size="xs">Catalog Only</Badge>;
-  };
-
   const savedTotal = myCatalog.length + myCustom.length;
 
   return (
@@ -331,7 +305,8 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
 
       <Tabs value={tab} onValueChange={setTab}>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <TabsList>
+          {/* On narrow phones the tab strip scrolls inside itself instead of widening the page. */}
+          <TabsList className="max-w-full justify-start overflow-x-auto">
             <TabsTrigger value="catalog">
               Board Catalog ({catalog.length})
             </TabsTrigger>
@@ -408,132 +383,40 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
             />
           ) : (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredCatalog.map((b) => {
-                return (
-                  <Card
-                    key={b.id}
-                    className="group h-full overflow-hidden border-none bg-transparent p-0 shadow-none ring-0 transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-md"
-                  >
-                    <MagicCard
-                      mode="orb"
-                      spotlightTone="orange"
-                      className="h-full rounded-xl p-0"
-                      contentClassName="h-full"
-                    >
-                      <CardContent className="flex h-full flex-col justify-between gap-2.5 p-3.5">
-                      <div className="space-y-2.5">
-                        {/* Compact Card Header */}
-                        <div className="space-y-1">
-                          <div className="flex items-baseline justify-between gap-2">
-                            <h3 className="text-sm font-bold tracking-tight text-foreground truncate">
-                              {b.model}
-                            </h3>
-                            <span className="shrink-0 max-w-[140px] truncate font-mono text-[11px] font-semibold text-sky-500 dark:text-sky-400">
-                              {b.chip_variant}
-                            </span>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
-                            <span>
-                              {b.manufacturer} · {b.revision}
-                            </span>
-                            <Badge
-                              variant={
-                                b.catalog_category === "partner" ? "info-light" : "outline"
-                              }
-                              size="xs"
-                            >
-                              {b.catalog_category === "partner" ? "Partner" : "Official"}
-                            </Badge>
-                            {formatFirmwareBadge(b)}
-                            {supportsBleProvisioningForBoard(b).supportsBle ? (
-                              <Badge variant="info-light" size="xs">
-                                {b.supports_wifi === false ? "BLE Only" : "BLE + Wi-Fi"}
-                              </Badge>
-                            ) : (
-                              <Badge variant="outline" size="xs">
-                                AP Only (No BLE)
-                              </Badge>
-                            )}
-                            {b.verification_status === "verified" && (
-                              <span
-                                className="inline-flex items-center gap-0.5 font-medium text-emerald-600 dark:text-emerald-400"
-                                title="Hardware pinout verified against official board user guide"
-                              >
-                                <RiShieldCheckLine className="size-3" />
-                                Verified
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Compact Recessed Dark Vector SVG PCB Showcase */}
-                        <button
-                          type="button"
-                          onClick={() => setInspectBoard(b)}
-                          className="flex w-full cursor-pointer items-center justify-center rounded-lg border border-border/60 bg-[#0b0e12] px-2 py-2.5 transition-colors hover:border-primary/50"
-                          aria-label={`Preview ${b.model} vector pin diagram`}
-                        >
-                          <BoardVectorSvg
-                            board={b}
-                            orientation="horizontal"
-                            className="h-auto max-h-36 w-full"
-                          />
-                        </button>
-
-                      </div>
-
-                      <div className="space-y-1.5 pt-0.5">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 w-full border-primary/55 text-xs font-semibold text-primary hover:bg-primary/10 hover:text-primary"
-                          onClick={() => setInspectBoard(b)}
-                        >
-                          Details
-                        </Button>
-                        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                          <div className="flex items-center gap-2.5">
-                            <span>{b.gpio_definitions.length} GPIOs</span>
-                            {b.docs_url && (
-                              <a
-                                href={b.docs_url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-0.5 font-medium text-muted-foreground hover:text-foreground"
-                              >
-                                Docs
-                                <RiExternalLinkLine className="size-3" />
-                              </a>
-                            )}
-                          </div>
-                          {canManage && !savedIds.has(b.id) ? (
-                            <Button
-                              variant="ghost"
-                              size="xs"
-                              className="h-6 px-2 text-[11px]"
-                              onClick={() => void handleSaveToMyBoards(b.id)}
-                            >
-                              <RiBookmarkLine className="size-3" />
-                              Save
-                            </Button>
-                          ) : savedIds.has(b.id) ? (
-                            <Button
-                              variant="secondary"
-                              size="xs"
-                              className="h-6 px-2 text-[11px]"
-                              onClick={() => void handleRemoveFromMyBoards(b.id)}
-                            >
-                              <RiBookmarkFill className="size-3 text-primary" />
-                              Saved
-                            </Button>
-                          ) : null}
-                        </div>
-                      </div>
-                    </CardContent>
-                    </MagicCard>
-                  </Card>
-                );
-              })}
+              {filteredCatalog.map((b) => (
+                <BoardLibraryCard
+                  key={b.id}
+                  board={b}
+                  source={b.catalog_category === "partner" ? "partner" : "official"}
+                  onOpenDetails={() => setInspectBoard(b)}
+                  action={
+                    savedIds.has(b.id) ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="h-8 shrink-0 text-xs"
+                        disabled={!canManage}
+                        aria-label={`Remove ${b.model} from My Boards`}
+                        onClick={() => void handleRemoveFromMyBoards(b.id)}
+                      >
+                        <RiBookmarkFill className="size-3.5 text-primary" aria-hidden="true" />
+                        Saved
+                      </Button>
+                    ) : canManage ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 shrink-0 text-xs"
+                        aria-label={`Save ${b.model} to My Boards`}
+                        onClick={() => void handleSaveToMyBoards(b.id)}
+                      >
+                        <RiBookmarkLine className="size-3.5" aria-hidden="true" />
+                        Save
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              ))}
             </div>
           )}
         </TabsContent>
@@ -547,126 +430,50 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
             />
           ) : (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {myCatalog.map((b) => {
-                const specs = resolveBoardHardwareSpecs(b);
-                return (
-                  <Card
-                    key={b.id}
-                    className="h-full overflow-hidden border-none bg-transparent p-0 shadow-none ring-0 transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-md"
-                  >
-                    <MagicCard
-                      mode="orb"
-                      spotlightTone="orange"
-                      className="h-full rounded-xl p-0"
-                      contentClassName="h-full"
-                    >
-                      <CardContent className="flex h-full flex-col justify-between gap-2.5 p-3.5">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-sm font-bold text-foreground truncate">
-                          {b.model}
-                        </span>
-                        <span className="shrink-0 max-w-[130px] truncate font-mono text-[11px] font-semibold text-sky-500 dark:text-sky-400">
-                          {b.chip_variant}
-                        </span>
-                      </div>
-                      <div className="rounded-lg border border-border/60 bg-[#0b0e12] px-2 py-2.5">
-                        <BoardVectorSvg
-                          board={b}
-                          orientation="horizontal"
-                          className="h-auto max-h-32 w-full"
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="font-semibold text-amber-500 dark:text-amber-400">
-                          {specs.memory}
-                        </span>
-                        <span className="truncate text-muted-foreground">{specs.wireless}</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2 pt-0.5">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 flex-1 border-primary/55 text-xs font-semibold text-primary hover:bg-primary/10 hover:text-primary"
-                          onClick={() => setInspectBoard(b)}
-                        >
-                          Details
-                        </Button>
-                        {canManage && (
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            onClick={() => void handleRemoveFromMyBoards(b.id)}
-                          >
-                            Unsave
-                          </Button>
-                        )}
-                      </div>
-                    </CardContent>
-                    </MagicCard>
-                  </Card>
-                );
-              })}
-              {myCustom.map((b) => {
-                const specs = resolveBoardHardwareSpecs(b);
-                return (
-                  <Card
-                    key={b.id}
-                    className="h-full overflow-hidden border-none bg-transparent p-0 shadow-none ring-0 transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-md"
-                  >
-                    <MagicCard
-                      mode="orb"
-                      spotlightTone="orange"
-                      className="h-full rounded-xl p-0"
-                      contentClassName="h-full"
-                    >
-                      <CardContent className="flex h-full flex-col justify-between gap-2.5 p-3.5">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-sm font-bold text-foreground truncate">
-                          {b.manufacturer} {b.model}
-                        </span>
-                        <Badge variant="warning-light" size="xs">Custom</Badge>
-                      </div>
-                      <div className="rounded-lg border border-border/60 bg-[#0b0e12] px-2 py-2.5">
-                        <BoardVectorSvg
-                          board={b}
-                          orientation="horizontal"
-                          compact
-                          className="h-auto max-h-32 w-full"
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="font-semibold text-amber-500 dark:text-amber-400">
-                          {specs.memory}
-                        </span>
-                        <span className="text-muted-foreground">
-                          {b.gpio_definitions.length} pins
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2 pt-0.5">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 flex-1 border-primary/55 text-xs font-semibold text-primary hover:bg-primary/10 hover:text-primary"
-                          onClick={() => setInspectBoard(b)}
-                        >
-                          Details
-                        </Button>
-                        {canManage && (
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            onClick={() => setDeleteTarget(b)}
-                          >
-                            <RiDeleteBinLine className="size-3.5" aria-hidden="true" />
-                            Delete
-                          </Button>
-                        )}
-                      </div>
-                    </CardContent>
-                    </MagicCard>
-                  </Card>
-                );
-              })}
+              {myCatalog.map((b) => (
+                <BoardLibraryCard
+                  key={b.id}
+                  board={b}
+                  source={b.catalog_category === "partner" ? "partner" : "official"}
+                  onOpenDetails={() => setInspectBoard(b)}
+                  action={
+                    canManage ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 shrink-0 text-xs"
+                        aria-label={`Remove ${b.model} from My Boards`}
+                        onClick={() => void handleRemoveFromMyBoards(b.id)}
+                      >
+                        Unsave
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              ))}
+              {myCustom.map((b) => (
+                <BoardLibraryCard
+                  key={b.id}
+                  board={b}
+                  source="custom"
+                  compactDrawing
+                  onOpenDetails={() => setInspectBoard(b)}
+                  action={
+                    canManage ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 shrink-0 text-xs"
+                        aria-label={`Delete custom board ${b.model}`}
+                        onClick={() => setDeleteTarget(b)}
+                      >
+                        <RiDeleteBinLine className="size-3.5" aria-hidden="true" />
+                        Delete
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              ))}
             </div>
           )}
         </TabsContent>
@@ -882,53 +689,7 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
         </TabsContent>
       </Tabs>
 
-      <Dialog open={Boolean(inspectBoard)} onOpenChange={(o) => !o && setInspectBoard(null)}>
-        <DialogContent className="sm:max-w-4xl max-h-[88vh] overflow-y-auto p-4 sm:p-5">
-          <DialogHeader className="pb-1">
-            <div className="flex flex-wrap items-center justify-between gap-2 pr-6">
-              <div>
-                <DialogTitle className="text-sm sm:text-base">
-                  {inspectBoard?.manufacturer} {inspectBoard?.model} ({inspectBoard?.revision})
-                </DialogTitle>
-                <DialogDescription className="text-xs">
-                  {inspectBoard?.chip_variant} · {inspectBoard?.flash_size_mb} MB Flash ·{" "}
-                  {inspectBoard?.psram_size_mb} MB PSRAM ·{" "}
-                  {inspectBoard?.firmware_status === "firmware_supported"
-                    ? "Firmware Supported"
-                    : "Catalog Profile"}
-                </DialogDescription>
-              </div>
-              {inspectBoard?.docs_url && (
-                <a
-                  href={inspectBoard.docs_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium hover:bg-muted"
-                >
-                  Docs
-                  <RiExternalLinkLine className="size-3" />
-                </a>
-              )}
-            </div>
-          </DialogHeader>
-          {inspectBoard && (
-            <Tabs defaultValue="details" key={inspectBoard.id} className="space-y-4">
-              <TabsList><TabsTrigger value="details">Board details</TabsTrigger><TabsTrigger value="pinout">Pinout details</TabsTrigger></TabsList>
-              <TabsContent value="details">
-                <dl className="grid gap-3 sm:grid-cols-2">
-                  {Object.entries({ Manufacturer: inspectBoard.manufacturer, Model: inspectBoard.model, Revision: inspectBoard.revision, Chip: inspectBoard.chip_variant, Processor: resolveBoardHardwareSpecs(inspectBoard).processor, Memory: resolveBoardHardwareSpecs(inspectBoard).memory, Wireless: resolveBoardHardwareSpecs(inspectBoard).wireless, USB: resolveBoardHardwareSpecs(inspectBoard).usb, Buttons: resolveBoardHardwareSpecs(inspectBoard).buttons, GPIOs: inspectBoard.gpio_definitions.length, Firmware: inspectBoard.firmware_status, Verification: inspectBoard.verification_status, Series: inspectBoard.series, Description: inspectBoard.description, "Chip family": inspectBoard.chip_family, "Flash size": `${inspectBoard.flash_size_mb} MB`, "PSRAM size": `${inspectBoard.psram_size_mb} MB`, "USB VID": inspectBoard.usb_vid, "USB PID": inspectBoard.usb_pid, "Partition scheme": inspectBoard.partition_scheme, "PSRAM mode": inspectBoard.psram_mode, "Flash mode": inspectBoard.flash_mode, "Flash frequency": inspectBoard.flash_freq, "Bootloader offset": inspectBoard.bootloader_offset, "OTA app offset": inspectBoard.ota_app_offset, "Boot GPIO": inspectBoard.boot_button_gpio, "Firmware compatibility": inspectBoard.firmware_compat_key, "Connectivity notes": inspectBoard.connectivity_note, "Revision notes": inspectBoard.revision_notes, "Source provider": inspectBoard.source_provider, "Last synced": inspectBoard.last_synced_at }).map(([label, value]) => (
-                    <div key={label} className="rounded-xl border bg-muted/30 p-3"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 break-words text-sm font-medium">{value ?? "—"}</dd></div>
-                  ))}
-                </dl>
-              </TabsContent>
-              <TabsContent value="pinout"><InteractiveBoardPinout board={inspectBoard} /></TabsContent>
-            </Tabs>
-          )}
-          <DialogFooter className="pt-1">
-            <Button size="sm" onClick={() => setInspectBoard(null)}>Close</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <BoardDetailsDialog board={inspectBoard} onClose={() => setInspectBoard(null)} />
 
       <ConfirmDeleteDialog
         open={Boolean(deleteTarget)}

@@ -5,8 +5,14 @@ import type {
   FlashSizeValues,
 } from "esptool-js/lib/types/arguments.js";
 import {
+  canonicalChipFamily,
   defaultBootButtonGpioForChip,
+  detectedPsramFromFeatures,
   parseFlashSizeMb,
+  USB_FLASH_PORT_VENDOR_IDS,
+  verifyUsbBoardIdentity,
+  type UsbBoardIdentityReport,
+  type UsbIdentityBoardProfile,
 } from "@homecoreos/shared";
 import { apiFetch, sha256HexClient } from "./api";
 import { parseSetupSerialLine, type ParsedSerialSetupInfo } from "./ble-provisioning";
@@ -34,13 +40,50 @@ export interface UsbFlashReleaseSpec {
   files: UsbFlashFileSpec[];
 }
 
-export interface UsbFlashTargetBoardSpec {
-  slug?: string;
-  model?: string;
-  chip_family?: string;
-  flash_size_mb?: number;
+/**
+ * The board the user selected. Every field is optional, but the more of the
+ * Board Library profile is passed in (chip, flash, PSRAM, USB IDs, layout),
+ * the more of the connected hardware can be checked against it.
+ */
+export interface UsbFlashTargetBoardSpec extends UsbIdentityBoardProfile {
   boot_button_gpio?: number | null;
   usb_interface?: string | null;
+}
+
+/** The identity check of the connected board against the selected one. */
+export type UsbFlashBoardReport = UsbBoardIdentityReport<UsbFlashTargetBoardSpec>;
+
+/** "force" writes the firmware although the board differs; "cancel" stops. */
+export type UsbBoardMismatchDecision = "force" | "cancel";
+
+/** What is recorded about the board check with every USB flash event. */
+export interface UsbFlashBoardCheckSummary {
+  result: UsbFlashBoardReport["result"];
+  /** True only after the user explicitly chose "Force to Flash". */
+  forced: boolean;
+  severity: UsbFlashBoardReport["severity"];
+  detectedSummary: string;
+  usbId?: string;
+  selectedBoardSlug?: string;
+  recommendedBoardSlugs: string[];
+  mismatches: string[];
+}
+
+/**
+ * Thrown when flashing stops because the connected board is not the selected
+ * one. Nothing has been written to the controller at that point.
+ */
+export class UsbBoardMismatchError extends Error {
+  readonly report: UsbFlashBoardReport;
+  /** True when the user saw the warning and chose not to continue. */
+  readonly cancelledByUser: boolean;
+
+  constructor(message: string, report: UsbFlashBoardReport, cancelledByUser: boolean) {
+    super(message);
+    this.name = "UsbBoardMismatchError";
+    this.report = report;
+    this.cancelledByUser = cancelledByUser;
+  }
 }
 
 export type UsbFlashStage =
@@ -59,6 +102,16 @@ export interface UsbFlashCallbacks {
   onLog: (line: string) => void;
   onStage?: (stage: UsbFlashStage) => void;
   onChipDetected?: (chip: string, flashSize?: string) => void;
+  /** The identity check of the connected board, whatever its outcome. */
+  onBoardChecked?: (report: UsbFlashBoardReport) => void;
+  /**
+   * Called when the connected board differs from the selected one. Flashing
+   * waits for the answer and writes nothing until it arrives. Without this
+   * handler a mismatch that can keep the firmware from running always stops.
+   */
+  onBoardMismatch?: (
+    report: UsbFlashBoardReport
+  ) => Promise<UsbBoardMismatchDecision> | UsbBoardMismatchDecision;
   onBytesProgress?: (writtenBytes: number, totalBytes: number) => void;
   onSetupCaptured?: (info: ParsedSerialSetupInfo) => void;
 }
@@ -93,48 +146,13 @@ export function isWebSerialSupported(): { supported: boolean; reason?: string } 
   return { supported: true };
 }
 
-function normalizeChipName(chipName: string): string {
-  return chipName.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 /**
  * Extracts canonical Espressif SoC family from esptool-js CHIP_NAME strings
  * (e.g. "ESP32-C61 (revision v0.1)" -> "esp32c61", "ESP8684" -> "esp32c2",
  * "ESP32-D0WD-V3" -> "esp32") and compares strictly without substring collisions.
  */
 export function extractCanonicalChipFamily(detectedChip: string): string {
-  const firstToken = detectedChip.trim().split(/[\s(]/)[0] ?? "";
-  const norm = normalizeChipName(firstToken);
-  if (!norm) return "";
-  if (norm === "esp8684" || norm.startsWith("esp8684")) return "esp32c2";
-
-  const knownSubfamilies = [
-    "esp32c61",
-    "esp32h21",
-    "esp32s31",
-    "esp32s3",
-    "esp32s2",
-    "esp32c6",
-    "esp32c5",
-    "esp32c3",
-    "esp32c2",
-    "esp32h2",
-    "esp32h4",
-    "esp32p4",
-  ];
-  for (const fam of knownSubfamilies) {
-    if (norm === fam || norm.startsWith(fam)) return fam;
-  }
-  if (
-    norm === "esp32" ||
-    norm.startsWith("esp32d0") ||
-    norm.startsWith("esp32u4") ||
-    norm.startsWith("esp32pico") ||
-    norm.startsWith("esp32s0")
-  ) {
-    return "esp32";
-  }
-  return norm;
+  return canonicalChipFamily(detectedChip);
 }
 
 export function chipMatchesFamily(detectedChip: string, expectedFamily: string): boolean {
@@ -311,9 +329,56 @@ async function listenForSetupBannerOnPort(
   return captured;
 }
 
+/** USB vendor and product ID of the serial port, when the browser reports them. */
+function readUsbPortIds(port: WebSerialPort): { usbVendorId?: number; usbProductId?: number } {
+  try {
+    const info = (
+      port as unknown as { getInfo?: () => { usbVendorId?: number; usbProductId?: number } }
+    ).getInfo?.();
+    return {
+      usbVendorId: typeof info?.usbVendorId === "number" ? info.usbVendorId : undefined,
+      usbProductId: typeof info?.usbProductId === "number" ? info.usbProductId : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/** The chip's own feature list ("Embedded PSRAM 8MB (AP_3v3)", ...), if it can be read. */
+async function readChipFeatures(esploader: unknown): Promise<string[] | null> {
+  try {
+    const chip = (
+      esploader as { chip?: { getChipFeatures?: (loader: unknown) => Promise<string[]> } }
+    ).chip;
+    if (typeof chip?.getChipFeatures !== "function") return null;
+    const features = await chip.getChipFeatures(esploader);
+    return Array.isArray(features) ? features.map(String) : null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeBoardCheck(report: UsbFlashBoardReport, forced: boolean): UsbFlashBoardCheckSummary {
+  return {
+    result: report.result,
+    forced,
+    severity: report.severity,
+    detectedSummary: report.detected.summary.slice(0, 200),
+    usbId: report.detected.usb.usbId ?? undefined,
+    selectedBoardSlug: report.selected?.board.slug,
+    recommendedBoardSlugs: report.recommended
+      .map((r) => r.board.slug)
+      .filter((slug): slug is string => Boolean(slug))
+      .slice(0, 5),
+    mismatches: report.mismatches.map((m) => m.code).slice(0, 10),
+  };
+}
+
 export async function flashFreshControllerViaUsb(params: {
   release: UsbFlashReleaseSpec;
   targetBoard?: UsbFlashTargetBoardSpec | null;
+  /** Board Library profiles to recommend from when the board does not match. */
+  candidateBoards?: UsbFlashTargetBoardSpec[];
   controllerId?: string;
   eraseAll?: boolean;
   baudRate?: number;
@@ -322,10 +387,12 @@ export async function flashFreshControllerViaUsb(params: {
   chipDetected: string;
   detectedFlashSize?: string;
   setupInfo?: ParsedSerialSetupInfo | null;
+  boardCheck: UsbFlashBoardCheckSummary | null;
 }> {
   const {
     release,
     targetBoard,
+    candidateBoards = [],
     controllerId,
     eraseAll = false,
     baudRate = 460800,
@@ -388,13 +455,10 @@ export async function flashFreshControllerViaUsb(params: {
   callbacks.onPhase("Select your USB-connected ESP32 serial port...");
   let port: WebSerialPort;
   try {
+    // Espressif native USB, the common USB-UART bridges (CP210x, CH34x, FTDI)
+    // and board makers with their own USB vendor ID, such as Seeed Studio.
     port = await nav.serial.requestPort({
-      filters: [
-        { usbVendorId: 0x303a }, // Espressif native USB-JTAG / USB-OTG
-        { usbVendorId: 0x10c4 }, // Silicon Labs CP210x
-        { usbVendorId: 0x1a86 }, // WCH CH340 / CH9102
-        { usbVendorId: 0x0403 }, // FTDI
-      ],
+      filters: USB_FLASH_PORT_VENDOR_IDS.map((usbVendorId) => ({ usbVendorId })),
     });
   } catch (err) {
     callbacks.onStage?.("error");
@@ -407,6 +471,7 @@ export async function flashFreshControllerViaUsb(params: {
   let chipDetected = "unknown";
   let detectedFlashSize: string | undefined;
   let detectedFlashSizeMb: number | null = null;
+  let boardCheck: UsbFlashBoardCheckSummary | null = null;
   const bootGpio =
     targetBoard?.boot_button_gpio ??
     defaultBootButtonGpioForChip(
@@ -444,12 +509,8 @@ export async function flashFreshControllerViaUsb(params: {
     }
     callbacks.onLog(`Detected target chip: ${chipDetected}`);
 
-    if (!chipMatchesFamily(chipDetected, release.chip_family)) {
-      throw new Error(
-        `Chip mismatch: Connected board reports "${chipDetected}", but selected firmware targets "${release.chip_family.toUpperCase()}".`
-      );
-    }
-
+    // Everything the connected hardware reports about itself.
+    const chipFeatures = await readChipFeatures(esploader);
     detectedFlashSize = await esploader.detectFlashSize();
     detectedFlashSizeMb = parseDetectedFlashMb(detectedFlashSize);
     if (detectedFlashSize) {
@@ -467,21 +528,65 @@ export async function flashFreshControllerViaUsb(params: {
             : release.partition_scheme === "dual_ota_4mb"
               ? 4
               : null;
-    const requiredFlashMb = Math.max(
-      targetBoard?.flash_size_mb ?? 0,
-      release.flash_size_mb ?? 0,
-      parseDetectedFlashMb(factoryFile.flash_size) ?? 0,
-      schemeRequiredMb ?? 0
-    ) || null;
+    const firmwareFlashMb =
+      Math.max(
+        release.flash_size_mb ?? 0,
+        parseDetectedFlashMb(factoryFile.flash_size) ?? 0,
+        schemeRequiredMb ?? 0
+      ) || null;
 
-    if (
-      detectedFlashSizeMb !== null &&
-      requiredFlashMb !== null &&
-      detectedFlashSizeMb < requiredFlashMb
-    ) {
-      throw new Error(
-        `Flash size mismatch: Connected board has ${detectedFlashSizeMb}MB SPI flash, but selected firmware requires ${requiredFlashMb}MB (${targetBoard?.model ?? release.target_board_slug ?? release.partition_scheme ?? factoryFile.flash_size}).`
-      );
+    // Compare the connected board with the selected one BEFORE writing anything.
+    const report = verifyUsbBoardIdentity<UsbFlashTargetBoardSpec>({
+      detected: {
+        chipName: chipDetected,
+        flashSizeMb: detectedFlashSizeMb,
+        psramSizeMb: detectedPsramFromFeatures(chipDetected, chipFeatures),
+        features: chipFeatures ?? undefined,
+        ...readUsbPortIds(port),
+      },
+      selectedBoard: targetBoard ?? null,
+      candidateBoards,
+      firmware: {
+        chipFamily: release.chip_family,
+        minFlashMb: firmwareFlashMb,
+        label: `${release.name} v${release.version}`,
+      },
+    });
+    boardCheck = summarizeBoardCheck(report, false);
+    callbacks.onLog(report.headline);
+    callbacks.onBoardChecked?.(report);
+
+    if (report.result === "mismatch") {
+      const codes = new Set(report.mismatches.map((m) => m.code));
+      const requiredFlashMb = Math.max(targetBoard?.flash_size_mb ?? 0, firmwareFlashMb ?? 0) || null;
+      const reason = codes.has("chip_family")
+        ? chipMatchesFamily(chipDetected, release.chip_family)
+          ? `Chip mismatch: Connected board reports "${chipDetected}", but the selected board ${report.selected?.label ?? ""} uses a different chip.`
+          : `Chip mismatch: Connected board reports "${chipDetected}", but selected firmware targets "${release.chip_family.toUpperCase()}".`
+        : codes.has("flash_smaller")
+          ? `Flash size mismatch: Connected board has ${detectedFlashSizeMb}MB SPI flash, but selected firmware requires ${requiredFlashMb}MB (${targetBoard?.model ?? release.target_board_slug ?? release.partition_scheme ?? factoryFile.flash_size}).`
+          : `Board mismatch: ${report.mismatches[0]?.detail ?? report.headline}`;
+
+      if (callbacks.onBoardMismatch) {
+        callbacks.onPhase("The connected board does not match. Waiting for your decision...");
+        const decision = await callbacks.onBoardMismatch(report);
+        if (decision !== "force") {
+          throw new UsbBoardMismatchError(
+            `Flashing stopped before anything was written. ${reason}`,
+            report,
+            true
+          );
+        }
+        boardCheck = summarizeBoardCheck(report, true);
+        callbacks.onLog(
+          "Force to Flash confirmed by the user: writing firmware to a board that does not match the selection."
+        );
+      } else if (report.severity !== "minor") {
+        // Nobody can be asked, so a mismatch that can keep the firmware from running stops here.
+        throw new UsbBoardMismatchError(reason, report, false);
+      } else {
+        callbacks.onLog("The difference does not keep this firmware from running. Continuing.");
+      }
     }
 
     // For merged 0x0 usb_factory images built by esptool.py merge_bin, pass "keep" so
@@ -557,11 +662,15 @@ export async function flashFreshControllerViaUsb(params: {
         status: "succeeded",
         chipDetected,
         detectedFlashSizeMb: detectedFlashSizeMb ?? undefined,
-        reportedBoardSlug: targetBoard?.slug ?? release.target_board_slug ?? undefined,
+        // A forced flash proved the board is NOT the selected one: do not report it as such.
+        reportedBoardSlug: boardCheck?.forced
+          ? undefined
+          : (targetBoard?.slug ?? release.target_board_slug ?? undefined),
+        boardCheck: boardCheck ?? undefined,
       }),
     }).catch(() => {});
 
-    return { chipDetected, detectedFlashSize, setupInfo };
+    return { chipDetected, detectedFlashSize, setupInfo, boardCheck };
   } catch (err) {
     callbacks.onStage?.("error");
     const message = err instanceof Error ? err.message : "USB flashing failed.";
@@ -573,8 +682,13 @@ export async function flashFreshControllerViaUsb(params: {
         status: "failed",
         chipDetected,
         detectedFlashSizeMb: detectedFlashSizeMb ?? undefined,
-        reportedBoardSlug: targetBoard?.slug ?? release.target_board_slug ?? undefined,
+        // The check found another board: do not name the selected one as connected.
+        reportedBoardSlug:
+          boardCheck?.result === "mismatch"
+            ? undefined
+            : (targetBoard?.slug ?? release.target_board_slug ?? undefined),
         errorMessage: message.slice(0, 480),
+        boardCheck: boardCheck ?? undefined,
       }),
     }).catch(() => {});
     throw err;

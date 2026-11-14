@@ -48,6 +48,14 @@ export function UsbFlashIllustration({ active = false }: { active?: boolean }) {
   );
 }
 
+export interface UsbFlashBoardCheckLine {
+  result: "match" | "mismatch" | "unverified";
+  /** One sentence describing what was found. */
+  headline: string;
+  /** The user chose "Force to Flash" after the mismatch warning. */
+  forced: boolean;
+}
+
 export function UsbFlashStagePipeline({
   stage,
   percent,
@@ -59,6 +67,7 @@ export function UsbFlashStagePipeline({
   logs,
   error,
   onRetry,
+  boardCheck,
 }: {
   stage: UsbFlashStage;
   percent: number;
@@ -70,7 +79,10 @@ export function UsbFlashStagePipeline({
   logs: string[];
   error?: string | null;
   onRetry?: () => void;
+  /** Result of comparing the connected board with the selected one. */
+  boardCheck?: UsbFlashBoardCheckLine | null;
 }) {
+  const boardDiffers = boardCheck?.result === "mismatch";
   const order = USB_STAGES.map((s) => s.id);
   const currentIdx = stage === "idle" ? -1 : order.indexOf(stage);
   const isFlashingActive =
@@ -94,7 +106,11 @@ export function UsbFlashStagePipeline({
               {phase || "Ready to connect over USB"}
             </span>
             {chipDetected && (
-              <Badge variant="success-light" radius="full" className="shrink-0">
+              <Badge
+                variant={boardDiffers ? "warning-light" : "success-light"}
+                radius="full"
+                className="shrink-0"
+              >
                 <RiCpuLine className="size-3" aria-hidden="true" />
                 {chipDetected} {flashSize ? `(${flashSize})` : ""}
               </Badge>
@@ -182,6 +198,40 @@ export function UsbFlashStagePipeline({
             })}
           </StepperNav>
         </Stepper>
+
+        {boardCheck && (
+          <p
+            data-testid="usb-board-check"
+            data-result={boardCheck.result}
+            className={cn(
+              "flex items-start gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] leading-snug",
+              boardDiffers
+                ? "border-warning/40 bg-warning/10 text-warning-foreground"
+                : boardCheck.result === "match"
+                  ? "border-success/30 bg-success/10 text-success-foreground"
+                  : "border-border bg-muted/40 text-muted-foreground"
+            )}
+          >
+            {boardDiffers ? (
+              <RiAlertLine className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+            ) : (
+              <RiShieldCheckLine className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+            )}
+            <span className="min-w-0 break-words">
+              <span className="font-semibold">Board check:</span> {boardCheck.headline}
+              {boardCheck.forced && (
+                <span className="font-semibold">
+                  {/* Says only what has happened so far. */}
+                  {stage === "completed"
+                    ? " Flashed anyway at your request."
+                    : stage === "error"
+                      ? " Force to Flash was chosen, but the flash did not complete."
+                      : " Flashing anyway at your request."}
+                </span>
+              )}
+            </span>
+          </p>
+        )}
 
         {error && (
           <StatusAlert

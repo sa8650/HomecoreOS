@@ -22,6 +22,19 @@ const otaStartSchema = z.object({
   releaseId: z.string().uuid(),
 });
 
+/** Outcome of the board identity check the browser flasher runs before writing. */
+const usbBoardCheckSchema = z.object({
+  result: z.enum(["match", "mismatch", "unverified"]),
+  /** True only when the user explicitly chose "Force to Flash". */
+  forced: z.boolean().default(false),
+  severity: z.enum(["none", "minor", "major", "critical"]).optional(),
+  detectedSummary: z.string().max(200).optional(),
+  usbId: z.string().max(24).optional(),
+  selectedBoardSlug: z.string().max(120).optional(),
+  recommendedBoardSlugs: z.array(z.string().max(120)).max(5).optional(),
+  mismatches: z.array(z.string().max(60)).max(10).optional(),
+});
+
 const usbFlashLogSchema = z.object({
   releaseId: z.string().uuid(),
   controllerId: z.string().uuid().optional(),
@@ -30,6 +43,7 @@ const usbFlashLogSchema = z.object({
   detectedFlashSizeMb: z.number().int().min(1).max(64).optional(),
   reportedBoardSlug: z.string().max(120).optional(),
   errorMessage: z.string().max(500).optional(),
+  boardCheck: usbBoardCheckSchema.optional(),
 });
 
 interface ControllerCompatRow {
@@ -659,6 +673,13 @@ export function createFirmwareRoutes() {
 
       const auth = c.get("userAuth")!;
       const db = c.get("db");
+      const boardCheck = parsed.data.boardCheck ?? null;
+      const boardMismatch = boardCheck?.result === "mismatch";
+      const forcedFlash = Boolean(boardCheck?.forced && boardMismatch);
+      // The flasher stopped on a board mismatch before writing anything. That is
+      // the safety check working, not a flash that went wrong.
+      const stoppedOnMismatch =
+        parsed.data.status === "failed" && boardMismatch && !boardCheck?.forced;
 
       const { data: rel } = await db
         .from("firmware_releases")
@@ -700,7 +721,9 @@ export function createFirmwareRoutes() {
             if (parsed.data.detectedFlashSizeMb) {
               ctrlUpdates.detected_flash_size_mb = parsed.data.detectedFlashSizeMb;
             }
-            if (parsed.data.reportedBoardSlug) {
+            // The check proved the connected board is not the selected one, so
+            // the selected slug is never stored as what the controller is.
+            if (parsed.data.reportedBoardSlug && !boardMismatch) {
               ctrlUpdates.reported_board_slug = parsed.data.reportedBoardSlug;
             }
             await db
@@ -721,12 +744,18 @@ export function createFirmwareRoutes() {
           parsed.data.status === "succeeded"
             ? "firmware.usb_flash_succeeded"
             : "firmware.usb_flash_failed",
-        summary: `USB Web Serial flash (${targetVersion}) ${parsed.data.status}${
-          parsed.data.chipDetected ? ` on ${parsed.data.chipDetected}` : ""
-        }`,
+        summary: stoppedOnMismatch
+          ? `USB Web Serial flash (${targetVersion}) stopped before writing: the connected board${
+              parsed.data.chipDetected ? ` (${parsed.data.chipDetected})` : ""
+            } did not match the selected board`
+          : `USB Web Serial flash (${targetVersion}) ${parsed.data.status}${
+              parsed.data.chipDetected ? ` on ${parsed.data.chipDetected}` : ""
+            }${forcedFlash ? " (forced by the user after a board mismatch warning)" : ""}`,
         metadata: {
           errorMessage: parsed.data.errorMessage,
           chipDetected: parsed.data.chipDetected,
+          // Kept so a forced flash can always be traced back to who accepted the risk.
+          ...(boardCheck ? { boardCheck } : {}),
         },
       });
 
@@ -736,24 +765,43 @@ export function createFirmwareRoutes() {
         category: "firmware",
         eventKey: "firmware.install_result",
         preferenceKey: "firmware_install_results",
-        severity: parsed.data.status === "succeeded" ? "success" : "danger",
+        severity:
+          parsed.data.status === "succeeded"
+            ? forcedFlash
+              ? "warning"
+              : "success"
+            : stoppedOnMismatch
+              ? "warning"
+              : "danger",
         title:
           parsed.data.status === "succeeded"
             ? `USB Flash Complete (${targetVersion})`
-            : `USB Flash Failed (${targetVersion})`,
+            : stoppedOnMismatch
+              ? `USB Flash Stopped (${targetVersion})`
+              : `USB Flash Failed (${targetVersion})`,
         message:
           parsed.data.status === "succeeded"
             ? `Flashed firmware v${targetVersion} via Web Serial${
                 parsed.data.chipDetected ? ` onto ${parsed.data.chipDetected}` : ""
-              }.`
-            : `USB flash failed${
-                parsed.data.errorMessage ? `: ${parsed.data.errorMessage}` : "."
-              }`,
+              }.${
+                forcedFlash
+                  ? " The board did not match the selected board and the flash was forced."
+                  : ""
+              }`
+            : stoppedOnMismatch
+              ? `The connected board${
+                  boardCheck?.detectedSummary ? ` (${boardCheck.detectedSummary})` : ""
+                } did not match the selected board. Nothing was written to the controller.`
+              : `USB flash failed${
+                  parsed.data.errorMessage ? `: ${parsed.data.errorMessage}` : "."
+                }`,
         metadata: {
           controllerId: parsed.data.controllerId ?? null,
           releaseId: parsed.data.releaseId,
           status: parsed.data.status,
           chipDetected: parsed.data.chipDetected ?? null,
+          forced: forcedFlash,
+          stoppedOnBoardMismatch: stoppedOnMismatch,
         },
       }).catch(() => null);
 

@@ -13,6 +13,7 @@ import {
 import { recordActivity } from "../lib/audit";
 import { evaluateAutomationsForEvent } from "../lib/automation-engine";
 import {
+  checkPinSelectionPolicy,
   getUsedPinsOnController,
   resolveControllerBoardSpec,
   verifyHomeRoomOwnership,
@@ -195,6 +196,15 @@ export function createDeviceRoutes() {
 
       if (!pinCheck.valid) {
         return c.json({ error: pinCheck.errors.join(" "), warnings: pinCheck.warnings }, 400);
+      }
+      const devicePolicyError = checkPinSelectionPolicy({
+        board,
+        pin: parsed.data.gpioPin,
+        requirement,
+        usedPins,
+      });
+      if (devicePolicyError) {
+        return c.json({ error: devicePolicyError, warnings: pinCheck.warnings }, 400);
       }
 
       const { data: device, error } = await db
@@ -446,6 +456,16 @@ export function createDeviceRoutes() {
         if (!pinCheck.valid) {
           return c.json({ error: pinCheck.errors.join(" "), warnings: pinCheck.warnings }, 400);
         }
+        const policyError = checkPinSelectionPolicy({
+          board,
+          pin: targetPin,
+          requirement,
+          usedPins,
+          unchanged: targetPin === existing.gpio_pin && ctrlRow.id === existing.controller_id,
+        });
+        if (policyError) {
+          return c.json({ error: policyError, warnings: pinCheck.warnings }, 400);
+        }
         warnings = pinCheck.warnings;
       }
 
@@ -600,6 +620,15 @@ export function createDeviceRoutes() {
       });
       if (!pinCheck.valid) {
         return c.json({ error: pinCheck.errors.join(" "), warnings: pinCheck.warnings }, 400);
+      }
+      const switchPolicyError = checkPinSelectionPolicy({
+        board,
+        pin: parsed.data.gpioPin,
+        requirement: "digital_out",
+        usedPins,
+      });
+      if (switchPolicyError) {
+        return c.json({ error: switchPolicyError, warnings: pinCheck.warnings }, 400);
       }
 
       const { data: sw, error } = await db
@@ -840,6 +869,16 @@ export function createDeviceRoutes() {
         if (!pinCheck.valid) {
           return c.json({ error: pinCheck.errors.join(" "), warnings: pinCheck.warnings }, 400);
         }
+        const policyError = checkPinSelectionPolicy({
+          board,
+          pin: targetPin,
+          requirement: "digital_out",
+          usedPins,
+          unchanged: targetPin === existing.gpio_pin && ctrlRow.id === existing.controller_id,
+        });
+        if (policyError) {
+          return c.json({ error: policyError, warnings: pinCheck.warnings }, 400);
+        }
         warnings = pinCheck.warnings;
       }
 
@@ -1006,6 +1045,15 @@ export function createDeviceRoutes() {
         if (!pinCheck.valid) {
           return c.json({ error: pinCheck.errors.join(" "), warnings: pinCheck.warnings }, 400);
         }
+        const policyError = checkPinSelectionPolicy({
+          board,
+          pin: parsed.data.gpioPin,
+          requirement,
+          usedPins,
+        });
+        if (policyError) {
+          return c.json({ error: policyError, warnings: pinCheck.warnings }, 400);
+        }
         warnings = pinCheck.warnings;
       }
 
@@ -1160,6 +1208,16 @@ export function createDeviceRoutes() {
         });
         if (!pinCheck.valid) {
           return c.json({ error: pinCheck.errors.join(" "), warnings: pinCheck.warnings }, 400);
+        }
+        const policyError = checkPinSelectionPolicy({
+          board,
+          pin: targetPin,
+          requirement,
+          usedPins,
+          unchanged: targetPin === existing.gpio_pin && ctrlRow.id === existing.controller_id,
+        });
+        if (policyError) {
+          return c.json({ error: policyError, warnings: pinCheck.warnings }, 400);
         }
         warnings = pinCheck.warnings;
       }

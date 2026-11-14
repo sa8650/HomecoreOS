@@ -78,7 +78,7 @@ export async function createPglitePostgrest(): Promise<PgliteHarness> {
       const onConflictRaw = url.searchParams.get("on_conflict");
 
       for (const [key, value] of url.searchParams.entries()) {
-        if (["select", "order", "limit", "offset", "on_conflict"].includes(key)) {
+        if (["select", "order", "limit", "offset", "on_conflict", "columns"].includes(key)) {
           continue;
         }
         if (key === "or") {

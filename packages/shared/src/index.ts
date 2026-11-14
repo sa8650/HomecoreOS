@@ -104,6 +104,15 @@ export interface BoardLayoutSpec {
     name: string;
     pins: BoardHeaderPin[];
   };
+  /**
+   * Solder pads that the manufacturer breaks out in addition to the two main
+   * headers (for example the back pads D11-D19 of the XIAO ESP32-S3 Plus).
+   * They count as usable pins exactly like header pins.
+   */
+  extraPads?: {
+    name: string;
+    pins: BoardHeaderPin[];
+  };
   onboardFeatures?: Array<{
     label: string;
     gpioPin: number | null;
@@ -562,6 +571,9 @@ export function isNewerFirmwareVersion(
 
 export * from "./board-validation";
 export * from "./board-catalog-data";
+export * from "./seeed-xiao-catalog";
+export * from "./gpio-pin-selector";
+export * from "./usb-board-identity";
 export * from "./board-firmware-compat";
 export * from "./ble-provisioning";
 export * from "./automations";

@@ -3,7 +3,9 @@ import {
   normalizeChipFamily,
   resolveBoardFirmwareCompatibility,
   type BoardCatalogCategory,
+  type CatalogBoardSeed,
   type ChipFamily,
+  type GpioPinDefinition,
 } from "@homecoreos/shared";
 import type { CustomFetch, DbClient } from "./db";
 
@@ -30,7 +32,7 @@ export const ESPRESSIF_DEVKITS_URL = "https://www.espressif.com/products/devkits
 export const ESP_BOARD_MANAGER_INDEX_URL =
   "https://docs.espressif.com/projects/esp-board-manager/en/latest/references/boards/index.html";
 
-const CURATED_UNVERIFIED_ESPRESSIF_DEVKITS: DiscoveredDevKitEntry[] = [
+export const CURATED_UNVERIFIED_ESPRESSIF_DEVKITS: DiscoveredDevKitEntry[] = [
   {
     slug: "esp32-s3-devkitm-1",
     manufacturer: "Espressif",
@@ -196,6 +198,204 @@ export function parseEspBoardManagerIndexHtml(html: string): string[] {
   return names;
 }
 
+/** One timed GET against an official source. Never throws. */
+export async function fetchOfficialSource(
+  fetcher: CustomFetch,
+  url: string,
+  options?: { accept?: string; timeoutMs?: number }
+): Promise<{ ok: true; text: string } | { ok: false; reason: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options?.timeoutMs ?? 10000);
+  try {
+    const res = await fetcher(url, {
+      headers: {
+        Accept: options?.accept ?? "text/html",
+        // api.github.com rejects requests without a User-Agent.
+        "User-Agent": "HomecoreOS-BoardCatalog",
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+    return { ok: true, text: await res.text() };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : "network error" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface EspressifLiveSources {
+  discovered: DiscoveredDevKitEntry[];
+  boardManagerBoards: number;
+  liveSuccessCount: number;
+  notes: string[];
+}
+
+/** Reads the two official Espressif sources the catalog sync is based on. */
+export async function fetchEspressifLiveSources(fetcher: CustomFetch): Promise<EspressifLiveSources> {
+  const notes: string[] = [];
+  const discovered: DiscoveredDevKitEntry[] = [];
+  let liveSuccessCount = 0;
+  let boardManagerBoards = 0;
+
+  const [devkits, boardManager] = await Promise.all([
+    fetchOfficialSource(fetcher, ESPRESSIF_DEVKITS_URL),
+    fetchOfficialSource(fetcher, ESP_BOARD_MANAGER_INDEX_URL),
+  ]);
+
+  if (devkits.ok) {
+    const parsed = parseEspressifDevkitsHtml(devkits.text);
+    discovered.push(...parsed);
+    liveSuccessCount += 1;
+    notes.push(`Fetched Espressif DevKits (${parsed.length} boards matched)`);
+  } else if (/^HTTP /.test(devkits.reason)) {
+    notes.push(`Espressif DevKits returned ${devkits.reason}`);
+  } else {
+    notes.push(`Espressif DevKits unreachable (${devkits.reason})`);
+  }
+
+  if (boardManager.ok) {
+    boardManagerBoards = parseEspBoardManagerIndexHtml(boardManager.text).length;
+    liveSuccessCount += 1;
+    notes.push(`Fetched ESP Board Manager index (${boardManagerBoards} targets indexed)`);
+  } else if (/^HTTP /.test(boardManager.reason)) {
+    notes.push(`ESP Board Manager returned ${boardManager.reason}`);
+  } else {
+    notes.push(`ESP Board Manager unreachable (${boardManager.reason})`);
+  }
+
+  return { discovered, boardManagerBoards, liveSuccessCount, notes };
+}
+
+/** board_catalog row of a verified profile (catalog seed or official reference). */
+export function buildVerifiedCatalogRow(
+  board: CatalogBoardSeed,
+  options: {
+    isAvailable: boolean;
+    firmwareStatus: string;
+    verificationStatus?: "verified" | "needs_verification";
+    nowIso: string;
+  }
+): Record<string, unknown> {
+  const compat = resolveBoardFirmwareCompatibility(board);
+  return {
+    slug: board.slug,
+    manufacturer: board.manufacturer,
+    model: board.model,
+    revision: board.revision,
+    chip_family: board.chip_family,
+    chip_variant: board.chip_variant,
+    flash_size_mb: board.flash_size_mb,
+    psram_size_mb: board.psram_size_mb,
+    usb_vid: board.usb_vid ?? null,
+    usb_pid: board.usb_pid ?? null,
+    is_available: options.isAvailable,
+    description: board.revision_notes ?? null,
+    catalog_category: board.catalog_category,
+    series: board.series,
+    image_url: board.image_url,
+    pinout_image_url: board.pinout_image_url ?? null,
+    docs_url: board.docs_url,
+    datasheet_url: board.datasheet_url ?? null,
+    source_url: board.source_url,
+    source_provider: board.source_provider,
+    verification_status: options.verificationStatus ?? "verified",
+    firmware_status: options.firmwareStatus,
+    partition_scheme: compat.partition_scheme,
+    psram_mode: compat.psram_mode,
+    flash_mode: compat.flash_mode,
+    flash_freq: compat.flash_freq,
+    bootloader_offset: compat.bootloader_offset,
+    ota_app_offset: compat.ota_app_offset,
+    boot_button_gpio: compat.boot_button_gpio,
+    usb_interface: compat.usb_interface,
+    supports_wifi: compat.supports_wifi,
+    supports_ble: compat.supports_ble,
+    supports_ble_wifi_provisioning: compat.supports_ble_wifi_provisioning,
+    supports_ota_rollback: compat.supports_ota_rollback,
+    firmware_compat_key: compat.firmware_compat_key,
+    connectivity_note: compat.connectivity_note,
+    board_layout: board.board_layout,
+    revision_notes: board.revision_notes ?? null,
+    last_synced_at: options.nowIso,
+  };
+}
+
+/** board_catalog row of a discovered board whose pin map is still unverified. */
+export function buildUnverifiedCatalogRow(
+  entry: DiscoveredDevKitEntry,
+  nowIso: string
+): Record<string, unknown> {
+  const compat = resolveBoardFirmwareCompatibility(entry);
+  return {
+    slug: entry.slug,
+    manufacturer: entry.manufacturer,
+    model: entry.model,
+    revision: entry.revision,
+    chip_family: entry.chip_family,
+    chip_variant: entry.chip_variant,
+    flash_size_mb: entry.flash_size_mb,
+    psram_size_mb: entry.psram_size_mb,
+    is_available: false, // Never publish unverified boards to users automatically
+    description: entry.revision_notes,
+    catalog_category: entry.catalog_category,
+    series: entry.series,
+    image_url: entry.image_url,
+    docs_url: entry.docs_url,
+    source_url: entry.source_url,
+    source_provider: entry.source_provider,
+    verification_status: "needs_verification",
+    firmware_status: "catalog_only",
+    partition_scheme: compat.partition_scheme,
+    psram_mode: compat.psram_mode,
+    flash_mode: compat.flash_mode,
+    flash_freq: compat.flash_freq,
+    bootloader_offset: compat.bootloader_offset,
+    ota_app_offset: compat.ota_app_offset,
+    boot_button_gpio: compat.boot_button_gpio,
+    usb_interface: compat.usb_interface,
+    supports_wifi: compat.supports_wifi,
+    supports_ble: compat.supports_ble,
+    supports_ble_wifi_provisioning: compat.supports_ble_wifi_provisioning,
+    supports_ota_rollback: compat.supports_ota_rollback,
+    firmware_compat_key: compat.firmware_compat_key,
+    connectivity_note: compat.connectivity_note,
+    board_layout: {},
+    revision_notes: entry.revision_notes,
+    last_synced_at: nowIso,
+  };
+}
+
+export function buildGpioDefinitionRows(
+  boardCatalogId: string,
+  definitions: GpioPinDefinition[]
+): Array<Record<string, unknown>> {
+  return definitions.map((g) => ({
+    board_catalog_id: boardCatalogId,
+    pin: g.pin,
+    label: g.label,
+    board_pin_name: g.board_pin_name ?? null,
+    header_side: g.header_side ?? null,
+    header_position: g.header_position ?? null,
+    board_note: g.board_note ?? null,
+    capabilities: g.capabilities,
+    restrictions: g.restrictions,
+  }));
+}
+
+/** Espressif boards that are known but whose pin maps are not verified yet. */
+export function collectUnverifiedEspressifDevkits(
+  liveDiscovered: DiscoveredDevKitEntry[]
+): Map<string, DiscoveredDevKitEntry> {
+  const verifiedSlugs = new Set(VERIFIED_BOARD_CATALOG.map((b) => b.slug));
+  const pool = new Map<string, DiscoveredDevKitEntry>();
+  for (const item of [...CURATED_UNVERIFIED_ESPRESSIF_DEVKITS, ...liveDiscovered]) {
+    if (verifiedSlugs.has(item.slug)) continue;
+    if (!pool.has(item.slug)) pool.set(item.slug, item);
+  }
+  return pool;
+}
+
 export async function runOfficialCatalogSync(params: {
   db: DbClient;
   adminUserId?: string | null;
@@ -213,132 +413,46 @@ export async function runOfficialCatalogSync(params: {
   const fetcher: CustomFetch = params.syncFetch ?? fetch;
   const startedAt = new Date().toISOString();
   const sourceUrls: string[] = [ESPRESSIF_DEVKITS_URL, ESP_BOARD_MANAGER_INDEX_URL];
-  const liveDiscovered: DiscoveredDevKitEntry[] = [];
-  const fetchNotes: string[] = [];
-  let liveSuccessCount = 0;
 
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
-    try {
-      const res = await fetcher(ESPRESSIF_DEVKITS_URL, {
-        headers: { Accept: "text/html" },
-        signal: controller.signal,
-      });
-      if (res.ok) {
-        const html = await res.text();
-        const parsed = parseEspressifDevkitsHtml(html);
-        liveDiscovered.push(...parsed);
-        liveSuccessCount += 1;
-        fetchNotes.push(`Fetched Espressif DevKits (${parsed.length} boards matched)`);
-      } else {
-        fetchNotes.push(`Espressif DevKits returned HTTP ${res.status}`);
-      }
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch (err) {
-    fetchNotes.push(
-      `Espressif DevKits unreachable (${err instanceof Error ? err.message : "network error"})`
-    );
-  }
+  const live = await fetchEspressifLiveSources(fetcher);
+  const fetchNotes = live.notes;
+  const liveSuccessCount = live.liveSuccessCount;
 
-  let boardManagerBoards = 0;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
-    try {
-      const res = await fetcher(ESP_BOARD_MANAGER_INDEX_URL, {
-        headers: { Accept: "text/html" },
-        signal: controller.signal,
-      });
-      if (res.ok) {
-        const html = await res.text();
-        const found = parseEspBoardManagerIndexHtml(html);
-        boardManagerBoards = found.length;
-        liveSuccessCount += 1;
-        fetchNotes.push(`Fetched ESP Board Manager index (${boardManagerBoards} targets indexed)`);
-      } else {
-        fetchNotes.push(`ESP Board Manager returned HTTP ${res.status}`);
-      }
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch (err) {
-    fetchNotes.push(
-      `ESP Board Manager unreachable (${err instanceof Error ? err.message : "network error"})`
-    );
-  }
-
-  const verifiedSlugs = new Set(VERIFIED_BOARD_CATALOG.map((b) => b.slug));
-
-  const { data: existingRows } = await params.db
+  // Every row counts here, removed ones included: a slug stays unique after a
+  // soft delete, and a board an admin removed must not come back on its own.
+  const { data: allRows } = await params.db
     .from("board_catalog")
-    .select("id,slug,firmware_status,is_available,verification_status")
-    .is("deleted_at", null);
+    .select("id,slug,firmware_status,is_available,verification_status,deleted_at");
 
-  const existingBySlug = new Map(
-    (
-      (existingRows ?? []) as Array<{
-        id: string;
-        slug: string;
-        firmware_status: string;
-        is_available: boolean;
-        verification_status: string;
-      }>
-    ).map((r) => [r.slug, r])
-  );
+  const rows = (allRows ?? []) as Array<{
+    id: string;
+    slug: string;
+    firmware_status: string;
+    is_available: boolean;
+    verification_status: string;
+    deleted_at: string | null;
+  }>;
+  const existingBySlug = new Map(rows.filter((r) => !r.deleted_at).map((r) => [r.slug, r]));
+  const removedSlugs = new Set(rows.filter((r) => r.deleted_at).map((r) => r.slug));
 
   let insertedCount = 0;
   let updatedCount = 0;
   let needsVerificationCount = 0;
+  let skippedRemovedCount = 0;
   const nowIso = new Date().toISOString();
 
   // 1. Upsert verified boards (preserve admin firmware_status overrides)
   for (const board of VERIFIED_BOARD_CATALOG) {
+    if (removedSlugs.has(board.slug)) {
+      skippedRemovedCount += 1;
+      continue;
+    }
     const existing = existingBySlug.get(board.slug);
-    const compat = resolveBoardFirmwareCompatibility(board);
-    const payload = {
-      slug: board.slug,
-      manufacturer: board.manufacturer,
-      model: board.model,
-      revision: board.revision,
-      chip_family: board.chip_family,
-      chip_variant: board.chip_variant,
-      flash_size_mb: board.flash_size_mb,
-      psram_size_mb: board.psram_size_mb,
-      usb_vid: board.usb_vid ?? null,
-      usb_pid: board.usb_pid ?? null,
-      is_available: existing ? existing.is_available : board.is_published,
-      description: board.revision_notes ?? null,
-      catalog_category: board.catalog_category,
-      series: board.series,
-      image_url: board.image_url,
-      pinout_image_url: board.pinout_image_url ?? null,
-      docs_url: board.docs_url,
-      datasheet_url: board.datasheet_url ?? null,
-      source_url: board.source_url,
-      source_provider: board.source_provider,
-      verification_status: "verified",
-      firmware_status: existing?.firmware_status ?? board.firmware_status,
-      partition_scheme: compat.partition_scheme,
-      psram_mode: compat.psram_mode,
-      flash_mode: compat.flash_mode,
-      flash_freq: compat.flash_freq,
-      bootloader_offset: compat.bootloader_offset,
-      ota_app_offset: compat.ota_app_offset,
-      boot_button_gpio: compat.boot_button_gpio,
-      usb_interface: compat.usb_interface,
-      supports_wifi: compat.supports_wifi,
-      supports_ble: compat.supports_ble,
-      supports_ble_wifi_provisioning: compat.supports_ble_wifi_provisioning,
-      supports_ota_rollback: compat.supports_ota_rollback,
-      firmware_compat_key: compat.firmware_compat_key,
-      connectivity_note: compat.connectivity_note,
-      board_layout: board.board_layout,
-      revision_notes: board.revision_notes ?? null,
-      last_synced_at: nowIso,
-    };
+    const payload = buildVerifiedCatalogRow(board, {
+      isAvailable: existing ? existing.is_available : board.is_published,
+      firmwareStatus: existing?.firmware_status ?? board.firmware_status,
+      nowIso,
+    });
 
     if (existing) {
       await params.db
@@ -352,34 +466,23 @@ export async function runOfficialCatalogSync(params: {
         .insert(payload)
         .select("id")
         .single();
-      const boardId = (created as { id: string }).id;
-      await params.db.from("board_gpio_definitions").insert(
-        board.gpio_definitions.map((g) => ({
-          board_catalog_id: boardId,
-          pin: g.pin,
-          label: g.label,
-          board_pin_name: g.board_pin_name ?? null,
-          header_side: g.header_side ?? null,
-          header_position: g.header_position ?? null,
-          board_note: g.board_note ?? null,
-          capabilities: g.capabilities,
-          restrictions: g.restrictions,
-        }))
-      );
+      const boardId = (created as { id?: string } | null)?.id;
+      if (!boardId) continue;
+      await params.db
+        .from("board_gpio_definitions")
+        .insert(buildGpioDefinitionRows(boardId, board.gpio_definitions));
       insertedCount += 1;
     }
   }
 
   // 2. Merge additional non-verified Espressif boards WITHOUT fabricating GPIO pinouts
-  const unverifiedPool = new Map<string, DiscoveredDevKitEntry>();
-  for (const item of [...CURATED_UNVERIFIED_ESPRESSIF_DEVKITS, ...liveDiscovered]) {
-    if (verifiedSlugs.has(item.slug)) continue;
-    if (!unverifiedPool.has(item.slug)) {
-      unverifiedPool.set(item.slug, item);
-    }
-  }
+  const unverifiedPool = collectUnverifiedEspressifDevkits(live.discovered);
 
   for (const entry of unverifiedPool.values()) {
+    if (removedSlugs.has(entry.slug)) {
+      skippedRemovedCount += 1;
+      continue;
+    }
     const existing = existingBySlug.get(entry.slug);
     if (existing) {
       await params.db
@@ -397,44 +500,7 @@ export async function runOfficialCatalogSync(params: {
       }
       updatedCount += 1;
     } else {
-      const compat = resolveBoardFirmwareCompatibility(entry);
-      await params.db.from("board_catalog").insert({
-        slug: entry.slug,
-        manufacturer: entry.manufacturer,
-        model: entry.model,
-        revision: entry.revision,
-        chip_family: entry.chip_family,
-        chip_variant: entry.chip_variant,
-        flash_size_mb: entry.flash_size_mb,
-        psram_size_mb: entry.psram_size_mb,
-        is_available: false, // Never publish unverified boards to users automatically
-        description: entry.revision_notes,
-        catalog_category: entry.catalog_category,
-        series: entry.series,
-        image_url: entry.image_url,
-        docs_url: entry.docs_url,
-        source_url: entry.source_url,
-        source_provider: entry.source_provider,
-        verification_status: "needs_verification",
-        firmware_status: "catalog_only",
-        partition_scheme: compat.partition_scheme,
-        psram_mode: compat.psram_mode,
-        flash_mode: compat.flash_mode,
-        flash_freq: compat.flash_freq,
-        bootloader_offset: compat.bootloader_offset,
-        ota_app_offset: compat.ota_app_offset,
-        boot_button_gpio: compat.boot_button_gpio,
-        usb_interface: compat.usb_interface,
-        supports_wifi: compat.supports_wifi,
-        supports_ble: compat.supports_ble,
-        supports_ble_wifi_provisioning: compat.supports_ble_wifi_provisioning,
-        supports_ota_rollback: compat.supports_ota_rollback,
-        firmware_compat_key: compat.firmware_compat_key,
-        connectivity_note: compat.connectivity_note,
-        board_layout: {},
-        revision_notes: entry.revision_notes,
-        last_synced_at: nowIso,
-      });
+      await params.db.from("board_catalog").insert(buildUnverifiedCatalogRow(entry, nowIso));
       insertedCount += 1;
       needsVerificationCount += 1;
     }
@@ -446,6 +512,11 @@ export async function runOfficialCatalogSync(params: {
   const summaryNotes = [
     ...fetchNotes,
     `Catalog synced: ${VERIFIED_BOARD_CATALOG.length} verified boards, ${needsVerificationCount} awaiting GPIO verification.`,
+    ...(skippedRemovedCount > 0
+      ? [
+          `${skippedRemovedCount} board(s) removed by an admin were left out. Use Import Official Boards to restore them.`,
+        ]
+      : []),
   ].join(" · ");
 
   const { data: runRow } = await params.db

@@ -322,7 +322,7 @@ export function App() {
         case "/admin/firmware":
           return <AdminFirmwarePage />;
         case "/admin/boards":
-          return <AdminBoardsPage />;
+          return <AdminBoardsPage isSuperAdmin={isSuperAdmin} />;
         case "/admin/emqx":
           return <AdminEmqxPage />;
         case "/admin/usage":

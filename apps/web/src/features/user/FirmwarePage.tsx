@@ -11,6 +11,7 @@ import {
   RiEyeLine,
   RiHistoryLine,
   RiLoader4Line,
+  RiPauseCircleLine,
   RiRefreshLine,
   RiShieldCheckLine,
   RiUsbLine,
@@ -20,6 +21,7 @@ import {
   compareFirmwareVersions,
   SUPPORTED_CHIP_FAMILIES,
   supportsBleProvisioningForBoard,
+  usbBoardMismatchImpact,
 } from "@homecoreos/shared";
 import { toast } from "sonner";
 import {
@@ -30,13 +32,21 @@ import {
   invalidateApiCache,
 } from "@/lib/api";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
-import { isWebSerialSupported } from "@/lib/usb-flasher";
+import {
+  isWebSerialSupported,
+  UsbBoardMismatchError,
+  type UsbFlashTargetBoardSpec,
+} from "@/lib/usb-flasher";
 import { useUsbFlashSession } from "@/lib/use-usb-flash";
 import {
   OtaProgressPipeline,
   UsbFlashIllustration,
   UsbFlashStagePipeline,
 } from "@/components/firmware/FirmwareProgressPipeline";
+import {
+  UsbBoardMismatchPanel,
+  describeForcedFlashOutcome,
+} from "@/components/firmware/UsbBoardMismatchPanel";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";
 import { IconTile } from "@/components/reui/icon-tile";
@@ -152,6 +162,11 @@ export function FirmwarePage({
     totalBytes,
     flashError,
     capturedSetupInfo,
+    boardReport,
+    boardMismatch,
+    forcedFlash,
+    stoppedOnMismatch,
+    decideBoardMismatch,
     startUsbFlash,
   } = useUsbFlashSession();
 
@@ -315,6 +330,25 @@ export function FirmwarePage({
     [boards, usbMatchingBoards, usbBoardSlug]
   );
 
+  // After an attempt that stopped on a board mismatch: the board selected now,
+  // when it is one the check found to fit the connected hardware exactly. The
+  // notice on step 1 then says "connect again" instead of "choose the matching
+  // board", whether "Use this board" made the switch or the user did.
+  const stoppedMatchLabel =
+    stoppedOnMismatch && boardReport && usbTargetBoard
+      ? (boardReport.recommended.find(
+          (r) =>
+            r.exact &&
+            ((Boolean(r.board.id) && r.board.id === usbTargetBoard.id) ||
+              (Boolean(r.board.slug) && r.board.slug === usbTargetBoard.slug))
+        )?.label ?? null)
+      : null;
+
+  // After a forced flash onto another chip the controller cannot start, which
+  // decides what the last step offers next.
+  const forcedFlashWillNotStart =
+    forcedFlash && boardReport !== null && usbBoardMismatchImpact(boardReport.mismatches) === "will_not_start";
+
   async function handleUsbFlash() {
     if (!selectedUsbRelease) return;
     setUsbStep(2);
@@ -322,15 +356,55 @@ export function FirmwarePage({
       const result = await startUsbFlash({
         release: selectedUsbRelease,
         targetBoard: usbTargetBoard,
+        // Used to recommend the right board when the connected one differs.
+        candidateBoards: boards,
         eraseAll,
       });
-      toast.success(`Firmware installed cleanly on ${result.chipDetected}.`);
+      if (result.boardCheck?.forced) {
+        toast.warning(
+          `Firmware written to ${result.chipDetected} although it does not match the selected board.`
+        );
+      } else {
+        toast.success(`Firmware installed cleanly on ${result.chipDetected}.`);
+      }
       setUsbStep(3);
       invalidateApiCache("/api/firmware", "/api/controllers");
       await load(true);
-    } catch {
-      // hook state renders error inside UsbFlashStagePipeline
+    } catch (err) {
+      if (err instanceof UsbBoardMismatchError && err.cancelledByUser) {
+        // Back to the selection, where the right board can be chosen.
+        setUsbStep(1);
+      }
+      // Any other error is rendered by UsbFlashStagePipeline from the hook state.
     }
+  }
+
+  /** The USB release that can be installed on a board, if one is published. */
+  function findUsbReleaseForBoard(board: UsbFlashTargetBoardSpec): FirmwareReleaseItem | null {
+    const supports = (r: FirmwareReleaseItem) => {
+      if (!r.usb_available) return false;
+      if (r.compatible_boards && r.compatible_boards.length > 0) {
+        return r.compatible_boards.some((b) => b.slug === board.slug);
+      }
+      if (r.compatible_board_ids.length > 0) {
+        return Boolean(board.id) && r.compatible_board_ids.includes(board.id!);
+      }
+      return r.chip_family === board.chip_family;
+    };
+    // Prefer the release that is already selected, so only the board changes.
+    if (selectedUsbRelease && supports(selectedUsbRelease)) return selectedUsbRelease;
+    return releases.find(supports) ?? null;
+  }
+
+  function handleUseRecommendedBoard(board: UsbFlashTargetBoardSpec) {
+    const release = findUsbReleaseForBoard(board);
+    if (!release || !board.slug) return;
+    // Stops the paused flash; nothing has been written.
+    decideBoardMismatch("cancel");
+    setUsbReleaseId(release.id);
+    setUsbBoardSlug(board.slug);
+    setUsbStep(1);
+    toast.info(`Switched to ${board.manufacturer ?? ""} ${board.model ?? board.slug}.`.replace(/\s+/g, " "));
   }
 
   function handleSelectReleaseForUsb(release: FirmwareReleaseItem) {
@@ -341,6 +415,12 @@ export function FirmwarePage({
   }
 
   function requestCloseUsbDialog() {
+    if (boardMismatch) {
+      // Closing the warning is the safe answer: stop, write nothing.
+      decideBoardMismatch("cancel");
+      setUsbDialogOpen(false);
+      return;
+    }
     if (flashing) {
       setConfirmCloseFlash(true);
       return;
@@ -1214,6 +1294,33 @@ export function FirmwarePage({
 
             <Onboarding.Step step={1} className="min-w-0 space-y-4">
               <UsbFlashIllustration />
+              {stoppedOnMismatch && boardReport && (
+                <StatusAlert
+                  tone={stoppedMatchLabel ? "info" : "warning"}
+                  title="Nothing was written to the controller"
+                >
+                  {/* One paragraph: the alert body is a grid, so loose inline nodes would each
+                      take their own row. */}
+                  {stoppedMatchLabel ? (
+                    <p>
+                      The connected board is{" "}
+                      <strong className="text-foreground">{boardReport.detected.summary}</strong>.{" "}
+                      {stoppedMatchLabel} is selected now and matches it. Connect again to install
+                      the firmware.
+                    </p>
+                  ) : (
+                    <p>
+                      The connected board is{" "}
+                      <strong className="text-foreground">{boardReport.detected.summary}</strong>,
+                      which does not match {boardReport.selected?.label ?? "the selected firmware"}.{" "}
+                      {boardReport.recommended[0]
+                        ? `Recommended board: ${boardReport.recommended[0].label}.`
+                        : "No board in your Board Library matches it yet."}{" "}
+                      Choose the matching board below, or connect the board you selected.
+                    </p>
+                  )}
+                </StatusAlert>
+              )}
               <FormField id="usb-rel" label="Factory Firmware Release">
                 <Select
                   value={usbReleaseId || "__none__"}
@@ -1336,14 +1443,41 @@ export function FirmwarePage({
                   disabled={!canManage || !serialSupport.supported || !usbReleaseId || flashing}
                   onClick={() => void handleUsbFlash()}
                 >
-                  {flashing ? (
+                  {boardMismatch ? (
+                    <RiPauseCircleLine className="size-4" aria-hidden="true" />
+                  ) : flashing ? (
                     <RiLoader4Line className="size-4 animate-spin" aria-hidden="true" />
                   ) : (
                     <RiUsbLine className="size-4" aria-hidden="true" />
                   )}
-                  {flashing ? "Flashing via USB..." : "Start / Retry USB Flash"}
+                  {boardMismatch
+                    ? "Paused: board check"
+                    : flashing
+                      ? "Flashing via USB..."
+                      : "Start / Retry USB Flash"}
                 </Button>
               </div>
+              {boardMismatch && (
+                <UsbBoardMismatchPanel
+                  report={boardMismatch}
+                  firmwareLabel={
+                    selectedUsbRelease
+                      ? `${selectedUsbRelease.name} v${selectedUsbRelease.version}`
+                      : "Selected firmware"
+                  }
+                  describeRecommendation={(board) =>
+                    findUsbReleaseForBoard(board)
+                      ? { canSwitch: true }
+                      : {
+                          canSwitch: false,
+                          note: "No USB firmware is published for this board yet.",
+                        }
+                  }
+                  onCancel={() => decideBoardMismatch("cancel")}
+                  onForce={() => decideBoardMismatch("force")}
+                  onUseBoard={handleUseRecommendedBoard}
+                />
+              )}
               <UsbFlashStagePipeline
                 stage={flashStage}
                 percent={flashProgress}
@@ -1355,28 +1489,48 @@ export function FirmwarePage({
                 logs={flashLogs}
                 error={flashError}
                 onRetry={() => void handleUsbFlash()}
+                boardCheck={
+                  boardReport
+                    ? {
+                        result: boardReport.result,
+                        headline: boardReport.headline,
+                        forced: forcedFlash,
+                      }
+                    : null
+                }
               />
             </Onboarding.Step>
 
             <Onboarding.Step step={3} className="min-w-0 space-y-3">
-              <StatusAlert
-                tone="success"
-                title="Factory Firmware Verified & Flashed"
-                action={
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      setUsbDialogOpen(false);
-                      onNavigate("/controllers");
-                    }}
-                  >
-                    Continue to Controllers
-                    <RiArrowRightLine className="size-4" aria-hidden="true" />
-                  </Button>
-                }
-              >
-                Your controller rebooted with HomecoreOS firmware. Continue to the Controllers tab to choose Setup with BLE or Setup with Wi-Fi.
-              </StatusAlert>
+              {forcedFlash ? (
+                <StatusAlert tone="warning" title="Firmware written to a board that does not match">
+                  <p>
+                    The image was written and its checksum verified, but the connected board
+                    {boardReport ? ` (${boardReport.detected.summary})` : ""} is not{" "}
+                    {boardReport?.selected?.label ?? "the selected board"}.{" "}
+                    {describeForcedFlashOutcome(boardReport)}
+                  </p>
+                </StatusAlert>
+              ) : (
+                <StatusAlert
+                  tone="success"
+                  title="Factory Firmware Verified & Flashed"
+                  action={
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setUsbDialogOpen(false);
+                        onNavigate("/controllers");
+                      }}
+                    >
+                      Continue to Controllers
+                      <RiArrowRightLine className="size-4" aria-hidden="true" />
+                    </Button>
+                  }
+                >
+                  Your controller rebooted with HomecoreOS firmware. Continue to the Controllers tab to choose Setup with BLE or Setup with Wi-Fi.
+                </StatusAlert>
+              )}
               {capturedSetupInfo?.bleName && (
                 <StatusAlert tone="info" title="Controller Ready">
                   Bluetooth Name:{" "}
@@ -1407,6 +1561,13 @@ export function FirmwarePage({
                 >
                   Next
                   <RiArrowRightLine className="size-3.5" aria-hidden="true" />
+                </Button>
+              ) : forcedFlashWillNotStart ? (
+                // Pairing cannot work with firmware built for another chip, so
+                // the way forward is the board selection, not the Controllers page.
+                <Button type="button" size="sm" onClick={() => setUsbStep(1)}>
+                  <RiRefreshLine className="size-3.5" aria-hidden="true" />
+                  Install again
                 </Button>
               ) : (
                 <Button

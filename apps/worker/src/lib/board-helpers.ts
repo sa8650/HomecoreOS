@@ -1,7 +1,9 @@
 import {
+  evaluateGpioPinChoice,
   resolveBoardFirmwareCompatibility,
   type BoardProfileSpec,
   type GpioPinDefinition,
+  type PinOperationRequirement,
 } from "@homecoreos/shared";
 import type { DbClient } from "./db";
 
@@ -261,4 +263,35 @@ export async function verifyHomeRoomOwnership(
   }
 
   return { ok: true, homeId, roomId };
+}
+
+/**
+ * The pin selection policy of the visual GPIO selector, enforced on the server.
+ *
+ * validateGpioAssignment() already refuses conflicts, reserved pins and pins
+ * that lack the needed capability. This adds the pins the selector does not
+ * offer either: boot-strapping pins, USB / JTAG pins, the BOOT button pin and
+ * pins that are not broken out. It applies to new and changed assignments
+ * only, so a device that already sits on such a pin keeps working and can
+ * still be renamed or moved to another room.
+ *
+ * Returns the explanation to send back, or null when the pin is allowed.
+ */
+export function checkPinSelectionPolicy(params: {
+  board: BoardProfileSpec;
+  pin: number;
+  requirement: PinOperationRequirement;
+  usedPins: number[];
+  /** The entity already holds this pin on this controller. */
+  unchanged?: boolean;
+}): string | null {
+  if (params.unchanged) return null;
+  const verdict = evaluateGpioPinChoice({
+    board: params.board,
+    pin: params.pin,
+    requirement: params.requirement,
+    usedPins: params.usedPins,
+  });
+  if (verdict.allowed) return null;
+  return verdict.explanation ?? `GPIO ${params.pin} cannot be assigned on this board.`;
 }

@@ -143,25 +143,35 @@ export function classifyPlannerBoardStatus(board: PlannerBoardRecord): PlannerBo
   };
 }
 
-interface LayoutFacts {
-  /** GPIOs physically broken out on a documented header, or null if undocumented. */
+export interface BoardLayoutFacts {
+  /** GPIOs physically broken out on a documented header or pad, or null if undocumented. */
   headerPins: Set<number> | null;
   powerRails: string[];
   features: Map<number, Array<{ kind: string; label: string }>>;
 }
 
-function readLayoutFacts(board: PlannerBoardRecord): LayoutFacts {
+type LayoutFacts = BoardLayoutFacts;
+
+/**
+ * Reads what a board's layout documents: which GPIOs are broken out, which
+ * power rails exist and which pins serve on-board parts. Shared by the planner,
+ * the GPIO pin selector and the device / switch / sensor API.
+ */
+export function readBoardLayoutFacts(
+  board: Pick<PlannerBoardRecord, "board_layout" | "gpio_definitions">
+): BoardLayoutFacts {
   const layout = board.board_layout as
     | {
         leftHeader?: { pins?: unknown };
         rightHeader?: { pins?: unknown };
+        extraPads?: { pins?: unknown };
         onboardFeatures?: unknown;
       }
     | null
     | undefined;
 
   const headerEntries: Array<{ kind?: unknown; gpioPin?: unknown; voltage?: unknown }> = [];
-  for (const header of [layout?.leftHeader, layout?.rightHeader]) {
+  for (const header of [layout?.leftHeader, layout?.rightHeader, layout?.extraPads]) {
     if (header && Array.isArray(header.pins)) {
       for (const pin of header.pins) {
         if (pin && typeof pin === "object") headerEntries.push(pin as Record<string, unknown>);
@@ -213,24 +223,53 @@ function readLayoutFacts(board: PlannerBoardRecord): LayoutFacts {
 const RESTRICTED_FEATURE_KINDS = new Set(["button", "usb", "uart"]);
 const BLOCKED_FEATURE_KINDS = new Set(["psram", "flash"]);
 
-function classifyPin(
+export interface BoardPinHardwareFacts {
+  /** Reasons the pin must never be used. */
+  blocked: string[];
+  /** Reasons the pin affects booting, USB or an on-board control. */
+  restricted: string[];
+  /** On-board parts the pin is shared with (still usable). */
+  shared: string[];
+  /** The pin is wired to the board's flash, PSRAM or another internal part. */
+  hardwareReserved: boolean;
+  /** The layout documents its headers and this pin is not broken out on any. */
+  offHeader: boolean;
+  /** Kinds of on-board parts attached to the pin ("led", "button", ...). */
+  onboardKinds: string[];
+}
+
+/**
+ * The hardware rules for one pin, independent of what it would be used for.
+ * This is the single rule set behind the planner's pin tiers and the GPIO pin
+ * selector's states.
+ */
+export function collectBoardPinHardwareFacts(
   def: GpioPinDefinition,
-  facts: LayoutFacts,
+  facts: BoardLayoutFacts,
   bootButtonGpio: number | null
-): PlannerPinInfo {
+): BoardPinHardwareFacts {
   const caps = def.capabilities ?? ({} as GpioPinDefinition["capabilities"]);
   const res = def.restrictions ?? ({} as GpioPinDefinition["restrictions"]);
   const blocked: string[] = [];
   const restricted: string[] = [];
   const shared: string[] = [];
+  let hardwareReserved = false;
 
-  if (res.reserved) blocked.push(`Reserved: ${res.reserved_reason ?? "internal use"}`);
-  if (res.flash_psram_conflict) blocked.push("Wired to the board's internal flash / PSRAM");
-  if (facts.headerPins && !facts.headerPins.has(def.pin)) {
+  if (res.reserved) {
+    blocked.push(`Reserved: ${res.reserved_reason ?? "internal use"}`);
+    hardwareReserved = true;
+  }
+  if (res.flash_psram_conflict) {
+    blocked.push("Wired to the board's internal flash / PSRAM");
+    hardwareReserved = true;
+  }
+  const offHeader = Boolean(facts.headerPins && !facts.headerPins.has(def.pin));
+  if (offHeader) {
     blocked.push("Not available on the board's pin headers");
   }
   if (!caps.digital_in && !caps.digital_out && !caps.adc) {
     blocked.push("No usable input or output function");
+    hardwareReserved = true;
   }
 
   if (res.strapping_pin) {
@@ -241,15 +280,30 @@ function classifyPin(
     restricted.push("Connected to the BOOT / recovery button");
   }
 
+  const onboardKinds: string[] = [];
   for (const feature of facts.features.get(def.pin) ?? []) {
+    onboardKinds.push(feature.kind);
     if (BLOCKED_FEATURE_KINDS.has(feature.kind)) {
       blocked.push(`Used by on-board ${feature.label}`);
+      hardwareReserved = true;
     } else if (RESTRICTED_FEATURE_KINDS.has(feature.kind)) {
       restricted.push(`Used by on-board ${feature.label}`);
     } else {
       shared.push(`Shared with on-board ${feature.label}`);
     }
   }
+
+  return { blocked, restricted, shared, hardwareReserved, offHeader, onboardKinds };
+}
+
+function classifyPin(
+  def: GpioPinDefinition,
+  facts: LayoutFacts,
+  bootButtonGpio: number | null
+): PlannerPinInfo {
+  const caps = def.capabilities ?? ({} as GpioPinDefinition["capabilities"]);
+  const res = def.restrictions ?? ({} as GpioPinDefinition["restrictions"]);
+  const { blocked, restricted, shared } = collectBoardPinHardwareFacts(def, facts, bootButtonGpio);
 
   const tier: PlannerPinTier =
     blocked.length > 0
@@ -295,7 +349,7 @@ export function evaluatePlannerBoardCapability(
   const status = classifyPlannerBoardStatus(board);
   const spec = toPlannerBoardSpec(board);
   const compat = resolveBoardFirmwareCompatibility(board);
-  const facts = readLayoutFacts(board);
+  const facts = readBoardLayoutFacts(board);
   const definitions = Array.isArray(board.gpio_definitions) ? board.gpio_definitions : [];
 
   const specIssues: string[] = [];

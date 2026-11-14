@@ -9,6 +9,7 @@ import {
   RiAddLine,
   RiCpuLine,
   RiDeleteBinLine,
+  RiDownloadCloud2Line,
   RiExternalLinkLine,
   RiRefreshLine,
   RiUserSettingsLine,
@@ -54,6 +55,8 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { BoardProfileItem, BoardSyncRunItem } from "../types";
+import { BoardRemovalDialog } from "./BoardRemovalDialog";
+import { OfficialBoardImportDialog } from "./OfficialBoardImportDialog";
 
 interface AdminAccountRow {
   id: string;
@@ -489,7 +492,11 @@ export function AdminAccountsStaffPage({ isSuperAdmin }: { isSuperAdmin: boolean
   );
 }
 
-export function AdminBoardsPage() {
+/**
+ * `isSuperAdmin` decides whether boards can be removed here: the Worker lets
+ * only super admins remove a board, so nobody else is offered the control.
+ */
+export function AdminBoardsPage({ isSuperAdmin = false }: { isSuperAdmin?: boolean } = {}) {
   const effectiveTimezone = useEffectiveTimezone();
   const [boards, setBoards] = useState<BoardProfileItem[]>([]);
   const [syncRuns, setSyncRuns] = useState<BoardSyncRunItem[]>([]);
@@ -497,6 +504,8 @@ export function AdminBoardsPage() {
   const [syncing, setSyncing] = useState(false);
   const [filterTab, setFilterTab] = useState("all");
   const [inspectBoard, setInspectBoard] = useState<BoardProfileItem | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<BoardProfileItem | null>(null);
 
   const [addOpen, setAddOpen] = useState(false);
   const [slug, setSlug] = useState("");
@@ -508,7 +517,8 @@ export function AdminBoardsPage() {
   const [psramMb, setPsramMb] = useState(8);
 
   async function load() {
-    setLoading(true);
+    // Only the first load shows the skeleton. A reload keeps the page (and any
+    // open dialog, such as the import result) mounted.
     try {
       const res = await apiFetch<{
         boards: BoardProfileItem[];
@@ -638,9 +648,13 @@ export function AdminBoardsPage() {
       <PageHeader
         eyebrow="Global Hardware Catalog"
         title="Board Library Management"
-        description="Sync official Espressif & partner hardware boards, verify pin maps before publishing, and manage firmware compatibility flags."
+        description="Import official Espressif & partner hardware boards, verify pin maps before publishing, and manage firmware compatibility flags."
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+              <RiDownloadCloud2Line className="size-4" aria-hidden="true" />
+              Import Official Boards
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -713,7 +727,7 @@ export function AdminBoardsPage() {
         <EmptyStatePanel
           icon={<RiCpuLine />}
           title="No matching boards"
-          description="Sync the official Espressif catalog or switch filter tabs."
+          description="Import official boards, sync the Espressif catalog, or switch filter tabs."
           action={
             <Button onClick={() => void handleSyncOfficialCatalog()}>
               <RiRefreshLine className="size-4" aria-hidden="true" />
@@ -737,8 +751,9 @@ export function AdminBoardsPage() {
             <TableBody>
               {filteredBoards.map((b) => (
                 <TableRow key={b.id}>
-                  <TableCell>
-                    <div className="flex items-center gap-3">
+                  {/* Below 1420px the name may wrap, so the row actions stay in view on laptops. */}
+                  <TableCell className="whitespace-normal min-[1420px]:whitespace-nowrap">
+                    <div className="flex min-w-56 items-center gap-3">
                       <div className="flex h-11 w-16 shrink-0 items-center justify-center rounded-md border border-border bg-[#0b0e12] p-1">
                         <BoardVectorSvg
                           board={b}
@@ -747,11 +762,11 @@ export function AdminBoardsPage() {
                           className="h-full w-full"
                         />
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <p className="font-semibold text-foreground">
                           {b.manufacturer} {b.model}
                         </p>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex flex-wrap items-center gap-x-1.5">
                           <span className="font-mono text-[11px] text-muted-foreground">
                             {b.slug}
                           </span>
@@ -834,43 +849,60 @@ export function AdminBoardsPage() {
                       {b.is_available ? "Published" : "Draft / Hidden"}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right">
-                    <div className="inline-flex items-center gap-1.5">
-                      {(b.gpio_definitions?.length ?? 0) > 0 && (
+                  <TableCell className="whitespace-normal text-right">
+                    {/* Two groups that wrap as units: two rows on laptops, one row on wide screens. */}
+                    <div className="flex min-w-[6.5rem] flex-wrap items-center justify-end gap-1.5 min-[1420px]:flex-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        {(b.gpio_definitions?.length ?? 0) > 0 && (
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            onClick={() => setInspectBoard(b)}
+                          >
+                            Pinout
+                          </Button>
+                        )}
+                        {b.docs_url && (
+                          <a
+                            href={b.docs_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex h-7 items-center rounded-md border border-border px-2 text-xs hover:bg-muted"
+                            title="Official Hardware Docs"
+                          >
+                            <RiExternalLinkLine className="size-3.5" />
+                          </a>
+                        )}
+                      </div>
+                      <div className="inline-flex items-center gap-1.5">
                         <Button
-                          variant="outline"
+                          variant={b.is_available ? "outline" : "default"}
                           size="xs"
-                          onClick={() => setInspectBoard(b)}
+                          disabled={
+                            !b.is_available && b.verification_status === "needs_verification"
+                          }
+                          title={
+                            b.verification_status === "needs_verification"
+                              ? "Verify GPIO pin definitions before publishing"
+                              : undefined
+                          }
+                          onClick={() => void handleToggleAvailability(b)}
                         >
-                          Pinout
+                          {b.is_available ? "Hide" : "Publish"}
                         </Button>
-                      )}
-                      {b.docs_url && (
-                        <a
-                          href={b.docs_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex h-7 items-center rounded-md border border-border px-2 text-xs hover:bg-muted"
-                          title="Official Hardware Docs"
-                        >
-                          <RiExternalLinkLine className="size-3.5" />
-                        </a>
-                      )}
-                      <Button
-                        variant={b.is_available ? "outline" : "default"}
-                        size="xs"
-                        disabled={
-                          !b.is_available && b.verification_status === "needs_verification"
-                        }
-                        title={
-                          b.verification_status === "needs_verification"
-                            ? "Verify GPIO pin definitions before publishing"
-                            : undefined
-                        }
-                        onClick={() => void handleToggleAvailability(b)}
-                      >
-                        {b.is_available ? "Hide" : "Publish"}
-                      </Button>
+                        {isSuperAdmin && (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            aria-label={`Remove ${b.manufacturer} ${b.model}`}
+                            title="Remove from the Board Library"
+                            onClick={() => setRemoveTarget(b)}
+                          >
+                            <RiDeleteBinLine className="size-3.5" aria-hidden="true" />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -897,6 +929,18 @@ export function AdminBoardsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <OfficialBoardImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={load}
+      />
+
+      <BoardRemovalDialog
+        board={removeTarget}
+        onOpenChange={(open) => !open && setRemoveTarget(null)}
+        onRemoved={load}
+      />
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="sm:max-w-lg">

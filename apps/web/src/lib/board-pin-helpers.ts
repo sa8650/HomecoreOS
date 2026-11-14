@@ -1,7 +1,11 @@
 import {
+  buildGpioPinSelectorModel,
   requiredPinCapabilityForDevice,
   requiredPinCapabilityForSensor,
-  type GpioPinDefinition,
+  type GpioPinEntityKind,
+  type GpioPinSelectorEntry,
+  type GpioPinSelectorModel,
+  type GpioPinUsage,
   type PinOperationRequirement,
   type SupportedDeviceType,
   type SupportedSensorType,
@@ -132,6 +136,125 @@ export async function fetchHardwareContext(
   };
 }
 
+/** The board profile a controller runs on, when the library knows it. */
+export function resolveControllerBoard(
+  controller: ControllerItem | undefined,
+  boardsById: Map<string, BoardProfileItem>
+): BoardProfileItem | undefined {
+  const boardId = controller?.board_catalog_id ?? controller?.custom_board_id;
+  return boardId ? boardsById.get(boardId) : undefined;
+}
+
+/** The pin map of one controller for one device / switch / sensor type. */
+export interface PinMap {
+  /** The controller's board, or undefined when the library does not know it. */
+  board: BoardProfileItem | undefined;
+  /** Every pin of that board with its state; null without a pin map. */
+  model: GpioPinSelectorModel | null;
+  /** Devices, switches and sensors that already hold a pin on the controller. */
+  usedPins: GpioPinUsage[];
+  /** The entity being edited. Its own pin is not a conflict. */
+  editing: { entityKind: GpioPinEntityKind; id: string } | null;
+}
+
+export interface PinSelection extends PinMap {
+  /** The entry of the pin that is currently entered, if it exists on the board. */
+  entry: GpioPinSelectorEntry | null;
+  /** True when the entered pin must not be saved. */
+  blocked: boolean;
+  /** Why it is blocked, or what to keep in mind. */
+  reason?: string;
+}
+
+/**
+ * Builds the pin map the GPIO selector draws. The rules come from the shared
+ * pin policy, which the API enforces as well.
+ */
+export function resolvePinMap(params: {
+  controller: ControllerItem | undefined;
+  boardsById: Map<string, BoardProfileItem>;
+  requirement: PinOperationRequirement;
+  usedPinsByController?: HardwareContext["usedPinsByController"];
+  excludeEntity?: { kind: GpioPinEntityKind; id: string };
+}): PinMap {
+  const { controller, boardsById, requirement, usedPinsByController, excludeEntity } = params;
+  const board = resolveControllerBoard(controller, boardsById);
+  const usedPins: GpioPinUsage[] = controller ? (usedPinsByController?.get(controller.id) ?? []) : [];
+  const editing = excludeEntity ? { entityKind: excludeEntity.kind, id: excludeEntity.id } : null;
+  const model =
+    board && board.gpio_definitions.length > 0
+      ? buildGpioPinSelectorModel({ board, requirement, usedPins, editing })
+      : null;
+  return { board, model, usedPins, editing };
+}
+
+/** The verdict for the pin that is entered in the field. */
+export function resolvePinChoice(map: PinMap, pinNum: number | null): PinSelection {
+  if (pinNum === null) {
+    return { ...map, entry: null, blocked: false };
+  }
+  if (!Number.isInteger(pinNum) || pinNum < 0) {
+    return { ...map, entry: null, blocked: true, reason: "Enter a whole GPIO number." };
+  }
+
+  if (!map.model) {
+    // Without a pin map only a conflict on the same controller can be detected.
+    const conflict = map.usedPins.find(
+      (u) =>
+        u.pin === pinNum &&
+        !(map.editing && u.entityKind === map.editing.entityKind && u.id === map.editing.id)
+    );
+    return {
+      ...map,
+      entry: null,
+      blocked: Boolean(conflict),
+      reason: conflict
+        ? `GPIO ${pinNum} is already assigned to ${conflict.entityKind} "${conflict.name}" on this controller.`
+        : undefined,
+    };
+  }
+
+  const entry = map.model.entries.find((e) => e.pin === pinNum) ?? null;
+  if (!entry) {
+    return {
+      ...map,
+      entry,
+      blocked: true,
+      reason: `GPIO ${pinNum} does not exist on ${map.board?.model ?? "this board"}.`,
+    };
+  }
+  return { ...map, entry, blocked: !entry.selectable, reason: entry.explanation ?? undefined };
+}
+
+export function resolvePinSelection(params: {
+  controller: ControllerItem | undefined;
+  boardsById: Map<string, BoardProfileItem>;
+  pinNum: number | null;
+  requirement: PinOperationRequirement;
+  usedPinsByController?: HardwareContext["usedPinsByController"];
+  excludeEntity?: { kind: GpioPinEntityKind; id: string };
+}): PinSelection {
+  return resolvePinChoice(resolvePinMap(params), params.pinNum);
+}
+
+/**
+ * The pin a new device, switch or sensor starts with: the best suggestion.
+ * An I2C sensor starts on the board's own SDA pad, or on no pin at all (the
+ * default bus) when that pad is unknown or taken.
+ */
+export function suggestedDefaultPin(
+  model: GpioPinSelectorModel | null,
+  requirement: PinOperationRequirement
+): number | null {
+  const first = model?.suggestions[0];
+  if (model === null || first === undefined) return null;
+  if (requirement === "i2c") {
+    const entry = model.entries.find((e) => e.pin === first);
+    return entry?.roles.includes("SDA") ? first : null;
+  }
+  return first;
+}
+
 export function getPinHint(params: {
   controller: ControllerItem | undefined;
   boardsById: Map<string, BoardProfileItem>;
@@ -140,98 +263,18 @@ export function getPinHint(params: {
   usedPinsByController?: HardwareContext["usedPinsByController"];
   excludeEntity?: { kind: "switch" | "device" | "sensor"; id: string };
 }): { label: string; blocked: boolean; reason?: string } {
-  const {
-    controller,
-    boardsById,
-    pinNum,
-    requirement,
-    usedPinsByController,
-    excludeEntity,
-  } = params;
-
-  if (pinNum === null || !Number.isFinite(pinNum)) {
+  if (params.pinNum === null || !Number.isFinite(params.pinNum)) {
     return { label: "I2C / Bus", blocked: false };
   }
-
-  if (!controller) return { label: `GPIO${pinNum}`, blocked: false };
-
-  const used = (usedPinsByController?.get(controller.id) ?? []).find(
-    (entry) =>
-      entry.pin === pinNum &&
-      !(
-        excludeEntity &&
-        entry.entityKind === excludeEntity.kind &&
-        entry.id === excludeEntity.id
-      )
-  );
-  if (used) {
-    return {
-      label: `GPIO${pinNum}`,
-      blocked: true,
-      reason: `GPIO ${pinNum} is already assigned to ${used.entityKind} "${used.name}" on this controller.`,
-    };
-  }
-
-  const boardId = controller.board_catalog_id ?? controller.custom_board_id;
-  const board = boardId ? boardsById.get(boardId) : undefined;
-  const def: GpioPinDefinition | undefined = board?.gpio_definitions.find(
-    (g) => g.pin === pinNum
-  );
-  if (board && !def) {
-    return {
-      label: `GPIO${pinNum}`,
-      blocked: true,
-      reason: `GPIO ${pinNum} does not exist on ${board.model}.`,
-    };
-  }
-  if (!def) {
-    return { label: `GPIO${pinNum}`, blocked: false };
-  }
-
-  if (def.restrictions.reserved || def.restrictions.flash_psram_conflict) {
-    return {
-      label: def.label,
-      blocked: true,
-      reason: def.restrictions.reserved_reason ?? "Reserved internal Flash/PSRAM bus",
-    };
-  }
-
-  if (
-    (requirement === "digital_out" || requirement === "pwm") &&
-    def.restrictions.input_only
-  ) {
-    return {
-      label: def.label,
-      blocked: true,
-      reason: `GPIO ${pinNum} is input-only and cannot drive outputs.`,
-    };
-  }
-
-  if (requirement && !def.capabilities[requirement]) {
-    return {
-      label: def.label,
-      blocked: true,
-      reason: `GPIO ${pinNum} does not support ${requirement.replace("_", " ")}.`,
-    };
-  }
-
-  if (def.restrictions.usb_jtag_conflict) {
-    return {
-      label: def.label,
-      blocked: false,
-      reason: "Shared with USB/JTAG; may affect serial console when toggled.",
-    };
-  }
-
-  if (def.restrictions.strapping_pin) {
-    return {
-      label: def.label,
-      blocked: false,
-      reason: `Boot strapping pin (${def.restrictions.strapping_note ?? "sampled on reset"})`,
-    };
-  }
-
-  return { label: def.label, blocked: false };
+  const selection = resolvePinSelection({
+    ...params,
+    requirement: params.requirement ?? "digital_in",
+  });
+  return {
+    label: selection.entry?.label ?? `GPIO${params.pinNum}`,
+    blocked: selection.blocked,
+    reason: selection.reason,
+  };
 }
 
 export function getRequirementForDeviceType(deviceType: string): PinOperationRequirement {

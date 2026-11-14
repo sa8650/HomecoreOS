@@ -25,6 +25,12 @@ import { inspectConfiguration } from "../config/env";
 import { recordActivity } from "../lib/audit";
 import { runOfficialCatalogSync } from "../lib/espressif-catalog-sync";
 import {
+  OFFICIAL_IMPORT_PROVIDERS,
+  importOfficialBoards,
+  inspectBoardUsage,
+  previewOfficialBoardImport,
+} from "../lib/official-board-import";
+import {
   checkControllerReleaseCompatibility,
   syncBoardFirmwareStatuses,
   type CompatBoardRecord,
@@ -105,6 +111,16 @@ const platformSettingsPatchSchema = z.object({
   maintenance_mode: z.boolean().optional(),
   board_catalog_enabled: z.boolean().optional(),
   default_timezone: z.string().trim().min(1).max(64).optional(),
+});
+
+const boardImportPreviewSchema = z.object({
+  provider: z.enum(OFFICIAL_IMPORT_PROVIDERS),
+});
+
+const boardImportSchema = z.object({
+  provider: z.enum(OFFICIAL_IMPORT_PROVIDERS),
+  slugs: z.array(z.string().min(1).max(120)).min(1).max(60),
+  publish: z.boolean().default(true),
 });
 
 const boardCatalogSchema = z.object({
@@ -2430,6 +2446,87 @@ export function createAdminRoutes() {
     }
   );
 
+  // Official board import, step 1: read the official sources and list what
+  // could be added. Nothing is written.
+  app.post(
+    "/boards/import/preview",
+    requireAdminSession("super_admin", "operator"),
+    async (c) => {
+      const body = await c.req.json().catch(() => null);
+      const parsed = boardImportPreviewSchema.safeParse(body);
+      if (!parsed.success) return c.json({ error: "Choose a board source to preview." }, 400);
+
+      const deps = c.get("deps") ?? {};
+      const preview = await previewOfficialBoardImport({
+        db: c.get("db"),
+        provider: parsed.data.provider,
+        syncFetch: deps.syncFetch,
+      });
+      return c.json({ preview });
+    }
+  );
+
+  // Official board import, step 2: add the boards the admin selected.
+  app.post(
+    "/boards/import",
+    requireAdminSession("super_admin", "operator"),
+    async (c) => {
+      const body = await c.req.json().catch(() => null);
+      const parsed = boardImportSchema.safeParse(body);
+      if (!parsed.success) {
+        return c.json({ error: "Select at least one board to import." }, 400);
+      }
+
+      const admin = c.get("adminAuth")!;
+      const db = c.get("db");
+      const deps = c.get("deps") ?? {};
+
+      const run = await importOfficialBoards({
+        db,
+        provider: parsed.data.provider,
+        slugs: parsed.data.slugs,
+        publish: parsed.data.publish,
+        adminUserId: admin.userId,
+        syncFetch: deps.syncFetch,
+      });
+
+      await recordActivity(db, {
+        actorUserId: admin.userId,
+        category: "admin",
+        action: "admin.boards_imported",
+        summary: `Imported official boards from ${run.providerLabel}: ${run.importedCount} added, ${run.restoredCount} restored, ${run.skippedCount} skipped`,
+        metadata: {
+          runId: run.runId,
+          provider: run.provider,
+          publish: parsed.data.publish,
+          outcomes: run.outcomes.map((o) => ({
+            slug: o.slug,
+            action: o.action,
+            published: o.published,
+            verification: o.verification,
+          })),
+        },
+      });
+
+      return c.json({ run });
+    }
+  );
+
+  // What depends on a board. Shown in the removal confirmation.
+  app.get("/boards/:id/usage", async (c) => {
+    const db = c.get("db");
+    const { data: board } = await db
+      .from("board_catalog")
+      .select("id,slug,manufacturer,model")
+      .eq("id", c.req.param("id"))
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (!board) return c.json({ error: "Board not found in the catalog." }, 404);
+    const row = board as { id: string; slug: string; manufacturer: string; model: string };
+    const usage = await inspectBoardUsage(db, row);
+    return c.json({ board: row, usage });
+  });
+
   app.post(
     "/boards",
     requireAdminSession("super_admin", "operator"),
@@ -2549,12 +2646,49 @@ export function createAdminRoutes() {
     "/boards/:id",
     requireAdminSession("super_admin"),
     async (c) => {
+      const admin = c.get("adminAuth")!;
       const db = c.get("db");
-      await db
+      const { data: board } = await db
+        .from("board_catalog")
+        .select("id,slug,manufacturer,model")
+        .eq("id", c.req.param("id"))
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (!board) return c.json({ error: "Board not found in the catalog." }, 404);
+      const row = board as { id: string; slug: string; manufacturer: string; model: string };
+
+      // A controller resolves its pin map through the board. Removing a board
+      // that is in use would break GPIO validation for those controllers.
+      const usage = await inspectBoardUsage(db, row);
+      if (!usage.canRemove) {
+        return c.json({ error: usage.blockers[0], usage }, 409);
+      }
+
+      const { data: removed, error } = await db
         .from("board_catalog")
         .update({ deleted_at: new Date().toISOString(), is_available: false })
-        .eq("id", c.req.param("id"));
-      return c.json({ ok: true });
+        .eq("id", row.id)
+        .is("deleted_at", null)
+        .select("id")
+        .maybeSingle();
+      if (error || !removed) {
+        return c.json({ error: error?.message ?? "Board could not be removed." }, 400);
+      }
+
+      await recordActivity(db, {
+        actorUserId: admin.userId,
+        category: "admin",
+        action: "admin.board_removed",
+        summary: `Removed board "${row.manufacturer} ${row.model}" from the Board Library`,
+        metadata: {
+          boardId: row.id,
+          slug: row.slug,
+          savedByAccountCount: usage.savedByAccountCount,
+          firmwareReleaseCount: usage.firmwareReleaseCount,
+        },
+      });
+
+      return c.json({ ok: true, removed: row, usage });
     }
   );
 

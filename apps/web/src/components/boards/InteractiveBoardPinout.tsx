@@ -218,7 +218,7 @@ export function InteractiveBoardPinout({
     }
   };
 
-  const renderPinButton = (hp: BoardHeaderPin, side: "left" | "right") => {
+  const renderPinButton = (hp: BoardHeaderPin, side: "left" | "right" | "pad") => {
     const def = hp.gpioPin !== null ? gpioByPin.get(hp.gpioPin) : undefined;
     const cls = classifyPin(hp, def, usedSet);
     const matches = matchesPinFilter(filter, hp, def, search);
@@ -440,6 +440,19 @@ export function InteractiveBoardPinout({
                 </div>
               </div>
             </div>
+
+            {layout?.extraPads && layout.extraPads.pins.length > 0 && (
+              <div className="mt-2.5 space-y-1 border-t border-border pt-2" data-testid="extra-pads">
+                <p className="text-[10px] font-medium text-muted-foreground">
+                  <span className="font-semibold text-foreground">{layout.extraPads.name}</span>
+                  {" · "}solder pads next to the two pin headers. They can be assigned like header
+                  pins.
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {layout.extraPads.pins.map((hp) => renderPinButton(hp, "pad"))}
+                </div>
+              </div>
+            )}
 
             {layout?.onboardFeatures && layout.onboardFeatures.length > 0 && (
               <div className="mt-2.5 flex flex-wrap items-center gap-1 border-t border-border pt-2">

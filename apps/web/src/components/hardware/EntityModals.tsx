@@ -5,12 +5,13 @@ import {
 } from "@homecoreos/shared";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
-  getPinHint,
   getRequirementForDeviceType,
   getRequirementForSensorType,
   type HardwareContext,
 } from "@/lib/board-pin-helpers";
+import { useGpioPinField } from "@/lib/use-gpio-pin-field";
 import { formatTimestamp } from "@/lib/timezone";
+import { GpioPinPicker } from "@/components/hardware/GpioPinPicker";
 import { Badge } from "@/components/reui/badge";
 import { FormField, StatusAlert } from "@/components/shared/AppUi";
 import { Button } from "@/components/ui/button";
@@ -59,7 +60,6 @@ export function SwitchEditorModal({
   const [name, setName] = useState("");
   const [controllerId, setControllerId] = useState("");
   const [roomId, setRoomId] = useState(ROOM_NONE);
-  const [gpioPin, setGpioPin] = useState(4);
   const [invertedLogic, setInvertedLogic] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,13 +78,11 @@ export function SwitchEditorModal({
         setName(switchItem.name);
         setControllerId(switchItem.controller_id);
         setRoomId(switchItem.room_id ?? ROOM_NONE);
-        setGpioPin(switchItem.gpio_pin);
         setInvertedLogic(Boolean(switchItem.inverted));
       } else {
         setName("");
         setControllerId(ctx.controllers[0]?.id ?? "");
         setRoomId(ROOM_NONE);
-        setGpioPin(4);
         setInvertedLogic(false);
       }
     } else if (!switchItem && !controllerId && ctx.controllers[0]?.id) {
@@ -93,16 +91,17 @@ export function SwitchEditorModal({
   }, [open, switchItem, controllerId, ctx.controllers]);
 
   const selectedCtrl = ctx.controllers.find((c) => c.id === controllerId);
-  const pinHint = getPinHint({
+  const pinField = useGpioPinField({
+    open,
+    savedPin: switchItem ? switchItem.gpio_pin : undefined,
     controller: selectedCtrl,
-    boardsById: ctx.boardsById,
-    pinNum: gpioPin,
+    ctx,
     requirement: "digital_out",
-    usedPinsByController: ctx.usedPinsByController,
-    excludeEntity: switchItem
-      ? { kind: "switch", id: switchItem.id }
-      : undefined,
+    entityKind: "switch",
+    entityId: switchItem?.id,
+    fallbackPin: "4",
   });
+  const pinBlocked = pinField.pinNum === null || pinField.selection.blocked;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -115,6 +114,10 @@ export function SwitchEditorModal({
       setError("Select a controller.");
       return;
     }
+    if (pinField.pinNum === null) {
+      setError("Choose a GPIO pin for this switch.");
+      return;
+    }
     savingRef.current = true;
     setSaving(true);
     setError(null);
@@ -123,7 +126,7 @@ export function SwitchEditorModal({
         name: name.trim(),
         controllerId,
         roomId: roomId === ROOM_NONE ? null : roomId,
-        gpioPin: Number(gpioPin),
+        gpioPin: pinField.pinNum,
         invertedLogic,
       };
       if (isEditing && switchItem) {
@@ -151,7 +154,7 @@ export function SwitchEditorModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>
             {isEditing ? `Edit Switch: ${switchItem?.name}` : "Add Switch"}
@@ -205,22 +208,15 @@ export function SwitchEditorModal({
             </FormField>
           </div>
 
-          <FormField
+          <GpioPinPicker
             id="sw-gpio"
             label="GPIO Pin"
-            error={pinHint.blocked ? pinHint.reason : undefined}
-            hint={!pinHint.blocked ? pinHint.reason : undefined}
-          >
-            <Input
-              id="sw-gpio"
-              type="number"
-              min={0}
-              max={54}
-              value={gpioPin}
-              aria-invalid={pinHint.blocked}
-              onChange={(e) => setGpioPin(Number(e.target.value))}
-            />
-          </FormField>
+            value={pinField.text}
+            onChange={pinField.setPin}
+            selection={pinField.selection}
+            requirement="digital_out"
+            typeLabel="a switch"
+          />
 
           <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-3 py-2.5">
             <Label htmlFor="sw-inv" className="text-xs font-medium cursor-pointer">
@@ -243,7 +239,7 @@ export function SwitchEditorModal({
             </Button>
             <Button
               type="submit"
-              disabled={saving || !controllerId || pinHint.blocked}
+              disabled={saving || !controllerId || pinBlocked}
             >
               {saving
                 ? "Saving..."
@@ -278,7 +274,6 @@ export function DeviceEditorModal({
   );
   const [controllerId, setControllerId] = useState("");
   const [roomId, setRoomId] = useState(ROOM_NONE);
-  const [gpioPin, setGpioPin] = useState(6);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const savingRef = useRef(false);
@@ -297,13 +292,11 @@ export function DeviceEditorModal({
         setDeviceType(deviceItem.device_type);
         setControllerId(deviceItem.controller_id);
         setRoomId(deviceItem.room_id ?? ROOM_NONE);
-        setGpioPin(deviceItem.gpio_pin);
       } else {
         setName("");
         setDeviceType(SUPPORTED_DEVICE_TYPES[0]);
         setControllerId(ctx.controllers[0]?.id ?? "");
         setRoomId(ROOM_NONE);
-        setGpioPin(6);
       }
     } else if (!deviceItem && !controllerId && ctx.controllers[0]?.id) {
       setControllerId(ctx.controllers[0].id);
@@ -311,16 +304,18 @@ export function DeviceEditorModal({
   }, [open, deviceItem, controllerId, ctx.controllers]);
 
   const selectedCtrl = ctx.controllers.find((c) => c.id === controllerId);
-  const pinHint = getPinHint({
+  const requirement = getRequirementForDeviceType(deviceType);
+  const pinField = useGpioPinField({
+    open,
+    savedPin: deviceItem ? deviceItem.gpio_pin : undefined,
     controller: selectedCtrl,
-    boardsById: ctx.boardsById,
-    pinNum: gpioPin,
-    requirement: getRequirementForDeviceType(deviceType),
-    usedPinsByController: ctx.usedPinsByController,
-    excludeEntity: deviceItem
-      ? { kind: "device", id: deviceItem.id }
-      : undefined,
+    ctx,
+    requirement,
+    entityKind: "device",
+    entityId: deviceItem?.id,
+    fallbackPin: "6",
   });
+  const pinBlocked = pinField.pinNum === null || pinField.selection.blocked;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -333,6 +328,10 @@ export function DeviceEditorModal({
       setError("Select a controller.");
       return;
     }
+    if (pinField.pinNum === null) {
+      setError("Choose a GPIO pin for this device.");
+      return;
+    }
     savingRef.current = true;
     setSaving(true);
     setError(null);
@@ -342,7 +341,7 @@ export function DeviceEditorModal({
         deviceType,
         controllerId,
         roomId: roomId === ROOM_NONE ? null : roomId,
-        gpioPin: Number(gpioPin),
+        gpioPin: pinField.pinNum,
       };
       if (isEditing && deviceItem) {
         await apiFetch(`/api/devices/${deviceItem.id}`, {
@@ -369,7 +368,7 @@ export function DeviceEditorModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>
             {isEditing ? `Edit Device: ${deviceItem?.name}` : "Add Device"}
@@ -439,22 +438,15 @@ export function DeviceEditorModal({
             </FormField>
           </div>
 
-          <FormField
+          <GpioPinPicker
             id="dev-gpio"
             label="GPIO Pin"
-            error={pinHint.blocked ? pinHint.reason : undefined}
-            hint={!pinHint.blocked ? pinHint.reason : undefined}
-          >
-            <Input
-              id="dev-gpio"
-              type="number"
-              min={0}
-              max={54}
-              value={gpioPin}
-              aria-invalid={pinHint.blocked}
-              onChange={(e) => setGpioPin(Number(e.target.value))}
-            />
-          </FormField>
+            value={pinField.text}
+            onChange={pinField.setPin}
+            selection={pinField.selection}
+            requirement={requirement}
+            typeLabel={`a ${deviceType.replace(/_/g, " ")}`}
+          />
 
           <DialogFooter>
             <Button
@@ -466,7 +458,7 @@ export function DeviceEditorModal({
             </Button>
             <Button
               type="submit"
-              disabled={saving || !controllerId || pinHint.blocked}
+              disabled={saving || !controllerId || pinBlocked}
             >
               {saving
                 ? "Saving..."
@@ -501,7 +493,6 @@ export function SensorEditorModal({
   );
   const [controllerId, setControllerId] = useState("");
   const [roomId, setRoomId] = useState(ROOM_NONE);
-  const [gpioPin, setGpioPin] = useState<string>("5");
   const [i2cAddress, setI2cAddress] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -521,14 +512,12 @@ export function SensorEditorModal({
         setSensorType(sensorItem.sensor_type);
         setControllerId(sensorItem.controller_id);
         setRoomId(sensorItem.room_id ?? ROOM_NONE);
-        setGpioPin(sensorItem.gpio_pin !== null ? String(sensorItem.gpio_pin) : "");
         setI2cAddress(sensorItem.i2c_address ?? "");
       } else {
         setName("");
         setSensorType(SUPPORTED_SENSOR_TYPES[0]);
         setControllerId(ctx.controllers[0]?.id ?? "");
         setRoomId(ROOM_NONE);
-        setGpioPin("5");
         setI2cAddress("");
       }
     } else if (!sensorItem && !controllerId && ctx.controllers[0]?.id) {
@@ -538,23 +527,20 @@ export function SensorEditorModal({
 
   const requirement = getRequirementForSensorType(sensorType);
   const isI2c = requirement === "i2c";
-  const parsedPin =
-    gpioPin.trim() === ""
-      ? null
-      : Number.isInteger(Number(gpioPin))
-        ? Number(gpioPin)
-        : Number.NaN;
   const selectedCtrl = ctx.controllers.find((c) => c.id === controllerId);
-  const pinHint = getPinHint({
+  const pinField = useGpioPinField({
+    open,
+    savedPin: sensorItem ? sensorItem.gpio_pin : undefined,
     controller: selectedCtrl,
-    boardsById: ctx.boardsById,
-    pinNum: Number.isFinite(parsedPin) ? parsedPin : null,
+    ctx,
     requirement,
-    usedPinsByController: ctx.usedPinsByController,
-    excludeEntity: sensorItem
-      ? { kind: "sensor", id: sensorItem.id }
-      : undefined,
+    entityKind: "sensor",
+    entityId: sensorItem?.id,
+    // An I2C sensor without a pin uses the controller's default bus.
+    fallbackPin: isI2c ? "" : "5",
   });
+  const parsedPin = pinField.pinNum;
+  const pinBlocked = pinField.selection.blocked || (!isI2c && parsedPin === null);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -567,7 +553,7 @@ export function SensorEditorModal({
       setError("Select a controller.");
       return;
     }
-    if (gpioPin.trim() !== "" && !Number.isInteger(parsedPin)) {
+    if (parsedPin !== null && !Number.isInteger(parsedPin)) {
       setError("Enter a valid whole-number GPIO pin (0-54).");
       return;
     }
@@ -612,7 +598,7 @@ export function SensorEditorModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>
             {isEditing ? `Edit Sensor: ${sensorItem?.name}` : "Add Supported Sensor"}
@@ -682,35 +668,30 @@ export function SensorEditorModal({
             </FormField>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <GpioPinPicker
+            id="sen-gpio"
+            label={isI2c ? "I2C SDA GPIO (Optional)" : "GPIO Pin"}
+            value={pinField.text}
+            onChange={pinField.setPin}
+            selection={pinField.selection}
+            requirement={requirement}
+            typeLabel={isI2c ? "an I2C sensor" : "this sensor"}
+            optional={isI2c}
+          />
+          {isI2c && (
             <FormField
-              id="sen-gpio"
-              label={isI2c ? "I2C SDA GPIO (Optional)" : "GPIO Pin"}
-              error={pinHint.blocked ? pinHint.reason : undefined}
-              hint={!pinHint.blocked ? pinHint.reason : undefined}
+              id="sen-i2c"
+              label="I2C Address (Optional)"
+              hint="Leave the pin empty to use the controller's default I2C bus."
             >
               <Input
-                id="sen-gpio"
-                type="number"
-                min={0}
-                max={54}
-                value={gpioPin}
-                aria-invalid={pinHint.blocked}
-                onChange={(e) => setGpioPin(e.target.value)}
-                placeholder={isI2c ? "e.g. 8 or leave empty" : "5"}
+                id="sen-i2c"
+                value={i2cAddress}
+                onChange={(e) => setI2cAddress(e.target.value)}
+                placeholder="0x76 or 0x23"
               />
             </FormField>
-            {isI2c && (
-              <FormField id="sen-i2c" label="I2C Address (Optional)">
-                <Input
-                  id="sen-i2c"
-                  value={i2cAddress}
-                  onChange={(e) => setI2cAddress(e.target.value)}
-                  placeholder="0x76 or 0x23"
-                />
-              </FormField>
-            )}
-          </div>
+          )}
 
           <DialogFooter>
             <Button
@@ -722,7 +703,7 @@ export function SensorEditorModal({
             </Button>
             <Button
               type="submit"
-              disabled={saving || !controllerId || pinHint.blocked}
+              disabled={saving || !controllerId || pinBlocked}
             >
               {saving
                 ? "Saving..."

@@ -247,6 +247,88 @@ export interface BoardProfileItem {
   gpio_definitions: GpioPinDefinition[];
 }
 
+/** Where "Import Official Boards" reads board profiles from. */
+export type BoardImportProvider = "seeed_xiao" | "espressif";
+
+export interface BoardImportSourceCheck {
+  key: "pin_table" | "manifest" | "images" | "listing";
+  label: string;
+  /**
+   * confirmed: the official source agrees with the profile.
+   * conflict: it disagrees, so the board is held back for review.
+   * unreachable / not_available / reference: nothing to compare against.
+   */
+  status: "confirmed" | "conflict" | "unreachable" | "not_available" | "reference";
+  detail: string;
+  url?: string;
+}
+
+export interface BoardImportCandidate {
+  slug: string;
+  provider: BoardImportProvider;
+  name: string;
+  status: "new" | "in_library" | "removed" | "unsupported";
+  statusDetail: string;
+  /** Whether an import request may include this board. */
+  selectable: boolean;
+  verification: "verified" | "needs_verification";
+  verificationNote: string;
+  existingBoardId: string | null;
+  /** The profile that would be added. Null when the board cannot be imported. */
+  board: BoardProfileItem | null;
+  highlights: string[];
+  sources: Array<{ label: string; url: string }>;
+  checks: BoardImportSourceCheck[];
+}
+
+export interface BoardImportPreview {
+  provider: BoardImportProvider;
+  providerLabel: string;
+  fetchedAt: string;
+  /** How many official sources answered. 0 means the preview is offline. */
+  liveSourcesReached: number;
+  sourceUrls: string[];
+  notes: string[];
+  candidates: BoardImportCandidate[];
+}
+
+export interface BoardImportOutcome {
+  slug: string;
+  name: string;
+  action: "imported" | "restored" | "skipped";
+  detail: string;
+  boardId: string | null;
+  published: boolean;
+  verification: "verified" | "needs_verification" | null;
+}
+
+export interface BoardImportRun {
+  runId: string | null;
+  provider: BoardImportProvider;
+  providerLabel: string;
+  status: "succeeded" | "partial" | "failed";
+  requestedCount: number;
+  importedCount: number;
+  restoredCount: number;
+  skippedCount: number;
+  needsVerificationCount: number;
+  outcomes: BoardImportOutcome[];
+  /** What was read from the official sources during this run. */
+  sourceNotes: string[];
+  /** The source notes plus the counts, as stored in the sync history. */
+  summaryNotes: string;
+}
+
+/** What depends on a catalog board, and whether it may be removed. */
+export interface BoardUsageInfo {
+  controllerCount: number;
+  savedByAccountCount: number;
+  firmwareReleaseCount: number;
+  canRemove: boolean;
+  blockers: string[];
+  consequences: string[];
+}
+
 export interface BoardSyncRunItem {
   id: string;
   source_name: string;

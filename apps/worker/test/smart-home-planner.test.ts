@@ -829,15 +829,24 @@ describe("Smart Home Planner API", () => {
     expect(customRes.status).toBe(201);
     const customId = ((await customRes.json()) as { board: { id: string } }).board.id;
 
-    // Without pin rows the board is reported as unusable rather than guessed at.
+    // The route stores the pin rows together with the board.
+    const stored = await dbHarness.pg.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM public.board_gpio_definitions WHERE custom_board_id = $1",
+      [customId]
+    );
+    expect(stored.rows[0]!.n).toBe(s2.gpio_definitions.length);
+
+    // A board whose pin rows are missing is reported as unusable rather than guessed at.
+    await dbHarness.pg.query(
+      "DELETE FROM public.board_gpio_definitions WHERE custom_board_id = $1",
+      [customId]
+    );
     const withoutPins = await analyze(ownerCookie, SMALL_HOME);
     expect(withoutPins.evaluatedBoards.find((b) => b.boardId === customId)).toMatchObject({
       fits: false,
       readiness: "not_supported",
     });
 
-    // The route writes the pin rows with a PostgREST bulk insert, which the
-    // in-memory test database does not implement, so they are added directly.
     for (const g of s2.gpio_definitions) {
       await dbHarness.pg.query(
         `INSERT INTO public.board_gpio_definitions (custom_board_id, pin, label, capabilities, restrictions)
