@@ -85,7 +85,8 @@ function invalidateCacheForMutation(path: string): void {
     return;
   }
   if (path.startsWith("/api/devices")) {
-    invalidateApiCache("/api/devices", "/api/homes/overview");
+    // Device and controller counts feed the planner's account-limit check.
+    invalidateApiCache("/api/devices", "/api/homes/overview", "/api/planner");
     return;
   }
   if (path.startsWith("/api/sensors")) {
@@ -103,12 +104,18 @@ function invalidateCacheForMutation(path: string): void {
       "/api/boards/my-boards",
       "/api/switches",
       "/api/devices",
-      "/api/sensors"
+      "/api/sensors",
+      "/api/planner"
     );
     return;
   }
   if (path.startsWith("/api/boards")) {
-    invalidateApiCache("/api/boards");
+    // A custom board is a planner candidate, so saved plan verdicts may be stale.
+    invalidateApiCache("/api/boards", "/api/planner");
+    return;
+  }
+  if (path.startsWith("/api/planner")) {
+    invalidateApiCache("/api/planner");
     return;
   }
   if (path.startsWith("/api/automations")) {
@@ -131,7 +138,8 @@ function invalidateCacheForMutation(path: string): void {
     return;
   }
   if (path.startsWith("/api/admin")) {
-    invalidateApiCache("/api/admin", "/api/boards", "/api/firmware");
+    // Board and firmware changes also invalidate Smart Home Planner results.
+    invalidateApiCache("/api/admin", "/api/boards", "/api/firmware", "/api/planner");
   }
 }
 

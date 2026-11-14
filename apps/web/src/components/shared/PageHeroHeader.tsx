@@ -11,7 +11,8 @@ export type HeroTone =
   | "blue"
   | "red"
   | "teal"
-  | "pink";
+  | "pink"
+  | "indigo";
 
 const HERO_BG_CLASSES: Record<HeroTone, string> = {
   orange: "hc-hero-orange",
@@ -22,6 +23,7 @@ const HERO_BG_CLASSES: Record<HeroTone, string> = {
   red: "hc-hero-red",
   teal: "hc-hero-teal",
   pink: "hc-hero-pink",
+  indigo: "hc-hero-indigo",
 };
 
 const HERO_ICON_TINTS: Record<HeroTone, string> = {
@@ -33,6 +35,7 @@ const HERO_ICON_TINTS: Record<HeroTone, string> = {
   red: "text-rose-500/85 dark:text-rose-400/75",
   teal: "text-teal-600/80 dark:text-teal-400/75",
   pink: "text-pink-500/85 dark:text-pink-400/75",
+  indigo: "text-indigo-500/85 dark:text-indigo-400/75",
 };
 
 export interface PageHeroHeaderProps {

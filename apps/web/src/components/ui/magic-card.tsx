@@ -139,6 +139,20 @@ export const HERO_SPOTLIGHT_PALETTES: Record<
       gradientTo: "rgba(192, 132, 252, 0.18)",
     },
   },
+  indigo: {
+    light: {
+      glowFrom: "rgba(99, 102, 241, 0.20)",
+      glowTo: "rgba(56, 189, 248, 0.15)",
+      gradientFrom: "rgba(99, 102, 241, 0.40)",
+      gradientTo: "rgba(165, 180, 252, 0.24)",
+    },
+    dark: {
+      glowFrom: "rgba(99, 102, 241, 0.23)",
+      glowTo: "rgba(56, 189, 248, 0.15)",
+      gradientFrom: "rgba(129, 140, 248, 0.44)",
+      gradientTo: "rgba(56, 189, 248, 0.18)",
+    },
+  },
 };
 
 interface MagicCardBaseProps {

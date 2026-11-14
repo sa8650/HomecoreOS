@@ -600,6 +600,7 @@ describe("4-Part UI Overhaul: Heroes, Board Library Layout, Sonner Toasts & Magi
       "red",
       "teal",
       "pink",
+      "indigo",
     ]);
 
     // 1. BoardLibraryPage -> orange

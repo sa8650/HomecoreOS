@@ -14,7 +14,7 @@ HomecoreOS is a multi-user smart-home automation platform and ESP32 device fleet
 
 ## Workspaces
 
-1. **User Console (`/`)** — Overview with Interactive 2D Architectural Floor Plan & Room Editor, Rooms, Devices, Switches, Sensors, Controllers (8-step Guided Setup Wizard, Quick Register, Existing/Recover Controller with physical confirmation, live Wi-Fi/MQTT diagnostics, and 30-day Trash & Restore), Board Library (11 verified Espressif DevKits + Seeed Studio XIAO ESP32-S3 with clickable interactive physical pinout diagrams, My Boards, and Custom Board Builder), Automations (Cloud + offline controller rule sync + `@xyflow/react` Visual Flow Graph Builder with folders, true/false branching, ALL/ANY join gates, delays, notifications, HTTP webhooks, flow variables, and dry-run trace highlighting), two-tab Firmware & Updates (filterable Firmware catalog + Web Serial USB Flasher, and compatible OTA Updates with pending cancellation & history), Activity Log, and User Settings (including Regional Timezone preferences).
+1. **User Console (`/`)** — Overview with Interactive 2D Architectural Floor Plan & Room Editor, Rooms, Devices, Switches, Sensors, Controllers (8-step Guided Setup Wizard, Quick Register, Existing/Recover Controller with physical confirmation, live Wi-Fi/MQTT diagnostics, and 30-day Trash & Restore), Board Library (11 verified Espressif DevKits + Seeed Studio XIAO ESP32-S3 with clickable interactive physical pinout diagrams, My Boards, and Custom Board Builder), Smart Home Planner (guided wizard that checks a described home against the live Board Library and Firmware Management records and recommends controllers, pin assignments and required parts; see `docs/SMART_HOME_PLANNER.md`), Automations (Cloud + offline controller rule sync + `@xyflow/react` Visual Flow Graph Builder with folders, true/false branching, ALL/ANY join gates, delays, notifications, HTTP webhooks, flow variables, and dry-run trace highlighting), two-tab Firmware & Updates (filterable Firmware catalog + Web Serial USB Flasher, and compatible OTA Updates with pending cancellation & history), Activity Log, and User Settings (including Regional Timezone preferences).
 2. **Admin Console (`/admin`)** — Platform Overview, Setup Status, Users & Staff Management, Firmware Management (Single Image & ZIP Release Package with per-board slug/ID targeting), Board Library Management (one-click Official Espressif Catalog Sync, GPIO verification publication guard, firmware support flags, and pinout inspector), EMQX Management, Usage & Monitoring, and Platform Settings (including Global Default Regional Timezone).
 
 ## Repository Structure
@@ -27,7 +27,7 @@ packages/
   shared/           Shared TypeScript types, verified board catalog & pinouts, flow-graph compiler/validator, timezone & version helpers
 firmware/           ESP-IDF C/C++ firmware project (ESP32-S3 N16R8, persistent identity, AP+STA recovery, local automation sync)
 database/
-  migrations/       PostgreSQL schema & seed migrations (0001..0008)
+  migrations/       PostgreSQL schema & seed migrations (0001..0013)
   seeds/            Development-only seed data
 .github/workflows/  CI checks & automated ESP-IDF firmware build pipeline
 DESIGN_SYSTEM.md    HomecoreOS Geist design tokens, ReUI/Radix primitives & architectural floor-plan spec

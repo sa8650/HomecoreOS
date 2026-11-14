@@ -282,3 +282,43 @@ export const AUTOMATIONS_HERO_ICONS: IconPair = {
     </svg>,
   ],
 };
+
+// Smart Home Planner (Home + Gear, Floor Plan, Checklist, Controller Board, Relay Module, Ruler)
+export const PLANNER_HERO_ICONS: IconPair = {
+  left: [
+    <svg key="pl-l1" viewBox="0 0 36 36" fill="none" className="size-full">
+      <path d="M5 17 18 6l13 11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.5 15v14.5h19V15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="18" cy="21.5" r="3.2" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M18 16.3v1.6M18 25.1v1.6M12.8 21.5h1.6M21.6 21.5h1.6M14.3 17.8l1.1 1.1M20.6 24.1l1.1 1.1M21.7 17.8l-1.1 1.1M15.4 24.1l-1.1 1.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>,
+    <svg key="pl-l2" viewBox="0 0 36 36" fill="none" className="size-full">
+      <rect x="5" y="6" width="26" height="24" rx="2" stroke="currentColor" strokeWidth="2" />
+      <path d="M17 6v9M17 21v9M5 18h7M17 15h14M23 15v6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M12 18a5 5 0 0 1 5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>,
+    <svg key="pl-l3" viewBox="0 0 36 36" fill="none" className="size-full">
+      <rect x="8" y="5" width="20" height="26" rx="2.5" stroke="currentColor" strokeWidth="2" />
+      <path d="m12 12 1.6 1.6L16.4 10.8M12 19l1.6 1.6 2.8-2.8M12 26l1.6 1.6 2.8-2.8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M19.5 12.5H24M19.5 19.5H24M19.5 26.5H24" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>,
+  ],
+  right: [
+    <svg key="pl-r1" viewBox="0 0 36 36" fill="none" className="size-full">
+      <rect x="9" y="5" width="18" height="26" rx="2.5" stroke="currentColor" strokeWidth="2" />
+      <rect x="13" y="9" width="10" height="8" rx="1.2" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M5 10h4M5 15h4M5 20h4M5 25h4M27 10h4M27 15h4M27 20h4M27 25h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <path d="m13.5 24 2 2 4.5-4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>,
+    <svg key="pl-r2" viewBox="0 0 36 36" fill="none" className="size-full">
+      <rect x="5" y="9" width="26" height="18" rx="2.5" stroke="currentColor" strokeWidth="2" />
+      <rect x="9" y="13" width="7" height="10" rx="1.2" stroke="currentColor" strokeWidth="1.6" />
+      <rect x="20" y="13" width="7" height="10" rx="1.2" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M12.5 5v4M23.5 5v4M12.5 27v4M23.5 27v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>,
+    <svg key="pl-r3" viewBox="0 0 36 36" fill="none" className="size-full">
+      <path d="M6 24 24 6l6 6-18 18z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="m11 19 2.5 2.5M15 15l3.5 3.5M19 11l2.5 2.5M23 7l3.5 3.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>,
+  ],
+};

@@ -361,6 +361,26 @@
   background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
 }
 
+.hc-hero-indigo {
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle, rgba(15, 23, 42, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(99, 102, 241, 0.21), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(56, 189, 248, 0.19), transparent 72%),
+    radial-gradient(ellipse 46% 52% at 50% 0%, rgba(238, 242, 255, 0.88), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+.dark .hc-hero-indigo {
+  background-color: var(--card);
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.065) 1px, transparent 1px),
+    radial-gradient(ellipse 58% 72% at 6% 96%, rgba(99, 102, 241, 0.18), transparent 72%),
+    radial-gradient(ellipse 55% 70% at 94% 10%, rgba(56, 189, 248, 0.14), transparent 72%),
+    radial-gradient(ellipse 50% 55% at 50% 0%, rgba(99, 102, 241, 0.08), transparent 70%);
+  background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
+}
+
 .hc-blueprint-bg {
   background-color: color-mix(in srgb, var(--background) 92%, #74b8c0);
   background-image:

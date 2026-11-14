@@ -566,3 +566,4 @@ export * from "./board-firmware-compat";
 export * from "./ble-provisioning";
 export * from "./automations";
 export * from "./flow-graph";
+export * from "./planner";

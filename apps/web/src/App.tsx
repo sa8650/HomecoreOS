@@ -7,6 +7,7 @@ import {
   RiFlashlightLine,
   RiHardDrive2Line,
   RiHistoryLine,
+  RiHomeGearLine,
   RiLightbulbLine,
   RiNotification3Line,
   RiRouterLine,
@@ -123,6 +124,11 @@ const FirmwarePage = lazy(() =>
     default: m.FirmwarePage,
   }))
 );
+const SmartHomePlannerPage = lazy(() =>
+  import("@/features/user/SmartHomePlannerPage").then((m) => ({
+    default: m.SmartHomePlannerPage,
+  }))
+);
 const OverviewPage = lazy(() =>
   import("@/features/user/OverviewPage").then((m) => ({
     default: m.OverviewPage,
@@ -157,6 +163,7 @@ const USER_ROUTES: RouteNavDef[] = [
   { id: "sensors", label: "Sensors", path: "/sensors", icon: <RiSensorLine className="size-4" /> },
   { id: "controllers", label: "Controllers", path: "/controllers", icon: <RiCpuLine className="size-4" /> },
   { id: "boards", label: "Board Library", path: "/boards", icon: <RiStackLine className="size-4" /> },
+  { id: "planner", label: "Smart Home Planner", path: "/planner", icon: <RiHomeGearLine className="size-4" /> },
   { id: "automations", label: "Automation", path: "/automations", icon: <RiFlashlightLine className="size-4" /> },
   { id: "firmware", label: "Firmware & Updates", path: "/firmware", icon: <RiHardDrive2Line className="size-4" /> },
   { id: "notifications", label: "Notifications", path: "/notifications", icon: <RiNotification3Line className="size-4" /> },
@@ -437,6 +444,16 @@ export function App() {
         );
       case "/boards":
         return <BoardLibraryPage canManage={canManage} />;
+      case "/planner":
+        return (
+          <SmartHomePlannerPage
+            // Remount on account switch so one account's unsaved answers never follow into another.
+            key={userSession.account.id}
+            canManage={canManage}
+            onNavigate={navigate}
+            accountId={userSession.account.id}
+          />
+        );
       case "/automations":
         return <AutomationsPage canManage={canManage} canOperate={canOperate} />;
       case "/firmware":
