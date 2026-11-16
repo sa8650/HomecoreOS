@@ -1,0 +1,112 @@
+menu "HomecoreOS Board & Build Configuration"
+
+config HOMECORE_FW_VERSION
+    string "HomecoreOS Firmware Version"
+    default "1.2.0"
+    help
+        Semantic firmware version embedded into device heartbeats, pairing, and MQTT status.
+
+config HOMECORE_BOARD_SLUG
+    string "Target Board Catalog Slug"
+    default "esp32-s3-devkitc-1-n16r8"
+    help
+        Board catalog slug identifying exact hardware pinout, flash, and PSRAM layout.
+
+config HOMECORE_PARTITION_SCHEME
+    string "Partition Scheme Identifier"
+    default "dual_ota_16mb"
+    help
+        Partition table identifier matching the selected partitions CSV.
+
+config HOMECORE_BOOT_BUTTON_GPIO
+    int "BOOT / Recovery Button GPIO"
+    range 0 48
+    default 28 if IDF_TARGET_ESP32C5
+    default 9 if IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32C61 || IDF_TARGET_ESP32H2
+    default 0
+    help
+        Active-low BOOT / Recovery GPIO pin on this development board.
+
+config HOMECORE_FLASH_SIZE_MB
+    int "Target SPI Flash Size (MB)"
+    range 2 64
+    default 16 if IDF_TARGET_ESP32S3
+    default 8 if IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32C61
+    default 4
+    help
+        Configured flash chip capacity in megabytes.
+
+config HOMECORE_PSRAM_SIZE_MB
+    int "Target PSRAM Size (MB)"
+    range 0 32
+    default 8 if IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32C5
+    default 2 if IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32C61
+    default 0
+    help
+        Configured external PSRAM capacity in megabytes (0 if none).
+
+menu "HomecoreOS Sensor Drivers"
+
+config HOMECORE_I2C_DEFAULT_SDA_GPIO
+    int "Default I2C SDA GPIO (-1 if unavailable)"
+    range -1 48
+    default 1 if IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S2
+    default 0 if IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32C61 || IDF_TARGET_ESP32H2
+    default 21
+    help
+        Board default I2C SDA GPIO pin used when an I2C sensor binds to the board default bus.
+
+config HOMECORE_I2C_DEFAULT_SCL_GPIO
+    int "Default I2C SCL GPIO (-1 if unavailable)"
+    range -1 48
+    default 2 if IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S2
+    default 1 if IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32C61 || IDF_TARGET_ESP32H2
+    default 22
+    help
+        Board default I2C SCL GPIO pin used when an I2C sensor binds to the board default bus.
+
+config HOMECORE_DRIVER_DHT22
+    bool "Enable DHT22 / AM2302 Temperature & Humidity Driver"
+    default y
+    help
+        Compile the single-wire DHT22/AM2302 sensor driver into this firmware image.
+
+config HOMECORE_DRIVER_DS18B20
+    bool "Enable DS18B20 1-Wire Temperature Driver"
+    default y
+    help
+        Compile the Dallas 1-Wire DS18B20 temperature sensor driver into this firmware image.
+
+config HOMECORE_DRIVER_BME280
+    bool "Enable BME280 I2C Environmental Driver"
+    default y
+    help
+        Compile the Bosch BME280 I2C temperature, humidity, and barometric pressure driver.
+
+config HOMECORE_DRIVER_PIR
+    bool "Enable Digital PIR Motion Driver"
+    default y
+    help
+        Compile the digital GPIO PIR motion sensor driver.
+
+config HOMECORE_DRIVER_REED
+    bool "Enable Magnetic Reed Contact Switch Driver"
+    default y
+    help
+        Compile the magnetic reed door/window contact switch driver.
+
+config HOMECORE_DRIVER_BH1750
+    bool "Enable BH1750 I2C Ambient Light Driver"
+    default y
+    help
+        Compile the ROHM BH1750 I2C ambient light (lux) driver.
+
+config HOMECORE_DRIVER_ADC_VOLTAGE
+    bool "Enable Calibrated ADC Voltage Driver"
+    default y
+    help
+        Compile the calibrated ESP-IDF ADC oneshot voltage measurement driver.
+
+endmenu
+
+endmenu

@@ -1,0 +1,201 @@
+#include <assert.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+#include "../main/sensor_driver_logic.h"
+
+static bool approx(double a, double b, double tol) {
+    return fabs(a - b) <= tol;
+}
+
+static void test_resolution_and_i2c_parsing(void) {
+    /* Canonical SUPPORTED_SENSOR_TYPES from @homecoreos/shared */
+    assert(hc_sensor_resolve_driver("temperature_bme280", NULL) == HC_DRV_BME280);
+    assert(hc_sensor_resolve_driver("humidity_bme280", NULL) == HC_DRV_BME280);
+    assert(hc_sensor_resolve_driver("pressure_bme280", NULL) == HC_DRV_BME280);
+    assert(hc_sensor_resolve_driver("temperature_dht22", NULL) == HC_DRV_DHT22);
+    assert(hc_sensor_resolve_driver("humidity_dht22", NULL) == HC_DRV_DHT22);
+    assert(hc_sensor_resolve_driver("temperature_ds18b20", NULL) == HC_DRV_DS18B20);
+    assert(hc_sensor_resolve_driver("motion_pir", NULL) == HC_DRV_PIR);
+    assert(hc_sensor_resolve_driver("contact_reed", NULL) == HC_DRV_REED);
+    assert(hc_sensor_resolve_driver("light_bh1750", NULL) == HC_DRV_BH1750);
+    assert(hc_sensor_resolve_driver("analog_voltage", NULL) == HC_DRV_ADC_VOLTAGE);
+    /* Short aliases remain accepted too */
+    assert(hc_sensor_resolve_driver("temperature", NULL) == HC_DRV_BME280);
+    assert(hc_sensor_resolve_driver("humidity", NULL) == HC_DRV_BME280);
+    assert(hc_sensor_resolve_driver("pressure", NULL) == HC_DRV_BME280);
+    assert(hc_sensor_resolve_driver("motion", NULL) == HC_DRV_PIR);
+    assert(hc_sensor_resolve_driver("contact", NULL) == HC_DRV_REED);
+    assert(hc_sensor_resolve_driver("light", NULL) == HC_DRV_BH1750);
+    assert(hc_sensor_resolve_driver("voltage", NULL) == HC_DRV_ADC_VOLTAGE);
+    assert(hc_sensor_resolve_driver("unknown_sensor", NULL) == HC_DRV_NONE);
+
+    /* Explicit driver_id overrides sensor_type inference */
+    assert(hc_sensor_resolve_driver("temperature", "dht22") == HC_DRV_DHT22);
+    assert(strcmp(hc_sensor_driver_name(HC_DRV_ADC_VOLTAGE), "adc_voltage") == 0);
+    assert(strcmp(hc_sensor_default_unit(HC_MEAS_PRESSURE), "hPa") == 0);
+    assert(strcmp(hc_sensor_default_unit(HC_MEAS_LIGHT), "lux") == 0);
+    assert(strcmp(hc_sensor_default_unit(HC_MEAS_VOLTAGE), "V") == 0);
+
+    assert(hc_sensor_driver_is_i2c(HC_DRV_BME280) == true);
+    assert(hc_sensor_driver_is_i2c(HC_DRV_BH1750) == true);
+    assert(hc_sensor_driver_is_i2c(HC_DRV_DHT22) == false);
+    assert(hc_sensor_driver_default_i2c_addr(HC_DRV_BME280) == 0x76);
+    assert(hc_sensor_driver_default_i2c_addr(HC_DRV_BH1750) == 0x23);
+
+    bool ok = false;
+    assert(hc_sensor_parse_i2c_addr("0x77", 0x76, &ok) == 0x77 && ok);
+    assert(hc_sensor_parse_i2c_addr(" 0x5C ", 0x23, &ok) == 0x5C && ok);
+    assert(hc_sensor_parse_i2c_addr("118", 0x77, &ok) == 0x76 && ok);
+    assert(hc_sensor_parse_i2c_addr("", 0x76, &ok) == 0x76 && ok);
+    assert(hc_sensor_parse_i2c_addr(NULL, 0x23, &ok) == 0x23 && ok);
+
+    /* Reserved / malformed I2C addresses must fail validation */
+    assert(hc_sensor_parse_i2c_addr("0x03", 0x76, &ok) == 0x76 && !ok);
+    assert(hc_sensor_parse_i2c_addr("0x78", 0x76, &ok) == 0x76 && !ok);
+    assert(hc_sensor_parse_i2c_addr("not_hex", 0x76, &ok) == 0x76 && !ok);
+
+    /* Compiled driver bitmask checks */
+    uint32_t partial = HC_DRV_BIT_BME280 | HC_DRV_BIT_PIR;
+    assert(hc_sensor_is_driver_in_mask(partial, HC_DRV_BME280) == true);
+    assert(hc_sensor_is_driver_in_mask(partial, HC_DRV_PIR) == true);
+    assert(hc_sensor_is_driver_in_mask(partial, HC_DRV_DHT22) == false);
+    assert(hc_sensor_is_driver_in_mask(partial, HC_DRV_ADC_VOLTAGE) == false);
+}
+
+static void test_dht22_decoder(void) {
+    /* 61.2% RH = 612 = 0x0264, 24.5 C = 245 = 0x00F5 */
+    uint8_t valid_pos[5] = { 0x02, 0x64, 0x00, 0xF5, (uint8_t)((0x02 + 0x64 + 0x00 + 0xF5) & 0xFF) };
+    double temp = 0.0, hum = 0.0;
+    assert(hc_dht22_decode(valid_pos, &temp, &hum) == true);
+    assert(approx(temp, 24.5, 0.01));
+    assert(approx(hum, 61.2, 0.01));
+
+    /* Negative temp: -12.3 C -> 123 = 0x007B with sign bit 0x80 -> 0x80, 0x7B */
+    uint8_t valid_neg[5] = { 0x01, 0xF4, 0x80, 0x7B, (uint8_t)((0x01 + 0xF4 + 0x80 + 0x7B) & 0xFF) };
+    assert(hc_dht22_decode(valid_neg, &temp, &hum) == true);
+    assert(approx(temp, -12.3, 0.01));
+    assert(approx(hum, 50.0, 0.01));
+
+    /* Bad checksum rejected */
+    uint8_t bad_cksum[5] = { 0x02, 0x64, 0x00, 0xF5, 0x00 };
+    assert(hc_dht22_decode(bad_cksum, &temp, &hum) == false);
+
+    /* Out-of-range humidity (>100%) rejected */
+    uint8_t bad_range[5] = { 0x04, 0xB0, 0x00, 0xFA, (uint8_t)((0x04 + 0xB0 + 0x00 + 0xFA) & 0xFF) };
+    assert(hc_dht22_decode(bad_range, &temp, &hum) == false);
+}
+
+static void test_ds18b20_decoder(void) {
+    /* +25.0625 C = 401 = 0x0191 */
+    uint8_t sp_pos[9] = { 0x91, 0x01, 0x4B, 0x46, 0x7F, 0xFF, 0x0C, 0x10, 0x00 };
+    sp_pos[8] = hc_onewire_crc8(sp_pos, 8);
+    double temp = 0.0;
+    assert(hc_ds18b20_decode_scratchpad(sp_pos, &temp) == true);
+    assert(approx(temp, 25.06, 0.01));
+
+    /* -10.125 C = -162 = 0xFF5E */
+    uint8_t sp_neg[9] = { 0x5E, 0xFF, 0x4B, 0x46, 0x7F, 0xFF, 0x02, 0x10, 0x00 };
+    sp_neg[8] = hc_onewire_crc8(sp_neg, 8);
+    assert(hc_ds18b20_decode_scratchpad(sp_neg, &temp) == true);
+    assert(approx(temp, -10.13, 0.01));
+
+    /* Corrupted CRC rejected */
+    sp_pos[8] ^= 0x01;
+    assert(hc_ds18b20_decode_scratchpad(sp_pos, &temp) == false);
+
+    /* Bus open/short fault (all 0x00 or all 0xFF) rejected */
+    uint8_t all_zero[9] = {0};
+    uint8_t all_ff[9] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    assert(hc_ds18b20_decode_scratchpad(all_zero, &temp) == false);
+    assert(hc_ds18b20_decode_scratchpad(all_ff, &temp) == false);
+}
+
+static void test_bme280_compensation(void) {
+    /* Reference Bosch Sensortec BME280 datasheet calibration constants */
+    hc_bme280_calib_t cal = {
+        .dig_T1 = 27504, .dig_T2 = 26435, .dig_T3 = -1000,
+        .dig_P1 = 36477, .dig_P2 = -10685, .dig_P3 = 3024,
+        .dig_P4 = 2855,  .dig_P5 = 140,    .dig_P6 = -7,
+        .dig_P7 = 15500, .dig_P8 = -14600, .dig_P9 = 6000,
+        .dig_H1 = 75,    .dig_H2 = 370,    .dig_H3 = 0,
+        .dig_H4 = 300,   .dig_H5 = 50,     .dig_H6 = 30,
+    };
+
+    /* Verify register unpacker reproduces calibration table accurately */
+    uint8_t c1[26] = {
+        (uint8_t)(27504 & 0xFF), (uint8_t)(27504 >> 8),
+        (uint8_t)(26435 & 0xFF), (uint8_t)(26435 >> 8),
+        (uint8_t)((uint16_t)-1000 & 0xFF), (uint8_t)((uint16_t)-1000 >> 8),
+        (uint8_t)(36477 & 0xFF), (uint8_t)(36477 >> 8),
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 75
+    };
+    uint8_t c2[7] = {
+        (uint8_t)(370 & 0xFF), (uint8_t)(370 >> 8),
+        0,
+        (uint8_t)(300 >> 4),
+        (uint8_t)((300 & 0x0F) | ((50 & 0x0F) << 4)),
+        (uint8_t)(50 >> 4),
+        30
+    };
+    hc_bme280_calib_t parsed;
+    hc_bme280_parse_calib(c1, c2, &parsed);
+    assert(parsed.dig_T1 == 27504);
+    assert(parsed.dig_T2 == 26435);
+    assert(parsed.dig_T3 == -1000);
+    assert(parsed.dig_P1 == 36477);
+    assert(parsed.dig_H1 == 75);
+    assert(parsed.dig_H2 == 370);
+    assert(parsed.dig_H4 == 300);
+    assert(parsed.dig_H5 == 50);
+    assert(parsed.dig_H6 == 30);
+
+    /* Datasheet raw sample: adc_T=519888, adc_P=415148 -> ~25.08 C, ~1006.53 hPa */
+    hc_bme280_sample_t out;
+    assert(hc_bme280_compensate(&cal, 519888, 415148, 28000, &out) == true);
+    assert(approx(out.temp_c, 25.08, 0.05));
+    assert(approx(out.pressure_hpa, 1006.53, 0.2));
+    assert(out.humidity_pct >= 0.0 && out.humidity_pct <= 100.0);
+
+    /* Uninitialized / skipped readings must fail safely */
+    assert(hc_bme280_compensate(&cal, 0x80000, 415148, 28000, &out) == false);
+    hc_bme280_calib_t zero_cal;
+    memset(&zero_cal, 0, sizeof(zero_cal));
+    assert(hc_bme280_compensate(&zero_cal, 519888, 415148, 28000, &out) == false);
+}
+
+static void test_bh1750_digital_and_adc(void) {
+    /* BH1750: raw 300 (0x012C) / 1.2 = 250.0 lux */
+    uint8_t raw_lux[2] = { 0x01, 0x2C };
+    double lux = 0.0;
+    assert(hc_bh1750_decode_lux(raw_lux, &lux) == true);
+    assert(approx(lux, 250.0, 0.1));
+
+    /* PIR active-high and inverted */
+    assert(approx(hc_pir_decode(1, false), 1.0, 0.001));
+    assert(approx(hc_pir_decode(0, false), 0.0, 0.001));
+    assert(approx(hc_pir_decode(1, true), 0.0, 0.001));
+
+    /* Reed switch (internal pull-up: 0 = closed, 1 = open) */
+    assert(approx(hc_reed_decode(0, false), 0.0, 0.001));
+    assert(approx(hc_reed_decode(1, false), 1.0, 0.001));
+    assert(approx(hc_reed_decode(0, true), 1.0, 0.001));
+
+    /* Calibrated ADC millivolt -> volt */
+    double volts = 0.0;
+    assert(hc_adc_mv_to_volts(1650, 1.0, &volts) == true && approx(volts, 1.65, 0.001));
+    assert(hc_adc_mv_to_volts(1650, 2.0, &volts) == true && approx(volts, 3.30, 0.001));
+    assert(hc_adc_mv_to_volts(-5, 1.0, &volts) == false);
+    assert(hc_adc_mv_to_volts(9000, 1.0, &volts) == false);
+}
+
+int main(void) {
+    test_resolution_and_i2c_parsing();
+    test_dht22_decoder();
+    test_ds18b20_decoder();
+    test_bme280_compensation();
+    test_bh1750_digital_and_adc();
+    printf("test_sensor_driver_logic: all assertions passed.\n");
+    return 0;
+}
