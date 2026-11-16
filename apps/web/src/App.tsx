@@ -18,8 +18,13 @@ import {
   RiToggleLine,
   RiUserSettingsLine,
 } from "@remixicon/react";
-import { apiFetch } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
+import {
+  AppErrorFallback,
+  RouteErrorBoundary,
+  isChunkLoadError,
+} from "@/components/layout/ErrorBoundary";
 import { AdminIslandWorkspaceBar } from "@/components/dynamic-island/AdminIslandWorkspaceBar";
 import { UserIslandWorkspaceBar } from "@/components/dynamic-island/UserIslandWorkspaceBar";
 import { ConsoleShell, type NavItem } from "@/components/layout/ConsoleShell";
@@ -140,6 +145,104 @@ const RoomsPage = lazy(() =>
   }))
 );
 
+const STAFF_ROLES = ["owner", "administrator", "operator", "viewer"] as const;
+const PLATFORM_ADMIN_ROLES = ["super_admin", "operator", "support"] as const;
+const ACCOUNT_STATUSES = ["active", "paused", "pending_deletion"] as const;
+
+function pickEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T
+): T {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : fallback;
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+/**
+ * `/api/auth/me` is the one response the whole customer console is built on. A
+ * missing or malformed payload used to be assigned straight to state, and the
+ * first `session.account.status` read threw during render - blanking the app
+ * with no way back. Validate it instead and fall back to the sign-in screen.
+ */
+export function normalizeUserSession(raw: unknown): UserSessionData | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<UserSessionData>;
+  const user = candidate.user as Partial<UserSessionData["user"]> | undefined;
+  const account = candidate.account as Partial<UserSessionData["account"]> | undefined;
+  if (!user || typeof user.id !== "string" || !account || typeof account.id !== "string") {
+    return null;
+  }
+  const normalizeAccount = (value: unknown) => {
+    const item = value as Partial<UserSessionData["accounts"][number]> | undefined;
+    if (!item || typeof item.id !== "string") return null;
+    return {
+      id: item.id,
+      name: asString(item.name, "Account"),
+      slug: asString(item.slug, item.id),
+      status: pickEnum(item.status, ACCOUNT_STATUSES, "active"),
+      staffRole: pickEnum(item.staffRole, STAFF_ROLES, "viewer"),
+    };
+  };
+  const accounts = Array.isArray(candidate.accounts)
+    ? candidate.accounts
+        .map(normalizeAccount)
+        .filter((item): item is NonNullable<typeof item> => item !== null)
+    : [];
+  const activeAccount = normalizeAccount(account);
+  if (!activeAccount) return null;
+  return {
+    user: {
+      id: user.id,
+      email: asString(user.email),
+      fullName: asString(user.fullName) || asString(user.email, "Member"),
+      avatarSeed: typeof user.avatarSeed === "string" ? user.avatarSeed : null,
+      appearancePreference: pickEnum(
+        user.appearancePreference,
+        ["light", "dark", "system"] as const,
+        "system"
+      ),
+      timezone: typeof user.timezone === "string" ? user.timezone : null,
+    },
+    account: activeAccount,
+    accounts: accounts.length > 0 ? accounts : [activeAccount],
+    platformDefaultTimezone:
+      typeof candidate.platformDefaultTimezone === "string"
+        ? candidate.platformDefaultTimezone
+        : undefined,
+    effectiveTimezone:
+      typeof candidate.effectiveTimezone === "string" ? candidate.effectiveTimezone : undefined,
+  };
+}
+
+export function normalizeAdminSession(raw: unknown): AdminSessionData | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<AdminSessionData>;
+  const admin = candidate.admin as Partial<AdminSessionData["admin"]> | undefined;
+  if (!admin || typeof admin.id !== "string") return null;
+  return {
+    admin: {
+      id: admin.id,
+      email: asString(admin.email),
+      fullName: asString(admin.fullName) || asString(admin.email, "Administrator"),
+      role: pickEnum(admin.role, PLATFORM_ADMIN_ROLES, "support"),
+      appearancePreference:
+        typeof admin.appearancePreference === "string" ? admin.appearancePreference : undefined,
+      timezone: typeof admin.timezone === "string" ? admin.timezone : null,
+    },
+    platformDefaultTimezone:
+      typeof candidate.platformDefaultTimezone === "string"
+        ? candidate.platformDefaultTimezone
+        : undefined,
+    effectiveTimezone:
+      typeof candidate.effectiveTimezone === "string" ? candidate.effectiveTimezone : undefined,
+  };
+}
+
 function RouteLoadingFallback() {
   return (
     <div className="py-12 text-center text-xs text-muted-foreground">
@@ -200,6 +303,7 @@ export function App() {
   const [userSession, setUserSession] = useState<UserSessionData | null>(null);
   const [adminSession, setAdminSession] = useState<AdminSessionData | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
+  const [sessionError, setSessionError] = useState<unknown>(null);
   const sessionLoadSeqRef = useRef(0);
 
   const isAdminArea = path.startsWith("/admin");
@@ -221,6 +325,7 @@ export function App() {
     if (typeof window !== "undefined" && window.location.pathname !== nextPath) {
       window.history.pushState({}, "", nextPath);
     }
+    setSessionError(null);
     setPath(nextPath);
   }, []);
 
@@ -235,20 +340,27 @@ export function App() {
     setLoadingSession(true);
     try {
       if (isAdminArea) {
-        const res = await apiFetch<AdminSessionData>("/api/admin/auth/me");
+        const res = await apiFetch<unknown>("/api/admin/auth/me");
         if (sessionLoadSeqRef.current === seq) {
-          setAdminSession(res);
+          setAdminSession(normalizeAdminSession(res));
+          setSessionError(null);
         }
       } else {
-        const res = await apiFetch<UserSessionData>("/api/auth/me");
+        const res = await apiFetch<unknown>("/api/auth/me");
         if (sessionLoadSeqRef.current === seq) {
-          setUserSession(res);
+          setUserSession(normalizeUserSession(res));
+          setSessionError(null);
         }
       }
-    } catch {
+    } catch (err) {
       if (sessionLoadSeqRef.current === seq) {
         if (isAdminArea) setAdminSession(null);
         else setUserSession(null);
+        // 401/403 is the normal "signed out" answer; anything else (5xx,
+        // non-JSON payload, network failure) is worth surfacing so the user
+        // sees a recovery path instead of an unexplained sign-in form.
+        const status = err instanceof ApiError ? err.status : 0;
+        setSessionError(status === 401 || status === 403 ? null : err);
       }
     } finally {
       if (sessionLoadSeqRef.current === seq) {
@@ -295,17 +407,37 @@ export function App() {
   // ---------------- ADMIN CONSOLE WORKSPACE ----------------
   if (isAdminArea) {
     if (!adminSession) {
+      if (sessionError && !isChunkLoadError(sessionError)) {
+        return (
+          <TooltipProvider delayDuration={200}>
+            <div className="flex min-h-screen items-center justify-center bg-background px-4">
+              <div className="w-full max-w-xl">
+                <AppErrorFallback
+                  error={sessionError}
+                  onRetry={() => {
+                    setSessionError(null);
+                    void loadCurrentSession();
+                  }}
+                />
+              </div>
+            </div>
+            <Toaster theme={themeMode} />
+          </TooltipProvider>
+        );
+      }
       return (
         <TooltipProvider delayDuration={200}>
-          <Suspense fallback={<RouteLoadingFallback />}>
-            <AdminAuthPage
-              onAuthenticated={async () => {
-                await loadCurrentSession();
-                navigate("/admin");
-              }}
-              onNavigate={navigate}
-            />
-          </Suspense>
+          <RouteErrorBoundary path="admin-auth">
+            <Suspense fallback={<RouteLoadingFallback />}>
+              <AdminAuthPage
+                onAuthenticated={async () => {
+                  await loadCurrentSession();
+                  navigate("/admin");
+                }}
+                onNavigate={navigate}
+              />
+            </Suspense>
+          </RouteErrorBoundary>
           <Toaster theme={themeMode} />
         </TooltipProvider>
       );
@@ -400,9 +532,11 @@ export function App() {
             themeMode={themeMode}
             onToggleTheme={toggleTheme}
           >
-            <Suspense fallback={<RouteLoadingFallback />}>
-              {renderAdminPage()}
-            </Suspense>
+            <RouteErrorBoundary path={`admin:${path}`}>
+              <Suspense fallback={<RouteLoadingFallback />}>
+                {renderAdminPage()}
+              </Suspense>
+            </RouteErrorBoundary>
           </ConsoleShell>
         </TimezoneContext.Provider>
         <Toaster theme={themeMode} />
@@ -412,6 +546,25 @@ export function App() {
 
   // ---------------- CUSTOMER USER CONSOLE WORKSPACE ----------------
   if (!userSession) {
+    if (sessionError && !isChunkLoadError(sessionError)) {
+      return (
+        <TooltipProvider delayDuration={200}>
+          <div className="flex min-h-screen items-center justify-center bg-background px-4">
+            <div className="w-full max-w-xl">
+              <AppErrorFallback
+                error={sessionError}
+                onRetry={() => {
+                  setSessionError(null);
+                  void loadCurrentSession();
+                }}
+              />
+            </div>
+          </div>
+          <Toaster theme={themeMode} />
+        </TooltipProvider>
+      );
+    }
+
     const searchParams =
       typeof window !== "undefined"
         ? new URLSearchParams(window.location.search)
@@ -554,9 +707,11 @@ export function App() {
               This account is pending deletion and MQTT credentials have been revoked.
             </StatusAlert>
           )}
-          <Suspense fallback={<RouteLoadingFallback />}>
-            {renderUserPage()}
-          </Suspense>
+          <RouteErrorBoundary path={`user:${path}`}>
+            <Suspense fallback={<RouteLoadingFallback />}>
+              {renderUserPage()}
+            </Suspense>
+          </RouteErrorBoundary>
         </ConsoleShell>
       </TimezoneContext.Provider>
       <Toaster theme={themeMode} />

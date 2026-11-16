@@ -87,6 +87,11 @@ const USER_PREFERENCE_DEFS: Array<{
   },
 ];
 
+/** Keeps list state render-safe when a payload omits the expected array. */
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
 export function ActivityPage() {
   const timezone = useEffectiveTimezone();
   const initialCached = getCachedSnapshot<{ activity: ActivityItem[] }>("/api/activity");
@@ -102,7 +107,7 @@ export function ActivityPage() {
     const url = `/api/activity${qs}`;
     const snap = getCachedSnapshot<{ activity: ActivityItem[] }>(url);
     if (snap) {
-      setItems(snap.activity);
+      setItems(asArray<ActivityItem>(snap.activity));
       setLoading(false);
     } else {
       setLoading(true);
@@ -111,7 +116,7 @@ export function ActivityPage() {
     try {
       const res = await cachedGet<{ activity: ActivityItem[] }>(url, { ttlMs: 15_000 });
       if (loadSeqRef.current === seq) {
-        setItems(res.activity);
+        setItems(asArray<ActivityItem>(res?.activity));
       }
     } catch (err) {
       if (loadSeqRef.current === seq) {
@@ -274,11 +279,11 @@ export function UserSettingsPage({
           "/api/notifications/preferences"
         ).catch(() => ({ preferences: null })),
       ]);
-      setSessionsList(sRes.sessions);
-      setNotifPrefs(pRes.preferences);
+      setSessionsList(asArray<SessionItem>(sRes?.sessions));
+      setNotifPrefs(pRes?.preferences ?? null);
       if (isAccountActive) {
         const stRes = await apiFetch<{ staff: StaffMember[] }>("/api/account/staff");
-        setStaffList(stRes.staff);
+        setStaffList(asArray<StaffMember>(stRes?.staff));
       }
     } catch {
       // Handled smoothly if account paused

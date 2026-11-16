@@ -56,9 +56,14 @@ export async function fetchBasicHardwareContext(options?: {
     }),
   ]);
   return {
-    controllers: ctrlRes.controllers,
-    rooms: roomRes.rooms,
+    controllers: asList<ControllerItem>(ctrlRes?.controllers),
+    rooms: asList<RoomItem>(roomRes?.rooms),
   };
+}
+
+/** Payloads from a fallback page or an older worker may omit list keys. */
+function asList<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
 }
 
 export async function fetchHardwareContext(
@@ -107,11 +112,17 @@ export async function fetchHardwareContext(
         : Promise.resolve({ sensors: [] as SensorItem[] }),
     ]);
 
+  const controllers = asList<ControllerItem>(ctrlRes?.controllers);
+  const rooms = asList<RoomItem>(roomRes?.rooms);
+  const switches = asList<SwitchItem>(swRes?.switches);
+  const devices = asList<DeviceItem>(devRes?.devices);
+  const sensors = asList<SensorItem>(senRes?.sensors);
+
   const boardsById = new Map<string, BoardProfileItem>();
   for (const b of [
-    ...myRes.catalogBoards,
-    ...catRes.boards,
-    ...myRes.customBoards,
+    ...asList<BoardProfileItem>(myRes?.catalogBoards),
+    ...asList<BoardProfileItem>(catRes?.boards),
+    ...asList<BoardProfileItem>(myRes?.customBoards),
   ]) {
     boardsById.set(b.id, b);
   }
@@ -141,24 +152,24 @@ export async function fetchHardwareContext(
     usedPinsByController.set(controllerId, list);
   };
 
-  for (const s of swRes.switches) pushUsed(s.controller_id, s.gpio_pin, "switch", s.id, s.name);
-  for (const d of devRes.devices) pushUsed(d.controller_id, d.gpio_pin, "device", d.id, d.name);
-  for (const sen of senRes.sensors)
+  for (const s of switches) pushUsed(s.controller_id, s.gpio_pin, "switch", s.id, s.name);
+  for (const d of devices) pushUsed(d.controller_id, d.gpio_pin, "device", d.id, d.name);
+  for (const sen of sensors)
     pushUsed(sen.controller_id, sen.gpio_pin, "sensor", sen.id, sen.name, sen.sensor_type);
 
   const sensorCompatibilityByController = new Map<
     string,
     ControllerSensorCompatibilityReport
   >();
-  for (const ctrl of ctrlRes.controllers) {
+  for (const ctrl of controllers) {
     if (ctrl.sensor_compatibility) {
       sensorCompatibilityByController.set(ctrl.id, ctrl.sensor_compatibility);
     }
   }
 
   return {
-    controllers: ctrlRes.controllers,
-    rooms: roomRes.rooms,
+    controllers,
+    rooms,
     boardsById,
     usedPinsByController,
     sensorCompatibilityByController,

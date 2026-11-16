@@ -30,6 +30,7 @@ export default defineConfig({
     emptyOutDir: true,
     modulePreload: {
       resolveDependencies(_filename, deps) {
+        // Heavy, on-demand-only vendors must never be preloaded with a route.
         return deps.filter(
           (dep) => !dep.includes("vendor-esptool") && !dep.includes("vendor-xyflow")
         );
@@ -40,9 +41,6 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes("node_modules/@xyflow")) {
             return "vendor-xyflow";
-          }
-          if (id.includes("node_modules/esptool-js")) {
-            return "vendor-esptool";
           }
           if (id.includes("node_modules/@remixicon/react")) {
             return "vendor-icons";
