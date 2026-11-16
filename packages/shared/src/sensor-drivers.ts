@@ -552,6 +552,53 @@ function findDefaultI2cPinsFromLayout(
 }
 
 /**
+ * The board's *documented* default I2C bus, resolved only from data the board
+ * profile actually documents (header pad names/aliases and GPIO definition
+ * text). Unlike {@link deriveBoardHardwareCapabilityProfile}, this never
+ * invents a pair from the pool of I2C-capable pins — callers that need to
+ * draw wiring (the Wire Diagram) must not see a bus that was never documented.
+ */
+export function findDocumentedI2cBus(
+  board: Pick<BoardProfileSpec, "board_layout" | "gpio_definitions">
+): { sdaPin: number | null; sclPin: number | null } {
+  const usableI2cSet = new Set(
+    (board.gpio_definitions ?? [])
+      .filter((g) => g.capabilities?.i2c && !g.restrictions?.reserved)
+      .map((g) => g.pin)
+  );
+  const { sdaPin, sclPin } = findDefaultI2cPinsFromLayout(board, usableI2cSet);
+  // Drop the "lowest two I2C-capable pins" fallback: it documents nothing.
+  const hasDocumentedPin = (pin: number): boolean => {
+    const layout = board.board_layout;
+    const pins = [
+      ...(layout?.leftHeader?.pins ?? []),
+      ...(layout?.rightHeader?.pins ?? []),
+      ...(layout?.extraPads?.pins ?? []),
+    ];
+    const fromHeader = pins.some(
+      (hp) =>
+        hp.gpioPin === pin &&
+        [hp.pinName, ...(hp.aliases ?? [])]
+          .join(" ")
+          .toUpperCase()
+          .match(/\b(I2C_?SDA|SDA|I2C_?SCL|SCL)\b/)
+    );
+    if (fromHeader) return true;
+    return (board.gpio_definitions ?? []).some((def) => {
+      if (def.pin !== pin) return false;
+      const text = `${def.label} ${def.board_pin_name ?? ""} ${def.board_note ?? ""}`.toUpperCase();
+      return /\b(I2C_?SDA|SDA|I2C_?SCL|SCL)\b/.test(text);
+    });
+  };
+  const sdaOk = sdaPin !== null && hasDocumentedPin(sdaPin);
+  const sclOk = sclPin !== null && hasDocumentedPin(sclPin);
+  return {
+    sdaPin: sdaOk ? sdaPin : null,
+    sclPin: sclOk ? sclPin : null,
+  };
+}
+
+/**
  * Derives a structured hardware capability profile directly from the board's
  * existing `gpio_definitions` and `board_layout` without duplicating pin rules.
  */

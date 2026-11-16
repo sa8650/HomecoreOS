@@ -20,7 +20,7 @@ const MORPH_SPRING = {
 };
 
 const COLLAPSED_FALLBACK = { width: 52, height: 36 };
-const EXPANDED_FALLBACK = { width: 224, height: 38 };
+const EXPANDED_FALLBACK = { width: 144, height: 38 };
 const DRAG_THRESHOLD = 8;
 const EDGE_MARGIN = 12;
 const STORAGE_KEY = "hc:island:offset-x";
@@ -152,13 +152,12 @@ export function DynamicIsland({
     [getHostWidth]
   );
 
-  // Measure face & panel sizes dynamically with ResizeObserver
+  // Measure face & panel sizes synchronously on mount/expand and keep synced with ResizeObserver
   useLayoutEffect(() => {
     const faceEl = faceWrapRef.current;
     const panelEl = panelWrapRef.current;
-    if (typeof ResizeObserver === "undefined") return;
 
-    const ro = new ResizeObserver(() => {
+    const measure = () => {
       if (faceEl) {
         const rect = faceEl.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
@@ -177,8 +176,12 @@ export function DynamicIsland({
           });
         }
       }
-    });
+    };
 
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+
+    const ro = new ResizeObserver(measure);
     if (faceEl) ro.observe(faceEl);
     if (panelEl) ro.observe(panelEl);
     return () => ro.disconnect();

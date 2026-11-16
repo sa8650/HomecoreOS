@@ -141,7 +141,8 @@ describe("HomecoreOS interactive UI workflows", () => {
       </TimezoneContext.Provider>
     );
 
-    expect(screen.getByText(/Interactive 2D Home Floor Plan/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Home Preview$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Interactive 2D Home Floor Plan/i)).not.toBeInTheDocument();
     expect(screen.getAllByText(/Chandelier/i).length).toBeGreaterThan(0);
 
     // Select Kitchen via keyboard Enter on its SVG room group
@@ -887,20 +888,39 @@ describe("HomecoreOS interactive UI workflows", () => {
     expect(screen.getByText("100%")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Zoom in floor plan/i }));
     expect(screen.getByText("120%")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Reset floor plan view/i }));
+    await user.click(screen.getByRole("button", { name: /^Fit$/i }));
     expect(screen.getByText("100%")).toBeInTheDocument();
 
     // No room jump pill row above map
     expect(screen.queryByRole("button", { name: /Jump to /i })).not.toBeInTheDocument();
 
-    // Header bar hosts tooltip trigger, view switcher, Arrange Floor Plan, and Add Room
+    // Header bar hosts tooltip trigger and icon-only buttons with hover tooltips
     const headerBar = screen.getByTestId("floorplan-header-bar");
-    expect(within(headerBar).getByRole("button", { name: /Arrange Floor Plan/i })).toBeInTheDocument();
-    expect(within(headerBar).getByRole("button", { name: /Add Room/i })).toBeInTheDocument();
+    const iconOnlyButtonLabels = [
+      "Standard View",
+      "Wide View",
+      "Full Screen",
+      "Arrange Floor Plan",
+      "Add Room",
+      "Fit",
+    ] as const;
 
-    // Hovering / focusing info trigger reveals exact tooltip title & body
+    for (const label of iconOnlyButtonLabels) {
+      const btn = within(headerBar).getByRole("button", {
+        name: new RegExp(`^${label}$`, "i"),
+      });
+      expect(btn.textContent?.trim()).toBe("");
+      await user.hover(btn);
+      await waitFor(() => {
+        const tooltips = screen.getAllByRole("tooltip");
+        expect(tooltips.some((el) => el.textContent?.trim() === label)).toBe(true);
+      });
+      await user.unhover(btn);
+    }
+
+    // Hovering / focusing info trigger reveals Home Preview tooltip title & body
     const infoBtn = within(headerBar).getByRole("button", {
-      name: /Interactive 2D Home Floor Plan details/i,
+      name: /Home Preview details/i,
     });
     await user.hover(infoBtn);
     expect(
@@ -908,6 +928,7 @@ describe("HomecoreOS interactive UI workflows", () => {
         /Click fixtures directly on the map to toggle hardware, drag to pan, or jump between rooms\./i
       )
     ).toBeInTheDocument();
+    await user.unhover(infoBtn);
 
     // 3-state view switching: Standard View -> Wide View -> Full Screen -> Exit Full Screen
     const containerEl = screen.getByTestId("floorplan-container");

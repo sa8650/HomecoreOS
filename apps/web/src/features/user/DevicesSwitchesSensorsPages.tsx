@@ -11,6 +11,7 @@ import {
   RiLockLine,
   RiMapPinLine,
   RiMore2Fill,
+  RiRouteLine,
   RiSensorLine,
   RiSunLine,
   RiTempColdLine,
@@ -59,6 +60,10 @@ import {
 } from "@/components/ui/card";
 import { MagicCard } from "@/components/ui/magic-card";
 import {
+  WireDiagramModal,
+  type WireDiagramTarget,
+} from "@/components/hardware/WireDiagramModal";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
@@ -85,6 +90,7 @@ interface HardwareEntityCardProps {
   spotlightTone: HeroTone;
   canManage: boolean;
   onViewDetails: () => void;
+  onWireDiagram: () => void;
   onEdit: () => void;
   onMoveRoom: () => void;
   onDelete: () => void;
@@ -100,6 +106,7 @@ const HardwareEntityCard = memo(function HardwareEntityCard({
   spotlightTone,
   canManage,
   onViewDetails,
+  onWireDiagram,
   onEdit,
   onMoveRoom,
   onDelete,
@@ -151,6 +158,10 @@ const HardwareEntityCard = memo(function HardwareEntityCard({
                   <DropdownMenuItem onClick={onViewDetails}>
                     <RiEyeLine className="size-4" aria-hidden="true" />
                     View details
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={onWireDiagram}>
+                    <RiRouteLine className="size-4" aria-hidden="true" />
+                    Wire Diagram
                   </DropdownMenuItem>
                   {canManage && (
                     <>
@@ -216,6 +227,7 @@ export function SwitchesPage({
   const [detailsTarget, setDetailsTarget] = useState<SwitchItem | null>(null);
   const [moveTarget, setMoveTarget] = useState<SwitchItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SwitchItem | null>(null);
+  const [wireTarget, setWireTarget] = useState<WireDiagramTarget | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const inFlightToggleIdsRef = useRef<Set<string>>(new Set());
@@ -459,6 +471,10 @@ export function SwitchesPage({
                 spotlightTone="yellow"
                 canManage={canManage}
                 onViewDetails={() => setDetailsTarget(sw)}
+                onWireDiagram={() => {
+                  setWireTarget({ kind: "switch", data: sw });
+                  void ensureModalContext();
+                }}
                 onEdit={() => openEditor(sw)}
                 onMoveRoom={() => setMoveTarget(sw)}
                 onDelete={() => setDeleteTarget(sw)}
@@ -540,6 +556,20 @@ export function SwitchesPage({
         }}
       />
 
+      <WireDiagramModal
+        open={Boolean(wireTarget)}
+        onOpenChange={(next) => {
+          if (!next) setWireTarget(null);
+        }}
+        target={wireTarget}
+        ctx={effectiveModalCtx}
+        onEdit={() => {
+          const t = wireTarget;
+          setWireTarget(null);
+          if (t?.kind === "switch") openEditor(t.data);
+        }}
+      />
+
       <ConfirmDeleteDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
@@ -602,6 +632,7 @@ export function DevicesPage({
   const [detailsTarget, setDetailsTarget] = useState<DeviceItem | null>(null);
   const [moveTarget, setMoveTarget] = useState<DeviceItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeviceItem | null>(null);
+  const [wireTarget, setWireTarget] = useState<WireDiagramTarget | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const inFlightIdsRef = useRef<Set<string>>(new Set());
@@ -849,6 +880,10 @@ export function DevicesPage({
                 spotlightTone="purple"
                 canManage={canManage}
                 onViewDetails={() => setDetailsTarget(dev)}
+                onWireDiagram={() => {
+                  setWireTarget({ kind: "device", data: dev });
+                  void ensureModalContext();
+                }}
                 onEdit={() => openEditor(dev)}
                 onMoveRoom={() => setMoveTarget(dev)}
                 onDelete={() => setDeleteTarget(dev)}
@@ -930,6 +965,20 @@ export function DevicesPage({
         }}
       />
 
+      <WireDiagramModal
+        open={Boolean(wireTarget)}
+        onOpenChange={(next) => {
+          if (!next) setWireTarget(null);
+        }}
+        target={wireTarget}
+        ctx={effectiveModalCtx}
+        onEdit={() => {
+          const t = wireTarget;
+          setWireTarget(null);
+          if (t?.kind === "device") openEditor(t.data);
+        }}
+      />
+
       <ConfirmDeleteDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
@@ -981,6 +1030,7 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
   const [detailsTarget, setDetailsTarget] = useState<SensorItem | null>(null);
   const [moveTarget, setMoveTarget] = useState<SensorItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SensorItem | null>(null);
+  const [wireTarget, setWireTarget] = useState<WireDiagramTarget | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
 
@@ -1173,6 +1223,10 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
                 spotlightTone="green"
                 canManage={canManage}
                 onViewDetails={() => setDetailsTarget(sen)}
+                onWireDiagram={() => {
+                  setWireTarget({ kind: "sensor", data: sen });
+                  void ensureModalContext();
+                }}
                 onEdit={() => openEditor(sen)}
                 onMoveRoom={() => setMoveTarget(sen)}
                 onDelete={() => setDeleteTarget(sen)}
@@ -1246,6 +1300,20 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
         canManage={canManage}
         onEdit={() => {
           if (detailsTarget) openEditor(detailsTarget);
+        }}
+      />
+
+      <WireDiagramModal
+        open={Boolean(wireTarget)}
+        onOpenChange={(next) => {
+          if (!next) setWireTarget(null);
+        }}
+        target={wireTarget}
+        ctx={effectiveModalCtx}
+        onEdit={() => {
+          const t = wireTarget;
+          setWireTarget(null);
+          if (t?.kind === "sensor") openEditor(t.data);
         }}
       />
 

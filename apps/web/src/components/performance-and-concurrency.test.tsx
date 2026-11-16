@@ -74,7 +74,9 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
       if (url === "/api/boards/catalog") return jsonResponse({ boards: [{ id: "b1" }] });
       if (url === "/api/homes/overview") return jsonResponse({ homes: [{ id: "h1" }] });
       if (url === "/api/switches") return jsonResponse({ switches: [{ id: "sw1" }] });
+      if (url === "/api/activity") return jsonResponse({ logs: [{ id: "log1" }] });
       if (url === "/api/switches/sw1/toggle") return jsonResponse({ ok: true });
+      if (url === "/api/auth/login") return jsonResponse({ ok: true });
       return jsonResponse({});
     });
     globalThis.fetch = fetchMock as typeof fetch;
@@ -89,18 +91,28 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
 
     await cachedGet("/api/boards/catalog", { ttlMs: 60_000 });
     await cachedGet("/api/switches", { ttlMs: 15_000 });
+    await cachedGet("/api/activity", { ttlMs: 15_000 });
     expect(getCachedSnapshot("/api/homes/overview")).not.toBeNull();
     expect(getCachedSnapshot("/api/boards/catalog")).not.toBeNull();
     expect(getCachedSnapshot("/api/switches")).not.toBeNull();
+    expect(getCachedSnapshot("/api/activity")).not.toBeNull();
 
-    // Toggling a switch invalidates /api/switches and /api/homes/overview, NOT /api/boards/catalog
+    // Toggling a switch invalidates /api/switches, /api/homes/overview, and /api/activity, NOT /api/boards/catalog
     await apiFetch("/api/switches/sw1/toggle", {
       method: "POST",
       body: JSON.stringify({ isOn: true }),
     });
     expect(getCachedSnapshot("/api/switches")).toBeNull();
     expect(getCachedSnapshot("/api/homes/overview")).toBeNull();
+    expect(getCachedSnapshot("/api/activity")).toBeNull();
     expect(getCachedSnapshot("/api/boards/catalog")).not.toBeNull();
+
+    // Auth boundary mutation (/api/auth/login) clears all cached GET snapshots
+    await apiFetch("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: "next@example.com", password: "pw" }),
+    });
+    expect(getCachedSnapshot("/api/boards/catalog")).toBeNull();
   });
 
   it("applies optimistic switch state immediately on HomeFloorPlan and rolls back with StatusAlert on API failure", async () => {

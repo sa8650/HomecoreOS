@@ -574,6 +574,7 @@ export function isNewerFirmwareVersion(
 
 export * from "./board-validation";
 export * from "./board-catalog-data";
+export * from "./wire-diagram";
 export * from "./seeed-xiao-catalog";
 export * from "./waveshare-esp-catalog";
 export * from "./gpio-pin-selector";

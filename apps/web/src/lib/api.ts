@@ -75,28 +75,34 @@ export function invalidateApiCache(...prefixes: string[]): void {
 
 function invalidateCacheForMutation(path: string): void {
   if (
+    path.startsWith("/api/auth/login") ||
+    path.startsWith("/api/auth/register") ||
+    path.startsWith("/api/auth/invitations/accept") ||
     path.startsWith("/api/auth/logout") ||
     path.startsWith("/api/auth/switch-account") ||
+    path.startsWith("/api/admin/auth/login") ||
+    path.startsWith("/api/admin/auth/bootstrap") ||
     path.startsWith("/api/admin/auth/logout")
   ) {
     getCache.clear();
+    inflightGets.clear();
     return;
   }
   if (path.startsWith("/api/switches")) {
-    invalidateApiCache("/api/switches", "/api/homes/overview");
+    invalidateApiCache("/api/switches", "/api/homes/overview", "/api/activity");
     return;
   }
   if (path.startsWith("/api/devices")) {
     // Device and controller counts feed the planner's account-limit check.
-    invalidateApiCache("/api/devices", "/api/homes/overview", "/api/planner");
+    invalidateApiCache("/api/devices", "/api/homes/overview", "/api/planner", "/api/activity");
     return;
   }
   if (path.startsWith("/api/sensors")) {
-    invalidateApiCache("/api/sensors", "/api/homes/overview");
+    invalidateApiCache("/api/sensors", "/api/homes/overview", "/api/activity");
     return;
   }
   if (path.startsWith("/api/homes")) {
-    invalidateApiCache("/api/homes", "/api/switches", "/api/devices", "/api/sensors");
+    invalidateApiCache("/api/homes", "/api/switches", "/api/devices", "/api/sensors", "/api/activity");
     return;
   }
   if (path.startsWith("/api/controllers")) {
@@ -107,13 +113,14 @@ function invalidateCacheForMutation(path: string): void {
       "/api/switches",
       "/api/devices",
       "/api/sensors",
-      "/api/planner"
+      "/api/planner",
+      "/api/activity"
     );
     return;
   }
   if (path.startsWith("/api/boards")) {
     // A custom board is a planner candidate, so saved plan verdicts may be stale.
-    invalidateApiCache("/api/boards", "/api/planner");
+    invalidateApiCache("/api/boards", "/api/planner", "/api/activity");
     return;
   }
   if (path.startsWith("/api/planner")) {
@@ -121,7 +128,7 @@ function invalidateCacheForMutation(path: string): void {
     return;
   }
   if (path.startsWith("/api/automations")) {
-    invalidateApiCache("/api/automations");
+    invalidateApiCache("/api/automations", "/api/activity");
     if (
       path.endsWith("/run") ||
       path.endsWith("/test") ||
@@ -132,7 +139,11 @@ function invalidateCacheForMutation(path: string): void {
     return;
   }
   if (path.startsWith("/api/firmware")) {
-    invalidateApiCache("/api/firmware", "/api/controllers");
+    invalidateApiCache("/api/firmware", "/api/controllers", "/api/activity");
+    return;
+  }
+  if (path.startsWith("/api/account") || path.startsWith("/api/auth/change-password")) {
+    invalidateApiCache("/api/account", "/api/auth", "/api/activity");
     return;
   }
   if (path.startsWith("/api/notifications")) {
@@ -180,6 +191,13 @@ export async function apiFetch<T>(
   }
 
   if (!response.ok) {
+    if (
+      (response.status === 401 || response.status === 403) &&
+      (path === "/api/auth/me" || path === "/api/admin/auth/me")
+    ) {
+      getCache.clear();
+      inflightGets.clear();
+    }
     const obj = parsed as { error?: string; code?: string; details?: unknown } | null;
     throw new ApiError(
       obj?.error ?? `Request failed (${response.status})`,

@@ -858,12 +858,26 @@ describe("4-Part UI Overhaul: Heroes, Board Library Layout, Sonner Toasts & Magi
     });
     userView.unmount();
 
-    // Admin Console retains standard <header> topbar and has no Dynamic Island
+    // Admin Console removes <header> topbar, uses Dynamic Island, and applies lavender gradient
     window.history.pushState({}, "", "/admin");
     const adminView = render(<App />);
     await screen.findByRole("heading", { name: /Platform Overview/i });
-    expect(adminView.container.querySelector("header")).not.toBeNull();
-    expect(screen.queryByTestId("dynamic-island-shell")).not.toBeInTheDocument();
+    const adminWorkspaceCol = screen.getByTestId("console-workspace-column");
+    expect(adminWorkspaceCol.querySelector(":scope > header")).toBeNull();
+    expect(adminWorkspaceCol).toHaveClass("hc-admin-lavender-bg");
+
+    const adminIsland = screen.getByTestId("dynamic-island-shell");
+    expect(adminIsland).toHaveAttribute("data-expanded", "false");
+    await user.click(screen.getByTestId("dynamic-island-face"));
+    expect(adminIsland).toHaveAttribute("data-expanded", "true");
+    expect(screen.getByRole("button", { name: /Quick navigation/i })).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("island-profile-trigger"));
+    const adminProfileMenu = await screen.findByTestId("island-profile-menu");
+    expect(within(adminProfileMenu).getByText("Root Operator")).toBeInTheDocument();
+    expect(within(adminProfileMenu).getByRole("menuitem", { name: /Platform settings/i })).toBeInTheDocument();
+    expect(within(adminProfileMenu).getByRole("menuitem", { name: /Sign out/i })).toBeInTheDocument();
+
     adminView.unmount();
     window.history.pushState({}, "", "/");
   });

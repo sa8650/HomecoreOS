@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { getBrowserTimezoneFallback } from "@/lib/timezone";
 import { HomecoreWordmark } from "@/components/graphics/HomecoreGraphics";
@@ -40,6 +40,16 @@ export function CustomerAuthPage({
   const [regPassword, setRegPassword] = useState("");
 
   const [inviteCode, setInviteCode] = useState(initialInviteCode);
+
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
+    if (initialInviteCode) {
+      setInviteCode(initialInviteCode);
+    }
+  }, [initialInviteCode]);
 
   async function handleLogin(e: FormEvent) {
     e.preventDefault();

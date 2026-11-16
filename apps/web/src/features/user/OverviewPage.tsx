@@ -9,7 +9,7 @@ import {
   RiToggleLine,
 } from "@remixicon/react";
 import { toast } from "sonner";
-import { apiFetch, ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
+import { ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
 import { HomeFloorPlan } from "@/components/floorplan/HomeFloorPlan";
 import { Badge } from "@/components/reui/badge";
@@ -67,8 +67,17 @@ export function OverviewPage({ canManage, canOperate, onNavigate }: OverviewPage
   }, []);
 
   const handleSilentReload = useCallback(async () => {
-    const res = await apiFetch<OverviewData>("/api/homes/overview");
-    setData(res);
+    try {
+      const res = await cachedGet<OverviewData>("/api/homes/overview", {
+        ttlMs: 12_000,
+        force: true,
+      });
+      setData(res);
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Failed to refresh overview."
+      );
+    }
   }, []);
 
   useEffect(() => {

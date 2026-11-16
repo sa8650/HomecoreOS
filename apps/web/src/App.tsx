@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import {
   RiBarChartBoxLine,
   RiCpuLine,
@@ -20,9 +20,9 @@ import {
 } from "@remixicon/react";
 import { apiFetch } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
+import { AdminIslandWorkspaceBar } from "@/components/dynamic-island/AdminIslandWorkspaceBar";
 import { UserIslandWorkspaceBar } from "@/components/dynamic-island/UserIslandWorkspaceBar";
 import { ConsoleShell, type NavItem } from "@/components/layout/ConsoleShell";
-import { NotificationBellPopover } from "@/components/notifications/NotificationBellPopover";
 import { StatusAlert } from "@/components/shared/AppUi";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CustomerAuthPage } from "@/features/auth/CustomerAuthPage";
@@ -200,6 +200,7 @@ export function App() {
   const [userSession, setUserSession] = useState<UserSessionData | null>(null);
   const [adminSession, setAdminSession] = useState<AdminSessionData | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
+  const sessionLoadSeqRef = useRef(0);
 
   const isAdminArea = path.startsWith("/admin");
 
@@ -230,20 +231,29 @@ export function App() {
   }, []);
 
   const loadCurrentSession = useCallback(async () => {
+    const seq = ++sessionLoadSeqRef.current;
     setLoadingSession(true);
     try {
       if (isAdminArea) {
         const res = await apiFetch<AdminSessionData>("/api/admin/auth/me");
-        setAdminSession(res);
+        if (sessionLoadSeqRef.current === seq) {
+          setAdminSession(res);
+        }
       } else {
         const res = await apiFetch<UserSessionData>("/api/auth/me");
-        setUserSession(res);
+        if (sessionLoadSeqRef.current === seq) {
+          setUserSession(res);
+        }
       }
     } catch {
-      if (isAdminArea) setAdminSession(null);
-      else setUserSession(null);
+      if (sessionLoadSeqRef.current === seq) {
+        if (isAdminArea) setAdminSession(null);
+        else setUserSession(null);
+      }
     } finally {
-      setLoadingSession(false);
+      if (sessionLoadSeqRef.current === seq) {
+        setLoadingSession(false);
+      }
     }
   }, [isAdminArea]);
 
@@ -302,7 +312,7 @@ export function App() {
     }
 
     const isSuperAdmin = adminSession.admin.role === "super_admin";
-    const canManageBoards =
+    const canOperateAdmin =
       adminSession.admin.role === "super_admin" ||
       adminSession.admin.role === "operator";
     const adminEffectiveTz =
@@ -319,18 +329,28 @@ export function App() {
         case "/admin/setup":
           return <AdminSetupStatusPage />;
         case "/admin/accounts":
-          return <AdminAccountsStaffPage isSuperAdmin={isSuperAdmin} />;
+          return (
+            <AdminAccountsStaffPage
+              isSuperAdmin={isSuperAdmin}
+              canManageAccounts={canOperateAdmin}
+            />
+          );
         case "/admin/firmware":
-          return <AdminFirmwarePage />;
+          return (
+            <AdminFirmwarePage
+              isSuperAdmin={isSuperAdmin}
+              canManageFirmware={canOperateAdmin}
+            />
+          );
         case "/admin/boards":
           return (
             <AdminBoardsPage
               isSuperAdmin={isSuperAdmin}
-              canManageBoards={canManageBoards}
+              canManageBoards={canOperateAdmin}
             />
           );
         case "/admin/emqx":
-          return <AdminEmqxPage />;
+          return <AdminEmqxPage canManageEmqx={canOperateAdmin} />;
         case "/admin/usage":
           return <AdminUsagePage />;
         case "/admin/notifications":
@@ -361,9 +381,19 @@ export function App() {
               const target = ADMIN_ROUTES.find((r) => r.id === id);
               if (target) navigate(target.path);
             }}
-            headerNotifications={
-              <NotificationBellPopover scope="admin" onNavigate={navigate} />
-            }
+            workspaceClassName="hc-admin-lavender-bg"
+            floatingBar={({ openMobileNav }) => (
+              <AdminIslandWorkspaceBar
+                adminSession={adminSession}
+                routes={ADMIN_ROUTES}
+                activeRouteId={activeAdminRoute.id}
+                themeMode={themeMode}
+                onToggleTheme={toggleTheme}
+                onNavigate={navigate}
+                onSignOut={() => void handleAdminLogout()}
+                onOpenMobileNav={openMobileNav}
+              />
+            )}
             userEmail={adminSession.admin.email}
             userName={adminSession.admin.fullName}
             onSignOut={() => void handleAdminLogout()}
@@ -489,7 +519,6 @@ export function App() {
       <TimezoneContext.Provider value={userEffectiveTz}>
         <ConsoleShell
           consoleTitle={userSession.account.name}
-          consoleBadge={`USER · ${userSession.account.staffRole.toUpperCase()}`}
           navItems={USER_ROUTES}
           activeNav={activeUserRoute.id}
           onSelectNav={(id) => {
