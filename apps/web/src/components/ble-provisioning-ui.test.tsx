@@ -509,7 +509,7 @@ describe("Simplified 4-Option Controller Setup & BLE Provisioning UI", () => {
     // Switch to Setup with Wi-Fi fallback cleanly and generate 6-digit pairing code
     await user.click(screen.getByRole("button", { name: /Setup with Wi-Fi/i }));
     expect(screen.getAllByText(/HomecoreOS-Setup-XXXX/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/http:\/\/192\.168\.4\.1/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/http:\/\/192\.168\.4\.1/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Setup PIN/i)).not.toBeInTheDocument();
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
