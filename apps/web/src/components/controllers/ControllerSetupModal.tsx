@@ -1753,25 +1753,51 @@ export function ControllerSetupModal({
 
             <div className="space-y-4">
               <WifiPortalArtwork />
-              <p className="-mt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
-                {view === "recover_wifi" ? (
-                  <>
-                    Hold the <strong>BOOT / Recovery</strong> button for 3 seconds, re-join{" "}
-                    <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">HomecoreOS-Setup-XXXX</code>,
-                    then open{" "}
-                    <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">http://192.168.4.1</code>{" "}
-                    and choose <strong>Update Wi-Fi Credentials Only</strong>, or{" "}
-                    <strong>Recover / Re-pair Existing Controller</strong> with the 6-digit code below.
-                  </>
-                ) : (
-                  <>
-                    Your controller broadcasts{" "}
-                    <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">HomecoreOS-Setup-XXXX</code> —
-                    join it with your phone or computer, then open{" "}
-                    <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">http://192.168.4.1</code>.
-                  </>
-                )}
-              </p>
+
+              <Frame spacing="sm">
+                <FramePanel className="space-y-2 p-4 text-xs leading-relaxed text-muted-foreground">
+                  <p className="text-sm font-semibold text-foreground">
+                    {view === "recover_wifi"
+                      ? "Steps on your controller & browser"
+                      : "Steps to set up via Wi-Fi"}
+                  </p>
+                  <ol className="list-decimal space-y-1.5 pl-4">
+                    <li>
+                      {view === "recover_wifi"
+                        ? "Hold the BOOT / Recovery button on your controller for 3 seconds."
+                        : "Power on your new HomecoreOS controller."}
+                    </li>
+                    <li>
+                      Connect your phone or computer to{" "}
+                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
+                        HomecoreOS-Setup-XXXX
+                      </code>
+                      .
+                    </li>
+                    <li>
+                      Open{" "}
+                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
+                        http://192.168.4.1
+                      </code>{" "}
+                      in your browser.
+                    </li>
+                    {view === "recover_wifi" ? (
+                      <li>
+                        If only your Wi-Fi network changed, choose{" "}
+                        <strong>Update Wi-Fi Credentials Only</strong> and click{" "}
+                        <strong>Save &amp; Apply</strong>. If re-pairing is needed, choose{" "}
+                        <strong>Recover / Re-pair Existing Controller</strong> and enter your
+                        Wi-Fi details, server URL, and 6-digit recovery code below.
+                      </li>
+                    ) : (
+                      <li>
+                        Enter your Wi-Fi SSID, Wi-Fi password, 6-digit pairing code, and
+                        HomecoreOS server URL, then click <strong>Save &amp; Apply</strong>.
+                      </li>
+                    )}
+                  </ol>
+                </FramePanel>
+              </Frame>
 
               {/* Server URL copy card */}
               <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/35 px-3 py-2">
@@ -1903,8 +1929,8 @@ export function ControllerSetupModal({
                       {wifiPortalBusy
                         ? "Preparing..."
                         : view === "recover_wifi"
-                          ? "Get 6-Digit Recovery Code"
-                          : "Get 6-Digit Pairing Code"}
+                          ? "Get Recovery Code"
+                          : "Get Pairing Code"}
                     </Button>
                   </div>
                 </form>

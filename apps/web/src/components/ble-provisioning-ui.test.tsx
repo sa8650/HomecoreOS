@@ -537,7 +537,7 @@ describe("Simplified 4-Option Controller Setup & BLE Provisioning UI", () => {
     }) as typeof fetch;
 
     await user.type(screen.getByLabelText(/Controller Name/i), "Porch Sensor Hub");
-    await user.click(screen.getByRole("button", { name: /Get 6-Digit Pairing Code/i }));
+    await user.click(screen.getByRole("button", { name: /Get Pairing Code/i }));
     await waitFor(() => {
       expect(screen.getByText("908070")).toBeInTheDocument();
     });
