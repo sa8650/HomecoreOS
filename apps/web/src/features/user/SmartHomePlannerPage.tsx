@@ -56,6 +56,11 @@ import {
 } from "@/lib/planner-api";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
 
+/** Keeps list state render-safe when a payload omits the expected array. */
+function asList<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
 const PLAN_NAME_MAX = 80;
 
 type PlannerView = "wizard" | "analyzing" | "result";
@@ -197,7 +202,7 @@ export function SmartHomePlannerPage({
       try {
         const res = await listPlannerPlans({ force });
         if (plansRequest.current !== request) return;
-        setPlans(res.plans);
+        setPlans(asList<PlannerPlanSummary>(res.plans));
         setPlanLimit(res.limit);
         setPlansError(null);
 

@@ -169,6 +169,40 @@ function invalidateCacheForMutation(path: string): void {
   }
 }
 
+/**
+ * A 2xx response that is not JSON means we did not actually reach the worker
+ * API. Cloudflare's SPA fallback (`not_found_handling`), an Access/WAF login
+ * page, or a proxy error page all answer `200 OK text/html`. Accepting that as
+ * data used to hand pages an HTML string where they expected an object, which
+ * threw during render and permanently blanked the SPA.
+ */
+const NON_JSON_PAYLOAD_MESSAGE =
+  "The server returned an unexpected (non-JSON) response. Please reload the page and try again.";
+
+function looksLikeHtml(text: string): boolean {
+  return /^\s*<(!doctype|html|head|body)/i.test(text);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Normalizes an error body into the `{ error, code, details }` shape we read. */
+function toErrorPayload(parsed: unknown): ErrorPayload | null {
+  if (isPlainObject(parsed)) {
+    const error = typeof parsed.error === "string" ? parsed.error : undefined;
+    const code = typeof parsed.code === "string" ? parsed.code : undefined;
+    return { error, code, details: parsed.details };
+  }
+  return null;
+}
+
+interface ErrorPayload {
+  error?: string;
+  code?: string;
+  details?: unknown;
+}
+
 export async function apiFetch<T>(
   path: string,
   options?: RequestInit
@@ -183,20 +217,40 @@ export async function apiFetch<T>(
   ) {
     headers.set("Content-Type", "application/json");
   }
+  if (!headers.has("Accept")) {
+    // Without this, Cloudflare/browsers may negotiate an HTML error page and
+    // the worker can never answer with a machine-readable error body.
+    headers.set("Accept", "application/json");
+  }
 
-  const response = await fetch(path, {
-    credentials: "include",
-    ...options,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      credentials: "include",
+      ...options,
+      headers,
+    });
+  } catch (err) {
+    throw new ApiError(
+      err instanceof Error && err.message
+        ? `Network error: ${err.message}`
+        : "Network error: the server could not be reached.",
+      0
+    );
+  }
 
-  const contentType = response.headers.get("content-type") ?? "";
+  const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+  const isJson = contentType.includes("json");
+  // All API payloads are small JSON documents; read them as text first so a
+  // truncated or HTML body surfaces as a clean ApiError instead of a TypeError.
+  const rawText = await response.text().catch(() => "");
   let parsed: unknown = null;
-  if (contentType.includes("application/json")) {
-    parsed = await response.json().catch(() => null);
-  } else {
-    const text = await response.text().catch(() => "");
-    parsed = text ? { error: text } : null;
+  if (isJson && rawText.trim().length > 0) {
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      parsed = null;
+    }
   }
 
   if (!response.ok) {
@@ -207,12 +261,40 @@ export async function apiFetch<T>(
       getCache.clear();
       inflightGets.clear();
     }
-    const obj = parsed as { error?: string; code?: string; details?: unknown } | null;
+    const obj =
+      parsed !== null
+        ? toErrorPayload(parsed)
+        : rawText.trim().length > 0 && !looksLikeHtml(rawText)
+          ? { error: rawText.trim().slice(0, 300) }
+          : null;
     throw new ApiError(
       obj?.error ?? `Request failed (${response.status})`,
       response.status,
       obj?.code,
       obj?.details
+    );
+  }
+
+  if (!isJson) {
+    // Empty bodies are a legitimate success (204 No Content and friends).
+    if (rawText.trim().length === 0) {
+      if (method !== "GET" && method !== "HEAD") invalidateCacheForMutation(path);
+      return null as T;
+    }
+    throw new ApiError(
+      looksLikeHtml(rawText)
+        ? `${NON_JSON_PAYLOAD_MESSAGE} (the server sent an HTML page instead of API data)`
+        : NON_JSON_PAYLOAD_MESSAGE,
+      response.status,
+      "NON_JSON_RESPONSE"
+    );
+  }
+
+  if (parsed === null && rawText.trim().length > 0) {
+    throw new ApiError(
+      "The server returned malformed JSON. Please reload the page and try again.",
+      response.status,
+      "INVALID_JSON_RESPONSE"
     );
   }
 

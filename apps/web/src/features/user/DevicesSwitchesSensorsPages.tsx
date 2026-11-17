@@ -256,9 +256,9 @@ export function SwitchesPage({
         }),
         fetchBasicHardwareContext({ force }),
       ]);
-      setSwitches(swRes.switches);
-      setControllers(hw.controllers);
-      setRooms(hw.rooms);
+      setSwitches(Array.isArray(swRes?.switches) ? swRes.switches : []);
+      setControllers(Array.isArray(hw?.controllers) ? hw.controllers : []);
+      setRooms(Array.isArray(hw?.rooms) ? hw.rooms : []);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to load switches.");
     } finally {
@@ -662,9 +662,9 @@ export function DevicesPage({
         }),
         fetchBasicHardwareContext({ force }),
       ]);
-      setDevices(dRes.devices);
-      setControllers(hw.controllers);
-      setRooms(hw.rooms);
+      setDevices(Array.isArray(dRes?.devices) ? dRes.devices : []);
+      setControllers(Array.isArray(hw?.controllers) ? hw.controllers : []);
+      setRooms(Array.isArray(hw?.rooms) ? hw.rooms : []);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to load devices.");
     } finally {
@@ -1058,9 +1058,9 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
         }),
         fetchBasicHardwareContext({ force }),
       ]);
-      setSensors(sRes.sensors);
-      setControllers(hw.controllers);
-      setRooms(hw.rooms);
+      setSensors(Array.isArray(sRes?.sensors) ? sRes.sensors : []);
+      setControllers(Array.isArray(hw?.controllers) ? hw.controllers : []);
+      setRooms(Array.isArray(hw?.rooms) ? hw.rooms : []);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to load sensors.");
     } finally {

@@ -157,23 +157,28 @@ export function DynamicIsland({
     const faceEl = faceWrapRef.current;
     const panelEl = panelWrapRef.current;
 
+    // ResizeObserver fires with sub-pixel jitter while the island animates.
+    // Publishing a fresh object for an unchanged size re-rendered the whole
+    // island on every frame, so only commit real dimension changes.
     const measure = () => {
       if (faceEl) {
         const rect = faceEl.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          setFaceSize({
-            width: Math.ceil(rect.width),
-            height: Math.ceil(rect.height),
-          });
+        const width = Math.ceil(rect.width);
+        const height = Math.ceil(rect.height);
+        if (width > 0 && height > 0) {
+          setFaceSize((prev) =>
+            prev.width === width && prev.height === height ? prev : { width, height }
+          );
         }
       }
       if (panelEl) {
         const rect = panelEl.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          setPanelSize({
-            width: Math.ceil(rect.width),
-            height: Math.ceil(rect.height),
-          });
+        const width = Math.ceil(rect.width);
+        const height = Math.ceil(rect.height);
+        if (width > 0 && height > 0) {
+          setPanelSize((prev) =>
+            prev.width === width && prev.height === height ? prev : { width, height }
+          );
         }
       }
     };

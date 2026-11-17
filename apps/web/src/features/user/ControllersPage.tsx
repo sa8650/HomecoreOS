@@ -52,6 +52,11 @@ import type {
   RoomItem,
 } from "@/features/types";
 
+/** Keeps list state render-safe when a payload omits the expected array. */
+function asList<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
 /** Slice of `/api/firmware/updates` the controller cards need for version badges. */
 type FirmwareUpdatesPayload = {
   applicableUpdates?: Array<{
@@ -135,7 +140,7 @@ export function ControllersPage({
         "/api/controllers",
         { ttlMs: 15_000, force }
       ).then((cRes) => {
-        setControllers(cRes.controllers);
+        setControllers(asList<ControllerItem>(cRes.controllers));
         setLoading(false);
         return cRes;
       });
@@ -167,13 +172,13 @@ export function ControllersPage({
         }),
       ]).then(([trashOut, catOut, custOut, homeOut, roomsOut, updatesOut]) => {
         if (trashOut.status === "fulfilled") {
-          setTrashedControllers(trashOut.value.controllers);
+          setTrashedControllers(asList<ControllerItem>(trashOut.value.controllers));
         }
         if (catOut.status === "fulfilled") {
-          setCatalogBoards(catOut.value.boards);
+          setCatalogBoards(asList<BoardProfileItem>(catOut.value.boards));
         }
         if (custOut.status === "fulfilled") {
-          setCustomBoards(custOut.value.boards);
+          setCustomBoards(asList<BoardProfileItem>(custOut.value.boards));
         }
         if (homeOut.status === "fulfilled" && Array.isArray(homeOut.value?.homes)) {
           setHomes(homeOut.value.homes);

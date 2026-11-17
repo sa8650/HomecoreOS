@@ -104,6 +104,11 @@ import type {
   FirmwareUpdateHistoryItem,
 } from "@/features/types";
 
+/** Keeps list state render-safe when a payload omits the expected array. */
+function asList<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
 const ACTIVE_OTA_STATUSES = new Set([
   "pending",
   "downloading",
@@ -218,9 +223,12 @@ export function FirmwarePage({
 
       setReleases(relRes.releases);
       setFirmwareDownloadsEnabled(relRes.firmwareDownloadsEnabled ?? true);
-      setBoards([...catRes.boards, ...custRes.boards]);
-      setApplicableUpdates(updRes.applicableUpdates);
-      setHistory(updRes.history);
+      setBoards([
+        ...asList<BoardProfileItem>(catRes.boards),
+        ...asList<BoardProfileItem>(custRes.boards),
+      ]);
+      setApplicableUpdates(asList<ApplicableFirmwareUpdateItem>(updRes.applicableUpdates));
+      setHistory(asList<FirmwareUpdateHistoryItem>(updRes.history));
 
       const firstUsb = relRes.releases.find((r) => r.usb_available);
       setUsbReleaseId((prev) => prev || firstUsb?.id || "");
@@ -246,8 +254,8 @@ export function FirmwarePage({
           applicableUpdates: ApplicableFirmwareUpdateItem[];
           history: FirmwareUpdateHistoryItem[];
         }>("/api/firmware/updates");
-        setApplicableUpdates(res.applicableUpdates);
-        setHistory(res.history);
+        setApplicableUpdates(asList<ApplicableFirmwareUpdateItem>(res.applicableUpdates));
+        setHistory(asList<FirmwareUpdateHistoryItem>(res.history));
         invalidateApiCache("/api/firmware", "/api/controllers");
       } catch {
         // ignore transient poll failures
