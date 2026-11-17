@@ -152,7 +152,13 @@ async function inspectSelectedFile(file: File | null): Promise<FileInspectionMet
   return { name: file.name, sizeBytes: file.size, sha256, bytes };
 }
 
-export function AdminFirmwarePage() {
+export function AdminFirmwarePage({
+  isSuperAdmin = true,
+  canManageFirmware = true,
+}: {
+  isSuperAdmin?: boolean;
+  canManageFirmware?: boolean;
+} = {}) {
   const [releases, setReleases] = useState<FirmwareReleaseItem[]>([]);
   const [boards, setBoards] = useState<BoardProfileItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -628,16 +634,18 @@ export function AdminFirmwarePage() {
         title="Firmware Management"
         description="Upload validated USB + OTA ESP-IDF binaries or CI ZIP packages across all ESP32 board targets in private Cloudflare R2 storage."
         actions={
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={openSingleUploadModal}>
-              <RiUploadCloud2Line className="size-4" aria-hidden="true" />
-              Upload Binary / Release
-            </Button>
-            <Button size="sm" onClick={() => setZipOpen(true)}>
-              <RiUploadCloud2Line className="size-4" aria-hidden="true" />
-              Upload Release ZIP
-            </Button>
-          </div>
+          canManageFirmware ? (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={openSingleUploadModal}>
+                <RiUploadCloud2Line className="size-4" aria-hidden="true" />
+                Upload Binary / Release
+              </Button>
+              <Button size="sm" onClick={() => setZipOpen(true)}>
+                <RiUploadCloud2Line className="size-4" aria-hidden="true" />
+                Upload Release ZIP
+              </Button>
+            </div>
+          ) : undefined
         }
       />
 
@@ -667,7 +675,7 @@ export function AdminFirmwarePage() {
           <Switch
             aria-label="Toggle customer firmware downloads"
             checked={firmwareDownloadsEnabled}
-            disabled={savingDownloadToggle}
+            disabled={savingDownloadToggle || !canManageFirmware}
             onCheckedChange={(checked) => void handleToggleFirmwareDownloads(checked)}
           />
         </div>
@@ -712,10 +720,12 @@ export function AdminFirmwarePage() {
           title="No firmware releases uploaded yet"
           description="Upload a verified .bin image pair (USB + OTA) or CI release .zip package to private Cloudflare R2 storage."
           action={
-            <Button onClick={() => setZipOpen(true)}>
-              <RiUploadCloud2Line className="size-4" aria-hidden="true" />
-              Upload Release ZIP
-            </Button>
+            canManageFirmware ? (
+              <Button onClick={() => setZipOpen(true)}>
+                <RiUploadCloud2Line className="size-4" aria-hidden="true" />
+                Upload Release ZIP
+              </Button>
+            ) : undefined
           }
         />
       ) : (
@@ -728,7 +738,9 @@ export function AdminFirmwarePage() {
                 <TableHead>Compatible Boards</TableHead>
                 <TableHead>Status &amp; Rollout</TableHead>
                 <TableHead>Artifacts</TableHead>
-                <TableHead className="w-[70px] text-right">Actions</TableHead>
+                {canManageFirmware && (
+                  <TableHead className="w-[70px] text-right">Actions</TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -844,6 +856,7 @@ export function AdminFirmwarePage() {
                         ))}
                       </div>
                     </TableCell>
+                    {canManageFirmware && (
                     <TableCell className="text-right">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -918,17 +931,22 @@ export function AdminFirmwarePage() {
                               Archive
                             </DropdownMenuItem>
                           )}
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onSelect={() => setDeleteTarget(r)}
-                          >
-                            <RiDeleteBinLine className="size-4" aria-hidden="true" />
-                            Delete
-                          </DropdownMenuItem>
+                          {isSuperAdmin && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onSelect={() => setDeleteTarget(r)}
+                              >
+                                <RiDeleteBinLine className="size-4" aria-hidden="true" />
+                                Delete
+                              </DropdownMenuItem>
+                            </>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
+                    )}
                   </TableRow>
                 );
               })}
@@ -1486,7 +1504,11 @@ export function AdminFirmwarePage() {
   );
 }
 
-export function AdminEmqxPage() {
+export function AdminEmqxPage({
+  canManageEmqx = true,
+}: {
+  canManageEmqx?: boolean;
+} = {}) {
   const [data, setData] = useState<{
     brokerStatus: { configured: boolean; connected: boolean; brokerHost?: string; error?: string };
     liveClients: Array<{ clientid: string; connected?: boolean; ip_address?: string }>;
@@ -1594,7 +1616,7 @@ export function AdminEmqxPage() {
               <TableHead>Topic Prefix</TableHead>
               <TableHead>EMQX Sync</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>Action</TableHead>
+              {canManageEmqx && <TableHead>Action</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1608,17 +1630,19 @@ export function AdminEmqxPage() {
                     {cred.status}
                   </Badge>
                 </TableCell>
-                <TableCell>
-                  {cred.status === "active" && (
-                    <Button
-                      variant="destructive"
-                      size="xs"
-                      onClick={() => setRevokeTarget(cred.controller_id)}
-                    >
-                      Revoke
-                    </Button>
-                  )}
-                </TableCell>
+                {canManageEmqx && (
+                  <TableCell>
+                    {cred.status === "active" && (
+                      <Button
+                        variant="destructive"
+                        size="xs"
+                        onClick={() => setRevokeTarget(cred.controller_id)}
+                      >
+                        Revoke
+                      </Button>
+                    )}
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>
@@ -1672,12 +1696,16 @@ export function AdminUsagePage() {
     );
   }
 
-  const r2Pct = Math.min(
-    100,
-    Math.round((usage.r2.totalBytes / usage.r2.freeTierLimitBytes) * 100)
-  );
+  const r2Pct =
+    usage.r2.freeTierLimitBytes > 0
+      ? Math.min(
+          100,
+          Math.round((usage.r2.totalBytes / usage.r2.freeTierLimitBytes) * 100)
+        )
+      : 0;
   const emqxPct =
-    usage.emqx.activeConnections !== null
+    usage.emqx.activeConnections !== null &&
+    usage.emqx.serverlessMaxConnections > 0
       ? Math.min(
           100,
           Math.round(

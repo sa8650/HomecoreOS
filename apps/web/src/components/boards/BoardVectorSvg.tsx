@@ -112,6 +112,115 @@ function shortSilkLabel(hp: BoardHeaderPin): string {
   return raw;
 }
 
+export function headerPinKey(
+  hp: Pick<BoardHeaderPin, "headerName" | "position">
+): string {
+  return `${hp.headerName}:${hp.position}`;
+}
+
+export interface BoardVectorPinAnchor {
+  key: string;
+  side: "left" | "right";
+  index: number;
+  headerPin: BoardHeaderPin;
+  /** Pad thru-hole center X in vertical BoardVectorSvg coordinates. */
+  cx: number;
+  /** Pad thru-hole center Y in vertical BoardVectorSvg coordinates. */
+  cy: number;
+  /** Outer PCB edge X in vertical BoardVectorSvg coordinates. */
+  edgeX: number;
+}
+
+export interface BoardVectorVerticalLayout {
+  isXiao: boolean;
+  viewWidth: number;
+  viewHeight: number;
+  pcbX: number;
+  pcbY: number;
+  pcbW: number;
+  pcbH: number;
+  pins: BoardVectorPinAnchor[];
+}
+
+export function getBoardVectorVerticalLayout(
+  board: BoardProfileItem
+): BoardVectorVerticalLayout {
+  const specs = resolveBoardHardwareSpecs(board);
+  const { left, right } = resolveBoardPinRails(board);
+  const isXiao =
+    specs.modulePackage === "xiao" || board.board_layout?.formFactor === "xiao";
+
+  if (isXiao) {
+    const viewWidth = 260;
+    const viewHeight = 360;
+    const pcbX = 36;
+    const pcbY = 34;
+    const pcbW = 188;
+    const pcbH = 296;
+    const yTop = 84;
+    const yBot = 298;
+    const leftStep = left.length > 1 ? (yBot - yTop) / (left.length - 1) : 0;
+    const rightStep = right.length > 1 ? (yBot - yTop) / (right.length - 1) : 0;
+
+    const pins: BoardVectorPinAnchor[] = [
+      ...left.map((hp, index) => ({
+        key: headerPinKey(hp),
+        side: "left" as const,
+        index,
+        headerPin: hp,
+        cx: pcbX + 6,
+        cy: yTop + index * leftStep,
+        edgeX: pcbX - 8,
+      })),
+      ...right.map((hp, index) => ({
+        key: headerPinKey(hp),
+        side: "right" as const,
+        index,
+        headerPin: hp,
+        cx: pcbX + pcbW - 6,
+        cy: yTop + index * rightStep,
+        edgeX: pcbX + pcbW + 8,
+      })),
+    ];
+
+    return { isXiao, viewWidth, viewHeight, pcbX, pcbY, pcbW, pcbH, pins };
+  }
+
+  const viewWidth = 280;
+  const viewHeight = 620;
+  const pcbX = 36;
+  const pcbY = 28;
+  const pcbW = 208;
+  const pcbH = 562;
+  const yTop = 92;
+  const yBot = 548;
+  const leftStep = left.length > 1 ? (yBot - yTop) / (left.length - 1) : 0;
+  const rightStep = right.length > 1 ? (yBot - yTop) / (right.length - 1) : 0;
+
+  const pins: BoardVectorPinAnchor[] = [
+    ...left.map((hp, index) => ({
+      key: headerPinKey(hp),
+      side: "left" as const,
+      index,
+      headerPin: hp,
+      cx: pcbX + 16,
+      cy: yTop + index * leftStep,
+      edgeX: pcbX,
+    })),
+    ...right.map((hp, index) => ({
+      key: headerPinKey(hp),
+      side: "right" as const,
+      index,
+      headerPin: hp,
+      cx: pcbX + pcbW - 16,
+      cy: yTop + index * rightStep,
+      edgeX: pcbX + pcbW,
+    })),
+  ];
+
+  return { isXiao, viewWidth, viewHeight, pcbX, pcbY, pcbW, pcbH, pins };
+}
+
 export function getVectorVerticalPinPercents(board: BoardProfileItem): {
   pinTopPct: number;
   pinBottomPct: number;
@@ -131,6 +240,8 @@ export interface BoardVectorSvgProps {
   usedPins?: Set<number>;
   selectedPin?: number | null;
   activeHeaderPin?: BoardHeaderPin | null;
+  highlightedHeaderKeys?: ReadonlySet<string>;
+  connectedHeaderKeys?: ReadonlySet<string>;
   pinDimmed?: (hp: BoardHeaderPin) => boolean;
   onPinClick?: (hp: BoardHeaderPin) => void;
   onPinHover?: (hp: BoardHeaderPin | null) => void;
@@ -144,6 +255,8 @@ export function BoardVectorSvg({
   usedPins,
   selectedPin = null,
   activeHeaderPin = null,
+  highlightedHeaderKeys,
+  connectedHeaderKeys,
   pinDimmed,
   onPinClick,
   onPinHover,
@@ -165,12 +278,16 @@ export function BoardVectorSvg({
   const interactive = Boolean(onPinClick || onPinHover);
 
   const isPinHighlighted = (hp: BoardHeaderPin) =>
+    Boolean(highlightedHeaderKeys?.has(headerPinKey(hp))) ||
     (selectedPin !== null && hp.gpioPin === selectedPin) ||
     (activeHeaderPin?.headerName === hp.headerName &&
       activeHeaderPin?.position === hp.position) ||
     (hp.gpioPin !== null &&
       activeHeaderPin?.gpioPin !== null &&
       activeHeaderPin?.gpioPin === hp.gpioPin);
+
+  const isPinConnected = (hp: BoardHeaderPin) =>
+    Boolean(connectedHeaderKeys?.has(headerPinKey(hp)));
 
   const defs = (
     <defs>
@@ -250,12 +367,17 @@ export function BoardVectorSvg({
         const tone = pinToneForHeaderPin(hp, gpioByPin, usedPins);
         const color = PIN_TONE_COLOR[tone];
         const active = isPinHighlighted(hp);
+        const connected = isPinConnected(hp);
         const dimmed = pinDimmed ? pinDimmed(hp) : false;
 
         return (
           <g
             key={`xv-${side}-${hp.position}`}
             data-svg-pin={hp.pinName}
+            data-header-key={headerPinKey(hp)}
+            data-gpio-pin={hp.gpioPin !== null ? String(hp.gpioPin) : undefined}
+            data-pin-active={active ? "true" : undefined}
+            data-pin-connected={connected ? "true" : undefined}
             opacity={dimmed ? 0.25 : 1}
             className={interactive ? "cursor-pointer" : undefined}
             onClick={onPinClick ? () => onPinClick(hp) : undefined}
@@ -270,18 +392,29 @@ export function BoardVectorSvg({
               height={16}
               rx={5}
               fill={`url(#${uid}-gold)`}
-              stroke={active ? "#38bdf8" : "#745011"}
-              strokeWidth={active ? 2 : 0.8}
+              stroke={active ? "#38bdf8" : connected ? "#f8fafc" : "#745011"}
+              strokeWidth={active ? 2.2 : connected ? 1.4 : 0.8}
             />
             <circle cx={cx} cy={cy} r={3.8} fill="#0b0d11" />
+            {connected && !active && (
+              <circle
+                cx={cx}
+                cy={cy}
+                r={7.5}
+                fill="none"
+                stroke="#e2e8f0"
+                strokeOpacity={0.65}
+                strokeWidth={1.2}
+              />
+            )}
             {active && (
               <circle
                 cx={cx}
                 cy={cy}
-                r={10}
+                r={10.5}
                 fill="none"
                 stroke="#38bdf8"
-                strokeWidth={1.8}
+                strokeWidth={2}
               />
             )}
             <circle
@@ -725,12 +858,17 @@ export function BoardVectorSvg({
       const tone = pinToneForHeaderPin(hp, gpioByPin, usedPins);
       const color = PIN_TONE_COLOR[tone];
       const active = isPinHighlighted(hp);
+      const connected = isPinConnected(hp);
       const dimmed = pinDimmed ? pinDimmed(hp) : false;
 
       return (
         <g
           key={`dv-${side}-${hp.position}`}
           data-svg-pin={hp.pinName}
+          data-header-key={headerPinKey(hp)}
+          data-gpio-pin={hp.gpioPin !== null ? String(hp.gpioPin) : undefined}
+          data-pin-active={active ? "true" : undefined}
+          data-pin-connected={connected ? "true" : undefined}
           opacity={dimmed ? 0.25 : 1}
           className={interactive ? "cursor-pointer" : undefined}
           onClick={onPinClick ? () => onPinClick(hp) : undefined}
@@ -746,8 +884,8 @@ export function BoardVectorSvg({
               height={13}
               rx={2}
               fill={`url(#${uid}-gold)`}
-              stroke={active ? "#38bdf8" : "#6c4b11"}
-              strokeWidth={active ? 1.8 : 0.7}
+              stroke={active ? "#38bdf8" : connected ? "#f8fafc" : "#6c4b11"}
+              strokeWidth={active ? 2 : connected ? 1.4 : 0.7}
             />
           ) : (
             <circle
@@ -755,19 +893,30 @@ export function BoardVectorSvg({
               cy={cy}
               r={6.5}
               fill={`url(#${uid}-gold)`}
-              stroke={active ? "#38bdf8" : "#6c4b11"}
-              strokeWidth={active ? 1.8 : 0.7}
+              stroke={active ? "#38bdf8" : connected ? "#f8fafc" : "#6c4b11"}
+              strokeWidth={active ? 2 : connected ? 1.4 : 0.7}
             />
           )}
           <circle cx={cx} cy={cy} r={3.1} fill="#090b0f" />
+          {connected && !active && (
+            <circle
+              cx={cx}
+              cy={cy}
+              r={8.2}
+              fill="none"
+              stroke="#e2e8f0"
+              strokeOpacity={0.65}
+              strokeWidth={1.1}
+            />
+          )}
           {active && (
             <circle
               cx={cx}
               cy={cy}
-              r={9.5}
+              r={10}
               fill="none"
               stroke="#38bdf8"
-              strokeWidth={1.8}
+              strokeWidth={2}
             />
           )}
           <circle

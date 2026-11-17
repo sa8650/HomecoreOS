@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   RiCpuLine,
   RiDoorOpenLine,
+  RiHomeLine,
   RiLightbulbLine,
   RiPulseLine,
   RiRefreshLine,
@@ -9,8 +10,10 @@ import {
   RiToggleLine,
 } from "@remixicon/react";
 import { toast } from "sonner";
-import { apiFetch, ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
+import { ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
+import { cn } from "@/lib/utils";
+import { ControllerWiringPreview } from "@/components/controllers/ControllerWiringPreview";
 import { HomeFloorPlan } from "@/components/floorplan/HomeFloorPlan";
 import { Badge } from "@/components/reui/badge";
 import {
@@ -37,6 +40,7 @@ interface OverviewPageProps {
 
 export function OverviewPage({ canManage, canOperate, onNavigate }: OverviewPageProps) {
   const timezone = useEffectiveTimezone();
+  const [previewMode, setPreviewMode] = useState<"home" | "controller">("home");
   const cached = getCachedSnapshot<OverviewData>("/api/homes/overview");
   const [data, setData] = useState<OverviewData | null>(() => cached);
   const [loading, setLoading] = useState(!cached);
@@ -67,8 +71,17 @@ export function OverviewPage({ canManage, canOperate, onNavigate }: OverviewPage
   }, []);
 
   const handleSilentReload = useCallback(async () => {
-    const res = await apiFetch<OverviewData>("/api/homes/overview");
-    setData(res);
+    try {
+      const res = await cachedGet<OverviewData>("/api/homes/overview", {
+        ttlMs: 12_000,
+        force: true,
+      });
+      setData(res);
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Failed to refresh overview."
+      );
+    }
   }, []);
 
   useEffect(() => {
@@ -155,18 +168,78 @@ export function OverviewPage({ canManage, canOperate, onNavigate }: OverviewPage
         />
       </div>
 
-        <HomeFloorPlan
-        homes={data.homes}
-        rooms={data.rooms}
-        controllers={data.controllers}
-        switches={data.switches}
-        devices={data.devices}
-        sensors={data.sensors}
-        canEdit={canManage}
-        canOperate={canOperate}
-        onReload={handleSilentReload}
-        onNavigateRooms={() => onNavigate("/rooms")}
-      />
+      {/* Panel preview toggle — sits above the 2D panel, switches in place */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          2D Preview
+        </p>
+        <div
+          role="tablist"
+          aria-label="Preview panel mode"
+          className="inline-flex items-center gap-1 rounded-xl border bg-muted/40 p-1"
+        >
+          {(
+            [
+              {
+                id: "home",
+                label: "Home Preview",
+                icon: <RiHomeLine className="size-4" aria-hidden="true" />,
+              },
+              {
+                id: "controller",
+                label: "Controller Preview",
+                icon: <RiCpuLine className="size-4" aria-hidden="true" />,
+              },
+            ] as const
+          ).map((tab) => {
+            const active = previewMode === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setPreviewMode(tab.id)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:px-3",
+                  active
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {tab.icon}
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div key={previewMode} className="hc-step-enter">
+        {previewMode === "home" ? (
+          <HomeFloorPlan
+            homes={data.homes}
+            rooms={data.rooms}
+            controllers={data.controllers}
+            switches={data.switches}
+            devices={data.devices}
+            sensors={data.sensors}
+            canEdit={canManage}
+            canOperate={canOperate}
+            onReload={handleSilentReload}
+            onNavigateRooms={() => onNavigate("/rooms")}
+          />
+        ) : (
+          <ControllerWiringPreview
+            controllers={data.controllers}
+            switches={data.switches}
+            devices={data.devices}
+            sensors={data.sensors}
+            rooms={data.rooms}
+            onNavigate={onNavigate}
+          />
+        )}
+      </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>

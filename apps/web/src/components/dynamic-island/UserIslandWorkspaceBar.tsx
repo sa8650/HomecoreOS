@@ -16,6 +16,7 @@ import {
   IslandControl,
   IslandDivider,
 } from "@/components/dynamic-island/DynamicIsland";
+import { IslandActionButton } from "@/components/dynamic-island/IslandActionButton";
 import {
   IslandProfileMenuContent,
   IslandProfileTrigger,
@@ -227,6 +228,8 @@ export function UserIslandWorkspaceBar({
       >
         <RiApps2Line className="size-4" aria-hidden="true" />
       </IslandControl>
+
+      <IslandActionButton />
 
       <button
         type="button"

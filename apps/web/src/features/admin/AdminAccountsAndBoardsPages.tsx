@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { BoardFirmwareStatus } from "@homecoreos/shared";
 import {
   RiAddLine,
@@ -70,7 +70,13 @@ interface PlatformStaffRow {
   status: "active" | "suspended";
 }
 
-export function AdminAccountsStaffPage({ isSuperAdmin }: { isSuperAdmin: boolean }) {
+export function AdminAccountsStaffPage({
+  isSuperAdmin,
+  canManageAccounts = true,
+}: {
+  isSuperAdmin: boolean;
+  canManageAccounts?: boolean;
+}) {
   const timezone = useEffectiveTimezone();
   const [tab, setTab] = useState("customers");
   const [accounts, setAccounts] = useState<AdminAccountRow[]>([]);
@@ -91,12 +97,16 @@ export function AdminAccountsStaffPage({ isSuperAdmin }: { isSuperAdmin: boolean
 
   const [deleteTarget, setDeleteTarget] = useState<AdminAccountRow | null>(null);
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const [aRes, pRes] = await Promise.all([
         apiFetch<{ accounts: AdminAccountRow[] }>("/api/admin/accounts"),
-        apiFetch<{ platformStaff: PlatformStaffRow[] }>("/api/admin/platform-staff"),
+        isSuperAdmin
+          ? apiFetch<{ platformStaff: PlatformStaffRow[] }>("/api/admin/platform-staff").catch(
+              () => ({ platformStaff: [] as PlatformStaffRow[] })
+            )
+          : Promise.resolve({ platformStaff: [] as PlatformStaffRow[] }),
       ]);
       setAccounts(aRes.accounts);
       setPlatformStaff(pRes.platformStaff);
@@ -105,11 +115,11 @@ export function AdminAccountsStaffPage({ isSuperAdmin }: { isSuperAdmin: boolean
     } finally {
       setLoading(false);
     }
-  }
+  }, [isSuperAdmin]);
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
 
   async function handleCreateAccount(e: FormEvent) {
     e.preventDefault();
@@ -194,7 +204,7 @@ export function AdminAccountsStaffPage({ isSuperAdmin }: { isSuperAdmin: boolean
         description="Customer accounts and their staff remain strictly isolated from Platform Admin staff."
         actions={
           <div className="flex flex-wrap gap-2">
-            {tab === "customers" && (
+            {tab === "customers" && canManageAccounts && (
               <Button size="sm" onClick={() => setCreateAccountOpen(true)}>
                 <RiAddLine className="size-4" aria-hidden="true" />
                 Provision Customer Account
@@ -215,9 +225,11 @@ export function AdminAccountsStaffPage({ isSuperAdmin }: { isSuperAdmin: boolean
           <TabsTrigger value="customers">
             Customer Accounts <Badge variant="outline">{accounts.length}</Badge>
           </TabsTrigger>
-          <TabsTrigger value="platform">
-            Platform Admin Staff <Badge variant="outline">{platformStaff.length}</Badge>
-          </TabsTrigger>
+          {isSuperAdmin && (
+            <TabsTrigger value="platform">
+              Platform Admin Staff <Badge variant="outline">{platformStaff.length}</Badge>
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="customers">
@@ -227,10 +239,12 @@ export function AdminAccountsStaffPage({ isSuperAdmin }: { isSuperAdmin: boolean
               title="No customer accounts yet"
               description="Provision your first isolated tenant household or enable customer self-registration."
               action={
-                <Button onClick={() => setCreateAccountOpen(true)}>
-                  <RiAddLine className="size-4" aria-hidden="true" />
-                  Provision Customer Account
-                </Button>
+                canManageAccounts ? (
+                  <Button onClick={() => setCreateAccountOpen(true)}>
+                    <RiAddLine className="size-4" aria-hidden="true" />
+                    Provision Customer Account
+                  </Button>
+                ) : undefined
               }
             />
           ) : (
@@ -241,7 +255,7 @@ export function AdminAccountsStaffPage({ isSuperAdmin }: { isSuperAdmin: boolean
                   <TableHead>Account</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Created ({timezone})</TableHead>
-                  <TableHead>Actions</TableHead>
+                  {canManageAccounts && <TableHead>Actions</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -267,37 +281,39 @@ export function AdminAccountsStaffPage({ isSuperAdmin }: { isSuperAdmin: boolean
                     <TableCell className="tabular-nums text-muted-foreground">
                       {formatTimestamp(acc.created_at, timezone)}
                     </TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap gap-1.5">
-                        {acc.status === "active" ? (
-                          <Button
-                            variant="outline"
-                            size="xs"
-                            onClick={() => void handleAccountStatus(acc.id, "pause")}
-                          >
-                            Pause
-                          </Button>
-                        ) : (
-                          <Button
-                            variant="outline"
-                            size="xs"
-                            onClick={() => void handleAccountStatus(acc.id, "reactivate")}
-                          >
-                            Reactivate
-                          </Button>
-                        )}
-                        {isSuperAdmin && (
-                          <Button
-                            variant="destructive"
-                            size="xs"
-                            onClick={() => setDeleteTarget(acc)}
-                          >
-                            <RiDeleteBinLine className="size-3.5" aria-hidden="true" />
-                            Delete
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
+                    {canManageAccounts && (
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1.5">
+                          {acc.status === "active" ? (
+                            <Button
+                              variant="outline"
+                              size="xs"
+                              onClick={() => void handleAccountStatus(acc.id, "pause")}
+                            >
+                              Pause
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="xs"
+                              onClick={() => void handleAccountStatus(acc.id, "reactivate")}
+                            >
+                              Reactivate
+                            </Button>
+                          )}
+                          {isSuperAdmin && (
+                            <Button
+                              variant="destructive"
+                              size="xs"
+                              onClick={() => setDeleteTarget(acc)}
+                            >
+                              <RiDeleteBinLine className="size-3.5" aria-hidden="true" />
+                              Delete
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    )}
                   </TableRow>
                 ))}
               </TableBody>

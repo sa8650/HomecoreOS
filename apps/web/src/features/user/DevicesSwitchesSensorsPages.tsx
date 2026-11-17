@@ -48,6 +48,7 @@ import {
   SENSORS_HERO_ICONS,
   SWITCHES_HERO_ICONS,
 } from "@/components/shared/HeroDomainIcons";
+import { SensorSparkline, type SensorReadingPoint } from "@/components/sensors/SensorSparkline";
 import { PageHeroHeader, type HeroTone } from "@/components/shared/PageHeroHeader";
 import { Button } from "@/components/ui/button";
 import {
@@ -268,6 +269,7 @@ export function SwitchesPage({
   useEffect(() => {
     void load();
   }, [load]);
+
 
   const ensureModalContext = useCallback(async () => {
     try {
@@ -1033,6 +1035,7 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
   const [wireTarget, setWireTarget] = useState<WireDiagramTarget | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
+  const [historyById, setHistoryById] = useState<Record<string, SensorReadingPoint[]>>({});
 
   const controllerById = useMemo(
     () => new Map(controllers.map((c) => [c.id, c])),
@@ -1068,6 +1071,34 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // One batched, account-scoped history fetch for the visible sensor cards.
+  // Cached briefly so re-renders don't hammer the database.
+  const sensorIdsKey = useMemo(
+    () => sensors.map((s) => s.id).sort().join(","),
+    [sensors]
+  );
+  useEffect(() => {
+    if (!sensorIdsKey) {
+      setHistoryById({});
+      return;
+    }
+    let cancelled = false;
+    cachedGet<{ history: Record<string, SensorReadingPoint[]> }>(
+      `/api/sensors/history?ids=${encodeURIComponent(sensorIdsKey)}`,
+      { ttlMs: 30_000 }
+    )
+      .then((res) => {
+        if (!cancelled) setHistoryById(res.history ?? {});
+      })
+      .catch(() => {
+        // History is best-effort; cards fall back to the empty state.
+        if (!cancelled) setHistoryById({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sensorIdsKey]);
 
   const ensureModalContext = useCallback(async () => {
     try {
@@ -1251,6 +1282,11 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
                     {online ? "Online" : "Offline"}
                   </Badge>
                 </div>
+                <SensorSparkline
+                  sensorType={sen.sensor_type}
+                  points={historyById[sen.id]}
+                  className="mt-2"
+                />
               </HardwareEntityCard>
             );
           })}

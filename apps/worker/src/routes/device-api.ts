@@ -729,6 +729,33 @@ export function createDeviceApiRoutes() {
         .eq("account_id", dev.accountId)
         .is("deleted_at", null);
 
+      // Rolling per-sensor reading history (bounded) for card sparklines.
+      // Best-effort only — history bookkeeping must never break telemetry ingest.
+      if (numericValue !== null && sensorMeta) {
+        const historyUnit =
+          typeof (sensorMeta as { unit?: unknown }).unit === "string"
+            ? ((sensorMeta as { unit?: unknown }).unit as string)
+            : "";
+        const retentionCutoff = new Date(
+          Date.now() - 30 * 24 * 60 * 60 * 1000
+        ).toISOString();
+        try {
+          await db.from("sensor_readings").insert({
+            sensor_id: s.sensorId,
+            account_id: dev.accountId,
+            value: numericValue,
+            unit: historyUnit,
+          });
+          await db
+            .from("sensor_readings")
+            .delete()
+            .eq("sensor_id", s.sensorId)
+            .lt("recorded_at", retentionCutoff);
+        } catch {
+          // ignore history write failures
+        }
+      }
+
       if (sensorMeta && numericValue !== null) {
         const meta = sensorMeta as {
           id: string;

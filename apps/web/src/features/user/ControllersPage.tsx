@@ -3,9 +3,11 @@ import {
   RiAddLine,
   RiArrowRightLine,
   RiBluetoothConnectLine,
+  RiCheckLine,
   RiCheckboxCircleFill,
   RiCpuLine,
   RiDeleteBinLine,
+  RiDoorOpenLine,
   RiEyeLine,
   RiHistoryLine,
   RiLinkUnlinkM,
@@ -65,6 +67,7 @@ import type {
   BoardProfileItem,
   ControllerItem,
   HomeItem,
+  RoomItem,
 } from "@/features/types";
 
 export function ControllersPage({
@@ -87,7 +90,12 @@ export function ControllersPage({
   const [catalogBoards, setCatalogBoards] = useState<BoardProfileItem[]>([]);
   const [customBoards, setCustomBoards] = useState<BoardProfileItem[]>([]);
   const [homes, setHomes] = useState<HomeItem[]>([]);
+  const [rooms, setRooms] = useState<RoomItem[]>([]);
   const [loading, setLoading] = useState(!cachedCtrls);
+
+  const [roomTarget, setRoomTarget] = useState<ControllerItem | null>(null);
+  const [roomSelection, setRoomSelection] = useState<string>("");
+  const [assigningRoom, setAssigningRoom] = useState(false);
 
   const [setupModal, setSetupModal] = useState<{
     open: boolean;
@@ -156,7 +164,11 @@ export function ControllersPage({
           ttlMs: 60_000,
           force,
         }),
-      ]).then(([trashOut, catOut, custOut, homeOut]) => {
+        cachedGet<{ rooms: RoomItem[] }>("/api/homes/rooms", {
+          ttlMs: 60_000,
+          force,
+        }),
+      ]).then(([trashOut, catOut, custOut, homeOut, roomsOut]) => {
         if (trashOut.status === "fulfilled") {
           setTrashedControllers(trashOut.value.controllers);
         }
@@ -168,6 +180,9 @@ export function ControllersPage({
         }
         if (homeOut.status === "fulfilled" && Array.isArray(homeOut.value?.homes)) {
           setHomes(homeOut.value.homes);
+        }
+        if (roomsOut.status === "fulfilled" && Array.isArray(roomsOut.value?.rooms)) {
+          setRooms(roomsOut.value.rooms);
         }
       });
 
@@ -182,6 +197,42 @@ export function ControllersPage({
   useEffect(() => {
     void load();
   }, [load]);
+
+  const roomById = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms]);
+  const assignableRooms = useMemo(
+    () => (roomTarget ? rooms.filter((r) => r.home_id === roomTarget.home_id) : []),
+    [rooms, roomTarget]
+  );
+
+  function openRoomAssign(ctrl: ControllerItem) {
+    setRoomSelection(ctrl.room_id ?? "");
+    setRoomTarget(ctrl);
+  }
+
+  async function handleAssignRoom() {
+    if (!roomTarget || assigningRoom) return;
+    setAssigningRoom(true);
+    try {
+      const nextRoomId = roomSelection === "" ? null : roomSelection;
+      const res = await apiFetch<{ controller: ControllerItem }>(
+        `/api/controllers/${roomTarget.id}/room`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ roomId: nextRoomId }),
+        }
+      );
+      setControllers((prev) =>
+        prev.map((c) => (c.id === res.controller.id ? { ...c, ...res.controller } : c))
+      );
+      toast.success(nextRoomId ? "Controller assigned to room." : "Room assignment removed.");
+      setRoomTarget(null);
+      void load(true);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to update room assignment.");
+    } finally {
+      setAssigningRoom(false);
+    }
+  }
 
   const filteredControllers = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -552,6 +603,12 @@ export function ControllersPage({
                                 Configure Wi-Fi
                               </DropdownMenuItem>
                             )}
+                            {canManage && (
+                              <DropdownMenuItem onClick={() => openRoomAssign(ctrl)}>
+                                <RiDoorOpenLine className="size-4" aria-hidden="true" />
+                                Assign to Room
+                              </DropdownMenuItem>
+                            )}
                             {canOperate && ctrl.status === "online" && (
                               <>
                                 <DropdownMenuItem
@@ -674,6 +731,17 @@ export function ControllersPage({
                             </p>
                             <p className="truncate text-xs font-semibold tabular-nums text-foreground">
                               {formatTimestamp(lastSeenAt, timezone)}
+                            </p>
+                          </div>
+                          <div className="col-span-2 min-w-0 border-t pt-2">
+                            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Room
+                            </p>
+                            <p className="flex items-center gap-1 truncate text-xs font-semibold text-foreground">
+                              <RiDoorOpenLine className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                              {ctrl.room_id
+                                ? roomById.get(ctrl.room_id)?.name ?? "Assigned room"
+                                : "Unassigned"}
                             </p>
                           </div>
                         </div>
@@ -868,6 +936,126 @@ export function ControllersPage({
               </div>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Assign to Room Dialog */}
+      <Dialog
+        open={Boolean(roomTarget)}
+        onOpenChange={(open) => !open && setRoomTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Assign {roomTarget?.name} to a room</DialogTitle>
+            <DialogDescription>
+              The controller appears under the selected room across the console.
+              Switches, devices, and sensors keep their own room assignments.
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            role="radiogroup"
+            aria-label="Select a room"
+            className="max-h-72 space-y-1.5 overflow-y-auto"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={roomSelection === ""}
+              onClick={() => setRoomSelection("")}
+              className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
+                roomSelection === ""
+                  ? "border-primary/50 bg-primary/6 ring-1 ring-primary/30"
+                  : "hover:bg-muted/50"
+              }`}
+            >
+              <span className="min-w-0">
+                <span className="block truncate font-medium text-foreground">
+                  No room (remove assignment)
+                </span>
+                <span className="block truncate text-[11px] text-muted-foreground">
+                  Controller stays visible as unassigned
+                </span>
+              </span>
+              {roomSelection === "" && (
+                <RiCheckLine className="size-4 shrink-0 text-primary" aria-hidden="true" />
+              )}
+            </button>
+            {assignableRooms.map((room) => {
+              const selected = roomSelection === room.id;
+              return (
+                <button
+                  key={room.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setRoomSelection(room.id)}
+                  className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
+                    selected
+                      ? "border-primary/50 bg-primary/6 ring-1 ring-primary/30"
+                      : "hover:bg-muted/50"
+                  }`}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <RiDoorOpenLine
+                      className="size-4 shrink-0 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <span className="truncate font-medium text-foreground">
+                      {room.name}
+                    </span>
+                  </span>
+                  {selected && (
+                    <RiCheckLine className="size-4 shrink-0 text-primary" aria-hidden="true" />
+                  )}
+                </button>
+              );
+            })}
+            {roomTarget && assignableRooms.length === 0 && (
+              <EmptyStatePanel
+                compact
+                icon={<RiDoorOpenLine className="size-5" />}
+                tone="neutral"
+                title="No rooms in this home yet"
+                description="Create a room first, then come back to assign this controller."
+                action={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setRoomTarget(null);
+                      onNavigate("/rooms");
+                    }}
+                  >
+                    Go to Rooms
+                  </Button>
+                }
+              />
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRoomTarget(null)}
+              disabled={assigningRoom}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleAssignRoom()}
+              disabled={
+                assigningRoom ||
+                (roomTarget ? roomSelection === (roomTarget.room_id ?? "") : true)
+              }
+            >
+              {assigningRoom
+                ? "Saving…"
+                : roomSelection === ""
+                  ? "Remove Assignment"
+                  : "Save Assignment"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

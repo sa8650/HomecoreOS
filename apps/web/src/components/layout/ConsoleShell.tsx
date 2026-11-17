@@ -1,4 +1,4 @@
-import { memo, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import {
   RiCloseLine,
   RiLogoutBoxRLine,
@@ -33,6 +33,7 @@ export const ConsoleShell = memo(function ConsoleShell({
   headerActions,
   headerNotifications,
   floatingBar,
+  workspaceClassName,
   userEmail,
   userName,
   onSignOut,
@@ -48,6 +49,7 @@ export const ConsoleShell = memo(function ConsoleShell({
   headerActions?: ReactNode;
   headerNotifications?: ReactNode;
   floatingBar?: (controls: { openMobileNav: () => void }) => ReactNode;
+  workspaceClassName?: string;
   userEmail: string;
   userName: string;
   onSignOut: () => void;
@@ -56,6 +58,24 @@ export const ConsoleShell = memo(function ConsoleShell({
   children: ReactNode;
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (
+        document.querySelector(
+          '[data-slot="dialog-content"], [data-slot="alert-dialog-content"], [role="dialog"][aria-modal="true"]'
+        )
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setMobileOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mobileOpen]);
 
   const navContent = (
     <div className="flex h-full flex-col justify-between">
@@ -166,7 +186,13 @@ export const ConsoleShell = memo(function ConsoleShell({
         )}
 
         {/* Main Scrolling Workspace */}
-        <div className="relative flex min-h-screen min-w-0 flex-1 flex-col lg:pl-64">
+        <div
+          data-testid="console-workspace-column"
+          className={cn(
+            "relative flex min-h-screen min-w-0 flex-1 flex-col lg:pl-64",
+            workspaceClassName
+          )}
+        >
           {floatingBar ? (
             floatingBar({ openMobileNav: () => setMobileOpen(true) })
           ) : (

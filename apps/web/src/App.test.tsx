@@ -181,8 +181,11 @@ describe("HomecoreOS SPA routing & console isolation", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Interactive 2D Home Floor Plan/i)).toBeInTheDocument();
+      // The floor plan header and the new preview-mode toggle both read "Home Preview".
+      expect(screen.getAllByText(/^Home Preview$/i).length).toBeGreaterThan(0);
     });
+    expect(screen.queryByText(/Interactive 2D Home Floor Plan/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/USER · OWNER/i)).not.toBeInTheDocument();
     expect(screen.getAllByText(/^Rooms$/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Rooms & Areas/i)).not.toBeInTheDocument();
     expect(screen.getByText(/Board Library/i)).toBeInTheDocument();
@@ -235,10 +238,11 @@ describe("HomecoreOS SPA routing & console isolation", () => {
     await waitFor(() => {
       expect(screen.getByText(/Account Paused/i)).toBeInTheDocument();
     });
-    expect(screen.queryByText(/Interactive 2D Home Floor Plan/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Home Preview$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/USER · OWNER/i)).not.toBeInTheDocument();
   });
 
-  it("renders authenticated Admin Console on /admin with Setup Status and Platform Overview", async () => {
+  it("renders authenticated Admin Console on /admin with Dynamic Island, lavender workspace gradient, and no topbar", async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.endsWith("/api/admin/auth/me")) {
@@ -267,6 +271,9 @@ describe("HomecoreOS SPA routing & console isolation", () => {
           recentActivity: [],
         });
       }
+      if (url.includes("/api/admin/notifications")) {
+        return jsonResponse({ unreadCount: 0, notifications: [] });
+      }
       return jsonResponse({});
     }) as typeof fetch;
 
@@ -278,8 +285,66 @@ describe("HomecoreOS SPA routing & console isolation", () => {
         screen.getByRole("heading", { name: /Platform Overview/i })
       ).toBeInTheDocument();
     });
+    const workspaceCol = screen.getByTestId("console-workspace-column");
+    expect(workspaceCol.querySelector(":scope > header")).toBeNull();
+    expect(screen.getByTestId("dynamic-island-shell")).toBeInTheDocument();
+    expect(workspaceCol).toHaveClass("hc-admin-lavender-bg");
     expect(screen.getByText(/Setup Status/i)).toBeInTheDocument();
     expect(screen.getByText(/EMQX Management/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Asia\/Tokyo/i).length).toBeGreaterThan(0);
+  });
+
+  it("loads customer accounts cleanly for support admins without calling super-admin platform-staff or exposing write buttons", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/admin/auth/me")) {
+        return jsonResponse({
+          admin: {
+            id: "adm-support",
+            email: "support@homecore.local",
+            fullName: "Support Engineer",
+            role: "support",
+            timezone: null,
+          },
+          platformDefaultTimezone: "UTC",
+          effectiveTimezone: "UTC",
+        });
+      }
+      if (url.endsWith("/api/admin/accounts")) {
+        return jsonResponse({
+          accounts: [
+            {
+              id: "acc-1",
+              name: "Maple Residence",
+              slug: "maple-residence",
+              status: "active",
+              created_at: "2026-06-01T00:00:00Z",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/api/admin/platform-staff")) {
+        return new Response(JSON.stringify({ error: "Forbidden" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/admin/notifications")) {
+        return jsonResponse({ unreadCount: 0, notifications: [] });
+      }
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    window.history.pushState({}, "", "/admin/accounts");
+    render(<App />);
+
+    expect(await screen.findByText("Maple Residence")).toBeInTheDocument();
+    expect(screen.getByTestId("console-workspace-column")).toHaveClass(
+      "hc-admin-lavender-bg"
+    );
+    expect(
+      screen.queryByRole("button", { name: /Provision Customer Account/i })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Pause$/i })).not.toBeInTheDocument();
   });
 });

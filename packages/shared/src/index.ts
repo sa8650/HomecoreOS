@@ -585,4 +585,5 @@ export * from "./sensor-drivers";
 export * from "./ble-provisioning";
 export * from "./automations";
 export * from "./flow-graph";
+export * from "./action-button";
 export * from "./planner";

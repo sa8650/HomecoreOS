@@ -98,6 +98,7 @@ export interface ControllerItem {
   id: string;
   account_id: string;
   home_id: string;
+  room_id?: string | null;
   board_catalog_id: string | null;
   custom_board_id: string | null;
   name: string;
@@ -526,4 +527,56 @@ export interface OverviewData {
   switches: SwitchItem[];
   sensors: SensorItem[];
   recentActivity: ActivityItem[];
+}
+
+// ── Dynamic Island Action Button ─────────────────────────────────────────────
+export type {
+  ActionButtonCategory,
+  ActionButtonColor,
+  ActionButtonGesture,
+  ActionButtonGestures,
+  ActionButtonIcon,
+  ActionButtonOp,
+  ActionButtonStep,
+} from "@homecoreos/shared";
+
+export interface ActionButtonConfigItem {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  category: import("@homecoreos/shared").ActionButtonCategory;
+  config: import("@homecoreos/shared").ActionButtonGestures;
+  confirmationRequired: boolean;
+  isEnabled: boolean;
+  isActive: boolean;
+  lastExecutedAt: string | null;
+  lastExecutionStatus: "success" | "partial" | "failed" | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  states?: { on: number; off: number } | null;
+}
+
+export interface ActionButtonExecutionResult {
+  ok: boolean;
+  execution: {
+    ok: boolean;
+    gesture: import("@homecoreos/shared").ActionButtonGesture;
+    executedCount: number;
+    failedCount: number;
+    status: "success" | "partial" | "failed";
+    results: Array<{
+      stepId: string;
+      kind: string;
+      summary: string;
+      status: "done" | "failed";
+      error?: string;
+      acknowledged?:
+        | { kind: "switch"; switchId: string; isOn: boolean }
+        | { kind: "device"; deviceId: string; state: string };
+    }>;
+    states: { on: number; off: number } | null;
+    executedAt: string;
+  };
 }

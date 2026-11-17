@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/table";
 import type { UserNotificationPreferences } from "@homecoreos/shared";
 import type { ActivityItem, UserSessionData } from "@/features/types";
+import { ActionButtonSettingsCard } from "@/features/user/ActionButtonSettings";
 import { Switch } from "@/components/ui/switch";
 
 const USER_PREFERENCE_DEFS: Array<{
@@ -534,6 +535,8 @@ export function UserSettingsPage({
           </CardContent>
         </Card>
       </div>
+
+      <ActionButtonSettingsCard />
 
       {/* Customer Staff Management */}
       {canManageStaff && isAccountActive && (

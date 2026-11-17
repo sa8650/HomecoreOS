@@ -1021,6 +1021,73 @@ export function createDeviceRoutes() {
     });
   });
 
+  // Rolling per-sensor reading history (last ~48 points, ascending by time).
+  // Scoped strictly to the caller's account; returns an empty map when the
+  // account has no recorded history yet. Never fabricates data.
+  app.get("/sensors/history", async (c) => {
+    const auth = c.get("userAuth")!;
+    const db = c.get("db");
+    const raw = c.req.query("ids") ?? "";
+    const UUID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const ids = Array.from(
+      new Set(
+        raw
+          .split(",")
+          .map((part) => part.trim())
+          .filter((part) => UUID_RE.test(part))
+      )
+    ).slice(0, 60);
+    if (ids.length === 0) return c.json({ history: {} });
+
+    const { data: ownedRows } = await db
+      .from("sensors")
+      .select("id")
+      .eq("account_id", auth.accountId)
+      .is("deleted_at", null)
+      .in("id", ids);
+    const ownedIds = ((ownedRows ?? []) as Array<{ id: string }>).map(
+      (row) => row.id
+    );
+    if (ownedIds.length === 0) return c.json({ history: {} });
+
+    const MAX_POINTS = 48;
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const { data } = await db
+      .from("sensor_readings")
+      .select("sensor_id,value,unit,recorded_at")
+      .eq("account_id", auth.accountId)
+      .in("sensor_id", ownedIds)
+      .gte("recorded_at", since)
+      .order("recorded_at", { ascending: false })
+      .limit(ownedIds.length * (MAX_POINTS + 8));
+
+    const grouped: Record<
+      string,
+      Array<{ value: number; unit: string; recordedAt: string }>
+    > = {};
+    for (const row of (data ?? []) as Array<{
+      sensor_id: string;
+      value: number | string;
+      unit: string;
+      recorded_at: string;
+    }>) {
+      const bucket = (grouped[row.sensor_id] ??= []);
+      if (bucket.length >= MAX_POINTS) continue;
+      const numeric = Number(row.value);
+      if (!Number.isFinite(numeric)) continue;
+      bucket.push({
+        value: numeric,
+        unit: row.unit,
+        recordedAt: row.recorded_at,
+      });
+    }
+    for (const id of Object.keys(grouped)) {
+      grouped[id]!.reverse(); // ascending by time
+    }
+    return c.json({ history: grouped });
+  });
+
   app.post(
     "/sensors",
     requireStaffRole("owner", "administrator"),

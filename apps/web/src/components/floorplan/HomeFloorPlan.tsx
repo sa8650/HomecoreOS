@@ -731,6 +731,12 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
             return copy;
           });
         }
+      } else if (resized) {
+        setResizeDims((prev) => {
+          const copy = { ...prev };
+          delete copy[resizer.roomId];
+          return copy;
+        });
       }
       return;
     }
@@ -740,7 +746,14 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     dragStateRef.current = null;
     const moved = dragPositions[drag.roomId];
     if (!moved) return;
-    if (moved.x === drag.origX && moved.y === drag.origY) return;
+    if (moved.x === drag.origX && moved.y === drag.origY) {
+      setDragPositions((prev) => {
+        const copy = { ...prev };
+        delete copy[drag.roomId];
+        return copy;
+      });
+      return;
+    }
     try {
       await apiFetch(`/api/homes/rooms/${drag.roomId}`, {
         method: "PATCH",
@@ -835,8 +848,11 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     );
   };
 
+  const fullScreenLabel = isFullscreen ? "Exit Full Screen" : "Full Screen";
+  const arrangeLabel = editMode ? "Done Positioning" : "Arrange Floor Plan";
+
   return (
-    <TooltipProvider delayDuration={150}>
+    <TooltipProvider delayDuration={120} disableHoverableContent>
       <div
         data-testid="floorplan-container"
         data-view-mode={viewMode}
@@ -877,10 +893,10 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
                   <TooltipTrigger asChild>
                     <button
                       type="button"
-                      aria-label="Interactive 2D Home Floor Plan details"
+                      aria-label="Home Preview details"
                       className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm font-semibold text-foreground transition-colors hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
-                      <span>Interactive 2D Home Floor Plan</span>
+                      <span>Home Preview</span>
                       <RiInformationLine
                         className="size-4 shrink-0 text-muted-foreground"
                         aria-hidden="true"
@@ -892,7 +908,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
                     align="start"
                     className="max-w-xs flex-col items-start gap-1 p-2.5 text-xs"
                   >
-                    <p className="font-semibold">Interactive 2D Home Floor Plan</p>
+                    <p className="font-semibold">Home Preview</p>
                     <p className="text-[11px] leading-relaxed opacity-90">
                       Click fixtures directly on the map to toggle hardware, drag to pan, or jump between rooms.
                     </p>
@@ -942,106 +958,142 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
                   </Button>
                 )}
 
-                {/* 3-State Map View Selector: Standard View | Wide View | Full Screen */}
+                {/* 3-State Map View Selector: Standard View | Wide View | Full Screen (icon-only with hover tooltip) */}
                 <div
                   role="group"
                   aria-label="Floor plan view mode"
-                  className="inline-flex items-center rounded-lg border bg-background/80 p-0.5"
+                  className="inline-flex items-center gap-0.5 rounded-lg border bg-background/80 p-0.5"
                 >
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant={viewMode === "standard" ? "secondary" : "ghost"}
-                    aria-pressed={viewMode === "standard"}
-                    onClick={() => {
-                      setFullscreenRoomOpen(false);
-                      setViewMode("standard");
-                    }}
-                  >
-                    <RiLayoutColumnLine className="size-3.5" aria-hidden="true" />
-                    Standard View
-                  </Button>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant={viewMode === "wide" ? "secondary" : "ghost"}
-                    aria-pressed={viewMode === "wide"}
-                    onClick={() => {
-                      setFullscreenRoomOpen(false);
-                      setViewMode("wide");
-                    }}
-                  >
-                    <RiLayoutRowLine className="size-3.5" aria-hidden="true" />
-                    Wide View
-                  </Button>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant={isFullscreen ? "secondary" : "ghost"}
-                    aria-pressed={isFullscreen}
-                    onClick={() => {
-                      if (isFullscreen) {
-                        setFullscreenRoomOpen(false);
-                        setViewMode("standard");
-                      } else {
-                        setFullscreenRoomOpen(false);
-                        handleResetView();
-                        setViewMode("fullscreen");
-                      }
-                    }}
-                  >
-                    {isFullscreen ? (
-                      <RiFullscreenExitLine className="size-3.5" aria-hidden="true" />
-                    ) : (
-                      <RiFullscreenLine className="size-3.5" aria-hidden="true" />
-                    )}
-                    {isFullscreen ? "Exit Full Screen" : "Full Screen"}
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant={viewMode === "standard" ? "secondary" : "ghost"}
+                        aria-label="Standard View"
+                        aria-pressed={viewMode === "standard"}
+                        onClick={() => {
+                          setFullscreenRoomOpen(false);
+                          setViewMode("standard");
+                        }}
+                      >
+                        <RiLayoutColumnLine className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Standard View</TooltipContent>
+                  </Tooltip>
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant={viewMode === "wide" ? "secondary" : "ghost"}
+                        aria-label="Wide View"
+                        aria-pressed={viewMode === "wide"}
+                        onClick={() => {
+                          setFullscreenRoomOpen(false);
+                          setViewMode("wide");
+                        }}
+                      >
+                        <RiLayoutRowLine className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Wide View</TooltipContent>
+                  </Tooltip>
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant={isFullscreen ? "secondary" : "ghost"}
+                        aria-label={fullScreenLabel}
+                        aria-pressed={isFullscreen}
+                        onClick={() => {
+                          if (isFullscreen) {
+                            setFullscreenRoomOpen(false);
+                            setViewMode("standard");
+                          } else {
+                            setFullscreenRoomOpen(false);
+                            handleResetView();
+                            setViewMode("fullscreen");
+                          }
+                        }}
+                      >
+                        {isFullscreen ? (
+                          <RiFullscreenExitLine className="size-3.5" aria-hidden="true" />
+                        ) : (
+                          <RiFullscreenLine className="size-3.5" aria-hidden="true" />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">{fullScreenLabel}</TooltipContent>
+                  </Tooltip>
                 </div>
 
                 {canEdit && (
                   <>
-                    <Button
-                      size="xs"
-                      variant={editMode ? "default" : "outline"}
-                      onClick={() => {
-                        setEditMode((v) => !v);
-                        setFullscreenRoomOpen(false);
-                      }}
-                    >
-                      {editMode ? (
-                        <RiCheckLine className="size-3.5" aria-hidden="true" />
-                      ) : (
-                        <RiDragMove2Line className="size-3.5" aria-hidden="true" />
-                      )}
-                      {editMode ? "Done Positioning" : "Arrange Floor Plan"}
-                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          size="icon-xs"
+                          variant={editMode ? "default" : "outline"}
+                          aria-label={arrangeLabel}
+                          aria-pressed={editMode}
+                          onClick={() => {
+                            setEditMode((v) => !v);
+                            setFullscreenRoomOpen(false);
+                          }}
+                        >
+                          {editMode ? (
+                            <RiCheckLine className="size-3.5" aria-hidden="true" />
+                          ) : (
+                            <RiDragMove2Line className="size-3.5" aria-hidden="true" />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">{arrangeLabel}</TooltipContent>
+                    </Tooltip>
+
                     {primaryHomeId && (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        onClick={() => {
-                          setEditingRoom(null);
-                          setEditorOpen(true);
-                        }}
-                      >
-                        <RiAddLine className="size-3.5" aria-hidden="true" />
-                        Add Room
-                      </Button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            size="icon-xs"
+                            variant="outline"
+                            aria-label="Add Room"
+                            onClick={() => {
+                              setEditingRoom(null);
+                              setEditorOpen(true);
+                            }}
+                          >
+                            <RiAddLine className="size-3.5" aria-hidden="true" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">Add Room</TooltipContent>
+                      </Tooltip>
                     )}
                   </>
                 )}
 
                 <div className="flex items-center gap-1">
-                  <Button
-                    type="button"
-                    size="icon-xs"
-                    variant="outline"
-                    aria-label="Zoom out floor plan"
-                    onClick={() => setZoom((z) => clampZoom(z - 0.2))}
-                  >
-                    <RiZoomOutLine className="size-3.5" aria-hidden="true" />
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant="outline"
+                        aria-label="Zoom out floor plan"
+                        onClick={() => setZoom((z) => clampZoom(z - 0.2))}
+                      >
+                        <RiZoomOutLine className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Zoom Out</TooltipContent>
+                  </Tooltip>
                   <Badge
                     variant="secondary"
                     size="xs"
@@ -1049,25 +1101,34 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
                   >
                     {Math.round(zoom * 100)}%
                   </Badge>
-                  <Button
-                    type="button"
-                    size="icon-xs"
-                    variant="outline"
-                    aria-label="Zoom in floor plan"
-                    onClick={() => setZoom((z) => clampZoom(z + 0.2))}
-                  >
-                    <RiZoomInLine className="size-3.5" aria-hidden="true" />
-                  </Button>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    aria-label="Reset floor plan view"
-                    onClick={handleResetView}
-                  >
-                    <RiFocus3Line className="size-3.5" aria-hidden="true" />
-                    Fit
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant="outline"
+                        aria-label="Zoom in floor plan"
+                        onClick={() => setZoom((z) => clampZoom(z + 0.2))}
+                      >
+                        <RiZoomInLine className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Zoom In</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant="outline"
+                        aria-label="Fit"
+                        onClick={handleResetView}
+                      >
+                        <RiFocus3Line className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Fit</TooltipContent>
+                  </Tooltip>
                 </div>
               </div>
             </div>

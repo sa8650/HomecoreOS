@@ -5,6 +5,7 @@ import { createDbClient } from "./lib/db";
 import { emitNotification } from "./lib/notifications";
 import { dbMiddleware } from "./middleware/auth";
 import { createAccountRoutes } from "./routes/account";
+import { createActionButtonRoutes } from "./routes/action-button";
 import { createAdminRoutes } from "./routes/admin";
 import { createAuthRoutes } from "./routes/auth";
 import { createAutomationRoutes } from "./routes/automations";
@@ -55,6 +56,7 @@ export function createWorkerApp(defaultDeps?: WorkerRuntimeDeps) {
   });
 
   // Customer & Auth APIs
+  app.route("/api/action-button", createActionButtonRoutes());
   app.route("/api/auth", createAuthRoutes());
   app.route("/api/account", createAccountRoutes());
   app.route("/api/homes", createHomeRoutes());

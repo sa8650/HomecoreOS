@@ -428,3 +428,125 @@
   box-shadow: var(--ds-shadow-popover);
   color: var(--ds-text-1);
 }
+
+/* ── Dynamic Island Action Button ─────────────────────────────────────── */
+.island-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  max-width: 156px;
+  padding: 0 9px 0 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ds-text-2);
+  cursor: pointer;
+  outline: none;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease,
+    box-shadow 160ms ease;
+}
+
+.island-action:hover {
+  background: var(--ds-card-hover-bg);
+  color: var(--ds-text-1);
+}
+
+.island-action:focus-visible {
+  box-shadow: 0 0 0 2px var(--ds-primary);
+}
+
+.island-action[data-state="running"] {
+  color: var(--ds-primary);
+  background: var(--ds-primary-soft);
+}
+
+.island-action[data-state="success"] {
+  color: #059669;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.island-action[data-state="error"] {
+  color: var(--ds-danger);
+  background: var(--ds-danger-bg);
+  border-color: rgba(220, 76, 76, 0.4);
+}
+
+.island-action[data-armed="true"] {
+  color: var(--ds-primary);
+  border-color: var(--ds-primary-border);
+  background: var(--ds-primary-soft);
+  animation: island-action-arm 1.15s ease-in-out infinite;
+}
+
+@keyframes island-action-arm {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 118, 246, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(59, 118, 246, 0.22);
+  }
+}
+
+.island-action-label {
+  max-width: 74px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.island-action-state {
+  flex-shrink: 0;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  border-radius: 999px;
+  padding: 1.5px 5px;
+  line-height: 1.35;
+}
+
+.island-action-state[data-tone="on"] {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.16);
+}
+
+.island-action-state[data-tone="off"] {
+  color: var(--ds-text-2);
+  background: var(--ds-card-hover-bg);
+}
+
+.island-action-state[data-tone="mixed"] {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.18);
+}
+
+.dark .island-action-state[data-tone="on"] {
+  color: #34d399;
+}
+
+.dark .island-action-state[data-tone="mixed"] {
+  color: #fbbf24;
+}
+
+@media (max-width: 560px) {
+  .island-action-label {
+    display: none;
+  }
+  .island-action {
+    max-width: none;
+    padding: 0 7px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .island-action[data-armed="true"] {
+    animation: none;
+  }
+}

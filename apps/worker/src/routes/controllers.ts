@@ -30,6 +30,7 @@ import {
   getControllerSensorCompatibilityReport,
   getControllersSensorCompatibilityMap,
 } from "../lib/sensor-compatibility";
+import { verifyHomeRoomOwnership } from "../lib/board-helpers";
 import { requireStaffRole, requireUserSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
 
@@ -50,6 +51,11 @@ const recoverControllerSchema = z.object({
 
 const updateControllerSchema = z.object({
   name: z.string().trim().min(1).max(120),
+});
+
+// roomId: null removes the assignment; a uuid assigns/changes it.
+const assignControllerRoomSchema = z.object({
+  roomId: z.string().uuid().nullable(),
 });
 
 const wifiConfigSchema = z.object({
@@ -1278,6 +1284,70 @@ export function createControllerRoutes() {
         accountId: auth.accountId,
         controllerId: c.req.param("id"),
         reason: "config_change",
+      }).catch(() => null);
+
+      return c.json({ controller: data });
+    }
+  );
+
+  // Assign / change / remove a controller's room.
+  // The target room must belong to the caller's account and to the same home;
+  // cross-account or cross-home rooms are rejected. Children (switches,
+  // devices, sensors) keep their own independent room assignments.
+  app.patch(
+    "/:id/room",
+    requireStaffRole("owner", "administrator", "operator"),
+    async (c) => {
+      const body = await c.req.json().catch(() => null);
+      const parsed = assignControllerRoomSchema.safeParse(body);
+      if (!parsed.success) {
+        return c.json({ error: "Invalid room assignment payload." }, 400);
+      }
+
+      const auth = c.get("userAuth")!;
+      const db = c.get("db");
+      const controllerId = c.req.param("id");
+      const { data: ctrlData } = await db
+        .from("controllers")
+        .select("id,home_id,name")
+        .eq("id", controllerId)
+        .eq("account_id", auth.accountId)
+        .is("deleted_at", null)
+        .is("permanently_deleted_at", null)
+        .maybeSingle();
+
+      if (!ctrlData) return c.json({ error: "Controller not found." }, 404);
+      const ctrl = ctrlData as { id: string; home_id: string; name: string };
+
+      const roomId = parsed.data.roomId;
+      const loc = await verifyHomeRoomOwnership(db, auth.accountId, {
+        homeId: ctrl.home_id,
+        roomId,
+      });
+      if (!loc.ok) return c.json({ error: loc.error }, 400);
+
+      const { data, error } = await db
+        .from("controllers")
+        .update({ room_id: loc.roomId })
+        .eq("id", controllerId)
+        .eq("account_id", auth.accountId)
+        .is("deleted_at", null)
+        .select("*")
+        .maybeSingle();
+
+      if (error) return c.json({ error: error.message }, 400);
+      if (!data) return c.json({ error: "Controller not found." }, 404);
+
+      await recordActivity(db, {
+        accountId: auth.accountId,
+        actorUserId: auth.userId,
+        controllerId,
+        category: "controller",
+        action: roomId ? "controller.room_assigned" : "controller.room_unassigned",
+        summary: roomId
+          ? `Controller "${ctrl.name}" assigned to a room.`
+          : `Controller "${ctrl.name}" removed from its room assignment.`,
+        metadata: { controllerId, roomId: loc.roomId },
       }).catch(() => null);
 
       return c.json({ controller: data });
