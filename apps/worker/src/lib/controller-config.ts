@@ -11,6 +11,16 @@ import { sha256Hex } from "./crypto";
 import type { CustomFetch, DbClient } from "./db";
 import { EmqxClient, isEmqxConfigured } from "./emqx";
 
+/** Coerces a revision column to a non-negative integer. */
+function toRevNumber(value: number | string | null | undefined): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
 export interface ConsolidatedControllerConfigSnapshot {
   schema: 2;
   controllerId: string;
@@ -36,6 +46,12 @@ export interface ConsolidatedControllerConfigSnapshot {
     gpio_pin: number;
     is_on: boolean;
     inverted: boolean;
+    /**
+     * Outstanding intent. `is_on` above stays the last *confirmed* state so the
+     * controller can tell "what I last reported" from "what is wanted".
+     */
+    desired_on?: boolean | null;
+    desired_rev?: number;
   }>;
   devices: Array<{
     id: string;
@@ -146,14 +162,14 @@ export async function buildConsolidatedControllerConfig(
         .is("deleted_at", null),
       db
         .from("switches")
-        .select("id,name,gpio_pin,is_on,inverted")
+        .select("id,name,gpio_pin,is_on,inverted,desired_state,desired_rev,state_status")
         .eq("controller_id", controllerId)
         .eq("account_id", accountId)
         .is("deleted_at", null)
         .order("gpio_pin", { ascending: true }),
       db
         .from("devices")
-        .select("id,name,device_type,gpio_pin,state,config")
+        .select("id,name,device_type,gpio_pin,state,config,desired_state,desired_rev,state_status")
         .eq("controller_id", controllerId)
         .eq("account_id", accountId)
         .is("deleted_at", null)
@@ -216,6 +232,9 @@ export async function buildConsolidatedControllerConfig(
     gpio_pin: number;
     is_on: boolean;
     inverted: boolean;
+    desired_state?: Record<string, unknown> | null;
+    desired_rev?: number | string | null;
+    state_status?: string | null;
   }>;
   const devices = (devRes.data ?? []) as Array<{
     id: string;
@@ -223,6 +242,9 @@ export async function buildConsolidatedControllerConfig(
     device_type: string;
     gpio_pin: number;
     state: string;
+    desired_state?: Record<string, unknown> | null;
+    desired_rev?: number | string | null;
+    state_status?: string | null;
     config: Record<string, unknown>;
   }>;
   const sensorsRaw = (senRes.data ?? []) as Array<{
@@ -381,6 +403,14 @@ export async function buildConsolidatedControllerConfig(
       name: s.name,
       gpio_pin: s.gpio_pin,
       inverted: s.inverted,
+      // Structural identity deliberately excludes `is_on` (volatile), but the
+      // *pending intent* is not volatile: without it a state-only change never
+      // altered the hash, so a rebooting controller was always told
+      // "unchanged" and re-applied its own stale NVS cache.
+      desired_on:
+        s.state_status === "pending" && s.desired_state
+          ? Boolean((s.desired_state as { on?: unknown }).on)
+          : null,
     })),
     devices: devices.map((d) => ({
       id: d.id,
@@ -411,7 +441,18 @@ export async function buildConsolidatedControllerConfig(
     hash: structuralHash,
     settings,
     gpioConfig,
-    switches,
+    switches: switches.map((s) => ({
+      id: s.id,
+      name: s.name,
+      gpio_pin: s.gpio_pin,
+      is_on: s.is_on,
+      inverted: s.inverted,
+      desired_on:
+        s.state_status === "pending" && s.desired_state
+          ? Boolean((s.desired_state as { on?: unknown }).on)
+          : null,
+      desired_rev: toRevNumber(s.desired_rev),
+    })),
     devices,
     sensors,
     automations: localAutomations,

@@ -223,8 +223,17 @@ describe("Waveshare import, NodeMCU ESP8266 seeding, Update Board endpoint, and 
 
     const switchesRes = await req("/api/switches", { headers: { Cookie: userCookie } });
     const switchesData = (await switchesRes.json()) as {
-      switches: Array<{ id: string; is_on: boolean }>;
+      switches: Array<{
+        id: string;
+        is_on: boolean;
+        state_status?: string;
+        desired_state?: Record<string, unknown>;
+      }>;
     };
-    expect(switchesData.switches.find((s) => s.id === switchId)?.is_on).toBe(true);
+    // The scene records an ON intent; `is_on` stays the confirmed value until
+    // the controller reports back.
+    const sceneSw = switchesData.switches.find((s) => s.id === switchId);
+    expect(sceneSw?.state_status).toBe("pending");
+    expect(sceneSw?.desired_state).toEqual({ on: true });
   });
 });

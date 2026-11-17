@@ -13,6 +13,7 @@ import {
   syncControllerConfigSnapshot,
 } from "../lib/controller-config";
 import { generateRandomToken, sha256Hex } from "../lib/crypto";
+import { confirmEntityState, reconcilePendingCommands } from "../lib/device-state";
 import {
   EmqxClient,
   buildControllerTopicPrefix,
@@ -34,6 +35,11 @@ import {
 } from "../lib/rate-limit";
 import { requireDeviceBearerAuth } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
+
+/** Coerces a reported revision to a non-negative integer. */
+function toRev(value: number | undefined | null): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
 
 const pairSchema = z.object({
   pairingCode: z
@@ -147,6 +153,9 @@ const telemetrySchema = z.object({
       z.object({
         switchId: z.string().uuid(),
         isOn: z.boolean(),
+        // Revision of the command that produced this state. Optional so
+        // firmware predating desired-state support keeps working unchanged.
+        rev: z.number().int().min(0).optional(),
       })
     )
     .optional(),
@@ -155,6 +164,8 @@ const telemetrySchema = z.object({
       z.object({
         deviceId: z.string().uuid(),
         state: z.string().trim().max(64),
+        // Optional applied-state revision; see the switches comment above.
+        rev: z.number().int().min(0).optional(),
       })
     )
     .optional(),
@@ -638,11 +649,23 @@ export function createDeviceApiRoutes() {
       syncPublished = Boolean(syncRes?.published);
     }
 
+    // Deliver any intent that accumulated while the controller was offline.
+    // Runs on every heartbeat so recovery needs no extra scheduling, and is
+    // cheap when idle because it only reads rows already flagged 'pending'.
+    const redelivered = await reconcilePendingCommands({
+      db,
+      env: c.env ?? {},
+      deps,
+      accountId: dev.accountId,
+      controllerId: dev.controllerId,
+    }).catch(() => 0);
+
     return c.json({
       ok: true,
       server_time: now,
       config_revision: currentRev,
       sync_published: syncPublished,
+      pending_commands_delivered: redelivered,
     });
   });
 
@@ -807,26 +830,21 @@ export function createDeviceApiRoutes() {
     }
 
     for (const sw of parsed.data.switches ?? []) {
-      const { data: existingSw } = await db
-        .from("switches")
-        .select("id,is_on")
-        .eq("id", sw.switchId)
-        .eq("controller_id", dev.controllerId)
-        .eq("account_id", dev.accountId)
-        .is("deleted_at", null)
-        .maybeSingle();
-
-      const stateChanged =
-        !existingSw ||
-        Boolean((existingSw as { is_on: boolean }).is_on) !== sw.isOn;
+      // Route the report through the single confirmation path so applied state,
+      // the legacy `is_on` mirror and the pending->synced transition all move
+      // together. Confirm the revision against the outstanding intent so a
+      // delayed duplicate report cannot clear a newer command.
+      await confirmEntityState({
+        db,
+        accountId: dev.accountId,
+        target: { kind: "switch", id: sw.switchId },
+        appliedState: { on: sw.isOn },
+        appliedRev: sw.rev === undefined ? null : toRev(sw.rev),
+      });
 
       await db
         .from("switches")
-        .update({
-          is_on: sw.isOn,
-          is_online: true,
-          ...(stateChanged ? { last_changed_at: now } : {}),
-        })
+        .update({ is_online: true })
         .eq("id", sw.switchId)
         .eq("controller_id", dev.controllerId)
         .eq("account_id", dev.accountId)
@@ -868,10 +886,19 @@ export function createDeviceApiRoutes() {
         isDeviceStateActive(prevState) === isDeviceStateActive(d.state);
       const effectiveState = preserveSemanticState ? prevState : d.state;
 
+      // Confirm through the single path (keeps applied_state/state_status in
+      // step with the legacy `state` mirror), then write the connectivity flags.
+      await confirmEntityState({
+        db,
+        accountId: dev.accountId,
+        target: { kind: "device", id: d.deviceId },
+        appliedState: { state: effectiveState },
+        appliedRev: d.rev === undefined ? null : toRev(d.rev),
+      });
+
       const { data: updatedDev } = await db
         .from("devices")
         .update({
-          state: effectiveState,
           is_online: !isDisconnected,
           last_state_at: now,
         })

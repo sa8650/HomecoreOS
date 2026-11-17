@@ -29,6 +29,7 @@ import type { WorkerBindings } from "../config/env";
 import { recordActivity } from "./audit";
 import type { CustomFetch, DbClient } from "./db";
 import { EmqxClient, isEmqxConfigured } from "./emqx";
+import { applyCommand } from "./device-state";
 import { emitNotification } from "./notifications";
 
 export type AutomationTrigger = AutomationTriggerConfig;
@@ -159,17 +160,23 @@ async function evaluateSingleCondition(
     if (expected === null) return { matched: false, detail: "Invalid expected switch state" };
     const { data: sw } = await db
       .from("switches")
-      .select("name,is_on")
+      .select("name,is_on,state_status,desired_state")
       .eq("id", cond.switchId)
       .eq("account_id", accountId)
       .is("deleted_at", null)
       .maybeSingle();
     if (!sw) return { matched: false, detail: "Switch not found" };
-    const row = sw as { name: string; is_on: boolean };
-    const matched = Boolean(row.is_on) === expected;
+    const row = sw as {
+      name: string;
+      is_on: boolean;
+      state_status?: string | null;
+      desired_state?: Record<string, unknown> | null;
+    };
+    const effective = effectiveSwitchOn(row);
+    const matched = effective === expected;
     return {
       matched,
-      detail: `${row.name} is ${row.is_on ? "ON" : "OFF"} (expected ${expected ? "ON" : "OFF"})`,
+      detail: `${row.name} is ${effective ? "ON" : "OFF"} (expected ${expected ? "ON" : "OFF"})`,
     };
   }
 
@@ -203,7 +210,7 @@ async function evaluateSingleCondition(
         .maybeSingle(),
       db
         .from("switches")
-        .select("is_on")
+        .select("is_on,state_status,desired_state")
         .eq("room_id", cond.roomId)
         .eq("account_id", accountId)
         .is("deleted_at", null),
@@ -217,7 +224,11 @@ async function evaluateSingleCondition(
     if (!room) return { matched: false, detail: "Room not found" };
     const roomName = (room as { name: string }).name;
     const states = [
-      ...((sws ?? []) as Array<{ is_on: boolean }>).map((s) => Boolean(s.is_on)),
+      ...((sws ?? []) as Array<{
+        is_on: boolean;
+        state_status?: string | null;
+        desired_state?: Record<string, unknown> | null;
+      }>).map((s) => effectiveSwitchOn(s)),
       ...((devs ?? []) as Array<{ state: string }>).map((d) => isDeviceStateActive(d.state)),
     ];
     const mode = cond.roomMatch ?? "all_on";
@@ -341,9 +352,31 @@ async function conditionsAreSatisfied(
   return res.matched;
 }
 
+/**
+ * Effective state = the outstanding intent if there is one, else the last
+ * confirmed state.
+ *
+ * Conditions must evaluate intent, otherwise an automation targeting a slow or
+ * offline controller sees stale values: a command that is queued but not yet
+ * acknowledged would be invisible, and chained rules could re-fire or never
+ * fire. Rows that predate migrations (no state_status) fall back to `is_on`.
+ */
+function effectiveSwitchOn(row: {
+  is_on: boolean;
+  state_status?: string | null;
+  desired_state?: Record<string, unknown> | null;
+}): boolean {
+  if (row.state_status === "pending" && row.desired_state) {
+    return Boolean((row.desired_state as { on?: unknown }).on);
+  }
+  return Boolean(row.is_on);
+}
+
 async function executeSwitchTarget(params: {
   db: DbClient;
   emqx: EmqxClient | null;
+  env?: WorkerBindings;
+  deps?: { emqxFetch?: CustomFetch };
   accountId: string;
   ruleId: string;
   switchId: string;
@@ -354,7 +387,7 @@ async function executeSwitchTarget(params: {
     | { kind: "switch"; switchId: string; isOn: boolean }
   >;
 }): Promise<boolean> {
-  const { db, emqx, accountId, ruleId, switchId, desired, errors, downstreamEvents } = params;
+  const { db, env, accountId, switchId, desired, errors, downstreamEvents } = params;
   const { data: swData } = await db
     .from("switches")
     .select("id,name,controller_id,gpio_pin,inverted,is_on")
@@ -376,39 +409,23 @@ async function executeSwitchTarget(params: {
     is_on: boolean;
   };
 
-  await db
-    .from("switches")
-    .update({
-      is_on: desired,
-      last_changed_at: new Date().toISOString(),
-    })
-    .eq("id", sw.id)
-    .eq("account_id", accountId);
+  // Automations go through the same command pipeline as manual toggles so
+  // ordering, offline queuing and de-duplication behave identically.
+  const result = await applyCommand({
+    db,
+    env: env ?? {},
+    deps: params.deps,
+    accountId,
+    target: { kind: "switch", id: sw.id },
+    desiredState: { on: desired },
+    source: "automation",
+  });
 
-  if (emqx) {
-    const { data: cred } = await db
-      .from("mqtt_credentials_metadata")
-      .select("topic_prefix,status")
-      .eq("controller_id", sw.controller_id)
-      .eq("account_id", accountId)
-      .eq("status", "active")
-      .maybeSingle();
-
-    if (cred) {
-      await emqx.publish({
-        topic: `${(cred as { topic_prefix: string }).topic_prefix}/cmd/switch`,
-        payload: {
-          switch_id: sw.id,
-          gpio_pin: sw.gpio_pin,
-          state: desired ? "ON" : "OFF",
-          inverted: sw.inverted,
-          source: "automation",
-          rule_id: ruleId,
-        },
-        qos: 1,
-      });
-    }
+  if (!result.ok) {
+    errors.push(`Switch ${sw.name}: command could not be recorded.`);
+    return false;
   }
+
   if (sw.is_on !== desired) {
     downstreamEvents.push({ kind: "switch", switchId: sw.id, isOn: desired });
   }
@@ -418,6 +435,8 @@ async function executeSwitchTarget(params: {
 async function executeDeviceTarget(params: {
   db: DbClient;
   emqx: EmqxClient | null;
+  env?: WorkerBindings;
+  deps?: { emqxFetch?: CustomFetch };
   accountId: string;
   ruleId: string;
   deviceId: string;
@@ -428,7 +447,7 @@ async function executeDeviceTarget(params: {
     | { kind: "switch"; switchId: string; isOn: boolean }
   >;
 }): Promise<boolean> {
-  const { db, emqx, accountId, ruleId, deviceId, targetState, errors, downstreamEvents } = params;
+  const { db, env, accountId, deviceId, targetState, errors, downstreamEvents } = params;
   const { data: devData } = await db
     .from("devices")
     .select("id,name,controller_id,gpio_pin,device_type,state")
@@ -450,35 +469,20 @@ async function executeDeviceTarget(params: {
     state: string;
   };
 
-  await db
-    .from("devices")
-    .update({ state: targetState })
-    .eq("id", dev.id)
-    .eq("account_id", accountId);
+  // Same command pipeline as switches, for consistent ordering/offline behavior.
+  const result = await applyCommand({
+    db,
+    env: env ?? {},
+    deps: params.deps,
+    accountId,
+    target: { kind: "device", id: dev.id },
+    desiredState: { state: targetState },
+    source: "automation",
+  });
 
-  if (emqx) {
-    const { data: cred } = await db
-      .from("mqtt_credentials_metadata")
-      .select("topic_prefix,status")
-      .eq("controller_id", dev.controller_id)
-      .eq("account_id", accountId)
-      .eq("status", "active")
-      .maybeSingle();
-
-    if (cred) {
-      await emqx.publish({
-        topic: `${(cred as { topic_prefix: string }).topic_prefix}/cmd/device`,
-        payload: {
-          device_id: dev.id,
-          device_type: dev.device_type,
-          gpio_pin: dev.gpio_pin,
-          state: targetState,
-          source: "automation",
-          rule_id: ruleId,
-        },
-        qos: 1,
-      });
-    }
+  if (!result.ok) {
+    errors.push(`Device ${dev.name}: command could not be recorded.`);
+    return false;
   }
   if (dev.state !== targetState) {
     downstreamEvents.push({
@@ -531,6 +535,8 @@ export async function executeAutomationActions(params: {
         const ok = await executeSwitchTarget({
           db,
           emqx,
+          env,
+          deps: { emqxFetch },
           accountId,
           ruleId,
           switchId: action.switchId,
@@ -543,6 +549,8 @@ export async function executeAutomationActions(params: {
         const ok = await executeDeviceTarget({
           db,
           emqx,
+          env,
+          deps: { emqxFetch },
           accountId,
           ruleId,
           deviceId: action.deviceId,
@@ -557,6 +565,8 @@ export async function executeAutomationActions(params: {
             const ok = await executeSwitchTarget({
               db,
               emqx,
+              env,
+              deps: { emqxFetch },
               accountId,
               ruleId,
               switchId: target.switchId,
@@ -569,6 +579,8 @@ export async function executeAutomationActions(params: {
             const ok = await executeDeviceTarget({
               db,
               emqx,
+              env,
+              deps: { emqxFetch },
               accountId,
               ruleId,
               deviceId: target.deviceId,
@@ -1288,6 +1300,8 @@ export async function executeOrTestFlowGraph(params: {
           actionOk = await executeDeviceTarget({
             db,
             emqx,
+            env,
+            deps: { emqxFetch },
             accountId,
             ruleId: params.ruleId ?? "flow-run",
             deviceId: cfg.deviceId,

@@ -154,6 +154,13 @@ typedef struct {
     char driver_type[32];   /* sensor_type (e.g. temperature, temperature_dht22, light) */
     char driver_id[24];     /* canonical driver_id (e.g. bme280, dht22, bh1750) */
     uint8_t i2c_addr;       /* 0 to use driver default */
+    /* Desired-state reconciliation (cloud authoritatively knows intent).
+     * `state` above stays the locally applied/confirmed value; these carry the
+     * outstanding cloud intent so a reboot applies it instead of the stale
+     * cached value. Zero means "no outstanding intent". */
+    uint32_t desired_rev;
+    bool desired_state;
+    bool has_desired;
 } hc_io_entry_t;
 
 // NVS Store
@@ -192,6 +199,10 @@ const char *hc_io_get_config_hash(void);
 uint16_t hc_io_get_heartbeat_interval_sec(void);
 esp_err_t hc_io_set_output(const char *target_id, bool state);
 esp_err_t hc_io_drive_pin(const char *target_id, hc_io_kind_t kind, uint8_t gpio_pin, bool inverted, bool state);
+
+/* Records the command revision a locally applied state reflects, so the
+ * confirmation report can be ordered by the cloud. Zero clears it. */
+void hc_io_note_applied_rev(const char *target_id, uint32_t rev);
 bool hc_io_is_safe_gpio(uint8_t pin);
 void hc_io_build_telemetry_json(char *out_buf, size_t out_len);
 bool hc_io_evaluate_local_rules(void);
@@ -246,5 +257,9 @@ void hc_mqtt_trigger_reconnect(void);
 bool hc_mqtt_consume_sync_request(void);
 void hc_mqtt_publish_status(const char *status_str);
 void hc_mqtt_publish_telemetry(const char *json_payload);
+
+/* Immediately publishes the current IO state (used to confirm a command without
+ * waiting for the periodic telemetry batch). */
+void hc_mqtt_publish_state_update(void);
 void hc_mqtt_publish_config_ack(uint32_t revision, const char *hash);
 void hc_mqtt_publish_ota_progress(const char *history_id, const char *status, int progress_pct);

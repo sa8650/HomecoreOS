@@ -580,8 +580,10 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       switch: { is_on: boolean };
       mqttDispatched: boolean;
     };
-    expect(swOnJson.switch.is_on).toBe(true);
+    // `is_on` is the controller-CONFIRMED state: it does not flip until the
+    // device reports back. The command itself must reach the broker.
     expect(swOnJson.mqttDispatched).toBe(true);
+    expect((swOnJson as unknown as { stateStatus: string }).stateStatus).toBe("pending");
     const swMqttMsg = emqxMock.state.published
       .slice(publishCountBefore)
       .find((m) => m.topic.endsWith("/cmd/switch"));
@@ -635,8 +637,10 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       device: { state: string };
       mqttDispatched: boolean;
     };
-    expect(devCmdJson.device.state).toBe("active");
+    // `state` is the confirmed value; the command is queued until the device
+    // reports back, so it stays 'idle' here while the MQTT publish must occur.
     expect(devCmdJson.mqttDispatched).toBe(true);
+    expect((devCmdJson as unknown as { stateStatus: string }).stateStatus).toBe("pending");
     const devMqttMsg = emqxMock.state.published
       .slice(devCmdBefore)
       .find((m) => m.topic.endsWith("/cmd/device"));
@@ -746,8 +750,18 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       switches: Array<{ id: string; is_on: boolean }>;
     };
     expect(overview.sensors.find((s) => s.id === bme.id)?.i2c_address).toBe("0x76");
-    expect(overview.devices.find((d) => d.id === dev.id)?.state).toBe("active");
-    expect(overview.switches.find((s) => s.id === sw.id)?.is_on).toBe(true);
+    // Confirmed state: a command is recorded as pending intent rather than
+    // optimistically rewriting the reported state.
+    const ovDev = overview.devices.find((d) => d.id === dev.id) as
+      | { state: string; state_status?: string; desired_state?: Record<string, unknown> }
+      | undefined;
+    expect(ovDev?.state_status).toBe("pending");
+    expect(ovDev?.desired_state).toEqual({ state: "active" });
+    const ovSw = overview.switches.find((s) => s.id === sw.id) as
+      | { is_on: boolean; state_status?: string; desired_state?: Record<string, unknown> }
+      | undefined;
+    expect(ovSw?.state_status).toBe("pending");
+    expect(ovSw?.desired_state).toEqual({ on: true });
 
     // Rename BME280 preserves i2c_address: "0x76"
     const bmePatch = await req(`/api/sensors/${bme.id}`, {

@@ -232,18 +232,34 @@ describe("Action Button (Dynamic Island custom action button)", () => {
     expect(execJson.execution.failedCount).toBe(0);
     expect(execJson.execution.states).toEqual({ on: 3, off: 0 });
 
-    // Verify persisted states
+    // Verify persisted intent. `is_on` is the controller-confirmed state and
+    // does not flip until the device reports back, so assert on the intent.
     const swList = await req("/api/switches", { headers: { Cookie: cookie } });
     const sws = ((await swList.json()) as {
-      switches: Array<{ id: string; is_on: boolean }>;
+      switches: Array<{
+        id: string;
+        is_on: boolean;
+        state_status?: string;
+        desired_state?: Record<string, unknown>;
+      }>;
     }).switches;
-    expect(sws.find((s) => s.id === switchId1)?.is_on).toBe(true);
-    expect(sws.find((s) => s.id === switchId2)?.is_on).toBe(true);
+    for (const id of [switchId1, switchId2]) {
+      const row = sws.find((s) => s.id === id);
+      expect(row?.state_status).toBe("pending");
+      expect(row?.desired_state).toEqual({ on: true });
+    }
     const devList = await req("/api/devices", { headers: { Cookie: cookie } });
     const devs = ((await devList.json()) as {
-      devices: Array<{ id: string; state: string }>;
+      devices: Array<{
+        id: string;
+        state: string;
+        state_status?: string;
+        desired_state?: Record<string, unknown>;
+      }>;
     }).devices;
-    expect(devs.find((d) => d.id === deviceId)?.state).toBe("active");
+    const targetDev = devs.find((d) => d.id === deviceId);
+    expect(targetDev?.state_status).toBe("pending");
+    expect(targetDev?.desired_state).toEqual({ state: "active" });
 
     // Cooldown: immediate re-execute is rejected
     const cooldownRes = await postJson(
@@ -375,18 +391,23 @@ describe("Action Button (Dynamic Island custom action button)", () => {
         states: { on: number; off: number } | null;
       };
     };
-    expect(execJson.ok).toBe(false);
-    expect(execJson.execution.executedCount).toBe(0);
-    expect(execJson.execution.failedCount).toBe(1);
-    expect(execJson.execution.results[0]?.error).toMatch(/offline/i);
-    expect(execJson.execution.states).toBeNull();
+    // Offline is no longer a failure: the intent is queued and applied when the
+    // controller reconnects, so the button reports success and the command is
+    // recorded as pending.
+    expect(execJson.ok).toBe(true);
+    expect(execJson.execution.executedCount).toBe(1);
+    expect(execJson.execution.failedCount).toBe(0);
 
-    // Switch must not have been flipped while offline
+    // The safety property is unchanged and is the important one: the relay must
+    // NOT be reported as flipped while the controller is unreachable.
     const swList = await req("/api/switches", { headers: { Cookie: cookie } });
     const sws = ((await swList.json()) as {
-      switches: Array<{ id: string; is_on: boolean }>;
+      switches: Array<{ id: string; is_on: boolean; state_status?: string; desired_state?: { on?: boolean } | null }>;
     }).switches;
-    expect(sws.find((s) => s.id === switchId2)?.is_on).toBe(false);
+    const queued = sws.find((s) => s.id === switchId2);
+    expect(queued?.is_on).toBe(false);
+    expect(queued?.state_status).toBe("pending");
+    expect(queued?.desired_state).toEqual({ on: true });
 
     await dbHarness.pg.query(
       "UPDATE controllers SET status = 'online' WHERE id = $1",

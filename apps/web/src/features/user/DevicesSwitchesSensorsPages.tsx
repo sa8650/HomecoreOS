@@ -29,6 +29,7 @@ import {
   type HardwareContext,
 } from "@/lib/board-pin-helpers";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
+import { entityStateMeta } from "@/lib/entity-state";
 import {
   DeviceEditorModal,
   HardwareDetailsModal,
@@ -293,37 +294,58 @@ export function SwitchesPage({
 
   const handleToggle = useCallback(async (sw: SwitchItem, next: boolean) => {
     // Prevent duplicate MQTT commands while an identical or in-flight command is running
-    if (inFlightToggleIdsRef.current.has(sw.id) || sw.is_on === next) {
+    if (inFlightToggleIdsRef.current.has(sw.id)) {
+      return;
+    }
+    // Already confirmed in the requested state, or already waiting for it.
+    if (sw.is_on === next && sw.state_status !== "pending") {
       return;
     }
 
     inFlightToggleIdsRef.current.add(sw.id);
-    const prevIsOn = sw.is_on;
+    const prev = sw;
     const seq = (toggleSeqRef.current.get(sw.id) ?? 0) + 1;
     toggleSeqRef.current.set(sw.id, seq);
 
-    setSwitches((prev) =>
-      prev.map((item) => (item.id === sw.id ? { ...item, is_on: next } : item))
+    // Intentionally do NOT flip `is_on`: that is the controller-confirmed
+    // state. We show a pending badge instead, so the UI never claims success
+    // before the hardware has confirmed it.
+    setSwitches((items) =>
+      items.map((item) =>
+        item.id === sw.id
+          ? {
+              ...item,
+              desired_state: { on: next },
+              state_status: "pending" as const,
+            }
+          : item
+      )
     );
-    setPendingToggleIds((prev) => ({ ...prev, [sw.id]: true }));
+    setPendingToggleIds((prevIds) => ({ ...prevIds, [sw.id]: true }));
 
     try {
       const res = await apiFetch<{ switch?: SwitchItem }>(
         `/api/switches/${sw.id}/toggle`,
         {
           method: "POST",
+          // Lets the server reject an out-of-order request instead of
+          // overwriting a newer intent.
+          headers:
+            typeof sw.desired_rev === "number"
+              ? { "x-homecore-expected-rev": String(sw.desired_rev) }
+              : undefined,
           body: JSON.stringify({ isOn: next }),
         }
       );
       if (toggleSeqRef.current.get(sw.id) === seq && res.switch) {
-        setSwitches((prev) =>
-          prev.map((item) => (item.id === sw.id ? res.switch! : item))
+        setSwitches((items) =>
+          items.map((item) => (item.id === sw.id ? res.switch! : item))
         );
       }
     } catch (err) {
       if (toggleSeqRef.current.get(sw.id) === seq) {
-        setSwitches((prev) =>
-          prev.map((item) => (item.id === sw.id ? { ...item, is_on: prevIsOn } : item))
+        setSwitches((items) =>
+          items.map((item) => (item.id === sw.id ? prev : item))
         );
       }
       toast.error(
@@ -460,8 +482,15 @@ export function SwitchesPage({
             const roomName = sw.room_id
               ? roomById.get(sw.room_id)?.name ?? "Assigned room"
               : "Unassigned";
-            const isPending = Boolean(pendingToggleIds[sw.id]);
-            const online = isEntityOnline(sw.is_online, ctrl);
+            // Server truth decides: confirmed state, outstanding intent, or failure.
+            const visual = entityStateMeta({
+              appliedOn: sw.is_on,
+              desiredOn: sw.desired_state?.on,
+              status: sw.state_status,
+              ctrl,
+              entityOnline: sw.is_online,
+            });
+            const isPending = visual.isPending || Boolean(pendingToggleIds[sw.id]);
             return (
               <HardwareEntityCard
                 key={sw.id}
@@ -484,24 +513,33 @@ export function SwitchesPage({
                 <div className="flex items-center justify-between gap-2 border-t pt-3">
                   <div className="flex items-center gap-2">
                     <Badge
-                      variant={sw.is_on ? "success-light" : "secondary"}
+                      variant={
+                        visual.tone === "on"
+                          ? "success-light"
+                          : visual.tone === "pending"
+                            ? "warning-light"
+                            : visual.tone === "failed"
+                              ? "destructive-light"
+                              : "secondary"
+                      }
                       radius="full"
+                      title={visual.description}
                     >
-                      {sw.is_on ? "ON" : "OFF"}
+                      {visual.label}
                     </Badge>
-                    {!online && (
+                    {visual.tone === "offline" && (
                       <Badge variant="warning-light" radius="full">
                         Offline
                       </Badge>
                     )}
-                    {isPending && (
+                    {visual.tone === "pending" && (
                       <span className="text-[11px] text-muted-foreground">
                         Syncing...
                       </span>
                     )}
                   </div>
                   <Switch
-                    checked={sw.is_on}
+                    checked={visual.showAsOn}
                     disabled={!canOperate || isPending}
                     aria-label={`Toggle ${sw.name}`}
                     onCheckedChange={(next) => void handleToggle(sw, next)}

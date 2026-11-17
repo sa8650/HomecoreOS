@@ -67,8 +67,21 @@ static void handle_switch_cmd(const char *data, int len) {
             ? cJSON_IsTrue(state_j)
             : hc_io_parse_bool_state(state_j->valuestring, false);
         bool inv = cJSON_IsBool(inv_j) && cJSON_IsTrue(inv_j);
+        uint32_t rev = 0;
+        cJSON *rev_j = cJSON_GetObjectItem(root, "rev");
+        if (cJSON_IsNumber(rev_j) && rev_j->valuedouble >= 0) {
+            rev = (uint32_t)rev_j->valuedouble;
+        }
         hc_io_drive_pin(id_j->valuestring, HC_IO_KIND_SWITCH, (uint8_t)pin_j->valueint, inv, on);
-        ESP_LOGI(TAG, "Switch %s (GPIO %d) -> %s", id_j->valuestring, pin_j->valueint, on ? "ON" : "OFF");
+        /* Record which command revision this state reflects so the confirmation
+         * we publish immediately below can be ordered by the cloud. */
+        hc_io_note_applied_rev(id_j->valuestring, rev);
+        ESP_LOGI(TAG, "Switch %s (GPIO %d) -> %s (rev=%u)",
+            id_j->valuestring, pin_j->valueint, on ? "ON" : "OFF", (unsigned)rev);
+        /* Immediate confirmation instead of waiting for the periodic telemetry
+         * batch (which is floored at 30s). Without this the UI would sit on
+         * "pending" for up to a minute after every press. */
+        hc_mqtt_publish_state_update();
     }
     cJSON_Delete(root);
 }
@@ -87,12 +100,20 @@ static void handle_device_cmd(const char *data, int len) {
         bool active = cJSON_IsBool(active_j)
             ? cJSON_IsTrue(active_j)
             : hc_io_parse_bool_state(state_j->valuestring, false);
+        uint32_t rev = 0;
+        cJSON *rev_j = cJSON_GetObjectItem(root, "rev");
+        if (cJSON_IsNumber(rev_j) && rev_j->valuedouble >= 0) {
+            rev = (uint32_t)rev_j->valuedouble;
+        }
         hc_io_drive_pin(id_j->valuestring, HC_IO_KIND_DEVICE, (uint8_t)pin_j->valueint, false, active);
-        ESP_LOGI(TAG, "Device %s (GPIO %d) -> %s (%s)",
+        hc_io_note_applied_rev(id_j->valuestring, rev);
+        ESP_LOGI(TAG, "Device %s (GPIO %d) -> %s (%s) (rev=%u)",
             id_j->valuestring,
             pin_j->valueint,
             cJSON_IsString(state_j) ? state_j->valuestring : (active ? "active" : "inactive"),
-            active ? "HIGH" : "LOW");
+            active ? "HIGH" : "LOW",
+            (unsigned)rev);
+        hc_mqtt_publish_state_update();
     }
     cJSON_Delete(root);
 }
@@ -320,6 +341,21 @@ void hc_mqtt_publish_telemetry(const char *json_payload) {
     char topic[224];
     snprintf(topic, sizeof(topic), "%s/telemetry/sensors", s_cfg->topic_prefix);
     esp_mqtt_client_publish(s_client, topic, json_payload, 0, 0, 0);
+}
+
+void hc_mqtt_publish_state_update(void) {
+    if (!s_client || !s_mqtt_connected || !s_cfg) return;
+    /* Same payload shape as periodic telemetry, so the cloud needs no separate
+     * parsing path: one confirmation channel, just pushed earlier. */
+    char buf[4096];
+    hc_io_build_telemetry_json(buf, sizeof(buf));
+    if (buf[0] == '\0') return;
+    char topic[224];
+    snprintf(topic, sizeof(topic), "%s/telemetry/sensors", s_cfg->topic_prefix);
+    esp_mqtt_client_publish(s_client, topic, buf, 0, 1, 0);
+    /* Also push over HTTP: the Worker's authoritative ingest is HTTP, so this
+     * is what actually clears the pending state promptly. */
+    hc_http_post_telemetry(s_cfg, buf);
 }
 
 esp_err_t hc_mqtt_start(homecore_config_t *cfg) {

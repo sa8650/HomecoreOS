@@ -6,7 +6,6 @@ import {
   SUPPORTED_DEVICE_TYPES,
   SUPPORTED_SENSOR_TYPES,
   getSensorDriverForMeasurement,
-  isDeviceStateActive,
   isSupportedDeviceType,
   isSupportedSensorType,
   normalizeI2cAddress,
@@ -23,7 +22,7 @@ import {
   verifyHomeRoomOwnership,
 } from "../lib/board-helpers";
 import { syncControllerConfigSnapshot } from "../lib/controller-config";
-import { EmqxClient, isEmqxConfigured } from "../lib/emqx";
+import { applyCommand } from "../lib/device-state";
 import { validateControllerSensorMutation } from "../lib/sensor-compatibility";
 import { requireStaffRole, requireUserSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
@@ -55,20 +54,6 @@ const switchSchema = z.object({
 const switchToggleSchema = z.object({
   isOn: z.boolean(),
 });
-
-async function fetchControllerOnlineStatus(
-  db: AppEnv["Variables"]["db"],
-  controllerId: string,
-  accountId: string
-): Promise<boolean> {
-  const { data } = await db
-    .from("controllers")
-    .select("status")
-    .eq("id", controllerId)
-    .eq("account_id", accountId)
-    .maybeSingle();
-  return (data as { status?: string } | null)?.status === "online";
-}
 
 const sensorSchema = z.object({
   controllerId: z.string().uuid(),
@@ -285,86 +270,52 @@ export function createDeviceRoutes() {
       const db = c.get("db");
       const deps = c.get("deps") ?? {};
       const deviceId = c.req.param("id");
-      const emqxReady = isEmqxConfigured(c.env ?? {});
+      const expectedRevParam = c.req.header("x-homecore-expected-rev");
+      const expectedRev =
+        expectedRevParam && Number.isFinite(Number(expectedRevParam))
+          ? Number(expectedRevParam)
+          : null;
 
-      const [devRes, credRes, rulesRes] = await Promise.all([
-        db
-          .from("devices")
-          .select("id,name,controller_id,gpio_pin,device_type")
-          .eq("id", deviceId)
-          .eq("account_id", auth.accountId)
-          .is("deleted_at", null)
-          .maybeSingle(),
-        emqxReady
-          ? db
-              .from("mqtt_credentials_metadata")
-              .select("controller_id,topic_prefix,status")
-              .eq("account_id", auth.accountId)
-              .eq("status", "active")
-          : Promise.resolve({ data: null }),
-        db
-          .from("automation_rules")
-          .select("*")
-          .eq("account_id", auth.accountId)
-          .eq("enabled", true)
-          .is("deleted_at", null),
-      ]);
+      const { data: devRow } = await db
+        .from("devices")
+        .select("id,name,controller_id")
+        .eq("id", deviceId)
+        .eq("account_id", auth.accountId)
+        .is("deleted_at", null)
+        .maybeSingle();
 
-      if (!devRes.data) return c.json({ error: "Device not found." }, 404);
-      const dev = devRes.data as {
-        id: string;
-        name: string;
-        controller_id: string;
-        gpio_pin: number;
-        device_type: string;
-      };
+      if (!devRow) return c.json({ error: "Device not found." }, 404);
+      const dev = devRow as { id: string; name: string; controller_id: string };
 
-      const cred = ((credRes.data ?? []) as Array<{
-        controller_id: string;
-        topic_prefix: string;
-        status: string;
-      }>).find((r) => r.controller_id === dev.controller_id);
+      // Same single write path as switches.
+      const result = await applyCommand({
+        db,
+        env: c.env ?? {},
+        deps,
+        accountId: auth.accountId,
+        target: { kind: "device", id: dev.id },
+        desiredState: { state: parsed.data.state },
+        expectedRev,
+        source: "manual",
+        actorUserId: auth.userId,
+      });
 
-      let mqttDispatched = false;
-      if (emqxReady && cred) {
-        try {
-          const emqx = new EmqxClient(c.env!, deps.emqxFetch);
-          await emqx.publish({
-            topic: `${cred.topic_prefix}/cmd/device`,
-            payload: {
-              device_id: dev.id,
-              device_type: dev.device_type,
-              gpio_pin: dev.gpio_pin,
-              state: parsed.data.state,
-              active: isDeviceStateActive(parsed.data.state),
-              actor_user_id: auth.userId,
-            },
-            qos: 1,
-          });
-          mqttDispatched = true;
-        } catch (err) {
-          const msg =
-            err instanceof Error ? err.message : "Failed to dispatch MQTT command.";
-          return c.json({ error: `Controller command failed: ${msg}` }, 502);
-        }
+      if (!result.ok && result.reason === "not_found") {
+        return c.json({ error: "Device not found." }, 404);
+      }
+      if (result.error) {
+        return c.json({ error: `Controller command failed: ${result.error}` }, 502);
       }
 
-      const preloadedRules = (rulesRes.data ?? []) as NonNullable<
-        Parameters<typeof evaluateAutomationsForEvent>[0]["preloadedRules"]
-      >;
+      const preloadedRules = await db
+        .from("automation_rules")
+        .select("*")
+        .eq("account_id", auth.accountId)
+        .eq("enabled", true)
+        .is("deleted_at", null);
 
-      const [updateRes, controllerOnline] = await Promise.all([
-        db
-          .from("devices")
-          .update({
-            state: parsed.data.state,
-            last_state_at: new Date().toISOString(),
-          })
-          .eq("id", dev.id)
-          .eq("account_id", auth.accountId)
-          .select("*")
-          .single(),
-        fetchControllerOnlineStatus(db, dev.controller_id, auth.accountId),
+      const [updateRes] = await Promise.all([
+        db.from("devices").select("*").eq("id", dev.id).eq("account_id", auth.accountId).single(),
         recordActivity(db, {
           accountId: auth.accountId,
           actorUserId: auth.userId,
@@ -372,20 +323,36 @@ export function createDeviceRoutes() {
           category: "device",
           action: "device.command",
           summary: `Set device "${dev.name}" to ${parsed.data.state}`,
+          metadata: {
+            dispatched: result.dispatched,
+            stateStatus: result.stateStatus,
+            desiredRev: result.desiredRev,
+          },
         }),
-        preloadedRules.length > 0
+        (preloadedRules.data ?? []).length > 0
           ? evaluateAutomationsForEvent({
               db,
               env: c.env ?? {},
               emqxFetch: deps.emqxFetch,
               accountId: auth.accountId,
               event: { kind: "device", deviceId: dev.id, state: parsed.data.state },
-              preloadedRules,
+              preloadedRules: preloadedRules.data as NonNullable<
+                Parameters<typeof evaluateAutomationsForEvent>[0]["preloadedRules"]
+              >,
             })
           : Promise.resolve(0),
       ]);
 
-      return c.json({ device: updateRes.data, mqttDispatched, controllerOnline });
+      return c.json({
+        device: updateRes.data,
+        mqttDispatched: result.dispatched,
+        controllerOnline: result.controllerOnline,
+        stateStatus: result.stateStatus,
+        desiredRev: result.desiredRev,
+        appliedRev: result.appliedRev,
+        accepted: result.accepted,
+        reason: result.reason,
+      });
     }
   );
 
@@ -708,85 +675,54 @@ export function createDeviceRoutes() {
       const db = c.get("db");
       const deps = c.get("deps") ?? {};
       const switchId = c.req.param("id");
-      const emqxReady = isEmqxConfigured(c.env ?? {});
+      // Optional: the revision the client observed. Guards against an
+      // out-of-order request overwriting a newer intent.
+      const expectedRevParam = c.req.header("x-homecore-expected-rev");
+      const expectedRev =
+        expectedRevParam && Number.isFinite(Number(expectedRevParam))
+          ? Number(expectedRevParam)
+          : null;
 
-      const [swRes, credRes, rulesRes] = await Promise.all([
-        db
-          .from("switches")
-          .select("id,name,controller_id,gpio_pin,inverted")
-          .eq("id", switchId)
-          .eq("account_id", auth.accountId)
-          .is("deleted_at", null)
-          .maybeSingle(),
-        emqxReady
-          ? db
-              .from("mqtt_credentials_metadata")
-              .select("controller_id,topic_prefix,status")
-              .eq("account_id", auth.accountId)
-              .eq("status", "active")
-          : Promise.resolve({ data: null }),
-        db
-          .from("automation_rules")
-          .select("*")
-          .eq("account_id", auth.accountId)
-          .eq("enabled", true)
-          .is("deleted_at", null),
-      ]);
+      const { data: swRow } = await db
+        .from("switches")
+        .select("id,name,controller_id")
+        .eq("id", switchId)
+        .eq("account_id", auth.accountId)
+        .is("deleted_at", null)
+        .maybeSingle();
 
-      if (!swRes.data) return c.json({ error: "Switch not found." }, 404);
-      const sw = swRes.data as {
-        id: string;
-        name: string;
-        controller_id: string;
-        gpio_pin: number;
-        inverted: boolean;
-      };
+      if (!swRow) return c.json({ error: "Switch not found." }, 404);
+      const sw = swRow as { id: string; name: string; controller_id: string };
 
-      const cred = ((credRes.data ?? []) as Array<{
-        controller_id: string;
-        topic_prefix: string;
-        status: string;
-      }>).find((r) => r.controller_id === sw.controller_id);
+      // Single write path shared with automations and action buttons.
+      const result = await applyCommand({
+        db,
+        env: c.env ?? {},
+        deps,
+        accountId: auth.accountId,
+        target: { kind: "switch", id: sw.id },
+        desiredState: { on: parsed.data.isOn },
+        expectedRev,
+        source: "manual",
+        actorUserId: auth.userId,
+      });
 
-      let mqttDispatched = false;
-      if (emqxReady && cred) {
-        try {
-          const emqx = new EmqxClient(c.env!, deps.emqxFetch);
-          await emqx.publish({
-            topic: `${cred.topic_prefix}/cmd/switch`,
-            payload: {
-              switch_id: sw.id,
-              gpio_pin: sw.gpio_pin,
-              state: parsed.data.isOn ? "ON" : "OFF",
-              inverted: sw.inverted,
-              actor_user_id: auth.userId,
-            },
-            qos: 1,
-          });
-          mqttDispatched = true;
-        } catch (err) {
-          const msg =
-            err instanceof Error ? err.message : "Failed to dispatch MQTT switch command.";
-          return c.json({ error: `Controller command failed: ${msg}` }, 502);
-        }
+      if (!result.ok && result.reason === "not_found") {
+        return c.json({ error: "Switch not found." }, 404);
+      }
+      if (result.error) {
+        return c.json({ error: `Controller command failed: ${result.error}` }, 502);
       }
 
-      const preloadedRules = (rulesRes.data ?? []) as NonNullable<
-        Parameters<typeof evaluateAutomationsForEvent>[0]["preloadedRules"]
-      >;
+      const preloadedRules = await db
+        .from("automation_rules")
+        .select("*")
+        .eq("account_id", auth.accountId)
+        .eq("enabled", true)
+        .is("deleted_at", null);
 
-      const [updateRes, controllerOnline] = await Promise.all([
-        db
-          .from("switches")
-          .update({
-            is_on: parsed.data.isOn,
-            last_changed_at: new Date().toISOString(),
-          })
-          .eq("id", sw.id)
-          .eq("account_id", auth.accountId)
-          .select("*")
-          .single(),
-        fetchControllerOnlineStatus(db, sw.controller_id, auth.accountId),
+      const [updateRes] = await Promise.all([
+        db.from("switches").select("*").eq("id", sw.id).eq("account_id", auth.accountId).single(),
         recordActivity(db, {
           accountId: auth.accountId,
           actorUserId: auth.userId,
@@ -794,21 +730,38 @@ export function createDeviceRoutes() {
           category: "switch",
           action: parsed.data.isOn ? "switch.turned_on" : "switch.turned_off",
           summary: `Turned "${sw.name}" ${parsed.data.isOn ? "ON" : "OFF"}`,
-          metadata: { mqttDispatched },
+          metadata: {
+            dispatched: result.dispatched,
+            stateStatus: result.stateStatus,
+            desiredRev: result.desiredRev,
+          },
         }),
-        preloadedRules.length > 0
+        (preloadedRules.data ?? []).length > 0
           ? evaluateAutomationsForEvent({
               db,
               env: c.env ?? {},
               emqxFetch: deps.emqxFetch,
               accountId: auth.accountId,
               event: { kind: "switch", switchId: sw.id, isOn: parsed.data.isOn },
-              preloadedRules,
+              preloadedRules: preloadedRules.data as NonNullable<
+                Parameters<typeof evaluateAutomationsForEvent>[0]["preloadedRules"]
+              >,
             })
           : Promise.resolve(0),
       ]);
 
-      return c.json({ switch: updateRes.data, mqttDispatched, controllerOnline });
+      // `accepted: false` means this was a duplicate/stale request: nothing was
+      // published to MQTT and the stored state is already correct.
+      return c.json({
+        switch: updateRes.data,
+        mqttDispatched: result.dispatched,
+        controllerOnline: result.controllerOnline,
+        stateStatus: result.stateStatus,
+        desiredRev: result.desiredRev,
+        appliedRev: result.appliedRev,
+        accepted: result.accepted,
+        reason: result.reason,
+      });
     }
   );
 

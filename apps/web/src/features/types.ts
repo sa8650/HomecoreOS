@@ -170,9 +170,19 @@ export interface DeviceItem {
   name: string;
   device_type: string;
   gpio_pin: number;
+  /** Last state confirmed by the controller. */
   state: string;
   is_online: boolean;
+  desired_state?: Record<string, unknown> | null;
+  state_status?: DeviceStateStatus;
+  desired_rev?: number;
+  applied_rev?: number;
+  last_command_at?: string | null;
+  state_error?: string | null;
 }
+
+/** Reconciliation state shared by switches and devices. */
+export type DeviceStateStatus = "synced" | "pending" | "failed" | "expired";
 
 export interface SwitchItem {
   id: string;
@@ -182,10 +192,18 @@ export interface SwitchItem {
   controller_id: string;
   name: string;
   gpio_pin: number;
+  /** Last state confirmed by the controller. */
   is_on: boolean;
   inverted: boolean;
   is_online: boolean;
   last_changed_at: string | null;
+  /** `is_on` with an outstanding, not-yet-confirmed command applied. */
+  desired_state?: { on?: boolean } | null;
+  state_status?: DeviceStateStatus;
+  desired_rev?: number;
+  applied_rev?: number;
+  last_command_at?: string | null;
+  state_error?: string | null;
 }
 
 export interface SensorItem {

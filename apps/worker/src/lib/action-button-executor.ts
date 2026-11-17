@@ -26,7 +26,8 @@ import {
   executeOrTestFlowGraph,
 } from "./automation-engine";
 import type { WorkerBindings } from "../config/env";
-import { EmqxClient, isEmqxConfigured } from "./emqx";
+import { applyCommand } from "./device-state";
+import type { CustomFetch } from "./db";
 import { recordActivity } from "./audit";
 import type { AppEnv } from "../types/context";
 
@@ -191,36 +192,6 @@ export interface ActionButtonExecution {
   executedAt: string;
 }
 
-async function loadControllerStatusById(
-  db: AppEnv["Variables"]["db"],
-  accountId: string,
-  controllerIds: string[]
-): Promise<Map<string, boolean>> {
-  const map = new Map<string, boolean>();
-  if (controllerIds.length === 0) return map;
-  const { data } = await db
-    .from("controllers")
-    .select("id,status")
-    .eq("account_id", accountId)
-    .in("id", controllerIds);
-  for (const row of (data ?? []) as Array<{ id: string; status: string | null }>) {
-    map.set(row.id, row.status === "online");
-  }
-  return map;
-}
-
-async function loadActiveMqttCredentials(
-  db: AppEnv["Variables"]["db"],
-  accountId: string
-): Promise<Array<{ controller_id: string; topic_prefix: string }>> {
-  const { data } = await db
-    .from("mqtt_credentials_metadata")
-    .select("controller_id,topic_prefix")
-    .eq("account_id", accountId)
-    .eq("status", "active");
-  return (data ?? []) as Array<{ controller_id: string; topic_prefix: string }>;
-}
-
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export async function executeActionButtonSteps(params: {
@@ -256,25 +227,14 @@ export async function executeActionButtonSteps(params: {
   > = [];
   const visitedAutomationIds = new Set<string>();
 
-  const controllerIds = Array.from(
-    new Set([
-      ...inventory.switches.map((s) => s.controller_id),
-      ...inventory.devices.map((d) => d.controller_id),
-    ])
-  );
-  const [controllerOnlineMap, mqttCreds, rulesRes] = await Promise.all([
-    loadControllerStatusById(db, accountId, controllerIds),
-    loadActiveMqttCredentials(db, accountId),
-    db
-      .from("automation_rules")
-      .select("*")
-      .eq("account_id", accountId)
-      .eq("enabled", true)
-      .is("deleted_at", null),
-  ]);
-  const emqxReady = isEmqxConfigured(env);
-  const emqx = emqxReady ? new EmqxClient(env, emqxFetch) : null;
-  const credByController = new Map(mqttCreds.map((cred) => [cred.controller_id, cred]));
+  // Reachability and MQTT credentials are resolved inside `applyCommand`, so
+  // the executor no longer pre-loads or caches them.
+  const rulesRes = await db
+    .from("automation_rules")
+    .select("*")
+    .eq("account_id", accountId)
+    .eq("enabled", true)
+    .is("deleted_at", null);
   const preloadedRules = (rulesRes.data ?? []) as NonNullable<
     Parameters<typeof evaluateAutomationsForEvent>[0]["preloadedRules"]
   >;
@@ -393,18 +353,13 @@ export async function executeActionButtonSteps(params: {
           const sw = target.switchRow;
           const desired =
             target.op === "toggle" ? !sw.is_on : target.op === "on";
-          const online = controllerOnlineMap.get(sw.controller_id) ?? false;
           const summary = `Set "${sw.name}" ${desired ? "ON" : "OFF"}`;
-          if (!online) {
-            failStep(step.id, "switch-target", summary, "Controller is offline.", false);
-            continue;
-          }
+          // Offline is no longer a failure: the intent is persisted and applied
+          // when the controller reconnects.
           const dispatched = await dispatchSwitchCommand({
             db,
             env,
-            emqx,
-            emqxReady,
-            cred: credByController.get(sw.controller_id) ?? null,
+            emqxFetch,
             accountId,
             actorUserId,
             sw,
@@ -440,22 +395,12 @@ export async function executeActionButtonSteps(params: {
                 ? "active"
                 : "inactive";
           const desiredActive = isDeviceStateActive(desiredState);
-          const online = controllerOnlineMap.get(dev.controller_id) ?? false;
           const summary = `Set "${dev.name}" to ${desiredState}`;
-          if (!dev.is_online) {
-            failStep(step.id, "device-target", summary, "Device is offline.", false);
-            continue;
-          }
-          if (!online) {
-            failStep(step.id, "device-target", summary, "Controller is offline.", false);
-            continue;
-          }
+          // Queued while offline and applied on reconnect (see switch branch).
           const dispatched = await dispatchDeviceCommand({
             db,
             env,
-            emqx,
-            emqxReady,
-            cred: credByController.get(dev.controller_id) ?? null,
+            emqxFetch,
             accountId,
             actorUserId,
             dev,
@@ -558,91 +503,60 @@ function describeStep(step: ActionButtonStep, roomNames: Map<string, string>): s
 async function dispatchSwitchCommand(params: {
   db: AppEnv["Variables"]["db"];
   env: WorkerBindings;
-  emqx: EmqxClient | null;
-  emqxReady: boolean;
-  cred: { topic_prefix: string } | null;
+  emqxFetch?: CustomFetch;
   accountId: string;
   actorUserId: string;
   sw: ControllableSwitchRow;
   desired: boolean;
 }): Promise<{ ok: true; mqttDispatched: boolean } | { ok: false; error: string }> {
-  const { db, emqx, emqxReady, cred, accountId, actorUserId, sw, desired } = params;
-
-  let mqttDispatched = false;
-  if (emqxReady && emqx && cred) {
-    try {
-      await emqx.publish({
-        topic: `${cred.topic_prefix}/cmd/switch`,
-        payload: {
-          switch_id: sw.id,
-          gpio_pin: sw.gpio_pin,
-          state: desired ? "ON" : "OFF",
-          inverted: sw.inverted,
-          source: "action_button",
-          actor_user_id: actorUserId,
-        },
-        qos: 1,
-      });
-      mqttDispatched = true;
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to dispatch MQTT switch command.";
-      return { ok: false, error: `Controller command failed: ${msg}` };
-    }
+  const { db, env, accountId, sw, desired } = params;
+  // Shared command pipeline: identical ordering, offline queuing and
+  // de-duplication semantics as manual toggles and automations.
+  const result = await applyCommand({
+    db,
+    env,
+    deps: { emqxFetch: params.emqxFetch },
+    accountId,
+    target: { kind: "switch", id: sw.id },
+    desiredState: { on: desired },
+    source: "action_button",
+    actorUserId: params.actorUserId,
+  });
+  if (!result.ok) {
+    return { ok: false, error: "Switch command could not be recorded." };
   }
-
-  await db
-    .from("switches")
-    .update({ is_on: desired, last_changed_at: new Date().toISOString() })
-    .eq("id", sw.id)
-    .eq("account_id", accountId);
-
-  return { ok: true, mqttDispatched };
+  if (result.error) {
+    return { ok: false, error: `Controller command failed: ${result.error}` };
+  }
+  return { ok: true, mqttDispatched: result.dispatched };
 }
 
 async function dispatchDeviceCommand(params: {
   db: AppEnv["Variables"]["db"];
   env: WorkerBindings;
-  emqx: EmqxClient | null;
-  emqxReady: boolean;
-  cred: { topic_prefix: string } | null;
+  emqxFetch?: CustomFetch;
   accountId: string;
   actorUserId: string;
   dev: ControllableDeviceRow;
   desiredState: string;
 }): Promise<{ ok: true; mqttDispatched: boolean } | { ok: false; error: string }> {
-  const { db, emqx, emqxReady, cred, accountId, actorUserId, dev, desiredState } = params;
-
-  let mqttDispatched = false;
-  if (emqxReady && emqx && cred) {
-    try {
-      await emqx.publish({
-        topic: `${cred.topic_prefix}/cmd/device`,
-        payload: {
-          device_id: dev.id,
-          device_type: dev.device_type,
-          gpio_pin: dev.gpio_pin,
-          state: desiredState,
-          active: isDeviceStateActive(desiredState),
-          source: "action_button",
-          actor_user_id: actorUserId,
-        },
-        qos: 1,
-      });
-      mqttDispatched = true;
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to dispatch MQTT device command.";
-      return { ok: false, error: `Controller command failed: ${msg}` };
-    }
+  const { db, env, accountId, dev, desiredState } = params;
+  const result = await applyCommand({
+    db,
+    env,
+    deps: { emqxFetch: params.emqxFetch },
+    accountId,
+    target: { kind: "device", id: dev.id },
+    desiredState: { state: desiredState },
+    source: "action_button",
+    actorUserId: params.actorUserId,
+  });
+  if (!result.ok) {
+    return { ok: false, error: "Device command could not be recorded." };
   }
-
-  await db
-    .from("devices")
-    .update({ state: desiredState, last_state_at: new Date().toISOString() })
-    .eq("id", dev.id)
-    .eq("account_id", accountId);
-
-  return { ok: true, mqttDispatched };
+  if (result.error) {
+    return { ok: false, error: `Controller command failed: ${result.error}` };
+  }
+  return { ok: true, mqttDispatched: result.dispatched };
 }
 

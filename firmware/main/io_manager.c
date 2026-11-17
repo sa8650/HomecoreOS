@@ -328,6 +328,21 @@ esp_err_t hc_io_apply_config_json(const char *json, bool *out_changed) {
                 e->state = hc_io_parse_bool_state(st_j->valuestring, false);
             }
 
+            /* An outstanding cloud intent outranks the locally cached value.
+             * This is what makes "turn it off while the controller is offline"
+             * survive a reboot: the snapshot carries the intent, so we apply it
+             * instead of re-energising the relay from stale NVS state. */
+            cJSON *des_j = cJSON_GetObjectItem(item, "desired_on");
+            cJSON *drev_j = cJSON_GetObjectItem(item, "desired_rev");
+            e->has_desired = cJSON_IsBool(des_j);
+            e->desired_rev = cJSON_IsNumber(drev_j) ? (uint32_t)drev_j->valuedouble : 0;
+            if (e->has_desired) {
+                e->desired_state = cJSON_IsTrue(des_j);
+                e->state = e->desired_state;
+            } else {
+                e->desired_state = false;
+            }
+
             if (stype_str[0] != '\0') {
                 hc_copy_str(e->driver_type, sizeof(e->driver_type), stype_str);
             }
@@ -406,6 +421,21 @@ esp_err_t hc_io_set_output(const char *target_id, bool state) {
     }
     xSemaphoreGive(s_io_mutex);
     return res;
+}
+
+void hc_io_note_applied_rev(const char *target_id, uint32_t rev) {
+    if (!target_id || !s_io_mutex) return;
+    xSemaphoreTake(s_io_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < s_entry_count; i++) {
+        if (strcmp(s_entries[i].id, target_id) == 0) {
+            s_entries[i].desired_rev = rev;
+            /* The intent has been applied locally; it is no longer outstanding
+             * on this device (the cloud clears it once it sees this report). */
+            s_entries[i].has_desired = false;
+            break;
+        }
+    }
+    xSemaphoreGive(s_io_mutex);
 }
 
 esp_err_t hc_io_drive_pin(
@@ -537,6 +567,11 @@ void hc_io_build_telemetry_json(char *out_buf, size_t out_len) {
             cJSON *sw_item = cJSON_CreateObject();
             cJSON_AddStringToObject(sw_item, "switchId", e->id);
             cJSON_AddBoolToObject(sw_item, "isOn", e->state);
+            /* Echo the revision this state reflects so the cloud can tell a
+             * fresh confirmation from a delayed report of an older command. */
+            if (e->desired_rev > 0) {
+                cJSON_AddNumberToObject(sw_item, "rev", (double)e->desired_rev);
+            }
             cJSON_AddItemToArray(switches_arr, sw_item);
         } else {
             cJSON *d_item = cJSON_CreateObject();

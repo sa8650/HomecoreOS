@@ -194,8 +194,18 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
     const switches = ((await swListAfter.json()) as {
       switches: Array<{ id: string; is_on: boolean }>;
     }).switches;
-    expect(switches.find((s) => s.id === sw2Id)?.is_on).toBe(true);
-    expect(switches.find((s) => s.id === sw1Id)?.is_on).toBe(true);
+    // Automation output is recorded as outstanding intent (the controller has
+    // not confirmed in this test), not as an optimistic confirmed state.
+    const sw2 = switches.find((s) => s.id === sw2Id) as
+      | { is_on: boolean; state_status?: string; desired_state?: Record<string, unknown> }
+      | undefined;
+    const sw1 = switches.find((s) => s.id === sw1Id) as
+      | { is_on: boolean; state_status?: string; desired_state?: Record<string, unknown> }
+      | undefined;
+    expect(sw2?.state_status).toBe("pending");
+    expect(sw2?.desired_state).toEqual({ on: true });
+    expect(sw1?.state_status).toBe("pending");
+    expect(sw1?.desired_state).toEqual({ on: true });
 
     // 3. Edit rule via PATCH -> trigger on device state "active" -> turn Night Lamp OFF
     const patchRes = await req(`/api/automations/${ruleOffId}`, {
@@ -260,12 +270,18 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
     const eval1Json = (await eval1.json()) as { checked: number; triggered: number };
     expect(eval1Json.triggered).toBe(1);
 
-    // Switch 2 should now be ON
+    // Switch 2 should now have an outstanding ON intent
     const swAfterSched = await req("/api/switches", { headers: { Cookie: cookie } });
-    const sw2SchedOn = ((await swAfterSched.json()) as {
-      switches: Array<{ id: string; is_on: boolean }>;
-    }).switches.find((s) => s.id === sw2Id)?.is_on;
-    expect(sw2SchedOn).toBe(true);
+    const sw2Sched = ((await swAfterSched.json()) as {
+      switches: Array<{
+        id: string;
+        is_on: boolean;
+        state_status?: string;
+        desired_state?: Record<string, unknown>;
+      }>;
+    }).switches.find((s) => s.id === sw2Id);
+    expect(sw2Sched?.state_status).toBe("pending");
+    expect(sw2Sched?.desired_state).toEqual({ on: true });
 
     // Re-running within the same minute must NOT double-fire
     const eval2 = await req("/api/automations/evaluate-schedules", {
@@ -431,9 +447,15 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
 
     const afterSceneSw = await req("/api/switches", { headers: { Cookie: cookie } });
     const sw2AfterScene = ((await afterSceneSw.json()) as {
-      switches: Array<{ id: string; is_on: boolean }>;
-    }).switches.find((s) => s.id === sw2Id)?.is_on;
-    expect(sw2AfterScene).toBe(true);
+      switches: Array<{
+        id: string;
+        is_on: boolean;
+        state_status?: string;
+        desired_state?: Record<string, unknown>;
+      }>;
+    }).switches.find((s) => s.id === sw2Id);
+    expect(sw2AfterScene?.state_status).toBe("pending");
+    expect(sw2AfterScene?.desired_state).toEqual({ on: true });
 
     // 8. Sunset solar trigger (sun_event) fires at exact computed NOAA minute
     await req(`/api/switches/${sw2Id}/toggle`, {
@@ -567,7 +589,14 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
       devices: Array<{ id: string; state: string }>;
       summary: { activeDevices: number };
     };
-    expect(overviewOffJson.devices.find((d) => d.id === devId)?.state).toBe("inactive");
-    expect(overviewOffJson.summary.activeDevices).toBe(0);
+    // A queued command no longer rewrites the confirmed state; the intent is
+    // recorded and the summary reflects what the hardware has confirmed.
+    const devAfterOff = overviewOffJson.devices.find((d) => d.id === devId) as
+      | { state: string; state_status?: string; desired_state?: Record<string, unknown> }
+      | undefined;
+    expect(devAfterOff?.state_status).toBe("pending");
+    expect(devAfterOff?.desired_state).toEqual({ state: "inactive" });
+    // `activeDevices` counts confirmed state, so it stays 1 until confirmation.
+    expect(overviewOffJson.summary.activeDevices).toBe(1);
   });
 });
