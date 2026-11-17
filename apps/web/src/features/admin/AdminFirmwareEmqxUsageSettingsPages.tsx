@@ -1531,7 +1531,19 @@ export function AdminEmqxPage({
     setError(null);
     try {
       const res = await apiFetch<NonNullable<typeof data>>("/api/admin/emqx/status");
-      setData(res);
+      // A partial payload must not crash the render: `data.brokerStatus.host`
+      // was read unguarded and blanked the admin console.
+      const payload = (res ?? {}) as Partial<NonNullable<typeof data>>;
+      setData({
+        brokerStatus: {
+          configured: Boolean(payload.brokerStatus?.configured),
+          connected: Boolean(payload.brokerStatus?.connected),
+          brokerHost: payload.brokerStatus?.brokerHost,
+          error: payload.brokerStatus?.error,
+        },
+        liveClients: Array.isArray(payload.liveClients) ? payload.liveClients : [],
+        credentials: Array.isArray(payload.credentials) ? payload.credentials : [],
+      });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load EMQX status.");
     } finally {
@@ -1678,8 +1690,29 @@ export function AdminUsagePage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    apiFetch<NonNullable<typeof usage>>("/api/admin/usage")
-      .then(setUsage)
+    apiFetch<Partial<NonNullable<typeof usage>>>("/api/admin/usage")
+      .then((res) => {
+        // Normalize once so the progress bars never read through undefined.
+        const payload = res ?? {};
+        setUsage({
+          database: {
+            accounts: Number(payload.database?.accounts ?? 0),
+            controllers: Number(payload.database?.controllers ?? 0),
+            devices: Number(payload.database?.devices ?? 0),
+          },
+          r2: {
+            status: payload.r2?.status ?? "unknown",
+            objectCount: payload.r2?.objectCount ?? null,
+            totalBytes: Number(payload.r2?.totalBytes ?? 0),
+            freeTierLimitBytes: Number(payload.r2?.freeTierLimitBytes ?? 0),
+          },
+          emqx: {
+            configured: Boolean(payload.emqx?.configured),
+            activeConnections: payload.emqx?.activeConnections ?? null,
+            serverlessMaxConnections: Number(payload.emqx?.serverlessMaxConnections ?? 0),
+          },
+        });
+      })
       .catch((err) => setError(err instanceof ApiError ? err.message : "Failed to load usage."));
   }, []);
 

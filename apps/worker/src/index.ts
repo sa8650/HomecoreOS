@@ -22,6 +22,34 @@ import {
 import { createPlannerRoutes } from "./routes/planner";
 import type { AppEnv, WorkerRuntimeDeps } from "./types/context";
 
+/**
+ * Every path prefix that a real API router is mounted under.
+ *
+ * Keep this in sync with the `app.route(...)` calls in `createWorkerApp` below:
+ * a prefix that is missing here would be answered with a JSON 404 before its
+ * router ever runs. `test/asset-and-api-fallbacks.test.ts` guards this by
+ * asserting that every mounted router stays reachable.
+ */
+const KNOWN_API_PREFIXES = [
+  "/api/action-button",
+  "/api/auth",
+  "/api/account",
+  "/api/homes",
+  "/api/boards",
+  "/api/controllers",
+  "/api/automations",
+  "/api/firmware",
+  "/api/notifications",
+  "/api/planner",
+  "/api/admin",
+  "/api/device",
+  // `createDeviceRoutes()` is mounted at bare "/api", so these live at the root.
+  "/api/devices",
+  "/api/switches",
+  "/api/sensors",
+  "/api/activity",
+];
+
 export function createWorkerApp(defaultDeps?: WorkerRuntimeDeps) {
   const app = new Hono<AppEnv>();
 
@@ -34,7 +62,45 @@ export function createWorkerApp(defaultDeps?: WorkerRuntimeDeps) {
     await next();
   });
 
-  app.use("/api/*", dbMiddleware());
+  // Only build a database client for routes that need one. Unknown /api paths
+  // must fall through to the JSON 404 handler instead of failing here with a
+  // 500 when Supabase is not configured.
+  app.use("/api/*", async (c, next) => {
+    if (c.req.method === "GET" && KNOWN_API_PREFIXES.every((p) => !c.req.path.startsWith(p))) {
+      return c.json({ error: "API route not found." }, 404);
+    }
+    return dbMiddleware()(c, next);
+  });
+
+  // Stale-hash guard. `not_found_handling: "single-page-application"` answers
+  // any missing asset with index.html and a 200, so a tab left open across a
+  // deploy requests the previous `/assets/<hash>.js`, receives HTML, and the
+  // dynamic import rejects - which used to blank the whole app. `/assets/*` is
+  // listed in `run_worker_first`, so this handler sees those requests first.
+  app.get("/assets/*", async (c) => {
+    const assets = c.env?.ASSETS;
+    if (!assets) return c.notFound();
+
+    const res = await assets.fetch(c.req.raw);
+    const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
+
+    // The asset worker answered with the SPA shell: this hash no longer exists.
+    if (contentType.includes("text/html")) {
+      return new Response("This build is out of date. Reload the page to continue.", {
+        status: 404,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Homecore-Stale-Asset": "1",
+        },
+      });
+    }
+
+    const headers = new Headers(res.headers);
+    // Hashed filenames are immutable; revalidation only wastes round trips.
+    headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    return new Response(res.body, { status: res.status, headers });
+  });
 
   app.get("/health", (c) => {
     const cfg = inspectConfiguration(c.env ?? {});
@@ -78,6 +144,17 @@ export function createWorkerApp(defaultDeps?: WorkerRuntimeDeps) {
   app.notFound((c) => {
     if (c.req.path.startsWith("/api/")) {
       return c.json({ error: "API route not found." }, 404);
+    }
+    if (c.req.path.startsWith("/assets/")) {
+      // Never answer a stale asset request with index.html: the browser would
+      // parse HTML as JavaScript and the dynamic import would reject.
+      return new Response("Asset not found. Reload the page to get the latest build.", {
+        status: 404,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
     }
     if (c.env?.ASSETS) {
       return c.env.ASSETS.fetch(c.req.raw);

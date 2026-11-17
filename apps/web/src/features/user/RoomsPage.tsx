@@ -47,9 +47,10 @@ export function RoomsPage({ canManage }: { canManage: boolean }) {
         cachedGet<{ homes: HomeItem[] }>("/api/homes", { ttlMs: 60_000, force }),
         cachedGet<{ rooms: RoomItem[] }>("/api/homes/rooms", { ttlMs: 20_000, force }),
       ]);
-      setHomes(hRes.homes);
-      setRooms(rRes.rooms);
-      setSelectedHomeId((prev) => prev || hRes.homes[0]?.id || "");
+      const homes = Array.isArray(hRes?.homes) ? hRes.homes : [];
+      setHomes(homes);
+      setRooms(Array.isArray(rRes?.rooms) ? rRes.rooms : []);
+      setSelectedHomeId((prev) => prev || homes[0]?.id || "");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to load rooms.");
     } finally {

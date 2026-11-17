@@ -108,8 +108,8 @@ export function AdminAccountsStaffPage({
             )
           : Promise.resolve({ platformStaff: [] as PlatformStaffRow[] }),
       ]);
-      setAccounts(aRes.accounts);
-      setPlatformStaff(pRes.platformStaff);
+      setAccounts(Array.isArray(aRes?.accounts) ? aRes.accounts : []);
+      setPlatformStaff(Array.isArray(pRes?.platformStaff) ? pRes.platformStaff : []);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to load accounts.");
     } finally {
@@ -536,8 +536,8 @@ export function AdminBoardsPage({
         boards: BoardProfileItem[];
         syncRuns?: BoardSyncRunItem[];
       }>("/api/admin/boards");
-      setBoards(res.boards);
-      setSyncRuns(res.syncRuns ?? []);
+      setBoards(Array.isArray(res?.boards) ? res.boards : []);
+      setSyncRuns(Array.isArray(res?.syncRuns) ? res.syncRuns : []);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to load board catalog.");
     } finally {

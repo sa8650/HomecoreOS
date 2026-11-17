@@ -111,9 +111,11 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
           customBoards: BoardProfileItem[];
         }>("/api/boards/my-boards", { ttlMs: 60_000, force }),
       ]);
-      setCatalog(catRes.boards);
-      setMyCatalog(myRes.catalogBoards);
-      setMyCustom(myRes.customBoards);
+      // Never trust the payload shape: a proxy/SPA fallback or an older Worker
+      // build can omit these keys, and `undefined.filter` used to blank the SPA.
+      setCatalog(Array.isArray(catRes?.boards) ? catRes.boards : []);
+      setMyCatalog(Array.isArray(myRes?.catalogBoards) ? myRes.catalogBoards : []);
+      setMyCustom(Array.isArray(myRes?.customBoards) ? myRes.customBoards : []);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to load boards.");
     } finally {
