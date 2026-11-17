@@ -390,6 +390,19 @@
   background-size: 100% 100%, 28px 28px, 28px 28px;
 }
 
+/* Controller card board-map stage: soft blueprint panel with a dot grid */
+.hc-dot-grid {
+  background-color: #e8edf6;
+  background-image: radial-gradient(circle, rgba(100, 116, 139, 0.38) 1.1px, transparent 1.1px);
+  background-size: 14px 14px;
+  background-position: 7px 7px;
+}
+
+.dark .hc-dot-grid {
+  background-color: #10151c;
+  background-image: radial-gradient(circle, rgba(148, 163, 184, 0.18) 1.1px, transparent 1.1px);
+}
+
 /* Admin Console soft lavender top-to-center gradient (strictly 0% -> 50%, solid background below center) */
 .hc-admin-lavender-bg {
   --muted-foreground: #4c5b70;

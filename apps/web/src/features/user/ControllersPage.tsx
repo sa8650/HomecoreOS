@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   RiAddLine,
-  RiArrowRightLine,
   RiBluetoothConnectLine,
   RiCheckLine,
   RiCheckboxCircleFill,
   RiCpuLine,
   RiDeleteBinLine,
   RiDoorOpenLine,
-  RiEyeLine,
   RiHistoryLine,
-  RiLinkUnlinkM,
-  RiMore2Fill,
   RiRefreshLine,
   RiRestartLine,
   RiShieldCheckLine,
@@ -25,9 +21,9 @@ import {
   ControllerSetupModal,
   type ControllerSetupView,
 } from "@/components/controllers/ControllerSetupModal";
+import { ControllerCard } from "@/components/controllers/ControllerCard";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";
-import { IconTile } from "@/components/reui/icon-tile";
 import {
   ConfirmDeleteDialog,
   EmptyStatePanel,
@@ -37,14 +33,7 @@ import {
 import { CONTROLLERS_HERO_ICONS } from "@/components/shared/HeroDomainIcons";
 import { PageHeroHeader } from "@/components/shared/PageHeroHeader";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -53,13 +42,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { MagicCard } from "@/components/ui/magic-card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -69,6 +51,14 @@ import type {
   HomeItem,
   RoomItem,
 } from "@/features/types";
+
+/** Slice of `/api/firmware/updates` the controller cards need for version badges. */
+type FirmwareUpdatesPayload = {
+  applicableUpdates?: Array<{
+    controllerId: string;
+    availableRelease?: { version?: string } | null;
+  }>;
+};
 
 export function ControllersPage({
   canManage,
@@ -89,6 +79,9 @@ export function ControllersPage({
   const [trashedControllers, setTrashedControllers] = useState<ControllerItem[]>([]);
   const [catalogBoards, setCatalogBoards] = useState<BoardProfileItem[]>([]);
   const [customBoards, setCustomBoards] = useState<BoardProfileItem[]>([]);
+  const [updateVersionByController, setUpdateVersionByController] = useState<
+    Map<string, string>
+  >(new Map());
   const [homes, setHomes] = useState<HomeItem[]>([]);
   const [rooms, setRooms] = useState<RoomItem[]>([]);
   const [loading, setLoading] = useState(!cachedCtrls);
@@ -168,7 +161,11 @@ export function ControllersPage({
           ttlMs: 60_000,
           force,
         }),
-      ]).then(([trashOut, catOut, custOut, homeOut, roomsOut]) => {
+        cachedGet<FirmwareUpdatesPayload>("/api/firmware/updates", {
+          ttlMs: 60_000,
+          force,
+        }),
+      ]).then(([trashOut, catOut, custOut, homeOut, roomsOut, updatesOut]) => {
         if (trashOut.status === "fulfilled") {
           setTrashedControllers(trashOut.value.controllers);
         }
@@ -183,6 +180,14 @@ export function ControllersPage({
         }
         if (roomsOut.status === "fulfilled" && Array.isArray(roomsOut.value?.rooms)) {
           setRooms(roomsOut.value.rooms);
+        }
+        if (updatesOut.status === "fulfilled") {
+          const next = new Map<string, string>();
+          for (const update of updatesOut.value?.applicableUpdates ?? []) {
+            const version = update?.availableRelease?.version;
+            if (version) next.set(update.controllerId, version);
+          }
+          setUpdateVersionByController(next);
         }
       });
 
@@ -199,6 +204,32 @@ export function ControllersPage({
   }, [load]);
 
   const roomById = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms]);
+
+  // Board Library profiles (catalog + custom) so every controller card can draw
+  // the vector board map of the board it was provisioned with.
+  const boardById = useMemo(() => {
+    const map = new Map<string, BoardProfileItem>();
+    for (const board of catalogBoards) map.set(board.id, board);
+    for (const board of customBoards) map.set(board.id, board);
+    return map;
+  }, [catalogBoards, customBoards]);
+  const boardBySlug = useMemo(
+    () => new Map([...boardById.values()].map((board) => [board.slug, board])),
+    [boardById]
+  );
+  const boardForController = useCallback(
+    (ctrl: ControllerItem): BoardProfileItem | null => {
+      const byId = ctrl.board_catalog_id
+        ? boardById.get(ctrl.board_catalog_id)
+        : ctrl.custom_board_id
+          ? boardById.get(ctrl.custom_board_id)
+          : undefined;
+      if (byId) return byId;
+      const slug = ctrl.board_compat?.slug ?? ctrl.reported_board_slug;
+      return (slug ? boardBySlug.get(slug) : undefined) ?? null;
+    },
+    [boardById, boardBySlug]
+  );
   const assignableRooms = useMemo(
     () => (roomTarget ? rooms.filter((r) => r.home_id === roomTarget.home_id) : []),
     [rooms, roomTarget]
@@ -516,260 +547,31 @@ export function ControllersPage({
               data-testid="controllers-card-grid"
               className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3"
             >
-              {filteredControllers.map((ctrl) => {
-                const pairingBadge = pairingBadgeFor(ctrl);
-                const wifiUp = ctrl.wifi_connected ?? ctrl.status === "online";
-                const lastSeenAt = ctrl.last_communication_at ?? ctrl.last_heartbeat_at;
-                return (
-                  <Card
-                    key={ctrl.id}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`View details for ${ctrl.name}`}
-                    onClick={() => setDetailTarget(ctrl)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        setDetailTarget(ctrl);
-                      }
-                    }}
-                    className="h-full cursor-pointer border-none p-0 shadow-none ring-0 transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <MagicCard
-                      mode="orb"
-                      spotlightTone="blue"
-                      className="h-full rounded-xl p-0"
-                      contentClassName="flex h-full flex-col justify-between gap-3 py-4"
-                    >
-                      <CardHeader className="gap-1.5">
-                      <div className="flex min-w-0 items-start gap-3">
-                        <IconTile variant="soft" size="sm" className="shrink-0 text-primary">
-                          <RiCpuLine className="size-4" aria-hidden="true" />
-                        </IconTile>
-                        <div className="min-w-0 flex-1 space-y-0.5">
-                          <CardTitle className="truncate text-sm font-semibold tracking-tight text-foreground">
-                            {ctrl.name}
-                          </CardTitle>
-                          <CardDescription className="truncate text-xs">
-                            {ctrl.board_model}
-                          </CardDescription>
-                          <p className="truncate text-[11px] text-muted-foreground">
-                            {ctrl.chip_variant} ·{" "}
-                            {ctrl.detected_flash_size_mb ?? ctrl.flash_size_mb}MB Flash ·{" "}
-                            {ctrl.psram_size_mb}MB PSRAM
-                          </p>
-                        </div>
-                      </div>
-                      <CardAction>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-xs"
-                              aria-label={`Actions for ${ctrl.name}`}
-                              onClick={(e) => e.stopPropagation()}
-                              onKeyDown={(e) => e.stopPropagation()}
-                              className="text-muted-foreground hover:text-foreground"
-                            >
-                              <RiMore2Fill className="size-4" aria-hidden="true" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent
-                            align="end"
-                            className="w-52"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <DropdownMenuItem onClick={() => setDetailTarget(ctrl)}>
-                              <RiEyeLine className="size-4" aria-hidden="true" />
-                              View Details
-                            </DropdownMenuItem>
-                            {canManage && (
-                              <DropdownMenuItem
-                                onClick={() => openSetupFlow("entry", ctrl)}
-                              >
-                                <RiShieldCheckLine className="size-4" aria-hidden="true" />
-                                Recover / Re-pair
-                              </DropdownMenuItem>
-                            )}
-                            {canManage && (
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  setWifiTarget(ctrl);
-                                  setWifiSsid(ctrl.wifi_ssid ?? "");
-                                }}
-                              >
-                                <RiWifiLine className="size-4" aria-hidden="true" />
-                                Configure Wi-Fi
-                              </DropdownMenuItem>
-                            )}
-                            {canManage && (
-                              <DropdownMenuItem onClick={() => openRoomAssign(ctrl)}>
-                                <RiDoorOpenLine className="size-4" aria-hidden="true" />
-                                Assign to Room
-                              </DropdownMenuItem>
-                            )}
-                            {canOperate && ctrl.status === "online" && (
-                              <>
-                                <DropdownMenuItem
-                                  onClick={() => void handleAction(ctrl, "restart")}
-                                >
-                                  <RiRestartLine className="size-4" aria-hidden="true" />
-                                  Restart
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={() => void handleAction(ctrl, "disconnect")}
-                                >
-                                  <RiLinkUnlinkM className="size-4" aria-hidden="true" />
-                                  Disconnect
-                                </DropdownMenuItem>
-                              </>
-                            )}
-                            {canOperate && ctrl.status !== "online" && ctrl.mqtt && (
-                              <DropdownMenuItem
-                                onClick={() => void handleAction(ctrl, "reconnect")}
-                              >
-                                <RiRefreshLine className="size-4" aria-hidden="true" />
-                                Reconnect
-                              </DropdownMenuItem>
-                            )}
-                            {canManage && <DropdownMenuSeparator />}
-                            {canManage && ctrl.status === "online" && (
-                              <DropdownMenuItem
-                                variant="destructive"
-                                onClick={() => void handleAction(ctrl, "reset")}
-                              >
-                                <RiRestartLine className="size-4" aria-hidden="true" />
-                                Reset Controller
-                              </DropdownMenuItem>
-                            )}
-                            {canManage && (
-                              <DropdownMenuItem
-                                variant="destructive"
-                                onClick={() => setTrashTarget(ctrl)}
-                              >
-                                <RiDeleteBinLine className="size-4" aria-hidden="true" />
-                                Move to Trash
-                              </DropdownMenuItem>
-                            )}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </CardAction>
-                    </CardHeader>
-
-                    <CardContent className="flex flex-1 flex-col justify-between gap-3 pt-0">
-                      <div className="space-y-2.5">
-                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                          <Badge
-                            variant={
-                              ctrl.status === "online"
-                                ? "success-light"
-                                : ctrl.status === "pending"
-                                  ? "primary-light"
-                                  : "warning-light"
-                            }
-                            size="xs"
-                            radius="full"
-                          >
-                            {ctrl.status}
-                          </Badge>
-                          <Badge variant={wifiUp ? "success-light" : "secondary"} size="xs">
-                            {wifiUp ? (
-                              <RiWifiLine className="size-3" aria-hidden="true" />
-                            ) : (
-                              <RiWifiOffLine className="size-3" aria-hidden="true" />
-                            )}
-                            {wifiUp ? "Wi-Fi Connected" : "Wi-Fi Disconnected"}
-                          </Badge>
-                          <Badge
-                            variant={ctrl.mqtt_connected ? "success-light" : "secondary"}
-                            size="xs"
-                          >
-                            {ctrl.mqtt_connected ? "MQTT Connected" : "MQTT Disconnected"}
-                          </Badge>
-                          <Badge variant={pairingBadge.variant} size="xs">
-                            {pairingBadge.label}
-                          </Badge>
-                          {ctrl.board_compat?.supports_wifi === false && (
-                            <Badge variant="warning-light" size="xs">
-                              No Wi-Fi (802.15.4 / BLE)
-                            </Badge>
-                          )}
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border bg-muted/30 p-2.5 text-xs">
-                          <div className="min-w-0">
-                            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Firmware
-                            </p>
-                            <p className="truncate font-mono text-xs font-semibold text-foreground">
-                              {ctrl.firmware_version
-                                ? `v${ctrl.firmware_version.replace(/^v/, "")}`
-                                : "Unpaired"}
-                            </p>
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Wi-Fi SSID
-                            </p>
-                            <p className="truncate text-xs font-semibold text-foreground">
-                              {ctrl.wifi_ssid ?? "—"}
-                            </p>
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Signal / IP
-                            </p>
-                            <p className="truncate font-mono text-xs font-semibold tabular-nums text-foreground">
-                              {ctrl.wifi_rssi !== null ? `${ctrl.wifi_rssi} dBm` : "—"}
-                              {ctrl.local_ip ? ` · ${ctrl.local_ip}` : ""}
-                            </p>
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Last Seen
-                            </p>
-                            <p className="truncate text-xs font-semibold tabular-nums text-foreground">
-                              {formatTimestamp(lastSeenAt, timezone)}
-                            </p>
-                          </div>
-                          <div className="col-span-2 min-w-0 border-t pt-2">
-                            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              Room
-                            </p>
-                            <p className="flex items-center gap-1 truncate text-xs font-semibold text-foreground">
-                              <RiDoorOpenLine className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                              {ctrl.room_id
-                                ? roomById.get(ctrl.room_id)?.name ?? "Assigned room"
-                                : "Unassigned"}
-                            </p>
-                          </div>
-                        </div>
-
-                        {ctrl.last_error && (
-                          <div className="rounded-lg border border-destructive/30 bg-destructive/8 px-2.5 py-2 text-[11px] leading-snug text-destructive">
-                            <p className="font-semibold">Connection Error</p>
-                            <p className="mt-0.5 line-clamp-2 break-words [overflow-wrap:anywhere]">
-                              {ctrl.last_error}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex min-w-0 items-center justify-between gap-2 border-t pt-2.5 text-[11px] text-muted-foreground">
-                        <span className="min-w-0 truncate font-mono">
-                          {ctrl.hardware_uid ?? "Hardware UID pending"}
-                        </span>
-                        <span className="inline-flex shrink-0 items-center gap-1 font-medium text-primary">
-                          Details
-                          <RiArrowRightLine className="size-3" aria-hidden="true" />
-                        </span>
-                      </div>
-                    </CardContent>
-                    </MagicCard>
-                  </Card>
-                );
-              })}
+              {filteredControllers.map((ctrl) => (
+                <ControllerCard
+                  key={ctrl.id}
+                  ctrl={ctrl}
+                  board={boardForController(ctrl)}
+                  roomName={
+                    ctrl.room_id
+                      ? roomById.get(ctrl.room_id)?.name ?? "Assigned room"
+                      : null
+                  }
+                  updateVersion={updateVersionByController.get(ctrl.id) ?? null}
+                  timezone={timezone}
+                  canManage={canManage}
+                  canOperate={canOperate}
+                  onViewDetails={() => setDetailTarget(ctrl)}
+                  onRecover={() => openSetupFlow("entry", ctrl)}
+                  onConfigureWifi={() => {
+                    setWifiTarget(ctrl);
+                    setWifiSsid(ctrl.wifi_ssid ?? "");
+                  }}
+                  onAssignRoom={() => openRoomAssign(ctrl)}
+                  onAction={(action) => void handleAction(ctrl, action)}
+                  onMoveToTrash={() => setTrashTarget(ctrl)}
+                />
+              ))}
             </div>
           )}
         </TabsContent>
@@ -1161,6 +963,15 @@ export function ControllersPage({
                           <p className="text-[11px] text-muted-foreground">Last Seen</p>
                           <p className="text-xs font-semibold tabular-nums text-foreground">
                             {formatTimestamp(lastSeenAt, timezone)}
+                          </p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[11px] text-muted-foreground">Room</p>
+                          <p className="flex items-center gap-1 text-xs font-semibold text-foreground break-words">
+                            <RiDoorOpenLine className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                            {detailTarget.room_id
+                              ? roomById.get(detailTarget.room_id)?.name ?? "Assigned room"
+                              : "Unassigned"}
                           </p>
                         </div>
                         <div className="min-w-0">

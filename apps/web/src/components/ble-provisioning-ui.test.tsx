@@ -777,9 +777,9 @@ describe("Simplified 4-Option Controller Setup & BLE Provisioning UI", () => {
       expect(screen.getByText("Studio S3 Hub")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole("button", { name: /Details/i }));
+    await user.click(screen.getByRole("button", { name: /^Details$/i }));
     await waitFor(() => {
-      expect(screen.getAllByText("11:22:33:44:55:66").length).toBeGreaterThan(1);
+      expect(screen.getAllByText("11:22:33:44:55:66").length).toBeGreaterThan(0);
     });
     expect(screen.queryByText(/BLE \/ Setup AP PIN/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Z9X8C7V6")).not.toBeInTheDocument();

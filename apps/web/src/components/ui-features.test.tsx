@@ -601,7 +601,7 @@ describe("HomecoreOS interactive UI workflows", () => {
     await waitFor(() => {
       expect(screen.getByText("Living Room Hub")).toBeInTheDocument();
     });
-    expect(screen.getByText(/Wi-Fi Connected/i)).toBeInTheDocument();
+    expect(screen.getByTitle(/Wi-Fi Connected/i)).toBeInTheDocument();
     expect(screen.getByText(/MQTT Disconnected/i)).toBeInTheDocument();
     expect(screen.getByText(/Broker TLS connection timed out/i)).toBeInTheDocument();
 
@@ -2128,7 +2128,7 @@ describe("HomecoreOS interactive UI workflows", () => {
     expect(cardGrid.className).toContain("md:grid-cols-2");
     expect(cardGrid.className).toContain("lg:grid-cols-3");
     expect(screen.getByText("Living Room Hub")).toBeInTheDocument();
-    expect(screen.getByText(/Wi-Fi Connected/i)).toBeInTheDocument();
+    expect(screen.getByTitle(/Wi-Fi Connected/i)).toBeInTheDocument();
     expect(screen.getByText(/MQTT Disconnected/i)).toBeInTheDocument();
 
     // Clicking three-dot actions menu opens menu WITHOUT opening Details modal
