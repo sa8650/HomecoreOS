@@ -28,6 +28,7 @@ import {
 import type { WorkerBindings } from "../config/env";
 import { recordActivity } from "./audit";
 import type { CustomFetch, DbClient } from "./db";
+import { resolveDeviceCommandDelivery } from "./device-command-delivery";
 import { EmqxClient, isEmqxConfigured } from "./emqx";
 import { emitNotification } from "./notifications";
 
@@ -382,25 +383,25 @@ async function executeSwitchTarget(params: {
     .eq("account_id", accountId);
 
   if (emqx) {
-    const { data: cred } = await db
-      .from("mqtt_credentials_metadata")
-      .select("topic_prefix,status")
-      .eq("controller_id", sw.controller_id)
-      .eq("account_id", accountId)
-      .eq("status", "active")
-      .maybeSingle();
-
-    if (cred) {
+    // Controllers get the command on their own topic; a Node linked over
+    // ESP-NOW (no EMQX session) gets it relayed through its Controller.
+    const delivery = await resolveDeviceCommandDelivery(db, {
+      accountId,
+      deviceId: sw.controller_id,
+      kind: "switch",
+      payload: {
+        switch_id: sw.id,
+        gpio_pin: sw.gpio_pin,
+        state: desired ? "ON" : "OFF",
+        inverted: sw.inverted,
+        source: "automation",
+        rule_id: ruleId,
+      },
+    });
+    if (delivery) {
       await emqx.publish({
-        topic: `${(cred as { topic_prefix: string }).topic_prefix}/cmd/switch`,
-        payload: {
-          switch_id: sw.id,
-          gpio_pin: sw.gpio_pin,
-          state: desired ? "ON" : "OFF",
-          inverted: sw.inverted,
-          source: "automation",
-          rule_id: ruleId,
-        },
+        topic: delivery.topic,
+        payload: delivery.payload,
         qos: 1,
       });
     }
@@ -453,25 +454,23 @@ async function executeDeviceTarget(params: {
     .eq("account_id", accountId);
 
   if (emqx) {
-    const { data: cred } = await db
-      .from("mqtt_credentials_metadata")
-      .select("topic_prefix,status")
-      .eq("controller_id", dev.controller_id)
-      .eq("account_id", accountId)
-      .eq("status", "active")
-      .maybeSingle();
-
-    if (cred) {
+    const delivery = await resolveDeviceCommandDelivery(db, {
+      accountId,
+      deviceId: dev.controller_id,
+      kind: "device",
+      payload: {
+        device_id: dev.id,
+        device_type: dev.device_type,
+        gpio_pin: dev.gpio_pin,
+        state: targetState,
+        source: "automation",
+        rule_id: ruleId,
+      },
+    });
+    if (delivery) {
       await emqx.publish({
-        topic: `${(cred as { topic_prefix: string }).topic_prefix}/cmd/device`,
-        payload: {
-          device_id: dev.id,
-          device_type: dev.device_type,
-          gpio_pin: dev.gpio_pin,
-          state: targetState,
-          source: "automation",
-          rule_id: ruleId,
-        },
+        topic: delivery.topic,
+        payload: delivery.payload,
         qos: 1,
       });
     }

@@ -4,6 +4,7 @@ import {
   ESPNOW_NODE_STALE_MS,
   isDeviceStateActive,
   isNewerFirmwareVersion,
+  normalizeDeviceRole,
 } from "@homecoreos/shared";
 import { inspectConfiguration, requireEmqxConfig } from "../config/env";
 import { recordActivity } from "../lib/audit";
@@ -368,7 +369,7 @@ export function createDeviceApiRoutes() {
       db
         .from("controllers")
         .select(
-          "id,name,status,mqtt_connected,firmware_version,config_revision,last_synced_config_revision,pending_config_sync"
+          "id,name,status,mqtt_connected,device_role,firmware_version,config_revision,last_synced_config_revision,pending_config_sync"
         )
         .eq("id", dev.controllerId)
         .eq("account_id", dev.accountId)
@@ -388,6 +389,7 @@ export function createDeviceApiRoutes() {
       name: string;
       status: string;
       mqtt_connected: boolean;
+      device_role?: string | null;
       firmware_version?: string | null;
       config_revision?: number;
       last_synced_config_revision?: number;
@@ -467,17 +469,31 @@ export function createDeviceApiRoutes() {
     }
 
     // Unified role reporting. The role itself stays user-owned: a device may only
-    // confirm what it is running, never promote itself to Controller.
-    if (parsed.data.deviceRole !== undefined) {
-      updates.device_role = parsed.data.deviceRole;
+    // confirm what the console told it to run, never promote (or demote) itself.
+    // The persisted role is the single source of truth; a mismatching report is
+    // ignored and corrected on the next config snapshot.
+    const storedRole = normalizeDeviceRole(prev?.device_role);
+    if (
+      parsed.data.deviceRole !== undefined &&
+      parsed.data.deviceRole !== storedRole
+    ) {
+      // Deliberately ignored: the device keeps running the role this account
+      // assigned. The next config snapshot re-delivers the correct role.
+      console.warn(
+        `[device-api] ignoring self-reported role "${parsed.data.deviceRole}" from device ${dev.controllerId} (stored role: ${storedRole})`
+      );
     }
-    if (parsed.data.commMode !== undefined) {
-      updates.comm_mode = parsed.data.commMode;
-    }
-    if (parsed.data.linkState !== undefined) {
-      updates.node_link_state = parsed.data.linkState;
-      if (parsed.data.linkState === "linked") {
-        updates.node_last_linked_at = now;
+    // `comm_mode` / `node_link_state` describe a Node's uplink only; a Controller
+    // reporting them must not make its row look like a Node.
+    if (storedRole === "node") {
+      if (parsed.data.commMode !== undefined) {
+        updates.comm_mode = parsed.data.commMode;
+      }
+      if (parsed.data.linkState !== undefined) {
+        updates.node_link_state = parsed.data.linkState;
+        if (parsed.data.linkState === "linked") {
+          updates.node_last_linked_at = now;
+        }
       }
     }
 
@@ -489,8 +505,10 @@ export function createDeviceApiRoutes() {
 
     // A Controller reports which Nodes it currently hosts over ESP-NOW. Those
     // Nodes have no cloud session of their own, so this roster is what keeps
-    // their status, communication mode and last-activity honest.
-    if (parsed.data.nodes && parsed.data.nodes.length > 0) {
+    // their status, communication mode and last-activity honest. An empty array
+    // is meaningful too: it is how a Controller says "I host nobody right now",
+    // which is what marks its assigned Nodes as controller_lost.
+    if (parsed.data.nodes) {
       const roster = parsed.data.nodes;
       const linkedIds = roster.filter((n) => (n.link ?? "linked") === "linked").map((n) => n.id);
       if (linkedIds.length > 0) {
@@ -735,7 +753,13 @@ export function createDeviceApiRoutes() {
         reason: "reconnect",
         forcePublish: true,
       }).catch(() => null);
-      syncPublished = Boolean(syncRes?.published);
+      // A Node normally has no EMQX session of its own while it is linked over
+      // ESP-NOW, and an MQTT publish to an unsubscribed topic is accepted by the
+      // broker even though nobody received it. Never claim "published" for a
+      // device that reports no MQTT session: the heartbeat response then makes
+      // the device pull the snapshot over HTTPS instead.
+      syncPublished =
+        Boolean(syncRes?.published) && parsed.data.mqttConnected !== false;
     }
 
     return c.json({

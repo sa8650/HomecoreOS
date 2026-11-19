@@ -325,8 +325,13 @@ esp_err_t hc_http_post_heartbeat(homecore_config_t *cfg) {
             bool sync_pub = cJSON_IsBool(pub_j) && cJSON_IsTrue(pub_j);
             cJSON_Delete(resp_j);
 
-            // If server reports a newer revision and couldn't push via MQTT, fetch via HTTP fallback
-            if (srv_rev > cfg->config_revision && !sync_pub) {
+            // Pull a newer revision over HTTPS whenever the server could not
+            // confirm an MQTT push, and always when this device holds no MQTT
+            // session of its own (a Node linked over ESP-NOW). An EMQX publish to
+            // a Node topic that has no subscriber is still accepted by the
+            // broker, so `sync_published` alone is not proof of delivery.
+            if (srv_rev > cfg->config_revision &&
+                (!sync_pub || !hc_mqtt_is_connected())) {
                 hc_http_fetch_config(cfg);
             }
         }

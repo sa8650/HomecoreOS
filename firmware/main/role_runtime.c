@@ -62,6 +62,16 @@ bool hc_role_is_node(void) {
     return hc_role_current() == HC_ROLE_NODE;
 }
 
+bool hc_role_wants_mqtt(void) {
+    if (!s_cfg || s_cfg->device_role != HC_ROLE_NODE) return true;
+    if (!s_initialized) return false;
+    /* Standalone fallback, an OTA window, or no Controller assigned at all: the
+       Node must stay reachable over EMQX. Otherwise (linked or retrying) it
+       deliberately keeps no cloud session of its own. */
+    return s_state.standalone || s_state.ota_window_open ||
+        s_state.link == HC_NODE_UNASSIGNED;
+}
+
 hc_node_link_t hc_role_link_state(void) {
     if (!s_cfg || s_cfg->device_role != HC_ROLE_NODE) return HC_NODE_UNASSIGNED;
     return s_state.link;
@@ -169,6 +179,25 @@ static void on_controller_frame(const hc_espnow_rx_t *frame) {
                         );
                     }
                 }
+            } else if (strcmp(cmd_j->valuestring, "exec") == 0) {
+                // A switch/device command relayed by the Controller (this Node has
+                // no MQTT session while linked). Same handler as the MQTT path.
+                cJSON *kind_j = cJSON_GetObjectItem(root, "k");
+                cJSON *payload_j = cJSON_GetObjectItem(root, "p");
+                if (cJSON_IsString(kind_j) && kind_j->valuestring &&
+                    cJSON_IsObject(payload_j)) {
+                    char *payload_str = cJSON_PrintUnformatted(payload_j);
+                    if (payload_str) {
+                        bool applied = hc_command_apply(kind_j->valuestring, payload_str);
+                        ESP_LOGI(
+                            TAG,
+                            "Relayed %s command from Controller: %s",
+                            kind_j->valuestring,
+                            applied ? "applied" : "ignored"
+                        );
+                        cJSON_free(payload_str);
+                    }
+                }
             }
         }
         cJSON_Delete(root);
@@ -218,8 +247,12 @@ static void start_node_transport(homecore_config_t *cfg) {
     }
     if (strlen(cfg->assigned_controller_mac) == 0) {
         // The Controller is assigned but its ESP-NOW MAC is not known yet (it
-        // pairs/reports it on its next heartbeat). Poll frequently.
+        // pairs/reports it on its next heartbeat). Mark the transport armed so
+        // the tick does not retry every 500 ms; a config snapshot restarts it
+        // as soon as the MAC arrives.
         s_state.link = HC_NODE_CONTROLLER_LOST;
+        s_espnow_started = true;
+        ESP_LOGW(TAG, "Node assigned but Controller MAC unknown; waiting for config sync");
         return;
     }
 #if HOMECORE_HAS_WIFI
@@ -269,6 +302,10 @@ esp_err_t hc_role_init(homecore_config_t *cfg) {
     if (role == HC_ROLE_NODE && strlen(cfg->assigned_controller_id) == 0) {
         s_state.link = HC_NODE_UNASSIGNED;
     }
+    if (role == HC_ROLE_CONTROLLER) {
+        hc_role_bump_epoch(&s_state);
+        persist_role(cfg, true);
+    }
 
     ESP_LOGI(TAG, "Role=%s assigned=%s", hc_role_name(role), cfg->assigned_controller_id);
 
@@ -290,11 +327,10 @@ void hc_role_request_relink(homecore_config_t *cfg) {
     s_controller_fresh = false;
     s_ms_since_controller = 0;
     s_keepalive_ms = HC_ESPNOW_KEEPALIVE_MS;
-    (void)hc_espnow_seek_start(
-        cfg->assigned_controller_mac,
-        cfg->espnow_channel,
-        on_controller_frame
-    );
+    if (cfg->assigned_controller_mac[0]) {
+        s_espnow_started = false;
+        start_node_transport(cfg);
+    }
 }
 
 esp_err_t hc_role_relay_command_to_node(homecore_config_t *cfg, const char *node_id, const char *json) {
@@ -337,14 +373,28 @@ static void node_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
         start_node_transport(cfg);
     }
 
-    if (actions & HC_ROLE_ACT_ESPNOW_SEEK) {
+    if ((actions & HC_ROLE_ACT_ESPNOW_SEEK) && cfg->assigned_controller_mac[0]) {
         s_keepalive_ms += elapsed_ms;
         if (s_keepalive_ms >= HC_ESPNOW_KEEPALIVE_MS) {
             s_keepalive_ms = 0;
-            esp_err_t err = hc_espnow_send_keepalive(
+            // The body carries this Node's device id, which is what lets the
+            // Controller address it in its roster and relay commands to it.
+            char keepalive[72];
+            if (cfg->controller_id[0]) {
+                snprintf(
+                    keepalive,
+                    sizeof(keepalive),
+                    "{\"id\":\"%s\"}",
+                    cfg->controller_id
+                );
+            } else {
+                keepalive[0] = '\0';
+            }
+            esp_err_t err = hc_espnow_send_keepalive_json(
                 cfg->assigned_controller_mac,
                 s_state.epoch,
-                ++s_tx_seq
+                ++s_tx_seq,
+                keepalive[0] ? keepalive : NULL
             );
             if (err == ESP_OK && cfg->espnow_channel == 0 && hc_espnow_is_seeking()) {
                 // Nothing came back yet: sweep to the next channel.
@@ -365,17 +415,27 @@ static void node_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
             hc_node_link_name(s_state.link),
             s_state.standalone ? "active" : "off"
         );
+        if (!linked_now && cfg->espnow_channel == 0) {
+            // The Controller may have moved to another Wi-Fi channel while it
+            // was away: sweep again instead of shouting on a dead channel.
+            hc_espnow_reseek();
+        }
         persist_role(cfg, true);
     }
 
-    bool want_mqtt = s_state.standalone || s_state.ota_window_open;
-    if (want_mqtt && !hc_mqtt_is_started()) {
-        hc_mqtt_start(cfg);
-        s_mqtt_started_by_role = true;
-    } else if (!want_mqtt && s_mqtt_started_by_role) {
+    // The role owns the EMQX session for a Node: open it for the fallback or an
+    // OTA window, and close it again as soon as the ESP-NOW link is healthy.
+    // The check is on the transport, not on who started it, so a session opened
+    // at boot or by a recovery flow cannot leak into normal Node operation.
+    if (hc_role_wants_mqtt()) {
+        if (!hc_mqtt_is_started()) {
+            hc_mqtt_start(cfg);
+            s_mqtt_started_by_role = true;
+        }
+    } else if (hc_mqtt_is_started()) {
         hc_mqtt_stop();
         s_mqtt_started_by_role = false;
-        ESP_LOGI(TAG, "Controller re-linked: closing the Wi-Fi/MQTT fallback session");
+        ESP_LOGI(TAG, "ESP-NOW link healthy: closed the Node's independent MQTT session");
     }
 }
 
@@ -508,6 +568,11 @@ bool hc_role_apply_snapshot(homecore_config_t *cfg, const char *snapshot_json) {
     s_state.epoch = cfg->link_epoch;
 
     if (cfg->device_role == HC_ROLE_CONTROLLER) {
+        if (old_role != HC_ROLE_CONTROLLER) {
+            // Promoting to Controller opens a fresh command window: Nodes that
+            // link to it must not reject its first commands as stale.
+            hc_role_bump_epoch(&s_state);
+        }
         if (s_mqtt_started_by_role || !hc_mqtt_is_started()) {
             hc_mqtt_start(cfg);
         }
@@ -545,8 +610,10 @@ void hc_role_fill_heartbeat(const homecore_config_t *cfg, cJSON *root) {
         return;
     }
 
-    uint8_t count = hc_role_linked_node_count();
-    if (count == 0) return;
+    // The roster is always present for a Controller — including when it is
+    // empty. An omitted array would make the console keep the last "linked"
+    // state forever; an empty array is what marks assigned Nodes as
+    // controller_lost after the stale window.
     cJSON *nodes = cJSON_AddArrayToObject(root, "nodes");
     if (!nodes) return;
     for (uint8_t i = 0; i < s_node_count; ++i) {

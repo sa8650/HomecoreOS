@@ -262,6 +262,30 @@ static void test_command_dedupe_across_transitions(void) {
     assert(hc_role_accept_command(2, 2, &last_epoch, &last_seq));
 }
 
+static void test_epoch_bump_reopens_command_window(void) {
+    hc_role_state_t st;
+    hc_role_state_init(&st, HC_ROLE_CONTROLLER);
+    assert(st.epoch == 1);
+
+    uint16_t last_epoch = 0;
+    uint32_t last_seq = 0;
+    /* The Controller sent up to seq 500 before it rebooted. */
+    assert(hc_role_accept_command(1, 500, &last_epoch, &last_seq));
+    /* After the reboot the sequence restarts at 1: only a new epoch saves it. */
+    assert(!hc_role_accept_command(1, 1, &last_epoch, &last_seq));
+
+    hc_role_bump_epoch(&st);
+    assert(st.epoch == 2);
+    assert(hc_role_accept_command(st.epoch, 1, &last_epoch, &last_seq));
+    assert(!hc_role_accept_command(st.epoch, 1, &last_epoch, &last_seq));
+
+    /* Wraparound never produces epoch 0. */
+    st.epoch = 65535;
+    hc_role_bump_epoch(&st);
+    assert(st.epoch == 1);
+    hc_role_bump_epoch(NULL); /* safe */
+}
+
 int main(void) {
     test_role_names_and_parsing();
     test_node_linked_keeps_only_espnow();
@@ -276,6 +300,7 @@ int main(void) {
     test_node_staleness();
     test_role_change_guards();
     test_command_dedupe_across_transitions();
+    test_epoch_bump_reopens_command_window();
     printf("test_role_logic: all assertions passed\n");
     return 0;
 }

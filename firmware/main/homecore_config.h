@@ -270,6 +270,13 @@ bool hc_mqtt_is_connected(void);
 const char *hc_mqtt_get_last_error(void);
 void hc_mqtt_trigger_reconnect(void);
 bool hc_mqtt_consume_sync_request(void);
+
+/**
+ * Applies a switch/device command JSON payload. `kind` is "switch" or "device".
+ * The MQTT handlers and the ESP-NOW relay path share this, so a command executed
+ * locally and one relayed through a Controller behave identically.
+ */
+bool hc_command_apply(const char *kind, const char *json);
 void hc_mqtt_publish_status(const char *status_str);
 void hc_mqtt_publish_telemetry(const char *json_payload);
 void hc_mqtt_publish_config_ack(uint32_t revision, const char *hash);

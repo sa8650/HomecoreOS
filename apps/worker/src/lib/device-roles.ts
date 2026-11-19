@@ -1,4 +1,5 @@
 import {
+  boardSupportsControllerRole,
   canAssignNodeToController,
   normalizeDeviceRole,
   roleChangeBlocker,
@@ -114,11 +115,14 @@ export async function changeDeviceRole(
     board_catalog_id: device.board_catalog_id,
     custom_board_id: device.custom_board_id,
   });
+  // Same capability gate the console and firmware use. An unknown board profile
+  // is not treated as unsupported (we only block what we can prove cannot work).
   const boardSupported =
-    board?.supports_wifi !== false &&
-    !["esp8266", "esp32h2", "esp32h21"].includes(
-      String(board?.chip_family ?? "").toLowerCase()
-    );
+    !board ||
+    boardSupportsControllerRole({
+      chip_family: board.chip_family,
+      supports_wifi: board.supports_wifi,
+    });
 
   const blocker = roleChangeBlocker({
     targetRole: params.targetRole,
@@ -148,9 +152,11 @@ export async function changeDeviceRole(
     device_role: params.targetRole,
     role_changed_at: now,
     // A freshly promoted Controller is not yet hosting anything; a new Node has
-    // no uplink until one is chosen.
+    // no uplink until one is chosen. `comm_mode`/`node_link_state` describe a
+    // Node's uplink only, so they are cleared for the Controller role instead of
+    // leaving a stale "wifi_mqtt" value on a Controller row.
     assigned_controller_id: null,
-    comm_mode: params.targetRole === "node" ? "offline" : "wifi_mqtt",
+    comm_mode: params.targetRole === "node" ? "offline" : null,
     node_link_state: params.targetRole === "node" ? "unassigned" : null,
     updated_at: now,
   };

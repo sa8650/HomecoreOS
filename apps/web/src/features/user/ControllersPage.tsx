@@ -289,12 +289,17 @@ export function ControllersPage({
     [controllers]
   );
 
-  // A Node can only be hosted by an online Controller in the same home.
+  // A Node can only be hosted by an online Controller in the same home — the
+  // Worker enforces exactly this, so the picker never offers a choice it would
+  // reject (an offline Controller cannot answer an ESP-NOW link).
   const nodeTargetCandidates = useMemo(() => {
     const node = assignNodeTarget;
     if (!node) return [];
     return controllerDevices.filter(
-      (c) => c.id !== node.id && (!node.home_id || c.home_id === node.home_id)
+      (c) =>
+        c.id !== node.id &&
+        c.status === "online" &&
+        (!node.home_id || c.home_id === node.home_id)
     );
   }, [assignNodeTarget, controllerDevices]);
 

@@ -26,6 +26,7 @@ import {
   executeOrTestFlowGraph,
 } from "./automation-engine";
 import type { WorkerBindings } from "../config/env";
+import { resolveDeviceCommandDelivery } from "./device-command-delivery";
 import { EmqxClient, isEmqxConfigured } from "./emqx";
 import { recordActivity } from "./audit";
 import type { AppEnv } from "../types/context";
@@ -569,10 +570,15 @@ async function dispatchSwitchCommand(params: {
   const { db, emqx, emqxReady, cred, accountId, actorUserId, sw, desired } = params;
 
   let mqttDispatched = false;
-  if (emqxReady && emqx && cred) {
+  if (emqxReady && emqx) {
     try {
-      await emqx.publish({
-        topic: `${cred.topic_prefix}/cmd/switch`,
+      // A linked Node has no EMQX session of its own; its Controller relays the
+      // switch command over ESP-NOW.
+      const delivery = await resolveDeviceCommandDelivery(db, {
+        accountId,
+        deviceId: sw.controller_id,
+        kind: "switch",
+        credential: cred,
         payload: {
           switch_id: sw.id,
           gpio_pin: sw.gpio_pin,
@@ -581,9 +587,15 @@ async function dispatchSwitchCommand(params: {
           source: "action_button",
           actor_user_id: actorUserId,
         },
-        qos: 1,
       });
-      mqttDispatched = true;
+      if (delivery) {
+        await emqx.publish({
+          topic: delivery.topic,
+          payload: delivery.payload,
+          qos: 1,
+        });
+        mqttDispatched = true;
+      }
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : "Failed to dispatch MQTT switch command.";
@@ -614,10 +626,13 @@ async function dispatchDeviceCommand(params: {
   const { db, emqx, emqxReady, cred, accountId, actorUserId, dev, desiredState } = params;
 
   let mqttDispatched = false;
-  if (emqxReady && emqx && cred) {
+  if (emqxReady && emqx) {
     try {
-      await emqx.publish({
-        topic: `${cred.topic_prefix}/cmd/device`,
+      const delivery = await resolveDeviceCommandDelivery(db, {
+        accountId,
+        deviceId: dev.controller_id,
+        kind: "device",
+        credential: cred,
         payload: {
           device_id: dev.id,
           device_type: dev.device_type,
@@ -627,9 +642,15 @@ async function dispatchDeviceCommand(params: {
           source: "action_button",
           actor_user_id: actorUserId,
         },
-        qos: 1,
       });
-      mqttDispatched = true;
+      if (delivery) {
+        await emqx.publish({
+          topic: delivery.topic,
+          payload: delivery.payload,
+          qos: 1,
+        });
+        mqttDispatched = true;
+      }
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : "Failed to dispatch MQTT device command.";

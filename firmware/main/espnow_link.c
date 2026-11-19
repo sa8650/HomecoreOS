@@ -197,11 +197,13 @@ esp_err_t hc_espnow_seek_start(const char *controller_mac, uint8_t channel, hc_e
         return hc_espnow_set_channel(channel);
     }
 
-    // No pinned channel: sweep 1..13 until the Controller answers.
+    // No pinned channel: sweep 1..13 until the Controller answers. s_channel
+    // stays 0 ("follow the radio") so get_channel() reports the live channel and
+    // a later re-seek is allowed.
     s_seeking = true;
     s_channel = 0;
     s_seek_channel = 1;
-    esp_err_t hop_err = hc_espnow_set_channel(s_seek_channel);
+    esp_err_t hop_err = esp_wifi_set_channel(s_seek_channel, WIFI_SECOND_CHAN_NONE);
     ESP_LOGI(TAG, "Seeking Controller %s across channels", controller_mac);
     return hop_err;
 }
@@ -213,11 +215,22 @@ bool hc_espnow_is_seeking(void) {
 void hc_espnow_seek_hop(void) {
     if (!s_seeking) return;
     s_seek_channel = (uint8_t)((s_seek_channel % 13) + 1);
-    s_channel = s_seek_channel;
     esp_err_t err = esp_wifi_set_channel(s_seek_channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "channel hop to %u failed: %s", (unsigned)s_seek_channel, esp_err_to_name(err));
     }
+}
+
+void hc_espnow_reseek(void) {
+    if (s_hosting || !s_has_target) return;
+    if (s_channel != 0) return; /* channel pinned in the console profile */
+    s_seeking = true;
+    s_seek_channel = 1;
+    esp_err_t err = esp_wifi_set_channel(s_seek_channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "re-seek start on channel 1 failed: %s", esp_err_to_name(err));
+    }
+    ESP_LOGI(TAG, "Controller link lost: sweeping channels again");
 }
 
 static esp_err_t send_frame(
@@ -252,6 +265,17 @@ esp_err_t hc_espnow_send_keepalive(const char *mac, uint16_t epoch, uint32_t seq
     uint8_t addr[6];
     if (!hc_espnow_mac_from_string(mac, addr)) return ESP_ERR_INVALID_ARG;
     return send_frame(addr, HC_ESPNOW_FRAME_NODE_KEEPALIVE, epoch, seq, NULL);
+}
+
+esp_err_t hc_espnow_send_keepalive_json(
+    const char *mac,
+    uint16_t epoch,
+    uint32_t seq,
+    const char *json
+) {
+    uint8_t addr[6];
+    if (!hc_espnow_mac_from_string(mac, addr)) return ESP_ERR_INVALID_ARG;
+    return send_frame(addr, HC_ESPNOW_FRAME_NODE_KEEPALIVE, epoch, seq, json);
 }
 
 esp_err_t hc_espnow_send_ack(const uint8_t mac[6], uint16_t epoch, uint32_t seq) {
@@ -292,6 +316,19 @@ esp_err_t hc_espnow_send_keepalive(const char *mac, uint16_t epoch, uint32_t seq
     (void)seq;
     return ESP_ERR_NOT_SUPPORTED;
 }
+esp_err_t hc_espnow_send_keepalive_json(
+    const char *mac,
+    uint16_t epoch,
+    uint32_t seq,
+    const char *json
+) {
+    (void)mac;
+    (void)epoch;
+    (void)seq;
+    (void)json;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+void hc_espnow_reseek(void) {}
 esp_err_t hc_espnow_send_command(const char *mac, uint16_t epoch, uint32_t seq, const char *json) {
     (void)mac;
     (void)epoch;

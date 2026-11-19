@@ -86,6 +86,14 @@ void hc_role_state_init(hc_role_state_t *state, hc_role_t role);
 void hc_role_state_clear_fallback(hc_role_state_t *state);
 
 /**
+ * Opens a new command window by moving to the next epoch (wraps 65535 -> 1,
+ * never 0). Called when a Controller boots or is promoted: its transmit
+ * sequence lives in RAM and restarts, but a Node persists how far it got, so the
+ * epoch — not the sequence — has to signal the new window.
+ */
+void hc_role_bump_epoch(hc_role_state_t *state);
+
+/**
  * Advances a Node one tick and returns the action bitmask for the firmware.
  * `elapsed_ms` is the tick length.
  */
