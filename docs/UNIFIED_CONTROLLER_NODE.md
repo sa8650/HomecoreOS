@@ -342,6 +342,13 @@ Two further issues found while re-validating the relay path:
   genuinely does not fit is logged instead of dropped in silence.
 - A Node demoted from Controller kept no cloud session even when it had no Controller to link to.
   The session is now closed only when the Node actually has an assigned Controller.
+- `comm_mode` reported "offline" for a linked Node while its STA was between router associations;
+  a healthy ESP-NOW link now wins over the Wi-Fi state.
+- The Controllers card's "N linked" (and the assignment picker) counted *assigned* Nodes, so a Node
+  that had lost its Controller still appeared hosted. It now requires `node_link_state = linked`
+  **and** an online Node, matching what the card claims.
+- The OTA boot logic now has an explicit regression test for an **interrupted** update (a pending
+  record without a booted image resolves as a rollback, never as success).
 
 Build-log visibility: the workflow now tees the ESP-IDF build to `firmware/build.log` and, when a
 build fails, republishes the compiler/CMake errors as check-run annotations, so a red firmware matrix
