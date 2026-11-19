@@ -584,7 +584,10 @@ bool hc_role_apply_snapshot(homecore_config_t *cfg, const char *snapshot_json) {
             s_state.link = HC_NODE_CONTROLLER_LOST;
             start_node_transport(cfg);
         }
-        if (old_role == HC_ROLE_CONTROLLER) {
+        if (old_role == HC_ROLE_CONTROLLER && strlen(cfg->assigned_controller_id) > 0) {
+            // Demoted to a Node that has a Controller to link to: ESP-NOW takes
+            // over and the independent session is closed. An unassigned Node
+            // keeps its session, because EMQX is the only way to reach it.
             s_mqtt_started_by_role = false;
             hc_mqtt_stop();
         }
