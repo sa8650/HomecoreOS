@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "espnow_link.h"
 #include "role_runtime.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -171,14 +172,9 @@ static void handle_system_cmd(const char *data, int len) {
             // Delivered to a Controller: relay to the named Node over ESP-NOW.
             cJSON *node_j = cJSON_GetObjectItem(root, "node_id");
             if (cJSON_IsString(node_j) && node_j->valuestring) {
-                char cmd[160];
-                snprintf(
-                    cmd,
-                    sizeof(cmd),
-                    "{\"cmd\":\"relink\",\"epoch\":%u,\"seq\":%lu}",
-                    (unsigned)hc_role_epoch(),
-                    (unsigned long)(esp_timer_get_time() / 1000ULL)
-                );
+                // epoch/seq already travel in the ESP-NOW frame header; keeping
+                // them out of the JSON leaves room for the payload.
+                static const char cmd[] = "{\"cmd\":\"relink\"}";
                 esp_err_t relay = hc_role_relay_command_to_node(s_cfg, node_j->valuestring, cmd);
                 ESP_LOGI(TAG, "Relayed re-link to Node %s: %s", node_j->valuestring, esp_err_to_name(relay));
             }
@@ -192,19 +188,21 @@ static void handle_system_cmd(const char *data, int len) {
                 cJSON *rel_j = cJSON_GetObjectItem(ota_j, "release_id");
                 cJSON *hist_j = cJSON_GetObjectItem(ota_j, "history_id");
                 cJSON *ver_j = cJSON_GetObjectItem(ota_j, "version");
-                char cmd[256];
-                snprintf(
+                char cmd[HC_ESPNOW_MAX_PAYLOAD + 1];
+                int n = snprintf(
                     cmd,
                     sizeof(cmd),
-                    "{\"cmd\":\"ota\",\"epoch\":%u,\"seq\":%lu,\"ota\":{\"release_id\":\"%s\",\"history_id\":\"%s\",\"version\":\"%s\"}}",
-                    (unsigned)hc_role_epoch(),
-                    (unsigned long)(esp_timer_get_time() / 1000ULL),
+                    "{\"cmd\":\"ota\",\"ota\":{\"release_id\":\"%s\",\"history_id\":\"%s\",\"version\":\"%s\"}}",
                     cJSON_IsString(rel_j) ? rel_j->valuestring : "",
                     cJSON_IsString(hist_j) ? hist_j->valuestring : "",
                     cJSON_IsString(ver_j) ? ver_j->valuestring : ""
                 );
-                esp_err_t relay = hc_role_relay_command_to_node(s_cfg, node_j->valuestring, cmd);
-                ESP_LOGI(TAG, "Relayed OTA to Node %s: %s", node_j->valuestring, esp_err_to_name(relay));
+                if (n <= 0 || (size_t)n > HC_ESPNOW_MAX_PAYLOAD) {
+                    ESP_LOGW(TAG, "OTA instruction for Node %s does not fit an ESP-NOW frame", node_j->valuestring);
+                } else {
+                    esp_err_t relay = hc_role_relay_command_to_node(s_cfg, node_j->valuestring, cmd);
+                    ESP_LOGI(TAG, "Relayed OTA to Node %s: %s", node_j->valuestring, esp_err_to_name(relay));
+                }
             }
         } else if (strcmp(action, "relay_to_node") == 0 && s_cfg) {
             // A Node linked over ESP-NOW keeps no EMQX session of its own, so the
@@ -261,19 +259,18 @@ static void handle_system_cmd(const char *data, int len) {
                     char *payload_str = cJSON_PrintUnformatted(compact);
                     cJSON_Delete(compact);
                     if (payload_str) {
-                        char frame[192];
+                        // epoch/seq are in the frame header; the Node falls back
+                        // to them, so the JSON only needs the command itself.
+                        char frame[HC_ESPNOW_MAX_PAYLOAD + 1];
                         int n = snprintf(
                             frame,
                             sizeof(frame),
-                            "{\"cmd\":\"exec\",\"epoch\":%u,\"seq\":%lu,"
-                            "\"k\":\"%s\",\"p\":%s}",
-                            (unsigned)hc_role_epoch(),
-                            (unsigned long)(esp_timer_get_time() / 1000ULL),
+                            "{\"cmd\":\"exec\",\"k\":\"%s\",\"p\":%s}",
                             kind,
                             payload_str
                         );
                         cJSON_free(payload_str);
-                        if (n > 0 && (size_t)n < sizeof(frame)) {
+                        if (n > 0 && (size_t)n <= HC_ESPNOW_MAX_PAYLOAD) {
                             esp_err_t relay =
                                 hc_role_relay_command_to_node(s_cfg, node_j->valuestring, frame);
                             if (relay != ESP_OK) {
