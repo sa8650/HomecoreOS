@@ -370,6 +370,13 @@ describe("Unified Controller & Node roles", () => {
 
     // "I host nobody" is authoritative: the assigned Node is reconnecting, not linked.
     expect((await deviceRow(nodeId)).node_link_state).toBe("controller_lost");
+
+    // The card must stop claiming a linked Node it no longer hosts.
+    const listRes = await req("/api/controllers", { headers: { Cookie: cookie } });
+    const { controllers } = (await listRes.json()) as {
+      controllers: Array<{ id: string; connected_node_count: number }>;
+    };
+    expect(controllers.find((c) => c.id === hubId)!.connected_node_count).toBe(0);
   });
 
   it("relays a linked Node's switch command through its Controller instead of a silent MQTT publish", async () => {
