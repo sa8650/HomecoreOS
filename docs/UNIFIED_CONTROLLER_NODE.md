@@ -315,8 +315,53 @@ item below is fixed and covered by a test where a test can reach it.
 ### Firmware validation performed
 
 `role_runtime.c`, `espnow_link.c`, `mqtt_manager.c`, `main.c`, `nvs_store.c` and `pairing_client.c`
-were compiled with `gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only` against ESP-IDF-shaped stub
-headers, and the five host C suites (role, provisioning, OTA boot, IO state, sensor driver logic)
-pass. This is a syntax/behaviour gate, not a hardware run: ESP-NOW peer linking, channel re-sweep,
+were compiled against ESP-IDF-shaped stub headers **and**, decisively, by the real ESP-IDF build
+matrix (§13). The five host C suites (role, provisioning, OTA boot, IO state, sensor driver logic)
+pass. This is not a hardware run: ESP-NOW peer linking, channel re-sweep,
 relayed switch execution, the EMQX OTA window and the 3 s/10 s BOOT sequences still need the physical
 ESP32-S3-WROOM-1 N16R8 validation listed in §11.
+
+## 13. Firmware build gate restored — 2026-11-19
+
+The first firmware build of this feature on `main` failed for **20 of 21 boards**: every Wi-Fi
+target broke while `esp32-h2` (which skips the Wi-Fi component block) still built. Two real defects
+were hiding behind each other, and both were invisible to the stub-header syntax check that had been
+used as the firmware gate:
+
+| # | Defect | Cause | Fix |
+|---|---|---|---|
+| 1 | `idf_component_register` could not resolve the `main` component's requirements on every Wi-Fi target | `firmware/main/CMakeLists.txt` added `esp_now` to `REQUIRES`. ESP-IDF v5.x has **no `esp_now` component** — ESP-NOW is built into `esp_wifi`. | Removed the requirement; the comment now records why. |
+| 2 | `espnow_link.c` did not compile on any Wi-Fi target | The file included only `esp_wifi.h`, but `esp_now_peer_info_t`, `esp_now_recv_info_t`, `esp_now_add_peer()`, `esp_now_is_peer_exist()` and `ESP_ERR_ESPNOW_EXIST` live in `esp_now.h`. | Added `#include "esp_now.h"`. |
+
+Two further issues found while re-validating the relay path:
+
+- The relayed OTA instruction (`{"cmd":"ota","ota":{release_id,history_id,version}}`) also carried
+  `epoch`/`seq` even though the ESP-NOW frame header already transports both. With two UUIDs plus a
+  version string it could reach the `HC_ESPNOW_MAX_PAYLOAD` (200 byte) limit and fail silently. The
+  JSON is now header-free, buffers are sized from `HC_ESPNOW_MAX_PAYLOAD`, and an instruction that
+  genuinely does not fit is logged instead of dropped in silence.
+- A Node demoted from Controller kept no cloud session even when it had no Controller to link to.
+  The session is now closed only when the Node actually has an assigned Controller.
+- `comm_mode` reported "offline" for a linked Node while its STA was between router associations;
+  a healthy ESP-NOW link now wins over the Wi-Fi state.
+- The Controllers card's "N linked" (and the assignment picker) counted *assigned* Nodes, so a Node
+  that had lost its Controller still appeared hosted. It now requires `node_link_state = linked`
+  **and** an online Node, matching what the card claims.
+- The OTA boot logic now has an explicit regression test for an **interrupted** update (a pending
+  record without a booted image resolves as a rollback, never as success).
+
+Build-log visibility: the workflow now tees the ESP-IDF build to `firmware/build.log` and, when a
+build fails, republishes the compiler/CMake errors as check-run annotations, so a red firmware matrix
+states its cause in the Checks UI instead of only inside the raw log.
+
+Verification runs (all on `arena/ab75b390-homecoreos`, dispatched with `board_slug=all`):
+
+- 21/21 boards built, verified, packaged and manifest-checked:
+  `esp32`, `esp32s2`, `esp32s3` (5 profiles), `esp32c2`, `esp32c3` (3), `esp32c5` (2), `esp32c6` (3),
+  `esp32c61`, `esp32h2`.
+- Per board: `verify_firmware_image.py --verify-build` (dual-OTA slots, `otadata`, `nvs`, app fits
+  its slot, sdkconfig partition scheme/flash/PSRAM agreement), USB factory image merge, release
+  archive + SHA-256 driver manifest, and `--verify-package`.
+
+Physical hardware items in §11 remain open — the matrix proves the firmware compiles, links and
+packages for every supported profile, not that the radio behaves.

@@ -8,6 +8,7 @@
 
 #if HOMECORE_HAS_WIFI
 
+#include "esp_now.h"
 #include "esp_wifi.h"
 
 static const char *TAG = "hc_espnow";

@@ -15,9 +15,11 @@ set(HC_REQUIRES
 )
 
 if(NOT IDF_TARGET STREQUAL "esp32h2")
+    # ESP-NOW (esp_now.h / esp_now_* symbols) is built into the esp_wifi
+    # component in ESP-IDF v5.x; there is no separate "esp_now" component, and
+    # requiring one makes CMake fail to resolve the component for every Wi-Fi
+    # target while the H2 build still passes.
     list(APPEND HC_REQUIRES esp_wifi)
-    # ESP-NOW ships with the Wi-Fi component (esp_now_*).
-    list(APPEND HC_REQUIRES esp_now)
 endif()
 
 if(NOT IDF_TARGET STREQUAL "esp32s2")

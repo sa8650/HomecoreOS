@@ -276,6 +276,9 @@ export function createControllerRoutes() {
     // Unified role bookkeeping (single pass, no per-device queries).
     const roleById = new Map<string, ReturnType<typeof normalizeDeviceRole>>();
     const nameById = new Map<string, string>();
+    // "Connected nodes" is what the card claims ("N linked"): only Nodes that
+    // actually report a live ESP-NOW link. Assigned-but-lost Nodes are counted
+    // separately by the role-change guard, which must warn before orphaning them.
     const attachedNodeCount = new Map<string, number>();
     for (const row of ctrlRows) {
       const id = String(row.id);
@@ -287,6 +290,10 @@ export function createControllerRoutes() {
       if (normalizeDeviceRole(row.device_role) !== "node") continue;
       const parentId = row.assigned_controller_id ? String(row.assigned_controller_id) : "";
       if (!parentId) continue;
+      if (normalizeNodeLinkState(row.node_link_state) !== "linked") continue;
+      // A Node whose heartbeat timed out is offline even if the last roster
+      // still said "linked": the card must not claim it as hosted.
+      if (String(row.status ?? "") !== "online") continue;
       attachedNodeCount.set(parentId, (attachedNodeCount.get(parentId) ?? 0) + 1);
     }
 

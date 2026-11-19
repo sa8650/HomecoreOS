@@ -465,6 +465,7 @@ jobs:
           # Keep ZERO single quotes anywhere in this command block to prevent shell syntax errors.
           command: |
             set -eu
+            set -o pipefail
             HOMECORE_FW_VERSION="${{ needs.prepare-matrix.outputs.version }}"
             export HOMECORE_FW_VERSION
             if [ -z "${HOMECORE_FW_VERSION}" ]; then
@@ -475,8 +476,9 @@ jobs:
             rm -rf sdkconfig sdkconfig.version build
             python3 scripts/verify_firmware_image.py --write-sdkconfig-version "${HOMECORE_FW_VERSION}" --out sdkconfig.version
             SDKCFG="sdkconfig.defaults;boards/${{ matrix.board_slug }}.sdkconfig;sdkconfig.version"
-            idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" set-target "${{ matrix.chip_family }}"
-            idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" build
+            BUILD_LOG="build.log"
+            : > "${BUILD_LOG}"
+            { idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" set-target "${{ matrix.chip_family }}" && idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" build; } 2>&1 | tee -a "${BUILD_LOG}"
             python3 scripts/verify_firmware_image.py \
               --verify-build \
               --version "${HOMECORE_FW_VERSION}" \
@@ -491,6 +493,25 @@ jobs:
               --partition-table build/partition_table/partition-table.bin
             cd build
             esptool.py --chip "${{ matrix.chip_family }}" merge_bin -o homecoreos-usb-factory.bin "@flash_args"
+
+      - name: Report firmware build errors
+        if: failure()
+        shell: bash
+        run: |
+          LOG="${{ github.workspace }}/firmware/build.log"
+          if [ ! -f "${LOG}" ]; then
+            echo "::error::No build log was written to ${LOG}; listing firmware/ instead."
+            ls -la "${{ github.workspace }}/firmware" || true
+            exit 0
+          fi
+          echo "----- last 80 lines -----"
+          tail -n 80 "${LOG}" || true
+          echo "----- compiler / CMake errors -----"
+          grep -aE "error:|CMake Error|FAILED:|undefined reference|ninja: build stopped" "${LOG}" \
+            | head -n 25 \
+            | while IFS= read -r line; do
+                echo "::error::$(printf "%s" "${line}" | tr -d "\r" | cut -c1-900)"
+              done
 
       - name: Package release archive & SHA-256 driver manifest
         id: package

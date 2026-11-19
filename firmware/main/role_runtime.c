@@ -9,7 +9,6 @@
 static const char *TAG = "hc_role";
 
 #define HC_ESPNOW_KEEPALIVE_MS 2000u
-#define HC_ESPNOW_STATE_PUSH_MS 30000u
 #define HC_OTA_WINDOW_MS 180000u
 
 typedef struct {
@@ -30,7 +29,6 @@ static uint32_t s_ms_since_controller = 0;
 static bool s_controller_fresh = false;
 static uint32_t s_keepalive_ms = 0;
 static uint32_t s_hop_ms = 0;
-static uint32_t s_push_ms = 0;
 static uint32_t s_ota_window_ms = 0;
 
 static uint16_t s_remote_epoch = 0; /* last command window seen from the Controller */
@@ -46,11 +44,14 @@ static uint32_t now_ms(void) {
 
 const char *hc_role_comm_mode_name(const homecore_config_t *cfg) {
     if (!cfg) return "offline";
+    // A linked Node is reachable over ESP-NOW even when its STA is between
+    // router associations, so the link wins over the Wi-Fi state.
+    if (cfg->device_role == HC_ROLE_NODE && s_state.link == HC_NODE_LINKED) {
+        return "espnow";
+    }
     if (!hc_wifi_is_connected()) return "offline";
     if (!cfg->paired) return "offline";
-    if (cfg->device_role == HC_ROLE_NODE) {
-        return (s_state.link == HC_NODE_LINKED) ? "espnow" : "wifi_mqtt";
-    }
+    if (cfg->device_role == HC_ROLE_NODE) return "wifi_mqtt";
     return "wifi_mqtt";
 }
 
@@ -453,13 +454,12 @@ static void controller_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
         start_controller_transport(cfg);
     }
 
-    // Push the roster when it changes shape, and periodically so the console's
-    // link state never goes stale.
+    // The roster itself travels on every heartbeat (hc_role_fill_heartbeat), so
+    // only the persisted link state has to be refreshed when its shape changes.
     static uint8_t last_count = 0;
     uint8_t count = hc_role_linked_node_count();
     if (count != last_count) {
         last_count = count;
-        s_push_ms = HC_ESPNOW_STATE_PUSH_MS;
         persist_role(cfg, true);
     }
 }
@@ -584,7 +584,10 @@ bool hc_role_apply_snapshot(homecore_config_t *cfg, const char *snapshot_json) {
             s_state.link = HC_NODE_CONTROLLER_LOST;
             start_node_transport(cfg);
         }
-        if (old_role == HC_ROLE_CONTROLLER) {
+        if (old_role == HC_ROLE_CONTROLLER && strlen(cfg->assigned_controller_id) > 0) {
+            // Demoted to a Node that has a Controller to link to: ESP-NOW takes
+            // over and the independent session is closed. An unassigned Node
+            // keeps its session, because EMQX is the only way to reach it.
             s_mqtt_started_by_role = false;
             hc_mqtt_stop();
         }
