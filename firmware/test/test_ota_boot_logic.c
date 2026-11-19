@@ -120,6 +120,29 @@ static void test_wrong_partition_slot_fails_and_rolls_back(void) {
     assert(hc_ota_evaluate_boot_state(&in) == HC_OTA_DECISION_FAIL_AND_ROLLBACK);
 }
 
+static void test_interrupted_update_never_reports_success(void) {
+    // The download or flash died before the new image could boot: otadata still
+    // points at the old slot while a pending record names the new one. That must
+    // resolve as a rollback, never as a confirmed update.
+    hc_ota_boot_eval_input_t in = {
+        .has_pending = true,
+        .ota_state = HC_OTA_IMG_VALID,
+        .running_addr = 0x020000,
+        .invalid_addr = 0,
+        .prev_addr = 0x020000,
+        .target_addr = 0x320000,
+        .running_version = "1.2.0",
+        .target_version = "1.3.0",
+        .health_result = HC_OTA_HEALTH_PASS,
+    };
+    assert(hc_ota_evaluate_boot_state(&in) == HC_OTA_DECISION_ROLLED_BACK);
+
+    // If the pending record was never written (download interrupted before the
+    // flash step), the next boot is a plain boot with nothing to report.
+    in.has_pending = false;
+    assert(hc_ota_evaluate_boot_state(&in) == HC_OTA_DECISION_NONE);
+}
+
 int main(void) {
     test_runtime_version_prefers_app_desc();
     test_steady_state_unrelated_invalid_partition_ignored();
@@ -128,6 +151,7 @@ int main(void) {
     test_genuine_bootloader_rollback_detected();
     test_wrong_embedded_version_fails_and_rolls_back();
     test_wrong_partition_slot_fails_and_rolls_back();
+    test_interrupted_update_never_reports_success();
     printf("All C OTA boot logic unit tests passed!\n");
     return 0;
 }
