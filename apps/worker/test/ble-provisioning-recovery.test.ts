@@ -79,7 +79,7 @@ describe("Dual BLE + Wi-Fi Provisioning & Recovery Backend Flows", () => {
     const userCookie = extractCookie(regRes, "hc_user_session");
 
     // 1. Catalog exposes exact supports_ble & supports_ble_wifi_provisioning flags
-    const catRes = await req("/api/boards/catalog", {
+    const catRes = await req("/api/board-library/catalog", {
       headers: { Cookie: userCookie },
     });
     expect(catRes.status).toBe(200);
@@ -185,12 +185,12 @@ describe("Dual BLE + Wi-Fi Provisioning & Recovery Backend Flows", () => {
     expect(badH2Res.status).toBe(400);
 
     // 4. Create controllers for S3, S2, and H2 and verify BLE pairing + BLE recovery + guidance
-    const s3Create = await req("/api/controllers", {
+    const s3Create = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
         name: "Living Room S3",
-        boardCatalogId: bySlug.get("esp32-s3-devkitc-1-n16r8")!.id,
+        boardProfileId: bySlug.get("esp32-s3-devkitc-1-n16r8")!.id,
       }),
     });
     expect(s3Create.status).toBe(201);
@@ -199,22 +199,22 @@ describe("Dual BLE + Wi-Fi Provisioning & Recovery Backend Flows", () => {
       pairingCode: string;
     };
 
-    const s2Create = await req("/api/controllers", {
+    const s2Create = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
         name: "Hallway S2",
-        boardCatalogId: bySlug.get("esp32-s2-devkitc-1")!.id,
+        boardProfileId: bySlug.get("esp32-s2-devkitc-1")!.id,
       }),
     });
     expect(s2Create.status).toBe(201);
 
-    const h2Create = await req("/api/controllers", {
+    const h2Create = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
         name: "Thread Hub H2",
-        boardCatalogId: bySlug.get("esp32-h2-devkitm-1")!.id,
+        boardProfileId: bySlug.get("esp32-h2-devkitm-1")!.id,
       }),
     });
     expect(h2Create.status).toBe(201);
@@ -239,7 +239,7 @@ describe("Dual BLE + Wi-Fi Provisioning & Recovery Backend Flows", () => {
     expect(pairS3Res.status).toBe(200);
 
     // List controllers and check ble_setup_pin, provisioning_transport, and board_compat flags
-    const listRes = await req("/api/controllers", {
+    const listRes = await req("/api/board-instances", {
       headers: { Cookie: userCookie },
     });
     expect(listRes.status).toBe(200);
@@ -279,10 +279,10 @@ describe("Dual BLE + Wi-Fi Provisioning & Recovery Backend Flows", () => {
     });
 
     // Check board-specific recovery instructions across S3, S2, and H2
-    const recS3 = await req("/api/controllers/recover", {
+    const recS3 = await req("/api/board-instances/recover", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ controllerId: s3Ctrl.id }),
+      body: JSON.stringify({ boardInstanceId: s3Ctrl.id }),
     });
     expect(recS3.status).toBe(201);
     const recS3Json = (await recS3.json()) as {
@@ -298,10 +298,10 @@ describe("Dual BLE + Wi-Fi Provisioning & Recovery Backend Flows", () => {
       )
     ).toBe(true);
 
-    const recS2 = await req("/api/controllers/recover", {
+    const recS2 = await req("/api/board-instances/recover", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ controllerId: s2Ctrl.id }),
+      body: JSON.stringify({ boardInstanceId: s2Ctrl.id }),
     });
     expect(recS2.status).toBe(201);
     const recS2Json = (await recS2.json()) as {
@@ -316,10 +316,10 @@ describe("Dual BLE + Wi-Fi Provisioning & Recovery Backend Flows", () => {
       )
     ).toBe(false);
 
-    const recH2 = await req("/api/controllers/recover", {
+    const recH2 = await req("/api/board-instances/recover", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ controllerId: h2Ctrl.id }),
+      body: JSON.stringify({ boardInstanceId: h2Ctrl.id }),
     });
     expect(recH2.status).toBe(201);
     const recH2Json = (await recH2.json()) as {

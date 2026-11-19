@@ -46,10 +46,10 @@ the option reasons, the readiness checklist, the board table and the
 
 | Fact | Source |
 | --- | --- |
-| Boards, pins, pin capabilities and restrictions, Wi-Fi/BLE, publication and verification status | `board_catalog`, `custom_boards` (the customer's own), `board_gpio_definitions` |
+| Boards, pins, pin capabilities and restrictions, Wi-Fi/BLE, publication and verification status | `board_profiles`, `custom_board_profiles` (the customer's own), `board_gpio_definitions` |
 | Firmware releases, target boards, status, USB/OTA files and their validation | `firmware_releases`, `firmware_files` |
 | Whether the Board Library is enabled, account limits | `platform_settings` |
-| Controllers and devices the account already has | `controllers`, `devices` (counts only) |
+| Controllers and devices the account already has | `board_instances`, `devices` (counts only) |
 | I/O items one controller can hold (32) | `PLANNER_FIRMWARE_MAX_IO_ITEMS`, mirrors `HOMECORE_MAX_IO_ITEMS` in `firmware/main/homecore_config.h` |
 
 Not on record anywhere in HomecoreOS, and therefore reported as unknown rather

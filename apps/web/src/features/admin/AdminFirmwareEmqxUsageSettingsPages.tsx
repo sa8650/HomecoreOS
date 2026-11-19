@@ -1514,7 +1514,7 @@ export function AdminEmqxPage({
     liveClients: Array<{ clientid: string; connected?: boolean; ip_address?: string }>;
     credentials: Array<{
       id: string;
-      controller_id: string;
+      board_instance_id: string;
       mqtt_username: string;
       mqtt_client_id: string;
       topic_prefix: string;
@@ -1543,9 +1543,9 @@ export function AdminEmqxPage({
     void load();
   }, [load]);
 
-  async function handleRevoke(controllerId: string) {
+  async function handleRevoke(boardInstanceId: string) {
     try {
-      await apiFetch(`/api/admin/emqx/credentials/${controllerId}/revoke`, {
+      await apiFetch(`/api/admin/emqx/credentials/${boardInstanceId}/revoke`, {
         method: "POST",
       });
       toast.success("Revoked controller MQTT credentials.");
@@ -1636,7 +1636,7 @@ export function AdminEmqxPage({
                       <Button
                         variant="destructive"
                         size="xs"
-                        onClick={() => setRevokeTarget(cred.controller_id)}
+                        onClick={() => setRevokeTarget(cred.board_instance_id)}
                       >
                         Revoke
                       </Button>
@@ -1803,9 +1803,9 @@ export function AdminSettingsPage({
     controller_heartbeat_interval_seconds: number;
     controller_offline_timeout_seconds: number;
     max_devices_per_account: number;
-    max_controllers_per_account: number;
+    max_board_instances_per_account: number;
     maintenance_mode: boolean;
-    board_catalog_enabled: boolean;
+    board_library_enabled: boolean;
     firmware_downloads_enabled?: boolean;
   } | null>(null);
 
@@ -1974,9 +1974,9 @@ export function AdminSettingsPage({
               <label className="flex items-center justify-between gap-3 text-xs">
                 <span>Enable global Board Library catalog</span>
                 <Switch
-                  checked={settings.board_catalog_enabled}
+                  checked={settings.board_library_enabled}
                   disabled={!isSuperAdmin}
-                  onCheckedChange={(v) => setSettings({ ...settings, board_catalog_enabled: v })}
+                  onCheckedChange={(v) => setSettings({ ...settings, board_library_enabled: v })}
                 />
               </label>
               <label className="flex items-center justify-between gap-3 text-xs">
@@ -2094,11 +2094,11 @@ export function AdminSettingsPage({
                   disabled={!isSuperAdmin}
                   min={1}
                   max={500}
-                  value={settings.max_controllers_per_account}
+                  value={settings.max_board_instances_per_account}
                   onChange={(e) =>
                     setSettings({
                       ...settings,
-                      max_controllers_per_account: Number(e.target.value),
+                      max_board_instances_per_account: Number(e.target.value),
                     })
                   }
                 />

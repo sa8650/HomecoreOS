@@ -123,13 +123,13 @@ export function FirmwarePage({
           ttlMs: 60_000,
           force,
         }),
-        cachedGet<{ boards: BoardProfileItem[] }>("/api/boards/catalog", {
+        cachedGet<{ boards: BoardProfileItem[] }>("/api/board-library/catalog", {
           ttlMs: 60_000,
           force,
         }).catch(() => ({
           boards: [] as BoardProfileItem[],
         })),
-        cachedGet<{ boards: BoardProfileItem[] }>("/api/boards/custom", {
+        cachedGet<{ boards: BoardProfileItem[] }>("/api/board-library/custom", {
           ttlMs: 60_000,
           force,
         }).catch(() => ({
@@ -179,7 +179,7 @@ export function FirmwarePage({
         }>("/api/firmware/updates");
         setApplicableUpdates(res.applicableUpdates);
         setHistory(res.history);
-        invalidateApiCache("/api/firmware", "/api/controllers");
+        invalidateApiCache("/api/firmware", "/api/board-instances");
       } catch {
         // ignore transient poll failures
       }
@@ -187,17 +187,17 @@ export function FirmwarePage({
     return () => window.clearInterval(timer);
   }, [hasActiveOta]);
 
-  async function handleStartOta(controllerId: string, releaseId: string) {
-    setOtaBusyControllerId(controllerId);
+  async function handleStartOta(boardInstanceId: string, releaseId: string) {
+    setOtaBusyControllerId(boardInstanceId);
     try {
       await apiFetch("/api/firmware/ota/start", {
         method: "POST",
-        body: JSON.stringify({ controllerId, releaseId }),
+        body: JSON.stringify({ boardInstanceId, releaseId }),
       });
       toast.success(
         "Firmware update started. We will verify it automatically after your controller restarts."
       );
-      invalidateApiCache("/api/firmware", "/api/controllers");
+      invalidateApiCache("/api/firmware", "/api/board-instances");
       await load(true);
     } catch (err) {
       toast.error(
@@ -213,7 +213,7 @@ export function FirmwarePage({
     try {
       await apiFetch(`/api/firmware/ota/${historyId}/cancel`, { method: "POST" });
       toast.success("Pending OTA update cancelled.");
-      invalidateApiCache("/api/firmware", "/api/controllers");
+      invalidateApiCache("/api/firmware", "/api/board-instances");
       await load(true);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to cancel OTA update.");
@@ -706,7 +706,7 @@ export function FirmwarePage({
             <div className="space-y-4">
               {applicableUpdates.map((item) => {
                 const active = item.activeUpdate;
-                const isBusy = otaBusyControllerId === item.controllerId;
+                const isBusy = otaBusyControllerId === item.boardInstanceId;
                 const canTrigger =
                   canManage &&
                   item.controllerStatus === "online" &&
@@ -715,7 +715,7 @@ export function FirmwarePage({
 
                 return (
                   <Card
-                    key={item.controllerId}
+                    key={item.boardInstanceId}
                     className="border-none p-0 shadow-none ring-0 transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-md"
                   >
                     <MagicCard
@@ -732,7 +732,7 @@ export function FirmwarePage({
                               {item.controllerName}
                             </h3>
                             <Badge variant="secondary">
-                              {item.deviceRole === "node" ? "Node" : "Controller"}
+                              {item.boardRole === "node" ? "Node" : "Controller"}
                             </Badge>
                             <Badge variant="secondary">{item.boardModel}</Badge>
                             <Badge
@@ -782,7 +782,7 @@ export function FirmwarePage({
                             size="sm"
                             disabled={!canTrigger}
                             onClick={() =>
-                              void handleStartOta(item.controllerId, item.availableRelease.id)
+                              void handleStartOta(item.boardInstanceId, item.availableRelease.id)
                             }
                           >
                             {isBusy ? (
@@ -813,7 +813,7 @@ export function FirmwarePage({
                           onRetry={
                             canManage
                               ? () =>
-                                  void handleStartOta(item.controllerId, item.availableRelease.id)
+                                  void handleStartOta(item.boardInstanceId, item.availableRelease.id)
                               : undefined
                           }
                         />
@@ -865,7 +865,7 @@ export function FirmwarePage({
                       {history.map((h) => (
                         <TableRow key={h.id}>
                           <TableCell className="font-medium text-foreground">
-                            {h.controller_name ?? h.controller_id.slice(0, 8)}
+                            {h.controller_name ?? h.board_instance_id.slice(0, 8)}
                           </TableCell>
                           <TableCell className="font-mono">
                             {h.previous_version ? `${h.previous_version} → ` : ""}

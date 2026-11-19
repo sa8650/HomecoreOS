@@ -1,9 +1,9 @@
 import {
   boardSupportsControllerRole,
   canAssignNodeToController,
-  normalizeDeviceRole,
+  normalizeBoardRole,
   roleChangeBlocker,
-  type DeviceRole,
+  type BoardRole,
 } from "@homecoreos/shared";
 import type { WorkerBindings } from "../config/env";
 import { recordActivity } from "./audit";
@@ -39,13 +39,13 @@ export interface RoleChangeResult {
 export async function listAttachedNodes(
   db: DbClient,
   accountId: string,
-  controllerId: string
+  boardInstanceId: string
 ): Promise<AttachedNodeRow[]> {
   const { data } = await db
-    .from("controllers")
+    .from("board_instances")
     .select("id,name,status,comm_mode,node_link_state")
     .eq("account_id", accountId)
-    .eq("assigned_controller_id", controllerId)
+    .eq("assigned_controller_id", boardInstanceId)
     .is("deleted_at", null)
     .is("permanently_deleted_at", null)
     .order("created_at", { ascending: true });
@@ -70,7 +70,7 @@ export async function listAttachedNodes(
  * (they fall back to Wi-Fi/MQTT as standalone Nodes) and every affected device is
  * re-synced. Nothing is ever silently orphaned.
  */
-export async function changeDeviceRole(
+export async function changeBoardRole(
   db: DbClient,
   env: WorkerBindings,
   deps: { emqxFetch?: CustomFetch },
@@ -78,14 +78,14 @@ export async function changeDeviceRole(
     accountId: string;
     actorUserId: string | null;
     deviceId: string;
-    targetRole: DeviceRole;
+    targetRole: BoardRole;
     acknowledgeAttachedNodes?: boolean;
   }
 ): Promise<RoleChangeResult> {
   const { data: row } = await db
-    .from("controllers")
+    .from("board_instances")
     .select(
-      "id,name,home_id,board_catalog_id,custom_board_id,device_role,assigned_controller_id,status"
+      "id,name,home_id,board_profile_id,custom_board_profile_id,board_role,assigned_controller_id,status"
     )
     .eq("id", params.deviceId)
     .eq("account_id", params.accountId)
@@ -101,19 +101,19 @@ export async function changeDeviceRole(
     id: string;
     name: string;
     home_id: string;
-    board_catalog_id: string | null;
-    custom_board_id: string | null;
-    device_role?: string | null;
+    board_profile_id: string | null;
+    custom_board_profile_id: string | null;
+    board_role?: string | null;
     assigned_controller_id?: string | null;
     status: string;
   };
 
-  const currentRole = normalizeDeviceRole(device.device_role);
+  const currentRole = normalizeBoardRole(device.board_role);
   const attachedNodes = await listAttachedNodes(db, params.accountId, device.id);
 
   const board = await resolveControllerBoardSpec(db, {
-    board_catalog_id: device.board_catalog_id,
-    custom_board_id: device.custom_board_id,
+    board_profile_id: device.board_profile_id,
+    custom_board_profile_id: device.custom_board_profile_id,
   });
   // Same capability gate the console and firmware use. An unknown board profile
   // is not treated as unsupported (we only block what we can prove cannot work).
@@ -144,12 +144,12 @@ export async function changeDeviceRole(
   }
 
   if (currentRole === params.targetRole) {
-    return { ok: true, status: 200, device: { ...device, device_role: currentRole } };
+    return { ok: true, status: 200, device: { ...device, board_role: currentRole } };
   }
 
   const now = new Date().toISOString();
   const updates: Record<string, unknown> = {
-    device_role: params.targetRole,
+    board_role: params.targetRole,
     role_changed_at: now,
     // A freshly promoted Controller is not yet hosting anything; a new Node has
     // no uplink until one is chosen. `comm_mode`/`node_link_state` describe a
@@ -162,7 +162,7 @@ export async function changeDeviceRole(
   };
 
   await db
-    .from("controllers")
+    .from("board_instances")
     .update(updates)
     .eq("id", device.id)
     .eq("account_id", params.accountId);
@@ -171,7 +171,7 @@ export async function changeDeviceRole(
   // Wi-Fi/MQTT fallback so they remain reachable.
   if (params.targetRole === "node" && attachedNodes.length > 0) {
     await db
-      .from("controllers")
+      .from("board_instances")
       .update({
         assigned_controller_id: null,
         comm_mode: "wifi_mqtt",
@@ -185,7 +185,7 @@ export async function changeDeviceRole(
   await recordActivity(db, {
     accountId: params.accountId,
     actorUserId: params.actorUserId,
-    controllerId: device.id,
+    boardInstanceId: device.id,
     category: "controller",
     action: "controller.role_changed",
     summary:
@@ -201,14 +201,14 @@ export async function changeDeviceRole(
   // Re-publish the role configuration for the device and every detached Node.
   await syncControllerConfigSnapshot(db, env, deps, {
     accountId: params.accountId,
-    controllerId: device.id,
+    boardInstanceId: device.id,
     reason: "config_change",
     forcePublish: true,
   }).catch(() => undefined);
   for (const node of attachedNodes) {
     await syncControllerConfigSnapshot(db, env, deps, {
       accountId: params.accountId,
-      controllerId: node.id,
+      boardInstanceId: node.id,
       reason: "config_change",
       forcePublish: true,
     }).catch(() => undefined);
@@ -238,12 +238,12 @@ export async function assignNodeToController(
     accountId: string;
     actorUserId: string | null;
     nodeId: string;
-    controllerId: string | null;
+    boardInstanceId: string | null;
   }
 ): Promise<AssignResult> {
   const { data: nodeRow } = await db
-    .from("controllers")
-    .select("id,name,home_id,device_role,status")
+    .from("board_instances")
+    .select("id,name,home_id,board_role,status")
     .eq("id", params.nodeId)
     .eq("account_id", params.accountId)
     .is("deleted_at", null)
@@ -257,10 +257,10 @@ export async function assignNodeToController(
     id: string;
     name: string;
     home_id: string;
-    device_role?: string | null;
+    board_role?: string | null;
     status: string;
   };
-  if (normalizeDeviceRole(node.device_role) !== "node") {
+  if (normalizeBoardRole(node.board_role) !== "node") {
     return {
       ok: false,
       status: 409,
@@ -270,9 +270,9 @@ export async function assignNodeToController(
 
   const now = new Date().toISOString();
 
-  if (!params.controllerId) {
+  if (!params.boardInstanceId) {
     await db
-      .from("controllers")
+      .from("board_instances")
       .update({
         assigned_controller_id: null,
         comm_mode: "wifi_mqtt",
@@ -285,14 +285,14 @@ export async function assignNodeToController(
     await recordActivity(db, {
       accountId: params.accountId,
       actorUserId: params.actorUserId,
-      controllerId: node.id,
+      boardInstanceId: node.id,
       category: "controller",
       action: "controller.node_unassigned",
       summary: `Cleared the Controller assignment for Node "${node.name}"`,
     });
     await syncControllerConfigSnapshot(db, env, deps, {
       accountId: params.accountId,
-      controllerId: node.id,
+      boardInstanceId: node.id,
       reason: "config_change",
       forcePublish: true,
     }).catch(() => undefined);
@@ -300,9 +300,9 @@ export async function assignNodeToController(
   }
 
   const { data: ctrlRow } = await db
-    .from("controllers")
-    .select("id,name,home_id,device_role,status")
-    .eq("id", params.controllerId)
+    .from("board_instances")
+    .select("id,name,home_id,board_role,status")
+    .eq("id", params.boardInstanceId)
     .eq("account_id", params.accountId)
     .is("deleted_at", null)
     .is("permanently_deleted_at", null)
@@ -315,14 +315,14 @@ export async function assignNodeToController(
     id: string;
     name: string;
     home_id: string;
-    device_role?: string | null;
+    board_role?: string | null;
     status: string;
   };
 
   const verdict = canAssignNodeToController({
     nodeId: node.id,
-    controllerId: controller.id,
-    controllerRole: normalizeDeviceRole(controller.device_role),
+    boardInstanceId: controller.id,
+    controllerRole: normalizeBoardRole(controller.board_role),
     controllerOnline: controller.status === "online",
     sameHome: controller.home_id === node.home_id,
   });
@@ -331,7 +331,7 @@ export async function assignNodeToController(
   }
 
   await db
-    .from("controllers")
+    .from("board_instances")
     .update({
       assigned_controller_id: controller.id,
       comm_mode: "espnow",
@@ -344,7 +344,7 @@ export async function assignNodeToController(
   await recordActivity(db, {
     accountId: params.accountId,
     actorUserId: params.actorUserId,
-    controllerId: node.id,
+    boardInstanceId: node.id,
     category: "controller",
     action: "controller.node_assigned",
     summary: `Assigned Node "${node.name}" to Controller "${controller.name}"`,
@@ -353,7 +353,7 @@ export async function assignNodeToController(
   for (const id of [node.id, controller.id]) {
     await syncControllerConfigSnapshot(db, env, deps, {
       accountId: params.accountId,
-      controllerId: id,
+      boardInstanceId: id,
       reason: "config_change",
       forcePublish: true,
     }).catch(() => undefined);

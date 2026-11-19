@@ -7,10 +7,10 @@ config HOMECORE_FW_VERSION
         Semantic firmware version embedded into device heartbeats, pairing, and MQTT status.
 
 config HOMECORE_BOARD_SLUG
-    string "Target Board Catalog Slug"
+    string "Target Board Library Profile Slug"
     default "esp32-s3-devkitc-1-n16r8"
     help
-        Board catalog slug identifying exact hardware pinout, flash, and PSRAM layout.
+        Board Library profile slug identifying exact hardware pinout, flash, and PSRAM layout.
 
 config HOMECORE_PARTITION_SCHEME
     string "Partition Scheme Identifier"

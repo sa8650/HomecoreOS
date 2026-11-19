@@ -3,12 +3,12 @@ import {
   ESPNOW_RECONNECT_WINDOW_MS,
   getSensorDriverForMeasurement,
   normalizeConditionGroups,
-  normalizeDeviceRole,
+  normalizeBoardRole,
   normalizeTriggerList,
   type AutomationActionItem,
   type AutomationConditionsConfig,
   type AutomationTriggerConfig,
-  type DeviceRole,
+  type BoardRole,
 } from "@homecoreos/shared";
 import type { WorkerBindings } from "../config/env";
 import { sha256Hex } from "./crypto";
@@ -17,12 +17,12 @@ import { EmqxClient, isEmqxConfigured } from "./emqx";
 
 export interface ConsolidatedControllerConfigSnapshot {
   schema: 2;
-  controllerId: string;
+  boardInstanceId: string;
   revision: number;
   hash: string;
   role: {
     /** "controller" or "node" — one active role at a time. */
-    mode: DeviceRole;
+    mode: BoardRole;
     /** Node only: the Controller that hosts this device. */
     assignedControllerId: string | null;
     /** Node only: the Controller's MQTT-free ESP-NOW identity (MAC derived). */
@@ -125,7 +125,7 @@ function stableJsonStringify(value: unknown): string {
 export async function buildConsolidatedControllerConfig(
   db: DbClient,
   accountId: string,
-  controllerId: string
+  boardInstanceId: string
 ): Promise<{
   snapshot: ConsolidatedControllerConfigSnapshot;
   structuralHash: string;
@@ -145,11 +145,11 @@ export async function buildConsolidatedControllerConfig(
   const [ctrlRes, settingsRes, homesRes, swRes, devRes, senRes, rulesRes, nodesRes] =
     await Promise.all([
       db
-        .from("controllers")
+        .from("board_instances")
         .select(
-          "id,name,home_id,status,mqtt_connected,config_revision,config_hash,last_synced_config_revision,pending_config_sync,heartbeat_interval_sec,device_role,assigned_controller_id,espnow_channel"
+          "id,name,home_id,status,mqtt_connected,config_revision,config_hash,last_synced_config_revision,pending_config_sync,heartbeat_interval_sec,board_role,assigned_controller_id,espnow_channel"
         )
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", accountId)
         .is("deleted_at", null)
         .is("permanently_deleted_at", null)
@@ -167,21 +167,21 @@ export async function buildConsolidatedControllerConfig(
       db
         .from("switches")
         .select("id,name,gpio_pin,is_on,inverted")
-        .eq("controller_id", controllerId)
+        .eq("board_instance_id", boardInstanceId)
         .eq("account_id", accountId)
         .is("deleted_at", null)
         .order("gpio_pin", { ascending: true }),
       db
         .from("devices")
         .select("id,name,device_type,gpio_pin,state,config")
-        .eq("controller_id", controllerId)
+        .eq("board_instance_id", boardInstanceId)
         .eq("account_id", accountId)
         .is("deleted_at", null)
         .order("gpio_pin", { ascending: true }),
       db
         .from("sensors")
         .select("id,name,sensor_type,gpio_pin,unit,last_raw_payload")
-        .eq("controller_id", controllerId)
+        .eq("board_instance_id", boardInstanceId)
         .eq("account_id", accountId)
         .is("deleted_at", null)
         .order("name", { ascending: true }),
@@ -197,10 +197,10 @@ export async function buildConsolidatedControllerConfig(
         .order("id", { ascending: true }),
       // Nodes this device hosts (only meaningful for the Controller role).
       db
-        .from("controllers")
+        .from("board_instances")
         .select("id,name")
         .eq("account_id", accountId)
-        .eq("assigned_controller_id", controllerId)
+        .eq("assigned_controller_id", boardInstanceId)
         .is("deleted_at", null)
         .is("permanently_deleted_at", null)
         .order("created_at", { ascending: true }),
@@ -217,7 +217,7 @@ export async function buildConsolidatedControllerConfig(
     last_synced_config_revision: number;
     pending_config_sync: boolean;
     heartbeat_interval_sec: number;
-    device_role?: string | null;
+    board_role?: string | null;
     assigned_controller_id?: string | null;
     espnow_channel?: number | null;
   } | null;
@@ -400,13 +400,13 @@ export async function buildConsolidatedControllerConfig(
 
   // Unified role configuration. Nodes learn which Controller hosts them and the
   // ESP-NOW peer identity to look for; Controllers learn which Nodes they host.
-  const deviceRole: DeviceRole = normalizeDeviceRole(ctrl?.device_role);
+  const boardRole: BoardRole = normalizeBoardRole(ctrl?.board_role);
   const assignedControllerId = ctrl?.assigned_controller_id ?? null;
   let assignedControllerMac: string | null = null;
   let uplinkChannel: number | null = null;
-  if (deviceRole === "node" && assignedControllerId) {
+  if (boardRole === "node" && assignedControllerId) {
     const { data: uplink } = await db
-      .from("controllers")
+      .from("board_instances")
       .select("id,hardware_uid,reported_board_slug,espnow_channel")
       .eq("id", assignedControllerId)
       .eq("account_id", accountId)
@@ -419,15 +419,15 @@ export async function buildConsolidatedControllerConfig(
   }
   const hostedNodeIds = ((nodesRes?.data ?? []) as Array<{ id: string }>).map((n) => n.id);
   const role = {
-    mode: deviceRole,
-    assignedControllerId: deviceRole === "node" ? assignedControllerId : null,
+    mode: boardRole,
+    assignedControllerId: boardRole === "node" ? assignedControllerId : null,
     assignedControllerMac,
     // A Node's own override wins; otherwise it adopts the Controller's pinned
     // channel. null means "find the Controller on any channel".
     espnowChannel: ctrl?.espnow_channel ?? uplinkChannel ?? null,
     reconnectWindowMs: ESPNOW_RECONNECT_WINDOW_MS,
     linkTimeoutMs: ESPNOW_LINK_TIMEOUT_MS,
-    nodeIds: deviceRole === "controller" ? hostedNodeIds : [],
+    nodeIds: boardRole === "controller" ? hostedNodeIds : [],
   };
 
   const settings = {
@@ -474,7 +474,7 @@ export async function buildConsolidatedControllerConfig(
 
   const snapshot: ConsolidatedControllerConfigSnapshot = {
     schema: 2,
-    controllerId,
+    boardInstanceId,
     revision,
     hash: structuralHash,
     role,
@@ -509,7 +509,7 @@ export async function syncControllerConfigSnapshot(
   deps: { emqxFetch?: CustomFetch },
   params: {
     accountId: string;
-    controllerId: string;
+    boardInstanceId: string;
     reason: "config_change" | "reconnect" | "explicit_sync";
     forcePublish?: boolean;
   }
@@ -517,7 +517,7 @@ export async function syncControllerConfigSnapshot(
   const built = await buildConsolidatedControllerConfig(
     db,
     params.accountId,
-    params.controllerId
+    params.boardInstanceId
   );
 
   const ctrl = built.controllerRow;
@@ -587,7 +587,7 @@ export async function syncControllerConfigSnapshot(
   const isOnline = ctrl.status === "online" || ctrl.mqtt_connected;
   if (!isOnline && params.reason !== "reconnect") {
     await db
-      .from("controllers")
+      .from("board_instances")
       .update({
         ...(hashChanged ? { config_revision: nextRevision } : {}),
         config_hash: built.structuralHash,
@@ -611,7 +611,7 @@ export async function syncControllerConfigSnapshot(
   if (!isEmqxConfigured(env)) {
     if (hashChanged || firstHashInit) {
       await db
-        .from("controllers")
+        .from("board_instances")
         .update({
           ...(hashChanged ? { config_revision: nextRevision, pending_config_sync: true } : {}),
           config_hash: built.structuralHash,
@@ -634,7 +634,7 @@ export async function syncControllerConfigSnapshot(
   const [, credRes] = await Promise.all([
     hashChanged || firstHashInit
       ? db
-          .from("controllers")
+          .from("board_instances")
           .update({
             ...(hashChanged ? { config_revision: nextRevision, pending_config_sync: true } : {}),
             config_hash: built.structuralHash,
@@ -645,7 +645,7 @@ export async function syncControllerConfigSnapshot(
     db
       .from("mqtt_credentials_metadata")
       .select("topic_prefix,status")
-      .eq("controller_id", ctrl.id)
+      .eq("board_instance_id", ctrl.id)
       .eq("account_id", params.accountId)
       .eq("status", "active")
       .maybeSingle(),
@@ -674,7 +674,7 @@ export async function syncControllerConfigSnapshot(
 
   const nowIso = new Date().toISOString();
   await db
-    .from("controllers")
+    .from("board_instances")
     .update({
       config_hash: built.structuralHash,
       last_config_published_at: nowIso,
@@ -697,15 +697,15 @@ export async function syncControllerConfigSnapshot(
 export async function acknowledgeControllerConfigRevision(
   db: DbClient,
   accountId: string,
-  controllerId: string,
+  boardInstanceId: string,
   revision: number
 ): Promise<void> {
   if (!Number.isFinite(revision) || revision <= 0) return;
 
   const { data: ctrl } = await db
-    .from("controllers")
+    .from("board_instances")
     .select("config_revision,last_synced_config_revision")
-    .eq("id", controllerId)
+    .eq("id", boardInstanceId)
     .eq("account_id", accountId)
     .maybeSingle();
 
@@ -719,13 +719,13 @@ export async function acknowledgeControllerConfigRevision(
   const nowIso = new Date().toISOString();
 
   await db
-    .from("controllers")
+    .from("board_instances")
     .update({
       last_synced_config_revision: nextSynced,
       last_config_synced_at: nowIso,
       pending_config_sync: nextSynced < row.config_revision,
     })
-    .eq("id", controllerId)
+    .eq("id", boardInstanceId)
     .eq("account_id", accountId);
 }
 
@@ -737,7 +737,7 @@ export async function syncControllersForAccount(
   reason: "config_change" | "explicit_sync" = "config_change"
 ): Promise<void> {
   const { data: ctrls } = await db
-    .from("controllers")
+    .from("board_instances")
     .select("id")
     .eq("account_id", accountId)
     .is("deleted_at", null)
@@ -747,7 +747,7 @@ export async function syncControllersForAccount(
     try {
       await syncControllerConfigSnapshot(db, env, deps, {
         accountId,
-        controllerId: ctrl.id,
+        boardInstanceId: ctrl.id,
         reason,
       });
     } catch {

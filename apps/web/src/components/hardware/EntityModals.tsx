@@ -73,7 +73,7 @@ export function SwitchEditorModal({
 }) {
   const isEditing = Boolean(switchItem);
   const [name, setName] = useState("");
-  const [controllerId, setControllerId] = useState("");
+  const [boardInstanceId, setControllerId] = useState("");
   const [roomId, setRoomId] = useState(ROOM_NONE);
   const [invertedLogic, setInvertedLogic] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -91,7 +91,7 @@ export function SwitchEditorModal({
       setError(null);
       if (switchItem) {
         setName(switchItem.name);
-        setControllerId(switchItem.controller_id);
+        setControllerId(switchItem.board_instance_id);
         setRoomId(switchItem.room_id ?? ROOM_NONE);
         setInvertedLogic(Boolean(switchItem.inverted));
       } else {
@@ -100,12 +100,12 @@ export function SwitchEditorModal({
         setRoomId(ROOM_NONE);
         setInvertedLogic(false);
       }
-    } else if (!switchItem && !controllerId && ctx.controllers[0]?.id) {
+    } else if (!switchItem && !boardInstanceId && ctx.controllers[0]?.id) {
       setControllerId(ctx.controllers[0].id);
     }
-  }, [open, switchItem, controllerId, ctx.controllers]);
+  }, [open, switchItem, boardInstanceId, ctx.controllers]);
 
-  const selectedCtrl = ctx.controllers.find((c) => c.id === controllerId);
+  const selectedCtrl = ctx.controllers.find((c) => c.id === boardInstanceId);
   const pinField = useGpioPinField({
     open,
     savedPin: switchItem ? switchItem.gpio_pin : undefined,
@@ -125,7 +125,7 @@ export function SwitchEditorModal({
       setError("Switch name is required.");
       return;
     }
-    if (!controllerId) {
+    if (!boardInstanceId) {
       setError("Select a controller.");
       return;
     }
@@ -139,7 +139,7 @@ export function SwitchEditorModal({
     try {
       const payload = {
         name: name.trim(),
-        controllerId,
+        boardInstanceId,
         roomId: roomId === ROOM_NONE ? null : roomId,
         gpioPin: pinField.pinNum,
         invertedLogic,
@@ -192,7 +192,7 @@ export function SwitchEditorModal({
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <FormField id="sw-ctrl" label="Controller">
-              <Select value={controllerId} onValueChange={setControllerId}>
+              <Select value={boardInstanceId} onValueChange={setControllerId}>
                 <SelectTrigger id="sw-ctrl" className="w-full">
                   <SelectValue placeholder="Select controller..." />
                 </SelectTrigger>
@@ -254,7 +254,7 @@ export function SwitchEditorModal({
             </Button>
             <Button
               type="submit"
-              disabled={saving || !controllerId || pinBlocked}
+              disabled={saving || !boardInstanceId || pinBlocked}
             >
               {saving
                 ? "Saving..."
@@ -287,7 +287,7 @@ export function DeviceEditorModal({
   const [deviceType, setDeviceType] = useState<string>(
     SUPPORTED_DEVICE_TYPES[0]
   );
-  const [controllerId, setControllerId] = useState("");
+  const [boardInstanceId, setControllerId] = useState("");
   const [roomId, setRoomId] = useState(ROOM_NONE);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -305,7 +305,7 @@ export function DeviceEditorModal({
       if (deviceItem) {
         setName(deviceItem.name);
         setDeviceType(deviceItem.device_type);
-        setControllerId(deviceItem.controller_id);
+        setControllerId(deviceItem.board_instance_id);
         setRoomId(deviceItem.room_id ?? ROOM_NONE);
       } else {
         setName("");
@@ -313,12 +313,12 @@ export function DeviceEditorModal({
         setControllerId(ctx.controllers[0]?.id ?? "");
         setRoomId(ROOM_NONE);
       }
-    } else if (!deviceItem && !controllerId && ctx.controllers[0]?.id) {
+    } else if (!deviceItem && !boardInstanceId && ctx.controllers[0]?.id) {
       setControllerId(ctx.controllers[0].id);
     }
-  }, [open, deviceItem, controllerId, ctx.controllers]);
+  }, [open, deviceItem, boardInstanceId, ctx.controllers]);
 
-  const selectedCtrl = ctx.controllers.find((c) => c.id === controllerId);
+  const selectedCtrl = ctx.controllers.find((c) => c.id === boardInstanceId);
   const requirement = getRequirementForDeviceType(deviceType);
   const pinField = useGpioPinField({
     open,
@@ -339,7 +339,7 @@ export function DeviceEditorModal({
       setError("Device name is required.");
       return;
     }
-    if (!controllerId) {
+    if (!boardInstanceId) {
       setError("Select a controller.");
       return;
     }
@@ -354,7 +354,7 @@ export function DeviceEditorModal({
       const payload = {
         name: name.trim(),
         deviceType,
-        controllerId,
+        boardInstanceId,
         roomId: roomId === ROOM_NONE ? null : roomId,
         gpioPin: pinField.pinNum,
       };
@@ -422,7 +422,7 @@ export function DeviceEditorModal({
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <FormField id="dev-ctrl" label="Controller">
-              <Select value={controllerId} onValueChange={setControllerId}>
+              <Select value={boardInstanceId} onValueChange={setControllerId}>
                 <SelectTrigger id="dev-ctrl" className="w-full">
                   <SelectValue placeholder="Select controller..." />
                 </SelectTrigger>
@@ -473,7 +473,7 @@ export function DeviceEditorModal({
             </Button>
             <Button
               type="submit"
-              disabled={saving || !controllerId || pinBlocked}
+              disabled={saving || !boardInstanceId || pinBlocked}
             >
               {saving
                 ? "Saving..."
@@ -508,7 +508,7 @@ export function SensorEditorModal({
   const [sensorType, setSensorType] = useState<string>(
     SUPPORTED_SENSOR_TYPES[0]
   );
-  const [controllerId, setControllerId] = useState("");
+  const [boardInstanceId, setControllerId] = useState("");
   const [roomId, setRoomId] = useState(ROOM_NONE);
   const [i2cAddress, setI2cAddress] = useState("");
   const [saving, setSaving] = useState(false);
@@ -531,7 +531,7 @@ export function SensorEditorModal({
       if (sensorItem) {
         setName(sensorItem.name);
         setSensorType(sensorItem.sensor_type);
-        setControllerId(sensorItem.controller_id);
+        setControllerId(sensorItem.board_instance_id);
         setRoomId(sensorItem.room_id ?? ROOM_NONE);
         setI2cAddress(readSensorI2cAddress(sensorItem) ?? "");
       } else {
@@ -550,23 +550,23 @@ export function SensorEditorModal({
         setRoomId(ROOM_NONE);
         setI2cAddress("");
       }
-    } else if (!sensorItem && !controllerId && ctx.controllers[0]?.id) {
+    } else if (!sensorItem && !boardInstanceId && ctx.controllers[0]?.id) {
       setControllerId(ctx.controllers[0].id);
     }
-  }, [open, sensorItem, controllerId, ctx.controllers, ctx.sensorCompatibilityByController]);
+  }, [open, sensorItem, boardInstanceId, ctx.controllers, ctx.sensorCompatibilityByController]);
 
-  const selectedCtrl = ctx.controllers.find((c) => c.id === controllerId);
+  const selectedCtrl = ctx.controllers.find((c) => c.id === boardInstanceId);
 
   useEffect(() => {
-    if (!open || !controllerId || !fetchLiveCompatibility) return;
+    if (!open || !boardInstanceId || !fetchLiveCompatibility) return;
     let cancelled = false;
     setLoadingCompat(true);
-    apiFetch<ControllerSensorCompatibilityReport & { controllerId?: string }>(
-      `/api/controllers/${controllerId}/sensor-compatibility`
+    apiFetch<ControllerSensorCompatibilityReport & { boardInstanceId?: string }>(
+      `/api/board-instances/${boardInstanceId}/sensor-compatibility`
     )
       .then((res) => {
         if (!cancelled && res && Array.isArray(res.compatibleSensors)) {
-          setLiveCompatByCtrl((prev) => ({ ...prev, [controllerId]: res }));
+          setLiveCompatByCtrl((prev) => ({ ...prev, [boardInstanceId]: res }));
         }
       })
       .catch(() => {
@@ -578,11 +578,11 @@ export function SensorEditorModal({
     return () => {
       cancelled = true;
     };
-  }, [open, controllerId, fetchLiveCompatibility]);
+  }, [open, boardInstanceId, fetchLiveCompatibility]);
 
   const activeCompat: ControllerSensorCompatibilityReport | null =
-    (controllerId ? liveCompatByCtrl[controllerId] : undefined) ??
-    (controllerId ? ctx.sensorCompatibilityByController?.get(controllerId) : undefined) ??
+    (boardInstanceId ? liveCompatByCtrl[boardInstanceId] : undefined) ??
+    (boardInstanceId ? ctx.sensorCompatibilityByController?.get(boardInstanceId) : undefined) ??
     selectedCtrl?.sensor_compatibility ??
     null;
 
@@ -595,11 +595,11 @@ export function SensorEditorModal({
     if (!isStillCompatible) {
       if (!isEditing) {
         setSensorType(activeCompat.compatibleSensors[0]?.sensorType ?? "");
-      } else if (sensorItem && controllerId !== sensorItem.controller_id) {
+      } else if (sensorItem && boardInstanceId !== sensorItem.board_instance_id) {
         setSensorType(activeCompat.compatibleSensors[0]?.sensorType ?? "");
       }
     }
-  }, [open, activeCompat, controllerId, isEditing, sensorItem, sensorType]);
+  }, [open, activeCompat, boardInstanceId, isEditing, sensorItem, sensorType]);
 
   const selectableOptions: ControllerSensorOptionReport[] = activeCompat
     ? activeCompat.compatibleSensors
@@ -662,7 +662,7 @@ export function SensorEditorModal({
   const hardwareBindingUnchanged = Boolean(
     isEditing &&
       sensorItem &&
-      controllerId === sensorItem.controller_id &&
+      boardInstanceId === sensorItem.board_instance_id &&
       sensorType === sensorItem.sensor_type &&
       parsedPin === sensorItem.gpio_pin &&
       effectiveI2cAddress === savedI2cAddress
@@ -679,7 +679,7 @@ export function SensorEditorModal({
       setError("Sensor name is required.");
       return;
     }
-    if (!controllerId) {
+    if (!boardInstanceId) {
       setError("Select a controller.");
       return;
     }
@@ -713,7 +713,7 @@ export function SensorEditorModal({
       const payload = {
         name: name.trim(),
         sensorType,
-        controllerId,
+        boardInstanceId,
         roomId: roomId === ROOM_NONE ? null : roomId,
         gpioPin: parsedPin,
         i2cAddress: isI2c ? (i2cAddress.trim() || null) : null,
@@ -775,7 +775,7 @@ export function SensorEditorModal({
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <FormField id="sen-ctrl" label="Controller">
-              <Select value={controllerId} onValueChange={setControllerId}>
+              <Select value={boardInstanceId} onValueChange={setControllerId}>
                 <SelectTrigger id="sen-ctrl" className="w-full">
                   <SelectValue placeholder="Select controller..." />
                 </SelectTrigger>
@@ -920,7 +920,7 @@ export function SensorEditorModal({
               type="submit"
               disabled={
                 saving ||
-                !controllerId ||
+                !boardInstanceId ||
                 !sensorType ||
                 compatibilityBlocked ||
                 pinBlocked

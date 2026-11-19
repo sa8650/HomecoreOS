@@ -126,7 +126,7 @@ describe("Browser USB Firmware Flasher", () => {
         flash_size_mb: 16,
         boot_button_gpio: 0,
       },
-      controllerId: "ctrl-1",
+      boardInstanceId: "ctrl-1",
       eraseAll: false,
       callbacks: {
         onPhase: () => {},
@@ -410,7 +410,7 @@ describe("Browser USB flasher: board verification before writing", () => {
       release,
       targetBoard: options.targetBoard === undefined ? devkit : options.targetBoard,
       candidateBoards: library,
-      controllerId: "ctrl-1",
+      boardInstanceId: "ctrl-1",
       callbacks: {
         onPhase: (phase) => phases.push(phase),
         onProgress: () => {},

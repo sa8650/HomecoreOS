@@ -12,6 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PerspectiveGrid } from "@/components/ui/perspective-grid";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { TechnologyEcosystem } from "@/features/auth/TechnologyEcosystem";
 
 interface AdminAuthPageProps {
   onAuthenticated: () => Promise<void> | void;
@@ -64,7 +65,7 @@ export function AdminAuthPage({
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="relative min-h-screen overflow-hidden bg-background text-foreground">
+      <div className="relative min-h-screen overflow-x-hidden bg-background text-foreground">
         <div className="fixed inset-0 z-0">
           <PerspectiveGrid gridSize={36} fadeRadius={82} />
         </div>
@@ -162,8 +163,9 @@ export function AdminAuthPage({
           </Card>
         </main>
 
-          <footer className="pointer-events-auto mx-auto w-full max-w-5xl text-center text-[11px] text-muted-foreground">
-            Smart Things Platform Operations · Powered by HomecoreOS · Strictly Isolated Admin Sessions
+          <footer className="pointer-events-auto mx-auto flex w-full max-w-5xl flex-col items-center gap-3 text-center text-[11px] text-muted-foreground">
+            <TechnologyEcosystem />
+            <span>Smart Things Platform Operations · Powered by HomecoreOS · Strictly Isolated Admin Sessions</span>
           </footer>
         </div>
       </div>

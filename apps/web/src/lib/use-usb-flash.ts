@@ -65,7 +65,7 @@ export function useUsbFlashSession() {
       targetBoard?: UsbFlashTargetBoardSpec | null;
       /** Board Library profiles to recommend from when the board does not match. */
       candidateBoards?: UsbFlashTargetBoardSpec[];
-      controllerId?: string;
+      boardInstanceId?: string;
       eraseAll?: boolean;
     }) => {
       setFlashing(true);
@@ -89,7 +89,7 @@ export function useUsbFlashSession() {
           release: params.release,
           targetBoard: params.targetBoard,
           candidateBoards: params.candidateBoards,
-          controllerId: params.controllerId,
+          boardInstanceId: params.boardInstanceId,
           eraseAll: params.eraseAll,
           callbacks: {
             onStage: setFlashStage,

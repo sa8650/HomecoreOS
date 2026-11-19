@@ -204,19 +204,19 @@ describe("Regional Timezone Inheritance, 2D Floor Plan Geometry, and Hardware Ro
     expect(r2Updated.layout_config.floorStyle).toBe("tile");
 
     // 5. Hardware room reassignment via PATCH /api/{switches,devices,sensors}/:id
-    const boardsRes = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const boardsRes = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     const boardId = ((await boardsRes.json()) as { boards: Array<{ id: string }> }).boards[0]!.id;
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ name: "Floorplan Hub", boardCatalogId: boardId, homeId }),
+      body: JSON.stringify({ name: "Floorplan Hub", boardProfileId: boardId, homeId }),
     });
     const ctrlId = ((await ctrlRes.json()) as { controller: { id: string } }).controller.id;
 
     const swRes = await req("/api/switches", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ controllerId: ctrlId, name: "Pendant Light", gpioPin: 4 }),
+      body: JSON.stringify({ boardInstanceId: ctrlId, name: "Pendant Light", gpioPin: 4 }),
     });
     const swId = ((await swRes.json()) as { switch: { id: string } }).switch.id;
 

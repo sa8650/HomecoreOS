@@ -345,12 +345,12 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
     );
   }
   async function catalogSlugs(): Promise<string[]> {
-    const res = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const res = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     return ((await res.json()) as { boards: Array<{ slug: string }> }).boards.map((b) => b.slug);
   }
   async function boardCount(): Promise<number> {
     const res = await dbHarness.pg.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM public.board_catalog"
+      "SELECT count(*)::int AS n FROM public.board_profiles"
     );
     return res.rows[0]!.n;
   }
@@ -534,7 +534,7 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
 
   it("recognises a board that was added by hand under another slug", async () => {
     await dbHarness.pg.query(
-      `INSERT INTO public.board_catalog (slug, manufacturer, model, chip_family, chip_variant, flash_size_mb, psram_size_mb)
+      `INSERT INTO public.board_profiles (slug, manufacturer, model, chip_family, chip_variant, flash_size_mb, psram_size_mb)
        VALUES ('xiao-c6-manual', 'Seeed', 'Seeed Studio XIAO ESP32C6', 'esp32c6', 'ESP32-C6', 4, 0)`
     );
     const p = await preview("seeed_xiao");
@@ -642,11 +642,11 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
     const s3 = boards.find((b) => b.slug === "esp32-s3-devkitc-1-n16r8")!;
     const plus = boards.find((b) => b.slug === "seeed-xiao-esp32s3-plus")!;
 
-    const ctrl = await userJson("/api/controllers", { name: "Hall Hub", boardCatalogId: s3.id });
+    const ctrl = await userJson("/api/board-instances", { name: "Hall Hub", boardProfileId: s3.id });
     expect(ctrl.status).toBe(201);
     s3ControllerId = ((await ctrl.json()) as { controller: { id: string } }).controller.id;
     // A user also bookmarks the XIAO Plus.
-    expect((await req(`/api/boards/my-boards/${plus.id}`, { method: "POST", headers: { Cookie: userCookie } })).status).toBeLessThan(300);
+    expect((await req(`/api/board-library/saved-profiles/${plus.id}`, { method: "POST", headers: { Cookie: userCookie } })).status).toBeLessThan(300);
 
     // In use: blocked, with the reason.
     const usageRes = await req(`/api/admin/boards/${s3.id}/usage`, { headers: { Cookie: adminCookie } });
@@ -664,13 +664,13 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
       }
     ).usage;
     expect(plusUsage).toMatchObject({ canRemove: true, savedByAccountCount: 1 });
-    expect(plusUsage.consequences.join(" ")).toMatch(/1 account has it in My Boards/);
+    expect(plusUsage.consequences.join(" ")).toMatch(/1 account has it in Saved Profiles/);
 
     const removed = await req(`/api/admin/boards/${plus.id}`, { method: "DELETE", headers: { Cookie: adminCookie } });
     expect(removed.status).toBe(200);
     expect((await adminBoards()).boards.some((b) => b.id === plus.id)).toBe(false);
     expect(await catalogSlugs()).not.toContain("seeed-xiao-esp32s3-plus");
-    const mine = (await (await req("/api/boards/my-boards", { headers: { Cookie: userCookie } })).json()) as {
+    const mine = (await (await req("/api/board-library/saved-profiles", { headers: { Cookie: userCookie } })).json()) as {
       catalogBoards: Array<{ slug: string }>;
     };
     expect(mine.catalogBoards.some((b) => b.slug === "seeed-xiao-esp32s3-plus")).toBe(false);
@@ -718,8 +718,8 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
   });
 
   it("enforces the pin selector's policy on the server for new assignments", async () => {
-    const device = (gpioPin: number, name: string, controllerId = s3ControllerId, deviceType = "relay") =>
-      userJson("/api/devices", { controllerId, name, deviceType, gpioPin });
+    const device = (gpioPin: number, name: string, boardInstanceId = s3ControllerId, deviceType = "relay") =>
+      userJson("/api/devices", { boardInstanceId, name, deviceType, gpioPin });
 
     // Restricted pins: boot strapping and USB / JTAG.
     const strapping = await device(0, "On Strapping");
@@ -736,13 +736,13 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
 
     // An available pin works; using it twice is a conflict.
     expect((await device(5, "Porch Light")).status).toBe(201);
-    const conflict = await userJson("/api/switches", { controllerId: s3ControllerId, name: "Twin", gpioPin: 5 });
+    const conflict = await userJson("/api/switches", { boardInstanceId: s3ControllerId, name: "Twin", gpioPin: 5 });
     expect(conflict.status).toBe(400);
     expect(((await conflict.json()) as { error: string }).error).toMatch(/GPIO 5 is already assigned/);
 
     // A sensor type that needs ADC cannot sit on a pin without it.
     const analog = await userJson("/api/sensors", {
-      controllerId: s3ControllerId,
+      boardInstanceId: s3ControllerId,
       name: "Soil",
       sensorType: "analog_voltage",
       gpioPin: 21,
@@ -754,7 +754,7 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
     // The same rules apply to an imported XIAO board.
     const c3 = (await adminBoards()).boards.find((b) => b.slug === "seeed-xiao-esp32c3")!;
     await adminJson(`/api/admin/boards/${c3.id}`, { is_available: true }, "PATCH");
-    const ctrl = await userJson("/api/controllers", { name: "XIAO C3 Node", boardCatalogId: c3.id });
+    const ctrl = await userJson("/api/board-instances", { name: "XIAO C3 Node", boardProfileId: c3.id });
     expect(ctrl.status).toBe(201);
     c3ControllerId = ((await ctrl.json()) as { controller: { id: string } }).controller.id;
     const boot = await device(9, "On Boot Button", c3ControllerId);
@@ -768,7 +768,7 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
 
   it("keeps existing assignments on restricted pins working", async () => {
     const created = await userJson("/api/devices", {
-      controllerId: s3ControllerId,
+      boardInstanceId: s3ControllerId,
       name: "Old Relay",
       deviceType: "relay",
       gpioPin: 8,
@@ -781,7 +781,7 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
     // The edit dialog always sends the controller and the pin; nothing changed, so it saves.
     const rename = await userJson(
       `/api/devices/${id}`,
-      { name: "Old Relay (renamed)", controllerId: s3ControllerId, gpioPin: 0 },
+      { name: "Old Relay (renamed)", boardInstanceId: s3ControllerId, gpioPin: 0 },
       "PATCH"
     );
     expect(rename.status).toBe(200);
@@ -866,7 +866,7 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
     const controllerSlug = async () =>
       (
         await dbHarness.pg.query<{ reported_board_slug: string | null; firmware_version: string | null }>(
-          "SELECT reported_board_slug, firmware_version FROM public.controllers WHERE id = $1",
+          "SELECT reported_board_slug, firmware_version FROM public.board_instances WHERE id = $1",
           [s3ControllerId]
         )
       ).rows[0]!;
@@ -874,7 +874,7 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
     // The user cancelled at the warning: nothing was written.
     const stopped = await userJson("/api/firmware/usb-flash-events", {
       releaseId,
-      controllerId: s3ControllerId,
+      boardInstanceId: s3ControllerId,
       status: "failed",
       chipDetected: "ESP32-S3 (QFN56)",
       detectedFlashSizeMb: 8,
@@ -916,7 +916,7 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
     expect(before).not.toBe("esp32-s3-devkitc-1-n16r8");
     const forced = await userJson("/api/firmware/usb-flash-events", {
       releaseId,
-      controllerId: s3ControllerId,
+      boardInstanceId: s3ControllerId,
       status: "succeeded",
       chipDetected: "ESP32-S3 (QFN56)",
       detectedFlashSizeMb: 8,
@@ -934,7 +934,7 @@ describe("Board Library workflows: official import, removal, pin policy, USB aud
     // A normal flash of the matching board still stores what it flashed.
     const matched = await userJson("/api/firmware/usb-flash-events", {
       releaseId,
-      controllerId: s3ControllerId,
+      boardInstanceId: s3ControllerId,
       status: "succeeded",
       chipDetected: "ESP32-S3 (QFN56)",
       detectedFlashSizeMb: 16,

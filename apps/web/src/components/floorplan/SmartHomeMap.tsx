@@ -163,8 +163,8 @@ export const SmartHomeMap = memo(function SmartHomeMap({
   const ctrlById = useMemo(() => new Map(controllers.map((c) => [c.id, c])), [controllers]);
 
   const resolveOnline = useCallback(
-    (isOnline: boolean, controllerId: string) => {
-      const controller = ctrlById.get(controllerId);
+    (isOnline: boolean, boardInstanceId: string) => {
+      const controller = ctrlById.get(boardInstanceId);
       return controller ? isEntityOnline(isOnline, controller) : isOnline;
     },
     [ctrlById]
@@ -222,7 +222,7 @@ export const SmartHomeMap = memo(function SmartHomeMap({
         name: item.name,
         visual: classifySwitch(item.name),
         isOn: item.is_on,
-        online: resolveOnline(item.is_online, item.controller_id),
+        online: resolveOnline(item.is_online, item.board_instance_id),
         pending: Boolean(pendingIds[item.id]),
       });
     }
@@ -236,7 +236,7 @@ export const SmartHomeMap = memo(function SmartHomeMap({
         name: item.name,
         visual: classifyDeviceType(item.device_type, item.name),
         isOn: isDeviceStateActive(item.state),
-        online: resolveOnline(item.is_online, item.controller_id),
+        online: resolveOnline(item.is_online, item.board_instance_id),
         pending: Boolean(pendingIds[item.id]),
         valueLabel: item.state,
       });
@@ -251,7 +251,7 @@ export const SmartHomeMap = memo(function SmartHomeMap({
         name: item.name,
         visual: classifySensorType(item.sensor_type, item.name),
         isOn: item.last_value !== null && item.last_value !== undefined,
-        online: resolveOnline(item.is_online, item.controller_id),
+        online: resolveOnline(item.is_online, item.board_instance_id),
         pending: false,
         valueLabel: formatSensorValue(item),
       });
@@ -1322,8 +1322,8 @@ export const SmartHomeMap = memo(function SmartHomeMap({
           badge={selectedBadge}
           roomName={selectedBadgeRoom?.name ?? "Unassigned"}
           controllerName={
-            (popoverSwitch && ctrlById.get(popoverSwitch.controller_id)?.name) ||
-            (popoverDevice && ctrlById.get(popoverDevice.controller_id)?.name) ||
+            (popoverSwitch && ctrlById.get(popoverSwitch.board_instance_id)?.name) ||
+            (popoverDevice && ctrlById.get(popoverDevice.board_instance_id)?.name) ||
             undefined
           }
           anchor={popoverAnchor}

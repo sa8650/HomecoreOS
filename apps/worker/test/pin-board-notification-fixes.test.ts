@@ -172,7 +172,7 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
     // A. PIN MANAGEMENT: my-boards & custom boards preserve pin metadata
     //    and resolved firmware compatibility; unverified catalog save blocked
     // ------------------------------------------------------------------
-    const customCreateRes = await jsonReq("/api/boards/custom", "POST", ownerCookie, {
+    const customCreateRes = await jsonReq("/api/board-library/custom", "POST", ownerCookie, {
       manufacturer: "Acme",
       model: "Custom S3 Lab",
       revision: "v1.0",
@@ -183,11 +183,11 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
       gpioDefinitions: [makePin(4), makePin(5), makePin(6)],
     });
     expect(customCreateRes.status).toBe(201);
-    const customBoardId = ((await customCreateRes.json()) as { board: { id: string } }).board.id;
+    const customBoardProfileId = ((await customCreateRes.json()) as { board: { id: string } }).board.id;
 
     const [customListRes, myBoardsRes] = await Promise.all([
-      req("/api/boards/custom", { headers: { Cookie: ownerCookie } }),
-      req("/api/boards/my-boards", { headers: { Cookie: ownerCookie } }),
+      req("/api/board-library/custom", { headers: { Cookie: ownerCookie } }),
+      req("/api/board-library/saved-profiles", { headers: { Cookie: ownerCookie } }),
     ]);
     expect(customListRes.status).toBe(200);
     expect(myBoardsRes.status).toBe(200);
@@ -201,21 +201,21 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
       }>;
     };
     const myBoards = (await myBoardsRes.json()) as {
-      customBoards: Array<{
+      customBoardProfiles: Array<{
         id: string;
         supports_ble: boolean;
         gpio_definitions: GpioPinDefinition[];
       }>;
     };
 
-    const fetchedCustom = customList.boards.find((b) => b.id === customBoardId)!;
+    const fetchedCustom = customList.boards.find((b) => b.id === customBoardProfileId)!;
     expect(fetchedCustom.supports_ble).toBe(true);
     expect(fetchedCustom.partition_scheme).toBeTruthy();
     expect(fetchedCustom.gpio_definitions[0]?.board_pin_name).toBe("D4");
     expect(fetchedCustom.gpio_definitions[0]?.header_side).toBe("left");
     expect(fetchedCustom.gpio_definitions[0]?.board_note).toBe("Custom note 4");
 
-    const fetchedMyCustom = myBoards.customBoards.find((b) => b.id === customBoardId)!;
+    const fetchedMyCustom = myBoards.customBoardProfiles.find((b) => b.id === customBoardProfileId)!;
     expect(fetchedMyCustom.supports_ble).toBe(true);
     expect(fetchedMyCustom.gpio_definitions[0]?.board_pin_name).toBe("D4");
     expect(fetchedMyCustom.gpio_definitions[0]?.header_position).toBe(5);
@@ -241,12 +241,12 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
 
     // Force is_available=true in DB to prove POST /my-boards/:catalogId ALSO checks verification_status
     await db
-      .from("board_catalog")
+      .from("board_profiles")
       .update({ is_available: true })
       .eq("id", unverifiedBoardId);
 
     const saveUnverifiedRes = await jsonReq(
-      `/api/boards/my-boards/${unverifiedBoardId}`,
+      `/api/board-library/saved-profiles/${unverifiedBoardId}`,
       "POST",
       ownerCookie
     );
@@ -254,7 +254,7 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
 
     // Reset back to hidden
     await db
-      .from("board_catalog")
+      .from("board_profiles")
       .update({ is_available: false })
       .eq("id", unverifiedBoardId);
 
@@ -272,10 +272,10 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
     const roomId = ((await roomRes.json()) as { room: { id: string } }).room.id;
 
     // Pair controller on our custom board and assign a device to GPIO 4
-    const pairCustomRes = await jsonReq("/api/controllers", "POST", ownerCookie, {
+    const pairCustomRes = await jsonReq("/api/board-instances", "POST", ownerCookie, {
       homeId,
       roomId,
-      customBoardId,
+      customBoardProfileId,
       name: "Custom Lab Hub",
     });
     expect(pairCustomRes.status).toBe(201);
@@ -284,7 +284,7 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
     ).controller.id;
 
     const devOnPin4Res = await jsonReq("/api/devices", "POST", ownerCookie, {
-      controllerId: customCtrlId,
+      boardInstanceId: customCtrlId,
       roomId,
       name: "Lab Relay",
       deviceType: "relay",
@@ -304,7 +304,7 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
 
     // Removing GPIO 4 from the custom board must be blocked with 409!
     const breakCustomPinRes = await jsonReq(
-      `/api/boards/custom/${customBoardId}`,
+      `/api/board-library/custom/${customBoardProfileId}`,
       "PATCH",
       ownerCookie,
       {
@@ -316,7 +316,7 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
 
     // Changing chipFamily while controller is active must be blocked with 409!
     const breakChipRes = await jsonReq(
-      `/api/boards/custom/${customBoardId}`,
+      `/api/board-library/custom/${customBoardProfileId}`,
       "PATCH",
       ownerCookie,
       {
@@ -329,7 +329,7 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
 
     // Adding GPIO 7 while keeping GPIO 4 valid must succeed!
     const safeCustomPatchRes = await jsonReq(
-      `/api/boards/custom/${customBoardId}`,
+      `/api/board-library/custom/${customBoardProfileId}`,
       "PATCH",
       ownerCookie,
       {
@@ -380,10 +380,10 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
     expect(verifiedBoardBody.board.gpio_definitions).toHaveLength(2);
 
     // Pair controller on catalog board, assign GPIO 4, then verify admin PATCH removing GPIO 4 returns 409
-    const pairCatalogRes = await jsonReq("/api/controllers", "POST", ownerCookie, {
+    const pairCatalogRes = await jsonReq("/api/board-instances", "POST", ownerCookie, {
       homeId,
       roomId,
-      boardCatalogId: unverifiedBoardId,
+      boardProfileId: unverifiedBoardId,
       name: "Catalog Guard Hub",
     });
     expect(pairCatalogRes.status).toBe(201);
@@ -392,7 +392,7 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
     ).controller.id;
 
     const catDevRes = await jsonReq("/api/devices", "POST", ownerCookie, {
-      controllerId: catalogCtrlId,
+      boardInstanceId: catalogCtrlId,
       roomId,
       name: "Catalog Relay",
       deviceType: "relay",
@@ -424,7 +424,7 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
     expect(s3Board).toBeDefined();
 
     await db
-      .from("board_catalog")
+      .from("board_profiles")
       .update({
         verification_status: "needs_verification",
         image_url: "https://cdn.example.com/custom-s3-photo.png",
@@ -436,7 +436,7 @@ describe("Pin Management, Board Import, Board Update, and Notification Fixes", (
     expect(updateRunRes.status).toBe(200);
 
     const { data: s3After } = await db
-      .from("board_catalog")
+      .from("board_profiles")
       .select("verification_status,image_url,revision_notes")
       .eq("id", s3Board.id)
       .single();

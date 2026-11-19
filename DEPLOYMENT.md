@@ -54,7 +54,7 @@ HomecoreOS uses Supabase **strictly as PostgreSQL**. Do **not** enable Supabase 
 3. Open **SQL Editor** in the Supabase dashboard.
 4. Apply the single consolidated migration, `database/migrations/0001_init.sql`:
    - Paste it into the SQL Editor (or `psql "$DATABASE_URL" -f database/migrations/0001_init.sql`) and verify no errors appear.
-   - It creates every platform table, foreign key, index, trigger and atomic RPC function, seeds the platform settings row (including `default_timezone`) and the full board catalog with GPIO definitions, and keeps RLS **disabled** while revoking direct `anon`/`authenticated` PostgREST access.
+   - It creates every platform table, foreign key, index, trigger and atomic RPC function, seeds the platform settings row (including `default_timezone`) and the full Board Library with GPIO definitions, and keeps RLS **disabled** while revoking direct `anon`/`authenticated` PostgREST access.
    - The file is the merged result of the historical `0001`–`0021` chain; `npm run db:verify` replays it against a throwaway Postgres and fails if the schema drifts from `database/verify/schema-snapshot.json`.
 5. **Initial Platform Administrator**:
    - After deploying the Cloudflare Worker, open HomecoreOS in your browser and go to `/admin` (or click **Platform Admin Console** on the sign-in screen). When zero platform administrators exist, the initial root bootstrap form is presented automatically.

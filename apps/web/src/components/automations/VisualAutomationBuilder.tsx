@@ -891,15 +891,15 @@ export function VisualAutomationBuilder({
   }, []);
 
   const switchControllerById = useMemo(
-    () => new Map(switches.map((s) => [s.id, s.controller_id])),
+    () => new Map(switches.map((s) => [s.id, s.board_instance_id])),
     [switches]
   );
   const deviceControllerById = useMemo(
-    () => new Map(devices.map((d) => [d.id, d.controller_id])),
+    () => new Map(devices.map((d) => [d.id, d.board_instance_id])),
     [devices]
   );
   const sensorControllerById = useMemo(
-    () => new Map(sensors.map((s) => [s.id, s.controller_id])),
+    () => new Map(sensors.map((s) => [s.id, s.board_instance_id])),
     [sensors]
   );
 
@@ -914,8 +914,8 @@ export function VisualAutomationBuilder({
     [graph, switchControllerById, deviceControllerById, sensorControllerById]
   );
 
-  const localCtrlName = localCapability.controllerId
-    ? controllers.find((c) => c.id === localCapability.controllerId)?.name ?? "Controller"
+  const localCtrlName = localCapability.boardInstanceId
+    ? controllers.find((c) => c.id === localCapability.boardInstanceId)?.name ?? "Controller"
     : null;
 
   const deleteNodeById = useCallback(

@@ -47,11 +47,11 @@ export function createBoardRoutes() {
     const [settingsRes, boardsRes, releasesRes, gpiosRes] = await Promise.all([
       db
         .from("platform_settings")
-        .select("board_catalog_enabled")
+        .select("board_library_enabled")
         .eq("id", 1)
         .maybeSingle(),
       db
-        .from("board_catalog")
+        .from("board_profiles")
         .select("*")
         .eq("is_available", true)
         .eq("verification_status", "verified")
@@ -67,14 +67,14 @@ export function createBoardRoutes() {
       includeGpio
         ? db
             .from("board_gpio_definitions")
-            .select("board_catalog_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions")
-            .not("board_catalog_id", "is", null)
+            .select("board_profile_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions")
+            .not("board_profile_id", "is", null)
             .order("pin", { ascending: true })
         : Promise.resolve({ data: null }),
     ]);
 
     const settings = settingsRes.data;
-    if (settings && (settings as { board_catalog_enabled: boolean }).board_catalog_enabled === false) {
+    if (settings && (settings as { board_library_enabled: boolean }).board_library_enabled === false) {
       return c.json({ boards: [], catalogDisabled: true });
     }
 
@@ -135,10 +135,10 @@ export function createBoardRoutes() {
 
     const gpioByBoard = new Map<string, unknown[]>();
     if (includeGpio && gpiosRes.data) {
-      for (const g of gpiosRes.data as Array<{ board_catalog_id: string }>) {
-        const arr = gpioByBoard.get(g.board_catalog_id) ?? [];
+      for (const g of gpiosRes.data as Array<{ board_profile_id: string }>) {
+        const arr = gpioByBoard.get(g.board_profile_id) ?? [];
         arr.push(g);
-        gpioByBoard.set(g.board_catalog_id, arr);
+        gpioByBoard.set(g.board_profile_id, arr);
       }
     }
 
@@ -184,57 +184,57 @@ export function createBoardRoutes() {
     return c.json({ boards: enriched });
   });
 
-  app.get("/my-boards", async (c) => {
+  app.get("/saved-profiles", async (c) => {
     const auth = c.get("userAuth")!;
     const db = c.get("db");
 
     const [savedRes, ctrlRes, customRes] = await Promise.all([
       db
         .from("account_saved_boards")
-        .select("board_catalog_id")
+        .select("board_profile_id")
         .eq("account_id", auth.accountId),
       db
-        .from("controllers")
-        .select("board_catalog_id")
+        .from("board_instances")
+        .select("board_profile_id")
         .eq("account_id", auth.accountId)
         .is("deleted_at", null),
       db
-        .from("custom_boards")
+        .from("custom_board_profiles")
         .select("*")
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .order("created_at", { ascending: false }),
     ]);
 
-    const catalogIdSet = new Set<string>();
-    for (const s of (savedRes.data ?? []) as Array<{ board_catalog_id: string }>) {
-      catalogIdSet.add(s.board_catalog_id);
+    const profileIdSet = new Set<string>();
+    for (const s of (savedRes.data ?? []) as Array<{ board_profile_id: string }>) {
+      profileIdSet.add(s.board_profile_id);
     }
-    for (const ct of (ctrlRes.data ?? []) as Array<{ board_catalog_id: string | null }>) {
-      if (ct.board_catalog_id) catalogIdSet.add(ct.board_catalog_id);
+    for (const ct of (ctrlRes.data ?? []) as Array<{ board_profile_id: string | null }>) {
+      if (ct.board_profile_id) profileIdSet.add(ct.board_profile_id);
     }
 
     let catalogBoards: Array<Record<string, unknown>> = [];
-    const catalogIds = Array.from(catalogIdSet);
-    if (catalogIds.length > 0) {
+    const profileIds = Array.from(profileIdSet);
+    if (profileIds.length > 0) {
       const [bRes, gRes] = await Promise.all([
         db
-          .from("board_catalog")
+          .from("board_profiles")
           .select("*")
-          .in("id", catalogIds)
+          .in("id", profileIds)
           .is("deleted_at", null),
         db
           .from("board_gpio_definitions")
-          .select("board_catalog_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions")
-          .in("board_catalog_id", catalogIds)
+          .select("board_profile_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions")
+          .in("board_profile_id", profileIds)
           .order("pin", { ascending: true }),
       ]);
 
       const gpioMap = new Map<string, unknown[]>();
-      for (const g of (gRes.data ?? []) as Array<{ board_catalog_id: string }>) {
-        const arr = gpioMap.get(g.board_catalog_id) ?? [];
+      for (const g of (gRes.data ?? []) as Array<{ board_profile_id: string }>) {
+        const arr = gpioMap.get(g.board_profile_id) ?? [];
         arr.push(g);
-        gpioMap.set(g.board_catalog_id, arr);
+        gpioMap.set(g.board_profile_id, arr);
       }
 
       catalogBoards = ((bRes.data ?? []) as Array<Record<string, unknown>>).map(
@@ -249,22 +249,22 @@ export function createBoardRoutes() {
 
     const customBoardsRaw = (customRes.data ?? []) as Array<Record<string, unknown>>;
     const customIds = customBoardsRaw.map((b) => String(b.id));
-    let customBoards = customBoardsRaw;
+    let customBoardProfiles = customBoardsRaw;
     if (customIds.length > 0) {
       const { data: cg } = await db
         .from("board_gpio_definitions")
         .select(
-          "custom_board_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions"
+          "custom_board_profile_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions"
         )
-        .in("custom_board_id", customIds)
+        .in("custom_board_profile_id", customIds)
         .order("pin", { ascending: true });
       const cgMap = new Map<string, unknown[]>();
-      for (const g of (cg ?? []) as Array<{ custom_board_id: string }>) {
-        const arr = cgMap.get(g.custom_board_id) ?? [];
+      for (const g of (cg ?? []) as Array<{ custom_board_profile_id: string }>) {
+        const arr = cgMap.get(g.custom_board_profile_id) ?? [];
         arr.push(g);
-        cgMap.set(g.custom_board_id, arr);
+        cgMap.set(g.custom_board_profile_id, arr);
       }
-      customBoards = customBoardsRaw.map((b) => ({
+      customBoardProfiles = customBoardsRaw.map((b) => ({
         ...b,
         ...resolveBoardFirmwareCompatibility(b as unknown as BoardProfileSpec),
         source: "custom",
@@ -274,22 +274,22 @@ export function createBoardRoutes() {
 
     return c.json({
       catalogBoards,
-      customBoards,
+      customBoardProfiles,
     });
   });
 
   app.post(
-    "/my-boards/:catalogId",
+    "/saved-profiles/:profileId",
     requireStaffRole("owner", "administrator"),
     async (c) => {
       const auth = c.get("userAuth")!;
       const db = c.get("db");
-      const catalogId = c.req.param("catalogId");
+      const profileId = c.req.param("profileId");
 
       const { data: exists } = await db
-        .from("board_catalog")
+        .from("board_profiles")
         .select("id")
-        .eq("id", catalogId)
+        .eq("id", profileId)
         .eq("is_available", true)
         .eq("verification_status", "verified")
         .is("deleted_at", null)
@@ -300,9 +300,9 @@ export function createBoardRoutes() {
       await db.from("account_saved_boards").upsert(
         {
           account_id: auth.accountId,
-          board_catalog_id: catalogId,
+          board_profile_id: profileId,
         },
-        { onConflict: "account_id,board_catalog_id" }
+        { onConflict: "account_id,board_profile_id" }
       );
 
       return c.json({ ok: true }, 201);
@@ -310,7 +310,7 @@ export function createBoardRoutes() {
   );
 
   app.delete(
-    "/my-boards/:catalogId",
+    "/saved-profiles/:profileId",
     requireStaffRole("owner", "administrator"),
     async (c) => {
       const auth = c.get("userAuth")!;
@@ -319,7 +319,7 @@ export function createBoardRoutes() {
         .from("account_saved_boards")
         .delete()
         .eq("account_id", auth.accountId)
-        .eq("board_catalog_id", c.req.param("catalogId"));
+        .eq("board_profile_id", c.req.param("profileId"));
       return c.json({ ok: true });
     }
   );
@@ -329,7 +329,7 @@ export function createBoardRoutes() {
     const auth = c.get("userAuth")!;
     const db = c.get("db");
     const { data } = await db
-      .from("custom_boards")
+      .from("custom_board_profiles")
       .select("*")
       .eq("account_id", auth.accountId)
       .is("deleted_at", null)
@@ -342,16 +342,16 @@ export function createBoardRoutes() {
     const { data: gpios } = await db
       .from("board_gpio_definitions")
       .select(
-        "custom_board_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions"
+        "custom_board_profile_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions"
       )
-      .in("custom_board_id", ids)
+      .in("custom_board_profile_id", ids)
       .order("pin", { ascending: true });
 
     const map = new Map<string, unknown[]>();
-    for (const g of (gpios ?? []) as Array<{ custom_board_id: string }>) {
-      const arr = map.get(g.custom_board_id) ?? [];
+    for (const g of (gpios ?? []) as Array<{ custom_board_profile_id: string }>) {
+      const arr = map.get(g.custom_board_profile_id) ?? [];
       arr.push(g);
-      map.set(g.custom_board_id, arr);
+      map.set(g.custom_board_profile_id, arr);
     }
 
     return c.json({
@@ -405,7 +405,7 @@ export function createBoardRoutes() {
       const db = c.get("db");
       const compat = resolveBoardFirmwareCompatibility(spec);
       const { data: board, error } = await db
-        .from("custom_boards")
+        .from("custom_board_profiles")
         .insert({
           account_id: auth.accountId,
           slug,
@@ -447,7 +447,7 @@ export function createBoardRoutes() {
       const boardId = (board as { id: string }).id;
       const { error: gpioErr } = await db.from("board_gpio_definitions").insert(
         spec.gpio_definitions.map((g) => ({
-          custom_board_id: boardId,
+          custom_board_profile_id: boardId,
           pin: g.pin,
           label: g.label,
           board_pin_name: g.board_pin_name ?? null,
@@ -459,7 +459,7 @@ export function createBoardRoutes() {
         }))
       );
       if (gpioErr) {
-        await db.from("custom_boards").delete().eq("id", boardId);
+        await db.from("custom_board_profiles").delete().eq("id", boardId);
         return c.json(
           { error: `Failed to save custom board GPIO definitions: ${gpioErr.message}` },
           500
@@ -470,7 +470,7 @@ export function createBoardRoutes() {
         accountId: auth.accountId,
         actorUserId: auth.userId,
         category: "account",
-        action: "custom_board.created",
+        action: "custom_board_profiles.created",
         summary: `Created validated custom board "${spec.manufacturer} ${spec.model}"`,
       });
 
@@ -501,7 +501,7 @@ export function createBoardRoutes() {
       const boardId = c.req.param("id");
 
       const { data: existing } = await db
-        .from("custom_boards")
+        .from("custom_board_profiles")
         .select("id,slug,chip_family")
         .eq("id", boardId)
         .eq("account_id", auth.accountId)
@@ -532,7 +532,7 @@ export function createBoardRoutes() {
       }
 
       const usageCheck = await validateBoardGpioUpdateAgainstControllers(db, {
-        target: { customBoardId: boardId },
+        target: { customBoardProfileId: boardId },
         nextGpios: spec.gpio_definitions,
         chipFamilyChanged: existingRow.chip_family !== spec.chip_family,
       });
@@ -545,7 +545,7 @@ export function createBoardRoutes() {
 
       const gpioSwap = await replaceBoardGpioDefinitions(
         db,
-        { customBoardId: boardId },
+        { customBoardProfileId: boardId },
         spec.gpio_definitions
       );
       if (!gpioSwap.ok) {
@@ -554,7 +554,7 @@ export function createBoardRoutes() {
 
       const compat = resolveBoardFirmwareCompatibility(spec);
       const { data: updated, error } = await db
-        .from("custom_boards")
+        .from("custom_board_profiles")
         .update({
           manufacturer: spec.manufacturer,
           model: spec.model,
@@ -609,10 +609,10 @@ export function createBoardRoutes() {
       const boardId = c.req.param("id");
 
       const { count } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("id", { count: "exact", head: true })
         .eq("account_id", auth.accountId)
-        .eq("custom_board_id", boardId)
+        .eq("custom_board_profile_id", boardId)
         .is("deleted_at", null);
 
       if ((count ?? 0) > 0) {
@@ -623,7 +623,7 @@ export function createBoardRoutes() {
       }
 
       const { data } = await db
-        .from("custom_boards")
+        .from("custom_board_profiles")
         .update({ deleted_at: new Date().toISOString() })
         .eq("id", boardId)
         .eq("account_id", auth.accountId)

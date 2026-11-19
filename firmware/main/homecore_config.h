@@ -105,9 +105,9 @@ static inline void hc_copy_str(char *dst, size_t dst_cap, const char *src) {
 
 /** Default when no role was ever received: every legacy device is a Controller. */
 #ifdef CONFIG_HOMECORE_ROLE_DEFAULT
-#define HOMECORE_DEFAULT_DEVICE_ROLE (strcmp(CONFIG_HOMECORE_ROLE_DEFAULT, "node") == 0 ? 1 : 0)
+#define HOMECORE_DEFAULT_BOARD_ROLE (strcmp(CONFIG_HOMECORE_ROLE_DEFAULT, "node") == 0 ? 1 : 0)
 #else
-#define HOMECORE_DEFAULT_DEVICE_ROLE 0
+#define HOMECORE_DEFAULT_BOARD_ROLE 0
 #endif
 /** 0 = the Node searches all channels for its Controller. */
 #define HOMECORE_ESPNOW_CHANNEL_ANY 0
@@ -135,7 +135,7 @@ typedef struct homecore_config_s {
 
     bool paired;
     char account_id[48];
-    char controller_id[48];
+    char board_instance_id[48];
     char mqtt_host[128];
     uint16_t mqtt_port;
     bool mqtt_tls;
@@ -154,7 +154,7 @@ typedef struct homecore_config_s {
     // role is chosen at runtime by the user in the web console and delivered in
     // the config snapshot. It is persisted so a reboot keeps the device's role,
     // and a 10s BOOT factory reset erases it (device returns to Controller).
-    uint8_t device_role;                 // hc_role_t (0 = controller, 1 = node)
+    uint8_t board_role;                 // hc_role_t (0 = controller, 1 = node)
     char assigned_controller_id[48];     // Node: the Controller that hosts it
     char assigned_controller_mac[20];    // Node: that Controller's ESP-NOW peer MAC
     uint8_t espnow_channel;              // 0 = follow the Wi-Fi STA channel

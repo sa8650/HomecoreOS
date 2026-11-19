@@ -4,7 +4,7 @@ import {
   ESPNOW_NODE_STALE_MS,
   isDeviceStateActive,
   isNewerFirmwareVersion,
-  normalizeDeviceRole,
+  normalizeBoardRole,
 } from "@homecoreos/shared";
 import { inspectConfiguration, requireEmqxConfig } from "../config/env";
 import { recordActivity } from "../lib/audit";
@@ -106,7 +106,7 @@ const heartbeatSchema = z
     driverManifestHash: z.string().trim().max(128).optional(),
     dmh: z.string().trim().max(128).optional(),
     // Unified Controller / Node role reporting
-    deviceRole: z.enum(["controller", "node"]).optional(),
+    boardRole: z.enum(["controller", "node"]).optional(),
     role: z.enum(["controller", "node"]).optional(),
     commMode: z.enum(["espnow", "wifi_mqtt", "offline"]).optional(),
     cm: z.enum(["espnow", "wifi_mqtt", "offline"]).optional(),
@@ -145,7 +145,7 @@ const heartbeatSchema = z
     otaPendingVerify: d.otaPendingVerify ?? d.otaPending ?? d.op ?? false,
     configRevision: d.configRevision ?? d.rev,
     driverManifestHash: d.driverManifestHash ?? d.dmh,
-    deviceRole: d.deviceRole ?? d.role,
+    boardRole: d.boardRole ?? d.role,
     commMode: d.commMode ?? d.cm,
     linkState: d.linkState ?? d.ls,
     nodes: d.nodes,
@@ -238,7 +238,7 @@ function versionsExactMatch(
 interface ClaimedPairingRow {
   pairing_code_id: string;
   account_id: string;
-  controller_id: string;
+  board_instance_id: string;
   account_status: string;
   purpose?: "initial_pair" | "recovery";
   requires_physical_confirmation?: boolean;
@@ -279,11 +279,11 @@ export function createDeviceApiRoutes() {
     const db = c.get("db");
 
     const { data: ctrl } = await db
-      .from("controllers")
+      .from("board_instances")
       .select(
         "id,name,account_id,home_id,board_model,chip_variant,firmware_version,status,pairing_status,wifi_connected,mqtt_connected,config_revision,config_hash"
       )
-      .eq("id", dev.controllerId)
+      .eq("id", dev.boardInstanceId)
       .eq("account_id", dev.accountId)
       .is("deleted_at", null)
       .maybeSingle();
@@ -293,16 +293,16 @@ export function createDeviceApiRoutes() {
     const built = await buildConsolidatedControllerConfig(
       db,
       dev.accountId,
-      dev.controllerId
+      dev.boardInstanceId
     );
     const snapshot = built.snapshot;
 
     const ctrlMeta = ctrl as { config_hash?: string | null };
     if (!ctrlMeta.config_hash) {
       await db
-        .from("controllers")
+        .from("board_instances")
         .update({ config_hash: snapshot.hash })
-        .eq("id", dev.controllerId)
+        .eq("id", dev.boardInstanceId)
         .eq("account_id", dev.accountId);
     }
 
@@ -317,7 +317,7 @@ export function createDeviceApiRoutes() {
       await acknowledgeControllerConfigRevision(
         db,
         dev.accountId,
-        dev.controllerId,
+        dev.boardInstanceId,
         snapshot.revision
       );
       return c.json({
@@ -330,7 +330,7 @@ export function createDeviceApiRoutes() {
     await acknowledgeControllerConfigRevision(
       db,
       dev.accountId,
-      dev.controllerId,
+      dev.boardInstanceId,
       snapshot.revision
     );
 
@@ -349,7 +349,7 @@ export function createDeviceApiRoutes() {
     await acknowledgeControllerConfigRevision(
       db,
       dev.accountId,
-      dev.controllerId,
+      dev.boardInstanceId,
       parsed.data.revision
     );
     return c.json({ ok: true, revision: parsed.data.revision });
@@ -367,17 +367,17 @@ export function createDeviceApiRoutes() {
 
     const [{ data: prevRow }, { data: latestHistRow }] = await Promise.all([
       db
-        .from("controllers")
+        .from("board_instances")
         .select(
-          "id,name,status,mqtt_connected,device_role,firmware_version,config_revision,last_synced_config_revision,pending_config_sync"
+          "id,name,status,mqtt_connected,board_role,firmware_version,config_revision,last_synced_config_revision,pending_config_sync"
         )
-        .eq("id", dev.controllerId)
+        .eq("id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .maybeSingle(),
       db
         .from("firmware_update_history")
         .select("id,release_id,update_type,target_version,status,started_at,completed_at")
-        .eq("controller_id", dev.controllerId)
+        .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .order("started_at", { ascending: false })
         .limit(1)
@@ -389,7 +389,7 @@ export function createDeviceApiRoutes() {
       name: string;
       status: string;
       mqtt_connected: boolean;
-      device_role?: string | null;
+      board_role?: string | null;
       firmware_version?: string | null;
       config_revision?: number;
       last_synced_config_revision?: number;
@@ -424,14 +424,14 @@ export function createDeviceApiRoutes() {
     if (parsed.data.firmwareVersion !== undefined && !parsed.data.otaPendingVerify) {
       updates.firmware_version = parsed.data.firmwareVersion;
       const { data: ctrlBoardRef } = await db
-        .from("controllers")
-        .select("board_catalog_id,custom_board_id")
-        .eq("id", dev.controllerId)
+        .from("board_instances")
+        .select("board_profile_id,custom_board_profile_id")
+        .eq("id", dev.boardInstanceId)
         .maybeSingle();
       if (ctrlBoardRef) {
         const boardSpec = await resolveControllerBoardSpec(
           db,
-          ctrlBoardRef as { board_catalog_id: string | null; custom_board_id: string | null }
+          ctrlBoardRef as { board_profile_id: string | null; custom_board_profile_id: string | null }
         );
         const matchedRelId = await findMatchingFirmwareReleaseIdForDevice(
           db,
@@ -472,15 +472,15 @@ export function createDeviceApiRoutes() {
     // confirm what the console told it to run, never promote (or demote) itself.
     // The persisted role is the single source of truth; a mismatching report is
     // ignored and corrected on the next config snapshot.
-    const storedRole = normalizeDeviceRole(prev?.device_role);
+    const storedRole = normalizeBoardRole(prev?.board_role);
     if (
-      parsed.data.deviceRole !== undefined &&
-      parsed.data.deviceRole !== storedRole
+      parsed.data.boardRole !== undefined &&
+      parsed.data.boardRole !== storedRole
     ) {
       // Deliberately ignored: the device keeps running the role this account
       // assigned. The next config snapshot re-delivers the correct role.
       console.warn(
-        `[device-api] ignoring self-reported role "${parsed.data.deviceRole}" from device ${dev.controllerId} (stored role: ${storedRole})`
+        `[device-api] ignoring self-reported role "${parsed.data.boardRole}" from device ${dev.boardInstanceId} (stored role: ${storedRole})`
       );
     }
     // `comm_mode` / `node_link_state` describe a Node's uplink only; a Controller
@@ -498,9 +498,9 @@ export function createDeviceApiRoutes() {
     }
 
     await db
-      .from("controllers")
+      .from("board_instances")
       .update(updates)
-      .eq("id", dev.controllerId)
+      .eq("id", dev.boardInstanceId)
       .eq("account_id", dev.accountId);
 
     // A Controller reports which Nodes it currently hosts over ESP-NOW. Those
@@ -513,7 +513,7 @@ export function createDeviceApiRoutes() {
       const linkedIds = roster.filter((n) => (n.link ?? "linked") === "linked").map((n) => n.id);
       if (linkedIds.length > 0) {
         await db
-          .from("controllers")
+          .from("board_instances")
           .update({
             status: "online",
             comm_mode: "espnow",
@@ -523,18 +523,18 @@ export function createDeviceApiRoutes() {
             last_communication_at: now,
           })
           .eq("account_id", dev.accountId)
-          .eq("assigned_controller_id", dev.controllerId)
-          .eq("device_role", "node")
+          .eq("assigned_controller_id", dev.boardInstanceId)
+          .eq("board_role", "node")
           .in("id", linkedIds);
       }
 
       const reportedIds = new Set(roster.map((n) => n.id));
       const { data: assignedNodes } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("id,node_link_state,node_last_linked_at")
         .eq("account_id", dev.accountId)
-        .eq("assigned_controller_id", dev.controllerId)
-        .eq("device_role", "node")
+        .eq("assigned_controller_id", dev.boardInstanceId)
+        .eq("board_role", "node")
         .is("deleted_at", null);
 
       const staleCutoff = Date.now() - ESPNOW_NODE_STALE_MS;
@@ -552,7 +552,7 @@ export function createDeviceApiRoutes() {
 
       if (missing.length > 0) {
         await db
-          .from("controllers")
+          .from("board_instances")
           .update({ node_link_state: "controller_lost" })
           .eq("account_id", dev.accountId)
           .in(
@@ -588,7 +588,7 @@ export function createDeviceApiRoutes() {
                 progress_percent: 96,
               })
               .eq("id", latestHist.id)
-              .eq("controller_id", dev.controllerId)
+              .eq("board_instance_id", dev.boardInstanceId)
               .in("status", [...ACTIVE_OTA_STATUSES]);
           } else {
             const { data: transitioned } = await db
@@ -600,14 +600,14 @@ export function createDeviceApiRoutes() {
                 completed_at: now,
               })
               .eq("id", latestHist.id)
-              .eq("controller_id", dev.controllerId)
+              .eq("board_instance_id", dev.boardInstanceId)
               .in("status", [...ACTIVE_OTA_STATUSES])
               .select("id")
               .maybeSingle();
             if (transitioned) {
               await recordActivity(db, {
                 accountId: dev.accountId,
-                controllerId: dev.controllerId,
+                boardInstanceId: dev.boardInstanceId,
                 category: "firmware",
                 action: "firmware.ota_succeeded",
                 summary: `Firmware update succeeded: ${ctrlName} is running v${reportedFw}`,
@@ -625,7 +625,7 @@ export function createDeviceApiRoutes() {
                 dedupWindowSeconds: 86400,
                 metadata: {
                   historyId: latestHist.id,
-                  controllerId: dev.controllerId,
+                  boardInstanceId: dev.boardInstanceId,
                   status: "succeeded",
                   firmwareVersion: reportedFw,
                 },
@@ -646,14 +646,14 @@ export function createDeviceApiRoutes() {
               completed_at: now,
             })
             .eq("id", latestHist.id)
-            .eq("controller_id", dev.controllerId)
+            .eq("board_instance_id", dev.boardInstanceId)
             .in("status", [...ACTIVE_OTA_STATUSES])
             .select("id")
             .maybeSingle();
           if (transitioned) {
             await recordActivity(db, {
               accountId: dev.accountId,
-              controllerId: dev.controllerId,
+              boardInstanceId: dev.boardInstanceId,
               category: "firmware",
               action: "firmware.ota_rolled_back",
               summary: `Firmware update rolled back: ${rollbackMsg}`,
@@ -671,7 +671,7 @@ export function createDeviceApiRoutes() {
               dedupWindowSeconds: 86400,
               metadata: {
                 historyId: latestHist.id,
-                controllerId: dev.controllerId,
+                boardInstanceId: dev.boardInstanceId,
                 status: "rolled_back",
                 firmwareVersion: reportedFw,
               },
@@ -691,7 +691,7 @@ export function createDeviceApiRoutes() {
               completed_at: now,
             })
             .eq("id", latestHist.id)
-            .eq("controller_id", dev.controllerId)
+            .eq("board_instance_id", dev.boardInstanceId)
             .in("status", [...ACTIVE_OTA_STATUSES]);
         }
       }
@@ -707,9 +707,9 @@ export function createDeviceApiRoutes() {
         severity: "success",
         title: `Controller Online: ${prev.name}`,
         message: `${prev.name} reconnected and is online.`,
-        dedupKey: `ctrl:${dev.controllerId}:online`,
+        dedupKey: `ctrl:${dev.boardInstanceId}:online`,
         dedupWindowSeconds: 120,
-        metadata: { controllerId: dev.controllerId, previousStatus: prev.status },
+        metadata: { boardInstanceId: dev.boardInstanceId, previousStatus: prev.status },
       });
     }
 
@@ -723,9 +723,9 @@ export function createDeviceApiRoutes() {
         severity: "warning",
         title: `MQTT Disconnected: ${prev.name}`,
         message: `${prev.name} is reachable on Wi-Fi but its MQTT session is disconnected.`,
-        dedupKey: `ctrl:${dev.controllerId}:mqtt_off`,
+        dedupKey: `ctrl:${dev.boardInstanceId}:mqtt_off`,
         dedupWhileUnread: true,
-        metadata: { controllerId: dev.controllerId },
+        metadata: { boardInstanceId: dev.boardInstanceId },
       });
     }
 
@@ -738,7 +738,7 @@ export function createDeviceApiRoutes() {
       await acknowledgeControllerConfigRevision(
         db,
         dev.accountId,
-        dev.controllerId,
+        dev.boardInstanceId,
         reportedRev
       );
     } else if (
@@ -749,7 +749,7 @@ export function createDeviceApiRoutes() {
     ) {
       const syncRes = await syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
         accountId: dev.accountId,
-        controllerId: dev.controllerId,
+        boardInstanceId: dev.boardInstanceId,
         reason: "reconnect",
         forcePublish: true,
       }).catch(() => null);
@@ -781,13 +781,13 @@ export function createDeviceApiRoutes() {
     const now = new Date().toISOString();
 
     await db
-      .from("controllers")
+      .from("board_instances")
       .update({
         status: "online",
         wifi_connected: true,
         last_communication_at: now,
       })
-      .eq("id", dev.controllerId)
+      .eq("id", dev.boardInstanceId)
       .eq("account_id", dev.accountId);
 
     for (const s of parsed.data.sensors ?? []) {
@@ -809,7 +809,7 @@ export function createDeviceApiRoutes() {
         .from("sensors")
         .select("id,name,sensor_type,unit,last_raw_payload")
         .eq("id", s.sensorId)
-        .eq("controller_id", dev.controllerId)
+        .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .is("deleted_at", null)
         .maybeSingle();
@@ -849,7 +849,7 @@ export function createDeviceApiRoutes() {
         .from("sensors")
         .update(sensorUpdate)
         .eq("id", s.sensorId)
-        .eq("controller_id", dev.controllerId)
+        .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .is("deleted_at", null);
 
@@ -920,7 +920,7 @@ export function createDeviceApiRoutes() {
                 : `${meta.name} detected activity (${meta.sensor_type}).`,
             dedupKey: `sensor:${s.sensorId}:alert`,
             dedupWindowSeconds: 300,
-            metadata: { controllerId: dev.controllerId, sensorId: s.sensorId, value: numericValue, unit: meta.unit },
+            metadata: { boardInstanceId: dev.boardInstanceId, sensorId: s.sensorId, value: numericValue, unit: meta.unit },
           });
         }
       }
@@ -941,7 +941,7 @@ export function createDeviceApiRoutes() {
         .from("switches")
         .select("id,is_on")
         .eq("id", sw.switchId)
-        .eq("controller_id", dev.controllerId)
+        .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .is("deleted_at", null)
         .maybeSingle();
@@ -958,7 +958,7 @@ export function createDeviceApiRoutes() {
           ...(stateChanged ? { last_changed_at: now } : {}),
         })
         .eq("id", sw.switchId)
-        .eq("controller_id", dev.controllerId)
+        .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .is("deleted_at", null);
 
@@ -980,7 +980,7 @@ export function createDeviceApiRoutes() {
         .from("devices")
         .select("id,name,state")
         .eq("id", d.deviceId)
-        .eq("controller_id", dev.controllerId)
+        .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .is("deleted_at", null)
         .maybeSingle();
@@ -1006,7 +1006,7 @@ export function createDeviceApiRoutes() {
           last_state_at: now,
         })
         .eq("id", d.deviceId)
-        .eq("controller_id", dev.controllerId)
+        .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .is("deleted_at", null)
         .select("id,name")
@@ -1024,7 +1024,7 @@ export function createDeviceApiRoutes() {
           message: `${(updatedDev as { name: string }).name} reported state "${d.state}".`,
           dedupKey: `dev:${d.deviceId}:disconnected`,
           dedupWhileUnread: true,
-          metadata: { controllerId: dev.controllerId, deviceId: d.deviceId, state: d.state },
+          metadata: { boardInstanceId: dev.boardInstanceId, deviceId: d.deviceId, state: d.state },
         });
       }
 
@@ -1058,7 +1058,7 @@ export function createDeviceApiRoutes() {
         .from("firmware_update_history")
         .select("id,target_version,status")
         .eq("id", resolvedHistoryId)
-        .eq("controller_id", dev.controllerId)
+        .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .maybeSingle();
       resolvedTargetVersion =
@@ -1069,7 +1069,7 @@ export function createDeviceApiRoutes() {
       const { data: activeHist } = await db
         .from("firmware_update_history")
         .select("id,target_version,status")
-        .eq("controller_id", dev.controllerId)
+        .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .eq("release_id", parsed.data.releaseId)
         .in("status", [...ACTIVE_OTA_STATUSES])
@@ -1087,7 +1087,7 @@ export function createDeviceApiRoutes() {
         const { data: recentTermHist } = await db
           .from("firmware_update_history")
           .select("id,target_version,status")
-          .eq("controller_id", dev.controllerId)
+          .eq("board_instance_id", dev.boardInstanceId)
           .eq("account_id", dev.accountId)
           .eq("release_id", parsed.data.releaseId)
           .order("started_at", { ascending: false })
@@ -1165,7 +1165,7 @@ export function createDeviceApiRoutes() {
             completed_at: now,
           })
           .eq("id", resolvedHistoryId)
-          .eq("controller_id", dev.controllerId)
+          .eq("board_instance_id", dev.boardInstanceId)
           .eq("account_id", dev.accountId)
           .in("status", [...ACTIVE_OTA_STATUSES])
           .select("id")
@@ -1181,7 +1181,7 @@ export function createDeviceApiRoutes() {
             completed_at: null,
           })
           .eq("id", resolvedHistoryId)
-          .eq("controller_id", dev.controllerId)
+          .eq("board_instance_id", dev.boardInstanceId)
           .eq("account_id", dev.accountId)
           .in("status", [...ACTIVE_OTA_STATUSES]);
       }
@@ -1195,14 +1195,14 @@ export function createDeviceApiRoutes() {
       actualReportedVersion
     ) {
       const { data: ctrlBoardRef } = await db
-        .from("controllers")
-        .select("board_catalog_id,custom_board_id")
-        .eq("id", dev.controllerId)
+        .from("board_instances")
+        .select("board_profile_id,custom_board_profile_id")
+        .eq("id", dev.boardInstanceId)
         .maybeSingle();
       const boardSpec = ctrlBoardRef
         ? await resolveControllerBoardSpec(
             db,
-            ctrlBoardRef as { board_catalog_id: string | null; custom_board_id: string | null }
+            ctrlBoardRef as { board_profile_id: string | null; custom_board_profile_id: string | null }
           )
         : null;
       const matchedRelId = await findMatchingFirmwareReleaseIdForDevice(
@@ -1211,19 +1211,19 @@ export function createDeviceApiRoutes() {
         actualReportedVersion
       );
       await db
-        .from("controllers")
+        .from("board_instances")
         .update({
           firmware_version: actualReportedVersion,
           installed_firmware_release_id: matchedRelId,
         })
-        .eq("id", dev.controllerId)
+        .eq("id", dev.boardInstanceId)
         .eq("account_id", dev.accountId);
     }
 
     if (terminal && (!resolvedHistoryId || recordedTerminalTransition)) {
       await recordActivity(db, {
         accountId: dev.accountId,
-        controllerId: dev.controllerId,
+        boardInstanceId: dev.boardInstanceId,
         category: "firmware",
         action: `firmware.ota_${effectiveStatus}`,
         summary: `OTA firmware update ${effectiveStatus}${
@@ -1232,9 +1232,9 @@ export function createDeviceApiRoutes() {
       });
 
       const { data: ctrl } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("name")
-        .eq("id", dev.controllerId)
+        .eq("id", dev.boardInstanceId)
         .maybeSingle();
       const ctrlName = (ctrl as { name?: string } | null)?.name ?? "Controller";
       const ok = effectiveStatus === "succeeded";
@@ -1264,7 +1264,7 @@ export function createDeviceApiRoutes() {
         dedupWindowSeconds: 86400,
         metadata: {
           historyId: resolvedHistoryId,
-          controllerId: dev.controllerId,
+          boardInstanceId: dev.boardInstanceId,
           status: effectiveStatus,
           firmwareVersion: actualReportedVersion,
         },
@@ -1281,9 +1281,9 @@ export function createDeviceApiRoutes() {
 
     const [{ data: ctrl }, { data: rel }] = await Promise.all([
       db
-        .from("controllers")
-        .select("board_catalog_id,custom_board_id,reported_board_slug")
-        .eq("id", dev.controllerId)
+        .from("board_instances")
+        .select("board_profile_id,custom_board_profile_id,reported_board_slug")
+        .eq("id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .is("deleted_at", null)
         .maybeSingle(),
@@ -1303,8 +1303,8 @@ export function createDeviceApiRoutes() {
     }
 
     const cRow = ctrl as {
-      board_catalog_id: string | null;
-      custom_board_id: string | null;
+      board_profile_id: string | null;
+      custom_board_profile_id: string | null;
       reported_board_slug?: string | null;
     };
     const rRow = rel as {
@@ -1516,7 +1516,7 @@ async function handlePairOrRecover(
 
   const {
     account_id: accountId,
-    controller_id: controllerId,
+    board_instance_id: boardInstanceId,
     purpose = "initial_pair",
     requires_physical_confirmation: requiresPhysical = false,
   } = claimed;
@@ -1546,9 +1546,9 @@ async function handlePairOrRecover(
   }
 
   const { data: ctrlData } = await db
-    .from("controllers")
-    .select("id,name,connection_history,pairing_status,controller_identity_secret_hash")
-    .eq("id", controllerId)
+    .from("board_instances")
+    .select("id,name,connection_history,pairing_status,board_instance_identity_secret_hash")
+    .eq("id", boardInstanceId)
     .eq("account_id", accountId)
     .is("deleted_at", null)
     .is("permanently_deleted_at", null)
@@ -1563,13 +1563,13 @@ async function handlePairOrRecover(
   // Prevent duplicate controller pairing / hijacking another active paired controller's hardware identity or MAC
   if (identityHash) {
     const { data: dupByIdentity } = await db
-      .from("controllers")
+      .from("board_instances")
       .select("id,account_id")
-      .eq("controller_identity_secret_hash", identityHash)
+      .eq("board_instance_identity_secret_hash", identityHash)
       .eq("pairing_status", "paired")
       .is("deleted_at", null)
       .is("permanently_deleted_at", null)
-      .neq("id", controllerId)
+      .neq("id", boardInstanceId)
       .limit(1)
       .maybeSingle();
 
@@ -1599,13 +1599,13 @@ async function handlePairOrRecover(
 
   if (input.macAddress) {
     const { data: dupByMac } = await db
-      .from("controllers")
+      .from("board_instances")
       .select("id,account_id")
       .eq("hardware_uid", input.macAddress)
       .eq("pairing_status", "paired")
       .is("deleted_at", null)
       .is("permanently_deleted_at", null)
-      .neq("id", controllerId)
+      .neq("id", boardInstanceId)
       .limit(1)
       .maybeSingle();
 
@@ -1637,7 +1637,7 @@ async function handlePairOrRecover(
   const { data: prevCred } = await db
     .from("mqtt_credentials_metadata")
     .select("mqtt_username,mqtt_client_id,status")
-    .eq("controller_id", controllerId)
+    .eq("board_instance_id", boardInstanceId)
     .maybeSingle();
 
   if (prevCred && isEmqxConfigured(c.env ?? {})) {
@@ -1655,19 +1655,19 @@ async function handlePairOrRecover(
   }
 
   const credSuffix = isRecovery ? `_${generateRandomToken(2).toLowerCase().slice(0, 4)}` : "";
-  const mqttUsername = `hc_${controllerId.replace(/-/g, "").slice(0, 14)}${credSuffix}`;
-  const mqttClientId = `hc_esp_${controllerId.replace(/-/g, "").slice(0, 14)}${credSuffix}`;
+  const mqttUsername = `hc_${boardInstanceId.replace(/-/g, "").slice(0, 14)}${credSuffix}`;
+  const mqttClientId = `hc_esp_${boardInstanceId.replace(/-/g, "").slice(0, 14)}${credSuffix}`;
   const mqttPassword = generateRandomToken(24);
   const deviceApiToken = generateRandomToken(32);
   const deviceTokenHash = await sha256Hex(deviceApiToken);
-  const topicPrefix = buildControllerTopicPrefix(accountId, controllerId);
+  const topicPrefix = buildControllerTopicPrefix(accountId, boardInstanceId);
 
   let emqxSynced = false;
   if (isEmqxConfigured(c.env ?? {})) {
     const emqx = new EmqxClient(c.env!, deps.emqxFetch);
     await emqx.provisionControllerCredentials({
       accountId,
-      controllerId,
+      boardInstanceId,
       username: mqttUsername,
       password: mqttPassword,
     });
@@ -1679,7 +1679,7 @@ async function handlePairOrRecover(
   await db.from("mqtt_credentials_metadata").upsert(
     {
       account_id: accountId,
-      controller_id: controllerId,
+      board_instance_id: boardInstanceId,
       mqtt_username: mqttUsername,
       mqtt_client_id: mqttClientId,
       device_token_hash: deviceTokenHash,
@@ -1689,7 +1689,7 @@ async function handlePairOrRecover(
       last_rotated_at: now,
       revoked_at: null,
     },
-    { onConflict: "controller_id" }
+    { onConflict: "board_instance_id" }
   );
 
   const prevHistory = Array.isArray(
@@ -1699,10 +1699,10 @@ async function handlePairOrRecover(
     : [];
 
   const pairBoardSpec = await resolveControllerBoardSpec(db, {
-    board_catalog_id:
-      (ctrlData as { board_catalog_id?: string | null }).board_catalog_id ?? null,
-    custom_board_id:
-      (ctrlData as { custom_board_id?: string | null }).custom_board_id ?? null,
+    board_profile_id:
+      (ctrlData as { board_profile_id?: string | null }).board_profile_id ?? null,
+    custom_board_profile_id:
+      (ctrlData as { custom_board_profile_id?: string | null }).custom_board_profile_id ?? null,
   });
   const pairMatchedReleaseId = await findMatchingFirmwareReleaseIdForDevice(
     db,
@@ -1711,17 +1711,17 @@ async function handlePairOrRecover(
   );
 
   await db
-    .from("controllers")
+    .from("board_instances")
     .update({
       status: "online",
       pairing_status: "paired",
       wifi_connected: true,
       mqtt_connected: emqxSynced,
       hardware_uid: input.macAddress ?? null,
-      controller_identity_secret_hash:
+      board_instance_identity_secret_hash:
         identityHash ??
-        (ctrlData as { controller_identity_secret_hash?: string | null })
-          .controller_identity_secret_hash ??
+        (ctrlData as { board_instance_identity_secret_hash?: string | null })
+          .board_instance_identity_secret_hash ??
         null,
       firmware_version: input.firmwareVersion ?? null,
       installed_firmware_release_id: pairMatchedReleaseId,
@@ -1751,12 +1751,12 @@ async function handlePairOrRecover(
         },
       ],
     })
-    .eq("id", controllerId)
+    .eq("id", boardInstanceId)
     .eq("account_id", accountId);
 
   await recordActivity(db, {
     accountId,
-    controllerId,
+    boardInstanceId,
     category: "pairing",
     action: isRecovery ? "controller.recovered_and_repaired" : "controller.paired",
     summary: isRecovery
@@ -1776,12 +1776,12 @@ async function handlePairOrRecover(
   const builtConfig = await buildConsolidatedControllerConfig(
     db,
     accountId,
-    controllerId
+    boardInstanceId
   );
   const configSnapshot = builtConfig.snapshot;
 
   await db
-    .from("controllers")
+    .from("board_instances")
     .update({
       config_revision: configSnapshot.revision,
       config_hash: configSnapshot.hash,
@@ -1789,7 +1789,7 @@ async function handlePairOrRecover(
       pending_config_sync: false,
       last_config_sync_at: now,
     })
-    .eq("id", controllerId)
+    .eq("id", boardInstanceId)
     .eq("account_id", accountId);
 
   const ctrlName = (ctrlData as { name: string }).name;
@@ -1804,7 +1804,7 @@ async function handlePairOrRecover(
     message: isRecovery
       ? `Controller "${ctrlName}" verified physical recovery and rotated MQTT credentials.`
       : `Controller "${ctrlName}" completed initial pairing and provisioned EMQX ACLs.`,
-    metadata: { accountId, controllerId, isRecovery },
+    metadata: { accountId, boardInstanceId, isRecovery },
   });
 
   if (isRecovery) {
@@ -1817,12 +1817,12 @@ async function handlePairOrRecover(
       severity: "info",
       title: `Controller Recovered: ${ctrlName}`,
       message: `${ctrlName} confirmed physical recovery (${input.physicalConfirmationMethod}) and rotated credentials.`,
-      metadata: { controllerId, method: input.physicalConfirmationMethod },
+      metadata: { boardInstanceId, method: input.physicalConfirmationMethod },
     });
   }
 
   return c.json({
-    controller_id: controllerId,
+    board_instance_id: boardInstanceId,
     account_id: accountId,
     broker_host: brokerHost,
     tls_port: tlsPort,

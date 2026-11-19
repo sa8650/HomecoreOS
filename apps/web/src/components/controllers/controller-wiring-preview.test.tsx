@@ -14,8 +14,8 @@ function makeController(overrides: Partial<ControllerItem> = {}): ControllerItem
     id: "c1",
     account_id: "a1",
     home_id: "h1",
-    board_catalog_id: "b1",
-    custom_board_id: null,
+    board_profile_id: "b1",
+    custom_board_profile_id: null,
     name: "Living Hub",
     hardware_uid: "esp-1",
     board_model: "ESP32-S3-N16R8",
@@ -42,7 +42,7 @@ function makeSwitch(overrides: Partial<SwitchItem> = {}): SwitchItem {
     account_id: "a1",
     home_id: "h1",
     room_id: "r1",
-    controller_id: "c1",
+    board_instance_id: "c1",
     name: "Porch Light",
     gpio_pin: 12,
     is_on: true,
@@ -59,7 +59,7 @@ function makeDevice(overrides: Partial<DeviceItem> = {}): DeviceItem {
     account_id: "a1",
     home_id: "h1",
     room_id: "r1",
-    controller_id: "c1",
+    board_instance_id: "c1",
     name: "Ceiling Fan",
     device_type: "fan",
     gpio_pin: 14,
@@ -75,7 +75,7 @@ function makeSensor(overrides: Partial<SensorItem> = {}): SensorItem {
     account_id: "a1",
     home_id: "h1",
     room_id: "r1",
-    controller_id: "c1",
+    board_instance_id: "c1",
     name: "Lab Temp",
     sensor_type: "temperature_bme280",
     gpio_pin: null,
@@ -130,7 +130,7 @@ describe("ControllerWiringPreview", () => {
           makeController({ id: "c1", name: "Alpha Hub" }),
           makeController({ id: "c2", name: "Beta Hub" }),
         ]}
-        switches={[makeSwitch({ controller_id: "c1" })]}
+        switches={[makeSwitch({ board_instance_id: "c1" })]}
         devices={[]}
         sensors={[]}
       />

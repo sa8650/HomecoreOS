@@ -494,7 +494,7 @@ export function evaluatePlannerCatalog(
 
   // When the administrator switches the Board Library off, catalog boards are
   // not offered to customers anywhere, so the planner does not offer them either.
-  const boards = catalog.boardCatalogEnabled
+  const boards = catalog.boardLibraryEnabled
     ? catalog.boards
     : catalog.boards.filter((board) => board.source === "custom");
   const releases = catalog.releases;
@@ -617,7 +617,7 @@ export function evaluatePlannerCatalog(
     "warnings",
     () => {
       const global = generatePlannerRequirementWarnings(requirements);
-      if (boards.length === 0) global.push(plannerNoBoardsWarning(catalog.boardCatalogEnabled));
+      if (boards.length === 0) global.push(plannerNoBoardsWarning(catalog.boardLibraryEnabled));
       const built = shown.map((candidate, i) =>
         buildPlan(
           candidate,

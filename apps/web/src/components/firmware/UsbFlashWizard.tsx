@@ -118,11 +118,11 @@ export const UsbFlashWizard = forwardRef<
           ttlMs: 60_000,
           force,
         }),
-        cachedGet<{ boards: BoardProfileItem[] }>("/api/boards/catalog", {
+        cachedGet<{ boards: BoardProfileItem[] }>("/api/board-library/catalog", {
           ttlMs: 60_000,
           force,
         }).catch(() => ({ boards: [] as BoardProfileItem[] })),
-        cachedGet<{ boards: BoardProfileItem[] }>("/api/boards/custom", {
+        cachedGet<{ boards: BoardProfileItem[] }>("/api/board-library/custom", {
           ttlMs: 60_000,
           force,
         }).catch(() => ({ boards: [] as BoardProfileItem[] })),
@@ -231,7 +231,7 @@ export const UsbFlashWizard = forwardRef<
         toast.success(`Firmware installed cleanly on ${result.chipDetected}.`);
       }
       setUsbStep(3);
-      invalidateApiCache("/api/firmware", "/api/controllers");
+      invalidateApiCache("/api/firmware", "/api/board-instances");
       await loadReleases(true);
     } catch (err) {
       if (err instanceof UsbBoardMismatchError && err.cancelledByUser) {

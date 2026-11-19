@@ -819,7 +819,7 @@ export function analyzeFlowGraphLocalCapability(params: {
   sensorControllerById: Map<string, string>;
 }): {
   supported: boolean;
-  controllerId: string | null;
+  boardInstanceId: string | null;
   reasons: string[];
 } {
   const compiled = compileFlowGraphToRuleConfigs(params.graph);
@@ -847,7 +847,7 @@ export function analyzeFlowGraphLocalCapability(params: {
   const supported = allReasons.length === 0 && legacyAnalysis.supported;
   return {
     supported,
-    controllerId: supported ? legacyAnalysis.controllerId : null,
+    boardInstanceId: supported ? legacyAnalysis.boardInstanceId : null,
     reasons: allReasons,
   };
 }

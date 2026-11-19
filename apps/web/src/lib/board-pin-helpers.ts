@@ -46,7 +46,7 @@ export async function fetchBasicHardwareContext(options?: {
 }): Promise<{ controllers: ControllerItem[]; rooms: RoomItem[] }> {
   const force = options?.force ?? false;
   const [ctrlRes, roomRes] = await Promise.all([
-    cachedGet<{ controllers: ControllerItem[] }>("/api/controllers", {
+    cachedGet<{ controllers: ControllerItem[] }>("/api/board-instances", {
       ttlMs: 15_000,
       force,
     }),
@@ -68,7 +68,7 @@ export async function fetchHardwareContext(
   const force = options?.force ?? false;
   const [ctrlRes, roomRes, catRes, myRes, swRes, devRes, senRes] =
     await Promise.all([
-      cachedGet<{ controllers: ControllerItem[] }>("/api/controllers", {
+      cachedGet<{ controllers: ControllerItem[] }>("/api/board-instances", {
         ttlMs: 15_000,
         force,
       }),
@@ -76,14 +76,14 @@ export async function fetchHardwareContext(
         ttlMs: 20_000,
         force,
       }),
-      cachedGet<{ boards: BoardProfileItem[] }>("/api/boards/catalog", {
+      cachedGet<{ boards: BoardProfileItem[] }>("/api/board-library/catalog", {
         ttlMs: 60_000,
         force,
       }),
       cachedGet<{
         catalogBoards: BoardProfileItem[];
-        customBoards: BoardProfileItem[];
-      }>("/api/boards/my-boards", {
+        customBoardProfiles: BoardProfileItem[];
+      }>("/api/board-library/saved-profiles", {
         ttlMs: 60_000,
         force,
       }),
@@ -111,7 +111,7 @@ export async function fetchHardwareContext(
   for (const b of [
     ...myRes.catalogBoards,
     ...catRes.boards,
-    ...myRes.customBoards,
+    ...myRes.customBoardProfiles,
   ]) {
     boardsById.set(b.id, b);
   }
@@ -128,7 +128,7 @@ export async function fetchHardwareContext(
   >();
 
   const pushUsed = (
-    controllerId: string,
+    boardInstanceId: string,
     pin: number | null,
     entityKind: "switch" | "device" | "sensor",
     id: string,
@@ -136,15 +136,15 @@ export async function fetchHardwareContext(
     sensorType?: string
   ) => {
     if (pin === null || !Number.isFinite(pin)) return;
-    const list = usedPinsByController.get(controllerId) ?? [];
+    const list = usedPinsByController.get(boardInstanceId) ?? [];
     list.push({ pin, entityKind, id, name, sensorType });
-    usedPinsByController.set(controllerId, list);
+    usedPinsByController.set(boardInstanceId, list);
   };
 
-  for (const s of swRes.switches) pushUsed(s.controller_id, s.gpio_pin, "switch", s.id, s.name);
-  for (const d of devRes.devices) pushUsed(d.controller_id, d.gpio_pin, "device", d.id, d.name);
+  for (const s of swRes.switches) pushUsed(s.board_instance_id, s.gpio_pin, "switch", s.id, s.name);
+  for (const d of devRes.devices) pushUsed(d.board_instance_id, d.gpio_pin, "device", d.id, d.name);
   for (const sen of senRes.sensors)
-    pushUsed(sen.controller_id, sen.gpio_pin, "sensor", sen.id, sen.name, sen.sensor_type);
+    pushUsed(sen.board_instance_id, sen.gpio_pin, "sensor", sen.id, sen.name, sen.sensor_type);
 
   const sensorCompatibilityByController = new Map<
     string,
@@ -170,7 +170,7 @@ export function resolveControllerBoard(
   controller: ControllerItem | undefined,
   boardsById: Map<string, BoardProfileItem>
 ): BoardProfileItem | undefined {
-  const boardId = controller?.board_catalog_id ?? controller?.custom_board_id;
+  const boardId = controller?.board_profile_id ?? controller?.custom_board_profile_id;
   return boardId ? boardsById.get(boardId) : undefined;
 }
 

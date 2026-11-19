@@ -30,7 +30,7 @@ import { requireStaffRole, requireUserSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
 
 const deviceSchema = z.object({
-  controllerId: z.string().uuid(),
+  boardInstanceId: z.string().uuid(),
   homeId: z.string().uuid().optional().nullable(),
   roomId: z.string().uuid().optional().nullable(),
   name: z.string().trim().min(1).max(120),
@@ -45,7 +45,7 @@ const deviceCommandSchema = z.object({
 });
 
 const switchSchema = z.object({
-  controllerId: z.string().uuid(),
+  boardInstanceId: z.string().uuid(),
   homeId: z.string().uuid().optional().nullable(),
   roomId: z.string().uuid().optional().nullable(),
   name: z.string().trim().min(1).max(120),
@@ -59,20 +59,20 @@ const switchToggleSchema = z.object({
 
 async function fetchControllerOnlineStatus(
   db: AppEnv["Variables"]["db"],
-  controllerId: string,
+  boardInstanceId: string,
   accountId: string
 ): Promise<boolean> {
   const { data } = await db
-    .from("controllers")
+    .from("board_instances")
     .select("status")
-    .eq("id", controllerId)
+    .eq("id", boardInstanceId)
     .eq("account_id", accountId)
     .maybeSingle();
   return (data as { status?: string } | null)?.status === "online";
 }
 
 const sensorSchema = z.object({
-  controllerId: z.string().uuid(),
+  boardInstanceId: z.string().uuid(),
   homeId: z.string().uuid().optional().nullable(),
   roomId: z.string().uuid().optional().nullable(),
   name: z.string().trim().min(1).max(120),
@@ -86,7 +86,7 @@ const sensorSchema = z.object({
 const deviceUpdateSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   roomId: z.string().uuid().nullable().optional(),
-  controllerId: z.string().uuid().optional(),
+  boardInstanceId: z.string().uuid().optional(),
   deviceType: z.enum(SUPPORTED_DEVICE_TYPES).optional(),
   gpioPin: z.number().int().min(0).max(54).optional(),
 });
@@ -94,7 +94,7 @@ const deviceUpdateSchema = z.object({
 const switchUpdateSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   roomId: z.string().uuid().nullable().optional(),
-  controllerId: z.string().uuid().optional(),
+  boardInstanceId: z.string().uuid().optional(),
   gpioPin: z.number().int().min(0).max(54).optional(),
   invertedLogic: z.boolean().optional(),
 });
@@ -102,7 +102,7 @@ const switchUpdateSchema = z.object({
 const sensorUpdateSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   roomId: z.string().uuid().nullable().optional(),
-  controllerId: z.string().uuid().optional(),
+  boardInstanceId: z.string().uuid().optional(),
   sensorType: z.string().trim().min(1).max(64).optional(),
   gpioPin: z.number().int().min(0).max(54).nullable().optional(),
   i2cAddress: z.string().trim().max(16).nullable().optional(),
@@ -189,9 +189,9 @@ export function createDeviceRoutes() {
       }
 
       const { data: ctrl } = await db
-        .from("controllers")
-        .select("id,home_id,board_catalog_id,custom_board_id,status")
-        .eq("id", parsed.data.controllerId)
+        .from("board_instances")
+        .select("id,home_id,board_profile_id,custom_board_profile_id,status")
+        .eq("id", parsed.data.boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .maybeSingle();
@@ -200,8 +200,8 @@ export function createDeviceRoutes() {
       const ctrlRow = ctrl as {
         id: string;
         home_id: string;
-        board_catalog_id: string | null;
-        custom_board_id: string | null;
+        board_profile_id: string | null;
+        custom_board_profile_id: string | null;
       };
 
       const loc = await verifyHomeRoomOwnership(db, auth.accountId, {
@@ -241,7 +241,7 @@ export function createDeviceRoutes() {
           account_id: auth.accountId,
           home_id: loc.homeId ?? ctrlRow.home_id,
           room_id: loc.roomId,
-          controller_id: ctrlRow.id,
+          board_instance_id: ctrlRow.id,
           name: parsed.data.name,
           device_type: parsed.data.deviceType,
           gpio_pin: parsed.data.gpioPin,
@@ -257,7 +257,7 @@ export function createDeviceRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId: ctrlRow.id,
+        boardInstanceId: ctrlRow.id,
         category: "device",
         action: "device.created",
         summary: `Added ${parsed.data.deviceType} "${parsed.data.name}" on GPIO${parsed.data.gpioPin}`,
@@ -266,7 +266,7 @@ export function createDeviceRoutes() {
       const deps = c.get("deps") ?? {};
       const configSync = await syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
         accountId: auth.accountId,
-        controllerId: ctrlRow.id,
+        boardInstanceId: ctrlRow.id,
         reason: "config_change",
       }).catch(() => null);
 
@@ -291,7 +291,7 @@ export function createDeviceRoutes() {
       const [devRes, credRes, rulesRes] = await Promise.all([
         db
           .from("devices")
-          .select("id,name,controller_id,gpio_pin,device_type")
+          .select("id,name,board_instance_id,gpio_pin,device_type")
           .eq("id", deviceId)
           .eq("account_id", auth.accountId)
           .is("deleted_at", null)
@@ -299,7 +299,7 @@ export function createDeviceRoutes() {
         emqxReady
           ? db
               .from("mqtt_credentials_metadata")
-              .select("controller_id,topic_prefix,status")
+              .select("board_instance_id,topic_prefix,status")
               .eq("account_id", auth.accountId)
               .eq("status", "active")
           : Promise.resolve({ data: null }),
@@ -315,16 +315,16 @@ export function createDeviceRoutes() {
       const dev = devRes.data as {
         id: string;
         name: string;
-        controller_id: string;
+        board_instance_id: string;
         gpio_pin: number;
         device_type: string;
       };
 
       const cred = ((credRes.data ?? []) as Array<{
-        controller_id: string;
+        board_instance_id: string;
         topic_prefix: string;
         status: string;
-      }>).find((r) => r.controller_id === dev.controller_id);
+      }>).find((r) => r.board_instance_id === dev.board_instance_id);
 
       let mqttDispatched = false;
       if (emqxReady) {
@@ -333,7 +333,7 @@ export function createDeviceRoutes() {
           // the command over ESP-NOW instead.
           const delivery = await resolveDeviceCommandDelivery(db, {
             accountId: auth.accountId,
-            deviceId: dev.controller_id,
+            deviceId: dev.board_instance_id,
             kind: "device",
             credential: cred ?? null,
             payload: {
@@ -376,11 +376,11 @@ export function createDeviceRoutes() {
           .eq("account_id", auth.accountId)
           .select("*")
           .single(),
-        fetchControllerOnlineStatus(db, dev.controller_id, auth.accountId),
+        fetchControllerOnlineStatus(db, dev.board_instance_id, auth.accountId),
         recordActivity(db, {
           accountId: auth.accountId,
           actorUserId: auth.userId,
-          controllerId: dev.controller_id,
+          boardInstanceId: dev.board_instance_id,
           category: "device",
           action: "device.command",
           summary: `Set device "${dev.name}" to ${parsed.data.state}`,
@@ -416,7 +416,7 @@ export function createDeviceRoutes() {
       const deviceId = c.req.param("id");
       const { data: existingData } = await db
         .from("devices")
-        .select("id,home_id,room_id,controller_id,name,device_type,gpio_pin")
+        .select("id,home_id,room_id,board_instance_id,name,device_type,gpio_pin")
         .eq("id", deviceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
@@ -427,13 +427,13 @@ export function createDeviceRoutes() {
         id: string;
         home_id: string;
         room_id: string | null;
-        controller_id: string;
+        board_instance_id: string;
         name: string;
         device_type: string;
         gpio_pin: number;
       };
 
-      const targetControllerId = parsed.data.controllerId ?? existing.controller_id;
+      const targetControllerId = parsed.data.boardInstanceId ?? existing.board_instance_id;
       const targetDeviceType = parsed.data.deviceType ?? existing.device_type;
       if (!isSupportedDeviceType(targetDeviceType)) {
         return c.json({ error: "Unsupported device type." }, 400);
@@ -441,7 +441,7 @@ export function createDeviceRoutes() {
       const targetPin = parsed.data.gpioPin ?? existing.gpio_pin;
 
       const needsControllerLookup =
-        parsed.data.controllerId !== undefined ||
+        parsed.data.boardInstanceId !== undefined ||
         parsed.data.deviceType !== undefined ||
         parsed.data.gpioPin !== undefined ||
         parsed.data.roomId !== undefined;
@@ -449,19 +449,19 @@ export function createDeviceRoutes() {
       let ctrlRow: {
         id: string;
         home_id: string;
-        board_catalog_id: string | null;
-        custom_board_id: string | null;
+        board_profile_id: string | null;
+        custom_board_profile_id: string | null;
       } = {
-        id: existing.controller_id,
+        id: existing.board_instance_id,
         home_id: existing.home_id,
-        board_catalog_id: null,
-        custom_board_id: null,
+        board_profile_id: null,
+        custom_board_profile_id: null,
       };
 
       if (needsControllerLookup) {
         const { data: ctrl } = await db
-          .from("controllers")
-          .select("id,home_id,board_catalog_id,custom_board_id")
+          .from("board_instances")
+          .select("id,home_id,board_profile_id,custom_board_profile_id")
           .eq("id", targetControllerId)
           .eq("account_id", auth.accountId)
           .is("deleted_at", null)
@@ -473,7 +473,7 @@ export function createDeviceRoutes() {
 
       let warnings: string[] = [];
       if (
-        parsed.data.controllerId !== undefined ||
+        parsed.data.boardInstanceId !== undefined ||
         parsed.data.deviceType !== undefined ||
         parsed.data.gpioPin !== undefined
       ) {
@@ -500,7 +500,7 @@ export function createDeviceRoutes() {
           pin: targetPin,
           requirement,
           usedPins,
-          unchanged: targetPin === existing.gpio_pin && ctrlRow.id === existing.controller_id,
+          unchanged: targetPin === existing.gpio_pin && ctrlRow.id === existing.board_instance_id,
         });
         if (policyError) {
           return c.json({ error: policyError, warnings: pinCheck.warnings }, 400);
@@ -510,7 +510,7 @@ export function createDeviceRoutes() {
 
       const updates: Record<string, unknown> = {};
       if (parsed.data.name !== undefined) updates.name = parsed.data.name;
-      if (parsed.data.controllerId !== undefined) updates.controller_id = ctrlRow.id;
+      if (parsed.data.boardInstanceId !== undefined) updates.board_instance_id = ctrlRow.id;
       if (parsed.data.deviceType !== undefined) updates.device_type = targetDeviceType;
       if (parsed.data.gpioPin !== undefined) updates.gpio_pin = targetPin;
 
@@ -522,7 +522,7 @@ export function createDeviceRoutes() {
         if (!loc.ok) return c.json({ error: loc.error }, 400);
         updates.room_id = loc.roomId;
         updates.home_id = loc.homeId ?? ctrlRow.home_id;
-      } else if (parsed.data.controllerId !== undefined && ctrlRow.home_id !== existing.home_id) {
+      } else if (parsed.data.boardInstanceId !== undefined && ctrlRow.home_id !== existing.home_id) {
         updates.home_id = ctrlRow.home_id;
         updates.room_id = null;
       }
@@ -542,7 +542,7 @@ export function createDeviceRoutes() {
 
       const affectsConfigSnapshot =
         parsed.data.name !== undefined ||
-        parsed.data.controllerId !== undefined ||
+        parsed.data.boardInstanceId !== undefined ||
         parsed.data.deviceType !== undefined ||
         parsed.data.gpioPin !== undefined;
 
@@ -551,22 +551,22 @@ export function createDeviceRoutes() {
         recordActivity(db, {
           accountId: auth.accountId,
           actorUserId: auth.userId,
-          controllerId: ctrlRow.id,
+          boardInstanceId: ctrlRow.id,
           category: "device",
           action: "device.updated",
           summary: `Updated device "${(data as { name: string }).name}" on GPIO${targetPin}`,
         }),
-        affectsConfigSnapshot && existing.controller_id !== ctrlRow.id
+        affectsConfigSnapshot && existing.board_instance_id !== ctrlRow.id
           ? syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
               accountId: auth.accountId,
-              controllerId: existing.controller_id,
+              boardInstanceId: existing.board_instance_id,
               reason: "config_change",
             }).catch(() => null)
           : Promise.resolve(null),
         affectsConfigSnapshot
           ? syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
               accountId: auth.accountId,
-              controllerId: ctrlRow.id,
+              boardInstanceId: ctrlRow.id,
               reason: "config_change",
             }).catch(() => null)
           : Promise.resolve(null),
@@ -589,12 +589,12 @@ export function createDeviceRoutes() {
         .eq("id", c.req.param("id"))
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
-        .select("id,name,controller_id")
+        .select("id,name,board_instance_id")
         .maybeSingle();
       if (!data) return c.json({ error: "Device not found." }, 404);
       await syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
         accountId: auth.accountId,
-        controllerId: (data as { controller_id: string }).controller_id,
+        boardInstanceId: (data as { board_instance_id: string }).board_instance_id,
         reason: "config_change",
       }).catch(() => null);
       return c.json({ ok: true });
@@ -626,9 +626,9 @@ export function createDeviceRoutes() {
       const db = c.get("db");
 
       const { data: ctrl } = await db
-        .from("controllers")
-        .select("id,home_id,board_catalog_id,custom_board_id")
-        .eq("id", parsed.data.controllerId)
+        .from("board_instances")
+        .select("id,home_id,board_profile_id,custom_board_profile_id")
+        .eq("id", parsed.data.boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .maybeSingle();
@@ -637,8 +637,8 @@ export function createDeviceRoutes() {
       const ctrlRow = ctrl as {
         id: string;
         home_id: string;
-        board_catalog_id: string | null;
-        custom_board_id: string | null;
+        board_profile_id: string | null;
+        custom_board_profile_id: string | null;
       };
 
       const loc = await verifyHomeRoomOwnership(db, auth.accountId, {
@@ -676,7 +676,7 @@ export function createDeviceRoutes() {
           account_id: auth.accountId,
           home_id: loc.homeId ?? ctrlRow.home_id,
           room_id: loc.roomId,
-          controller_id: ctrlRow.id,
+          board_instance_id: ctrlRow.id,
           name: parsed.data.name,
           gpio_pin: parsed.data.gpioPin,
           inverted: parsed.data.invertedLogic,
@@ -691,7 +691,7 @@ export function createDeviceRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId: ctrlRow.id,
+        boardInstanceId: ctrlRow.id,
         category: "switch",
         action: "switch.created",
         summary: `Added switch "${parsed.data.name}" on GPIO${parsed.data.gpioPin}`,
@@ -700,7 +700,7 @@ export function createDeviceRoutes() {
       const deps = c.get("deps") ?? {};
       const configSync = await syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
         accountId: auth.accountId,
-        controllerId: ctrlRow.id,
+        boardInstanceId: ctrlRow.id,
         reason: "config_change",
       }).catch(() => null);
 
@@ -725,7 +725,7 @@ export function createDeviceRoutes() {
       const [swRes, credRes, rulesRes] = await Promise.all([
         db
           .from("switches")
-          .select("id,name,controller_id,gpio_pin,inverted")
+          .select("id,name,board_instance_id,gpio_pin,inverted")
           .eq("id", switchId)
           .eq("account_id", auth.accountId)
           .is("deleted_at", null)
@@ -733,7 +733,7 @@ export function createDeviceRoutes() {
         emqxReady
           ? db
               .from("mqtt_credentials_metadata")
-              .select("controller_id,topic_prefix,status")
+              .select("board_instance_id,topic_prefix,status")
               .eq("account_id", auth.accountId)
               .eq("status", "active")
           : Promise.resolve({ data: null }),
@@ -749,23 +749,23 @@ export function createDeviceRoutes() {
       const sw = swRes.data as {
         id: string;
         name: string;
-        controller_id: string;
+        board_instance_id: string;
         gpio_pin: number;
         inverted: boolean;
       };
 
       const cred = ((credRes.data ?? []) as Array<{
-        controller_id: string;
+        board_instance_id: string;
         topic_prefix: string;
         status: string;
-      }>).find((r) => r.controller_id === sw.controller_id);
+      }>).find((r) => r.board_instance_id === sw.board_instance_id);
 
       let mqttDispatched = false;
       if (emqxReady) {
         try {
           const delivery = await resolveDeviceCommandDelivery(db, {
             accountId: auth.accountId,
-            deviceId: sw.controller_id,
+            deviceId: sw.board_instance_id,
             kind: "switch",
             credential: cred ?? null,
             payload: {
@@ -807,11 +807,11 @@ export function createDeviceRoutes() {
           .eq("account_id", auth.accountId)
           .select("*")
           .single(),
-        fetchControllerOnlineStatus(db, sw.controller_id, auth.accountId),
+        fetchControllerOnlineStatus(db, sw.board_instance_id, auth.accountId),
         recordActivity(db, {
           accountId: auth.accountId,
           actorUserId: auth.userId,
-          controllerId: sw.controller_id,
+          boardInstanceId: sw.board_instance_id,
           category: "switch",
           action: parsed.data.isOn ? "switch.turned_on" : "switch.turned_off",
           summary: `Turned "${sw.name}" ${parsed.data.isOn ? "ON" : "OFF"}`,
@@ -848,7 +848,7 @@ export function createDeviceRoutes() {
       const switchId = c.req.param("id");
       const { data: existingData } = await db
         .from("switches")
-        .select("id,home_id,room_id,controller_id,name,gpio_pin,inverted")
+        .select("id,home_id,room_id,board_instance_id,name,gpio_pin,inverted")
         .eq("id", switchId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
@@ -859,36 +859,36 @@ export function createDeviceRoutes() {
         id: string;
         home_id: string;
         room_id: string | null;
-        controller_id: string;
+        board_instance_id: string;
         name: string;
         gpio_pin: number;
         inverted: boolean;
       };
 
-      const targetControllerId = parsed.data.controllerId ?? existing.controller_id;
+      const targetControllerId = parsed.data.boardInstanceId ?? existing.board_instance_id;
       const targetPin = parsed.data.gpioPin ?? existing.gpio_pin;
 
       const needsControllerLookup =
-        parsed.data.controllerId !== undefined ||
+        parsed.data.boardInstanceId !== undefined ||
         parsed.data.gpioPin !== undefined ||
         parsed.data.roomId !== undefined;
 
       let ctrlRow: {
         id: string;
         home_id: string;
-        board_catalog_id: string | null;
-        custom_board_id: string | null;
+        board_profile_id: string | null;
+        custom_board_profile_id: string | null;
       } = {
-        id: existing.controller_id,
+        id: existing.board_instance_id,
         home_id: existing.home_id,
-        board_catalog_id: null,
-        custom_board_id: null,
+        board_profile_id: null,
+        custom_board_profile_id: null,
       };
 
       if (needsControllerLookup) {
         const { data: ctrl } = await db
-          .from("controllers")
-          .select("id,home_id,board_catalog_id,custom_board_id")
+          .from("board_instances")
+          .select("id,home_id,board_profile_id,custom_board_profile_id")
           .eq("id", targetControllerId)
           .eq("account_id", auth.accountId)
           .is("deleted_at", null)
@@ -899,7 +899,7 @@ export function createDeviceRoutes() {
       }
 
       let warnings: string[] = [];
-      if (parsed.data.controllerId !== undefined || parsed.data.gpioPin !== undefined) {
+      if (parsed.data.boardInstanceId !== undefined || parsed.data.gpioPin !== undefined) {
         const [board, usedPins] = await Promise.all([
           resolveControllerBoardSpec(db, ctrlRow),
           getUsedPinsOnController(db, auth.accountId, ctrlRow.id, {
@@ -922,7 +922,7 @@ export function createDeviceRoutes() {
           pin: targetPin,
           requirement: "digital_out",
           usedPins,
-          unchanged: targetPin === existing.gpio_pin && ctrlRow.id === existing.controller_id,
+          unchanged: targetPin === existing.gpio_pin && ctrlRow.id === existing.board_instance_id,
         });
         if (policyError) {
           return c.json({ error: policyError, warnings: pinCheck.warnings }, 400);
@@ -932,7 +932,7 @@ export function createDeviceRoutes() {
 
       const updates: Record<string, unknown> = {};
       if (parsed.data.name !== undefined) updates.name = parsed.data.name;
-      if (parsed.data.controllerId !== undefined) updates.controller_id = ctrlRow.id;
+      if (parsed.data.boardInstanceId !== undefined) updates.board_instance_id = ctrlRow.id;
       if (parsed.data.gpioPin !== undefined) updates.gpio_pin = targetPin;
       if (parsed.data.invertedLogic !== undefined) updates.inverted = parsed.data.invertedLogic;
 
@@ -944,7 +944,7 @@ export function createDeviceRoutes() {
         if (!loc.ok) return c.json({ error: loc.error }, 400);
         updates.room_id = loc.roomId;
         updates.home_id = loc.homeId ?? ctrlRow.home_id;
-      } else if (parsed.data.controllerId !== undefined && ctrlRow.home_id !== existing.home_id) {
+      } else if (parsed.data.boardInstanceId !== undefined && ctrlRow.home_id !== existing.home_id) {
         updates.home_id = ctrlRow.home_id;
         updates.room_id = null;
       }
@@ -964,7 +964,7 @@ export function createDeviceRoutes() {
 
       const affectsConfigSnapshot =
         parsed.data.name !== undefined ||
-        parsed.data.controllerId !== undefined ||
+        parsed.data.boardInstanceId !== undefined ||
         parsed.data.gpioPin !== undefined ||
         parsed.data.invertedLogic !== undefined;
 
@@ -973,22 +973,22 @@ export function createDeviceRoutes() {
         recordActivity(db, {
           accountId: auth.accountId,
           actorUserId: auth.userId,
-          controllerId: ctrlRow.id,
+          boardInstanceId: ctrlRow.id,
           category: "switch",
           action: "switch.updated",
           summary: `Updated switch "${(data as { name: string }).name}" on GPIO${targetPin}`,
         }),
-        affectsConfigSnapshot && existing.controller_id !== ctrlRow.id
+        affectsConfigSnapshot && existing.board_instance_id !== ctrlRow.id
           ? syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
               accountId: auth.accountId,
-              controllerId: existing.controller_id,
+              boardInstanceId: existing.board_instance_id,
               reason: "config_change",
             }).catch(() => null)
           : Promise.resolve(null),
         affectsConfigSnapshot
           ? syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
               accountId: auth.accountId,
-              controllerId: ctrlRow.id,
+              boardInstanceId: ctrlRow.id,
               reason: "config_change",
             }).catch(() => null)
           : Promise.resolve(null),
@@ -1011,12 +1011,12 @@ export function createDeviceRoutes() {
         .eq("id", c.req.param("id"))
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
-        .select("id,controller_id")
+        .select("id,board_instance_id")
         .maybeSingle();
       if (!data) return c.json({ error: "Switch not found." }, 404);
       await syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
         accountId: auth.accountId,
-        controllerId: (data as { controller_id: string }).controller_id,
+        boardInstanceId: (data as { board_instance_id: string }).board_instance_id,
         reason: "config_change",
       }).catch(() => null);
       return c.json({ ok: true });
@@ -1130,11 +1130,11 @@ export function createDeviceRoutes() {
       const db = c.get("db");
 
       const { data: ctrl } = await db
-        .from("controllers")
+        .from("board_instances")
         .select(
-          "id,home_id,board_catalog_id,custom_board_id,firmware_version,installed_firmware_release_id"
+          "id,home_id,board_profile_id,custom_board_profile_id,firmware_version,installed_firmware_release_id"
         )
-        .eq("id", parsed.data.controllerId)
+        .eq("id", parsed.data.boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .maybeSingle();
@@ -1143,8 +1143,8 @@ export function createDeviceRoutes() {
       const ctrlRow = ctrl as {
         id: string;
         home_id: string;
-        board_catalog_id: string | null;
-        custom_board_id: string | null;
+        board_profile_id: string | null;
+        custom_board_profile_id: string | null;
         firmware_version: string | null;
         installed_firmware_release_id: string | null;
       };
@@ -1210,7 +1210,7 @@ export function createDeviceRoutes() {
           account_id: auth.accountId,
           home_id: loc.homeId ?? ctrlRow.home_id,
           room_id: loc.roomId,
-          controller_id: ctrlRow.id,
+          board_instance_id: ctrlRow.id,
           name: parsed.data.name,
           sensor_type: parsed.data.sensorType,
           gpio_pin: parsed.data.gpioPin ?? null,
@@ -1230,7 +1230,7 @@ export function createDeviceRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId: ctrlRow.id,
+        boardInstanceId: ctrlRow.id,
         category: "sensor",
         action: "sensor.created",
         summary: `Added ${parsed.data.sensorType} sensor "${parsed.data.name}"`,
@@ -1239,7 +1239,7 @@ export function createDeviceRoutes() {
       const deps = c.get("deps") ?? {};
       const configSync = await syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
         accountId: auth.accountId,
-        controllerId: ctrlRow.id,
+        boardInstanceId: ctrlRow.id,
         reason: "config_change",
       }).catch(() => null);
 
@@ -1284,7 +1284,7 @@ export function createDeviceRoutes() {
       const sensorId = c.req.param("id");
       const { data: existingData } = await db
         .from("sensors")
-        .select("id,home_id,room_id,controller_id,name,sensor_type,gpio_pin,unit,last_raw_payload")
+        .select("id,home_id,room_id,board_instance_id,name,sensor_type,gpio_pin,unit,last_raw_payload")
         .eq("id", sensorId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
@@ -1295,7 +1295,7 @@ export function createDeviceRoutes() {
         id: string;
         home_id: string;
         room_id: string | null;
-        controller_id: string;
+        board_instance_id: string;
         name: string;
         sensor_type: string;
         gpio_pin: number | null;
@@ -1303,7 +1303,7 @@ export function createDeviceRoutes() {
         last_raw_payload: Record<string, unknown> | null;
       };
 
-      const targetControllerId = parsed.data.controllerId ?? existing.controller_id;
+      const targetControllerId = parsed.data.boardInstanceId ?? existing.board_instance_id;
       const targetSensorType = parsed.data.sensorType ?? existing.sensor_type;
       if (!isSupportedSensorType(targetSensorType)) {
         return c.json({ error: "Unsupported sensor type." }, 400);
@@ -1328,14 +1328,14 @@ export function createDeviceRoutes() {
             : null;
 
       const hardwareBindingChanged =
-        targetControllerId !== existing.controller_id ||
+        targetControllerId !== existing.board_instance_id ||
         targetSensorType !== existing.sensor_type ||
         targetPin !== existing.gpio_pin ||
         (parsed.data.i2cAddress !== undefined && targetI2cAddr !== existingI2cAddr);
 
       const needsControllerLookup =
         hardwareBindingChanged ||
-        parsed.data.controllerId !== undefined ||
+        parsed.data.boardInstanceId !== undefined ||
         parsed.data.sensorType !== undefined ||
         parsed.data.gpioPin !== undefined ||
         parsed.data.roomId !== undefined;
@@ -1343,24 +1343,24 @@ export function createDeviceRoutes() {
       let ctrlRow: {
         id: string;
         home_id: string;
-        board_catalog_id: string | null;
-        custom_board_id: string | null;
+        board_profile_id: string | null;
+        custom_board_profile_id: string | null;
         firmware_version: string | null;
         installed_firmware_release_id: string | null;
       } = {
-        id: existing.controller_id,
+        id: existing.board_instance_id,
         home_id: existing.home_id,
-        board_catalog_id: null,
-        custom_board_id: null,
+        board_profile_id: null,
+        custom_board_profile_id: null,
         firmware_version: null,
         installed_firmware_release_id: null,
       };
 
       if (needsControllerLookup) {
         const { data: ctrl } = await db
-          .from("controllers")
+          .from("board_instances")
           .select(
-            "id,home_id,board_catalog_id,custom_board_id,firmware_version,installed_firmware_release_id"
+            "id,home_id,board_profile_id,custom_board_profile_id,firmware_version,installed_firmware_release_id"
           )
           .eq("id", targetControllerId)
           .eq("account_id", auth.accountId)
@@ -1407,7 +1407,7 @@ export function createDeviceRoutes() {
             requirement,
             usedPins: [],
             unchanged:
-              targetPin === existing.gpio_pin && ctrlRow.id === existing.controller_id,
+              targetPin === existing.gpio_pin && ctrlRow.id === existing.board_instance_id,
           });
           if (policyError) {
             return c.json({ error: policyError, warnings }, 400);
@@ -1417,7 +1417,7 @@ export function createDeviceRoutes() {
 
       const updates: Record<string, unknown> = {};
       if (parsed.data.name !== undefined) updates.name = parsed.data.name;
-      if (parsed.data.controllerId !== undefined) updates.controller_id = ctrlRow.id;
+      if (parsed.data.boardInstanceId !== undefined) updates.board_instance_id = ctrlRow.id;
       if (parsed.data.sensorType !== undefined) {
         updates.sensor_type = targetSensorType;
         updates.unit = defaultUnitForSensorType(targetSensorType, existing.unit);
@@ -1454,7 +1454,7 @@ export function createDeviceRoutes() {
         if (!loc.ok) return c.json({ error: loc.error }, 400);
         updates.room_id = loc.roomId;
         updates.home_id = loc.homeId ?? ctrlRow.home_id;
-      } else if (parsed.data.controllerId !== undefined && ctrlRow.home_id !== existing.home_id) {
+      } else if (parsed.data.boardInstanceId !== undefined && ctrlRow.home_id !== existing.home_id) {
         updates.home_id = ctrlRow.home_id;
         updates.room_id = null;
       }
@@ -1477,7 +1477,7 @@ export function createDeviceRoutes() {
 
       const affectsConfigSnapshot =
         parsed.data.name !== undefined ||
-        parsed.data.controllerId !== undefined ||
+        parsed.data.boardInstanceId !== undefined ||
         parsed.data.sensorType !== undefined ||
         parsed.data.gpioPin !== undefined ||
         parsed.data.i2cAddress !== undefined;
@@ -1487,22 +1487,22 @@ export function createDeviceRoutes() {
         recordActivity(db, {
           accountId: auth.accountId,
           actorUserId: auth.userId,
-          controllerId: ctrlRow.id,
+          boardInstanceId: ctrlRow.id,
           category: "sensor",
           action: "sensor.updated",
           summary: `Updated ${targetSensorType} sensor "${(data as { name: string }).name}"`,
         }),
-        affectsConfigSnapshot && existing.controller_id !== ctrlRow.id
+        affectsConfigSnapshot && existing.board_instance_id !== ctrlRow.id
           ? syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
               accountId: auth.accountId,
-              controllerId: existing.controller_id,
+              boardInstanceId: existing.board_instance_id,
               reason: "config_change",
             }).catch(() => null)
           : Promise.resolve(null),
         affectsConfigSnapshot
           ? syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
               accountId: auth.accountId,
-              controllerId: ctrlRow.id,
+              boardInstanceId: ctrlRow.id,
               reason: "config_change",
             }).catch(() => null)
           : Promise.resolve(null),
@@ -1528,12 +1528,12 @@ export function createDeviceRoutes() {
         .eq("id", c.req.param("id"))
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
-        .select("id,controller_id")
+        .select("id,board_instance_id")
         .maybeSingle();
       if (!data) return c.json({ error: "Sensor not found." }, 404);
       await syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
         accountId: auth.accountId,
-        controllerId: (data as { controller_id: string }).controller_id,
+        boardInstanceId: (data as { board_instance_id: string }).board_instance_id,
         reason: "config_change",
       }).catch(() => null);
       return c.json({ ok: true });

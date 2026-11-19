@@ -193,7 +193,7 @@ esp_err_t hc_pairing_claim_if_needed(homecore_config_t *cfg) {
     free(resp_buf);
     if (!root) return ESP_FAIL;
 
-    copy_json_str(root, "controller_id", cfg->controller_id, sizeof(cfg->controller_id));
+    copy_json_str(root, "board_instance_id", cfg->board_instance_id, sizeof(cfg->board_instance_id));
     copy_json_str(root, "account_id", cfg->account_id, sizeof(cfg->account_id));
     copy_json_str(root, "broker_host", cfg->mqtt_host, sizeof(cfg->mqtt_host));
     cJSON *port = cJSON_GetObjectItem(root, "tls_port");
@@ -219,7 +219,7 @@ esp_err_t hc_pairing_claim_if_needed(homecore_config_t *cfg) {
     }
     cJSON_Delete(root);
 
-    if (strlen(cfg->controller_id) == 0 || strlen(cfg->mqtt_host) == 0 || strlen(cfg->device_api_token) == 0) {
+    if (strlen(cfg->board_instance_id) == 0 || strlen(cfg->mqtt_host) == 0 || strlen(cfg->device_api_token) == 0) {
         ESP_LOGE(TAG, "Pairing response missing required broker/token fields");
         return ESP_FAIL;
     }
@@ -230,7 +230,7 @@ esp_err_t hc_pairing_claim_if_needed(homecore_config_t *cfg) {
     cfg->physical_confirmed = false;
     cfg->confirm_method[0] = '\0';
     hc_nvs_save_config(cfg);
-    ESP_LOGI(TAG, "Controller paired & synced successfully! ID=%s", cfg->controller_id);
+    ESP_LOGI(TAG, "Controller paired & synced successfully! ID=%s", cfg->board_instance_id);
     return ESP_OK;
 }
 

@@ -24,7 +24,7 @@ describe("HomecoreOS Performance Benchmark", () => {
 
   let adminCookie = "";
   let userCookie = "";
-  let controllerId = "";
+  let boardInstanceId = "";
   let roomId = "";
   const switchIds: string[] = [];
   let deviceId = "";
@@ -95,21 +95,21 @@ describe("HomecoreOS Performance Benchmark", () => {
     });
     roomId = ((await roomRes.json()) as { room: { id: string } }).room.id;
 
-    const boardsRes = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const boardsRes = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     const { boards } = (await boardsRes.json()) as { boards: Array<{ id: string }> };
     const boardId = boards[0]!.id;
 
     for (let i = 0; i < 2; i++) {
-      const cRes = await req("/api/controllers", {
+      const cRes = await req("/api/board-instances", {
         method: "POST",
         headers: { "Content-Type": "application/json", Cookie: userCookie },
-        body: JSON.stringify({ name: `Hub ${i + 1}`, homeId, boardCatalogId: boardId }),
+        body: JSON.stringify({ name: `Hub ${i + 1}`, homeId, boardProfileId: boardId }),
       });
       const { controller, pairingCode } = (await cRes.json()) as {
         controller: { id: string };
         pairingCode: string;
       };
-      if (i === 0) controllerId = controller.id;
+      if (i === 0) boardInstanceId = controller.id;
       await req("/api/device/pair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -127,7 +127,7 @@ describe("HomecoreOS Performance Benchmark", () => {
         headers: { "Content-Type": "application/json", Cookie: userCookie },
         body: JSON.stringify({
           name: `Switch ${pin}`,
-          controllerId,
+          boardInstanceId,
           roomId,
           gpioPin: pin,
         }),
@@ -141,7 +141,7 @@ describe("HomecoreOS Performance Benchmark", () => {
       body: JSON.stringify({
         name: "Living Room TV",
         deviceType: "tv",
-        controllerId,
+        boardInstanceId,
         roomId,
         gpioPin: 10,
       }),
@@ -185,11 +185,11 @@ describe("HomecoreOS Performance Benchmark", () => {
       await measureOp("GET /api/homes/overview", () =>
         req("/api/homes/overview", { headers: { Cookie: userCookie } })
       ),
-      await measureOp("GET /api/controllers (2 hubs)", () =>
-        req("/api/controllers", { headers: { Cookie: userCookie } })
+      await measureOp("GET /api/board-instances (2 hubs)", () =>
+        req("/api/board-instances", { headers: { Cookie: userCookie } })
       ),
-      await measureOp("GET /api/boards/catalog", () =>
-        req("/api/boards/catalog", { headers: { Cookie: userCookie } })
+      await measureOp("GET /api/board-library/catalog", () =>
+        req("/api/board-library/catalog", { headers: { Cookie: userCookie } })
       ),
       await measureOp("GET /api/notifications?limit=15", () =>
         req("/api/notifications?limit=15", { headers: { Cookie: userCookie } })

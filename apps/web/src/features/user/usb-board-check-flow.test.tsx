@@ -34,7 +34,7 @@ import { invalidateApiCache, sha256HexClient } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
 import { md5Hex } from "@/lib/usb-flasher";
 import type { BoardProfileItem, FirmwareReleaseItem } from "../types";
-import { ControllersPage } from "./ControllersPage";
+import { MyBoardsPage } from "./MyBoardsPage";
 
 const originalFetch = globalThis.fetch;
 const image = new Uint8Array([0xe9, 0x04, 0x02, 0x20, 0x10, 0x00, 0x00, 0x00]);
@@ -114,11 +114,11 @@ async function serve(releases: FirmwareReleaseItem[], boards: BoardProfileItem[]
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url === "/api/firmware/releases") return json({ releases });
-    if (url === "/api/boards/catalog") return json({ boards });
-    if (url === "/api/boards/custom") return json({ boards: [] });
+    if (url === "/api/board-library/catalog") return json({ boards });
+    if (url === "/api/board-library/custom") return json({ boards: [] });
     if (url === "/api/firmware/updates") return json({ applicableUpdates: [], history: [] });
-    if (url === "/api/controllers") return json({ controllers: [] });
-    if (url === "/api/controllers/trash") return json({ controllers: [] });
+    if (url === "/api/board-instances") return json({ controllers: [] });
+    if (url === "/api/board-instances/trash") return json({ controllers: [] });
     if (url === "/api/homes") return json({ homes: [] });
     if (url === "/api/homes/rooms") return json({ rooms: [] });
     if (url.endsWith("/download")) {
@@ -156,7 +156,7 @@ function connect(hardware: {
 async function openFlasher(user: ReturnType<typeof userEvent.setup>) {
   render(
     <TimezoneContext.Provider value="UTC">
-      <ControllersPage canManage canOperate onNavigate={vi.fn()} />
+      <MyBoardsPage canManage canOperate onNavigate={vi.fn()} />
       <Toaster />
     </TimezoneContext.Provider>
   );

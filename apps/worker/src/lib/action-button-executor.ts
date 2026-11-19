@@ -34,7 +34,7 @@ import type { AppEnv } from "../types/context";
 export interface ControllableSwitchRow {
   id: string;
   name: string;
-  controller_id: string;
+  board_instance_id: string;
   room_id: string | null;
   gpio_pin: number;
   inverted: boolean;
@@ -44,7 +44,7 @@ export interface ControllableSwitchRow {
 export interface ControllableDeviceRow {
   id: string;
   name: string;
-  controller_id: string;
+  board_instance_id: string;
   room_id: string | null;
   gpio_pin: number;
   device_type: string;
@@ -64,12 +64,12 @@ export async function loadControllableInventory(
   const [swRes, devRes] = await Promise.all([
     db
       .from("switches")
-      .select("id,name,controller_id,room_id,gpio_pin,inverted,is_on")
+      .select("id,name,board_instance_id,room_id,gpio_pin,inverted,is_on")
       .eq("account_id", accountId)
       .is("deleted_at", null),
     db
       .from("devices")
-      .select("id,name,controller_id,room_id,gpio_pin,device_type,state,is_online")
+      .select("id,name,board_instance_id,room_id,gpio_pin,device_type,state,is_online")
       .eq("account_id", accountId)
       .is("deleted_at", null),
   ]);
@@ -200,7 +200,7 @@ async function loadControllerStatusById(
   const map = new Map<string, boolean>();
   if (controllerIds.length === 0) return map;
   const { data } = await db
-    .from("controllers")
+    .from("board_instances")
     .select("id,status")
     .eq("account_id", accountId)
     .in("id", controllerIds);
@@ -213,13 +213,13 @@ async function loadControllerStatusById(
 async function loadActiveMqttCredentials(
   db: AppEnv["Variables"]["db"],
   accountId: string
-): Promise<Array<{ controller_id: string; topic_prefix: string }>> {
+): Promise<Array<{ board_instance_id: string; topic_prefix: string }>> {
   const { data } = await db
     .from("mqtt_credentials_metadata")
-    .select("controller_id,topic_prefix")
+    .select("board_instance_id,topic_prefix")
     .eq("account_id", accountId)
     .eq("status", "active");
-  return (data ?? []) as Array<{ controller_id: string; topic_prefix: string }>;
+  return (data ?? []) as Array<{ board_instance_id: string; topic_prefix: string }>;
 }
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -259,8 +259,8 @@ export async function executeActionButtonSteps(params: {
 
   const controllerIds = Array.from(
     new Set([
-      ...inventory.switches.map((s) => s.controller_id),
-      ...inventory.devices.map((d) => d.controller_id),
+      ...inventory.switches.map((s) => s.board_instance_id),
+      ...inventory.devices.map((d) => d.board_instance_id),
     ])
   );
   const [controllerOnlineMap, mqttCreds, rulesRes] = await Promise.all([
@@ -275,7 +275,7 @@ export async function executeActionButtonSteps(params: {
   ]);
   const emqxReady = isEmqxConfigured(env);
   const emqx = emqxReady ? new EmqxClient(env, emqxFetch) : null;
-  const credByController = new Map(mqttCreds.map((cred) => [cred.controller_id, cred]));
+  const credByController = new Map(mqttCreds.map((cred) => [cred.board_instance_id, cred]));
   const preloadedRules = (rulesRes.data ?? []) as NonNullable<
     Parameters<typeof evaluateAutomationsForEvent>[0]["preloadedRules"]
   >;
@@ -394,7 +394,7 @@ export async function executeActionButtonSteps(params: {
           const sw = target.switchRow;
           const desired =
             target.op === "toggle" ? !sw.is_on : target.op === "on";
-          const online = controllerOnlineMap.get(sw.controller_id) ?? false;
+          const online = controllerOnlineMap.get(sw.board_instance_id) ?? false;
           const summary = `Set "${sw.name}" ${desired ? "ON" : "OFF"}`;
           if (!online) {
             failStep(step.id, "switch-target", summary, "Controller is offline.", false);
@@ -405,7 +405,7 @@ export async function executeActionButtonSteps(params: {
             env,
             emqx,
             emqxReady,
-            cred: credByController.get(sw.controller_id) ?? null,
+            cred: credByController.get(sw.board_instance_id) ?? null,
             accountId,
             actorUserId,
             sw,
@@ -441,7 +441,7 @@ export async function executeActionButtonSteps(params: {
                 ? "active"
                 : "inactive";
           const desiredActive = isDeviceStateActive(desiredState);
-          const online = controllerOnlineMap.get(dev.controller_id) ?? false;
+          const online = controllerOnlineMap.get(dev.board_instance_id) ?? false;
           const summary = `Set "${dev.name}" to ${desiredState}`;
           if (!dev.is_online) {
             failStep(step.id, "device-target", summary, "Device is offline.", false);
@@ -456,7 +456,7 @@ export async function executeActionButtonSteps(params: {
             env,
             emqx,
             emqxReady,
-            cred: credByController.get(dev.controller_id) ?? null,
+            cred: credByController.get(dev.board_instance_id) ?? null,
             accountId,
             actorUserId,
             dev,
@@ -576,7 +576,7 @@ async function dispatchSwitchCommand(params: {
       // switch command over ESP-NOW.
       const delivery = await resolveDeviceCommandDelivery(db, {
         accountId,
-        deviceId: sw.controller_id,
+        deviceId: sw.board_instance_id,
         kind: "switch",
         credential: cred,
         payload: {
@@ -630,7 +630,7 @@ async function dispatchDeviceCommand(params: {
     try {
       const delivery = await resolveDeviceCommandDelivery(db, {
         accountId,
-        deviceId: dev.controller_id,
+        deviceId: dev.board_instance_id,
         kind: "device",
         credential: cred,
         payload: {

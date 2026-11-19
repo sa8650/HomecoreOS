@@ -550,7 +550,7 @@ describe("Smart Home Planner API", () => {
     }
 
     await dbHarness.pg.query(
-      `UPDATE public.board_catalog SET verification_status = 'needs_verification', is_available = true WHERE id = $1`,
+      `UPDATE public.board_profiles SET verification_status = 'needs_verification', is_available = true WHERE id = $1`,
       [s3BoardId]
     );
     const unverified = await analyze(ownerCookie, FAMILY_HOME);
@@ -560,7 +560,7 @@ describe("Smart Home Planner API", () => {
     expect(unverified.state).toBe("partially_ready");
 
     await dbHarness.pg.query(
-      `UPDATE public.board_catalog SET firmware_status = 'unsupported', verification_status = 'verified' WHERE id = $1`,
+      `UPDATE public.board_profiles SET firmware_status = 'unsupported', verification_status = 'verified' WHERE id = $1`,
       [s3BoardId]
     );
     const unsupported = await analyze(ownerCookie, FAMILY_HOME);
@@ -569,7 +569,7 @@ describe("Smart Home Planner API", () => {
     expect(blocked.readiness).toBe("not_supported");
 
     await dbHarness.pg.query(
-      `UPDATE public.board_catalog SET firmware_status = 'firmware_supported', verification_status = 'verified', is_available = true WHERE id = $1`,
+      `UPDATE public.board_profiles SET firmware_status = 'firmware_supported', verification_status = 'verified', is_available = true WHERE id = $1`,
       [s3BoardId]
     );
     expect((await analyze(ownerCookie, FAMILY_HOME)).state).toBe("ready");
@@ -639,10 +639,10 @@ describe("Smart Home Planner API", () => {
     await expectRefresh("board republished", "ready");
 
     // Platform limits.
-    await adminPost("/api/admin/settings", { max_controllers_per_account: 1 }, "PATCH");
+    await adminPost("/api/admin/settings", { max_board_instances_per_account: 1 }, "PATCH");
     const limited = await expectRefresh("controller limit lowered", "partially_ready");
     expect(limited.result.plans[0]!.warnings.map((w) => w.code)).toContain("account_limit_exceeded");
-    await adminPost("/api/admin/settings", { max_controllers_per_account: 25 }, "PATCH");
+    await adminPost("/api/admin/settings", { max_board_instances_per_account: 25 }, "PATCH");
     await expectRefresh("controller limit restored", "ready");
 
     // An artifact disappearing is a catalog change too.
@@ -811,7 +811,7 @@ describe("Smart Home Planner API", () => {
 
   it("follows the administrator's Board Library switch and includes only the account's custom boards", async () => {
     const s2 = VERIFIED_BOARD_CATALOG.find((b) => b.slug === "esp32-s2-devkitc-1")!;
-    const customRes = await post("/api/boards/custom", ownerCookie, {
+    const customRes = await post("/api/board-library/custom", ownerCookie, {
       manufacturer: "Acme",
       model: "Planner Custom S2",
       revision: "v1.0",
@@ -831,14 +831,14 @@ describe("Smart Home Planner API", () => {
 
     // The route stores the pin rows together with the board.
     const stored = await dbHarness.pg.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM public.board_gpio_definitions WHERE custom_board_id = $1",
+      "SELECT count(*)::int AS n FROM public.board_gpio_definitions WHERE custom_board_profile_id = $1",
       [customId]
     );
     expect(stored.rows[0]!.n).toBe(s2.gpio_definitions.length);
 
     // A board whose pin rows are missing is reported as unusable rather than guessed at.
     await dbHarness.pg.query(
-      "DELETE FROM public.board_gpio_definitions WHERE custom_board_id = $1",
+      "DELETE FROM public.board_gpio_definitions WHERE custom_board_profile_id = $1",
       [customId]
     );
     const withoutPins = await analyze(ownerCookie, SMALL_HOME);
@@ -849,7 +849,7 @@ describe("Smart Home Planner API", () => {
 
     for (const g of s2.gpio_definitions) {
       await dbHarness.pg.query(
-        `INSERT INTO public.board_gpio_definitions (custom_board_id, pin, label, capabilities, restrictions)
+        `INSERT INTO public.board_gpio_definitions (custom_board_profile_id, pin, label, capabilities, restrictions)
          VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
         [customId, g.pin, g.label, JSON.stringify(g.capabilities), JSON.stringify(g.restrictions)]
       );
@@ -868,7 +868,7 @@ describe("Smart Home Planner API", () => {
     expect(theirs.stats.boardsEvaluated).toBe(13);
     expect(JSON.stringify(theirs)).not.toContain("Planner Custom S2");
 
-    await adminPost("/api/admin/settings", { board_catalog_enabled: false }, "PATCH");
+    await adminPost("/api/admin/settings", { board_library_enabled: false }, "PATCH");
     const disabledMine = await analyze(ownerCookie, SMALL_HOME);
     expect(disabledMine.evaluatedBoards.map((b) => b.source)).toEqual(["custom"]);
     expect(disabledMine.state).toBe("partially_ready");
@@ -881,7 +881,7 @@ describe("Smart Home Planner API", () => {
     expect(disabledTheirs.plans).toEqual([]);
     expect(disabledTheirs.warnings.map((w) => w.code)).toContain("no_boards_available");
 
-    await adminPost("/api/admin/settings", { board_catalog_enabled: true }, "PATCH");
+    await adminPost("/api/admin/settings", { board_library_enabled: true }, "PATCH");
     expect((await analyze(otherCookie, SMALL_HOME)).stats.boardsEvaluated).toBe(13);
   });
 
@@ -917,7 +917,7 @@ describe("Smart Home Planner API", () => {
     const failingApp = createWorkerApp({
       dbFetch: async (input, init) => {
         const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        if (url.includes("/board_catalog")) {
+        if (url.includes("/board_profiles")) {
           return new Response(JSON.stringify({ message: "connection reset" }), {
             status: 500,
             headers: { "Content-Type": "application/json" },

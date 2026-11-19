@@ -411,7 +411,7 @@ void app_main(void) {
     ESP_LOGI(
         TAG,
         "Unified role=%s assigned_controller=%s espnow_channel=%s",
-        s_config.device_role == 1 ? "node" : "controller",
+        s_config.board_role == 1 ? "node" : "controller",
         s_config.assigned_controller_id[0] ? s_config.assigned_controller_id : "-",
         s_config.espnow_channel ? "pinned" : "auto"
     );

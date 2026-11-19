@@ -68,7 +68,7 @@ describe("Unified Controller & Node roles", () => {
     expect(regRes.status).toBe(201);
     cookie = extractCookie(regRes, "hc_user_session");
 
-    const catRes = await req("/api/boards/catalog", { headers: { Cookie: cookie } });
+    const catRes = await req("/api/board-library/catalog", { headers: { Cookie: cookie } });
     const boards = ((await catRes.json()) as {
       boards: Array<{ id: string; slug: string; chip_family: string }>;
     }).boards;
@@ -79,9 +79,9 @@ describe("Unified Controller & Node roles", () => {
     boardSlug = s3.slug;
 
     // Two identical boards: one stays a Controller, one becomes a Node.
-    const hubRes = await postJson("/api/controllers", {
+    const hubRes = await postJson("/api/board-instances", {
       name: "Living Room Hub",
-      boardCatalogId: boardId,
+      boardProfileId: boardId,
     });
     const hubJson = (await hubRes.json()) as { controller: { id: string }; pairingCode: string };
     hubId = hubJson.controller.id;
@@ -93,9 +93,9 @@ describe("Unified Controller & Node roles", () => {
     expect(hubPair.status).toBe(200);
     hubToken = ((await hubPair.json()) as { device_api_token: string }).device_api_token;
 
-    const nodeRes = await postJson("/api/controllers", {
+    const nodeRes = await postJson("/api/board-instances", {
       name: "Hallway Sensor Node",
-      boardCatalogId: boardId,
+      boardProfileId: boardId,
     });
     const nodeJson = (await nodeRes.json()) as { controller: { id: string }; pairingCode: string };
     nodeId = nodeJson.controller.id;
@@ -135,9 +135,9 @@ describe("Unified Controller & Node roles", () => {
 
   async function deviceRow(id: string) {
     const res = await dbHarness.pg.query<Record<string, unknown>>(
-      `select id,name,device_role,assigned_controller_id,comm_mode,node_link_state,status,
+      `select id,name,board_role,assigned_controller_id,comm_mode,node_link_state,status,
               pairing_status,hardware_uid,installed_firmware_release_id
-         from controllers where id = $1`,
+         from board_instances where id = $1`,
       [id]
     );
     return res.rows[0]!;
@@ -221,14 +221,14 @@ describe("Unified Controller & Node roles", () => {
   }
 
   it("lists every device as a Controller by default (legacy rows keep working)", async () => {
-    const res = await req("/api/controllers", { headers: { Cookie: cookie } });
+    const res = await req("/api/board-instances", { headers: { Cookie: cookie } });
     expect(res.status).toBe(200);
     const { controllers } = (await res.json()) as {
       controllers: Array<Record<string, unknown>>;
     };
     expect(controllers).toHaveLength(2);
     for (const c of controllers) {
-      expect(c.device_role).toBe("controller");
+      expect(c.board_role).toBe("controller");
       expect(c.assigned_controller_id).toBeNull();
       expect(c.connected_node_count).toBe(0);
       expect(c.node_comm_mode).toBeNull();
@@ -237,10 +237,10 @@ describe("Unified Controller & Node roles", () => {
 
   it("demotes a Controller to a Node without creating a second device record", async () => {
     const before = await deviceRow(nodeId);
-    const res = await postJson(`/api/controllers/${nodeId}/role`, { role: "node" }, "PATCH");
+    const res = await postJson(`/api/board-instances/${nodeId}/role`, { role: "node" }, "PATCH");
     expect(res.status).toBe(200);
     const { device } = (await res.json()) as { device: Record<string, unknown> };
-    expect(device.device_role).toBe("node");
+    expect(device.board_role).toBe("node");
 
     const after = await deviceRow(nodeId);
     // Same row, same identity, same firmware history.
@@ -248,19 +248,19 @@ describe("Unified Controller & Node roles", () => {
     expect(after.hardware_uid).toBe(before.hardware_uid);
     expect(after.pairing_status).toBe(before.pairing_status);
     expect(after.installed_firmware_release_id).toBe(before.installed_firmware_release_id);
-    expect(after.device_role).toBe("node");
+    expect(after.board_role).toBe("node");
     expect(after.node_link_state).toBe("unassigned");
 
     // Exactly two devices still exist.
     const countRes = await dbHarness.pg.query<{ n: number }>(
-      "select count(*)::int as n from controllers where deleted_at is null"
+      "select count(*)::int as n from board_instances where deleted_at is null"
     );
     expect(countRes.rows[0]!.n).toBe(2);
   });
 
   it("assigns the Node to a Controller and publishes the role in its config snapshot", async () => {
-    const res = await postJson(`/api/controllers/${nodeId}/assign-controller`, {
-      controllerId: hubId,
+    const res = await postJson(`/api/board-instances/${nodeId}/assign-controller`, {
+      boardInstanceId: hubId,
     });
     expect(res.status).toBe(200);
 
@@ -310,7 +310,7 @@ describe("Unified Controller & Node roles", () => {
     ).revision;
 
     const pinRes = await postJson(
-      `/api/controllers/${hubId}`,
+      `/api/board-instances/${hubId}`,
       { espnowChannel: 6 },
       "PATCH"
     );
@@ -343,7 +343,7 @@ describe("Unified Controller & Node roles", () => {
     expect(row.comm_mode).toBe("espnow");
     expect(row.status).toBe("online");
 
-    const listRes = await req("/api/controllers", { headers: { Cookie: cookie } });
+    const listRes = await req("/api/board-instances", { headers: { Cookie: cookie } });
     const { controllers } = (await listRes.json()) as {
       controllers: Array<Record<string, unknown>>;
     };
@@ -357,7 +357,7 @@ describe("Unified Controller & Node roles", () => {
   it("marks an assigned Node controller_lost when its Controller reports an empty roster", async () => {
     // Pretend the Node was last seen longer ago than the ESP-NOW stale window.
     await dbHarness.pg.query(
-      "update controllers set node_last_linked_at = now() - interval '2 minutes' where id = $1",
+      "update board_instances set node_last_linked_at = now() - interval '2 minutes' where id = $1",
       [nodeId]
     );
 
@@ -372,7 +372,7 @@ describe("Unified Controller & Node roles", () => {
     expect((await deviceRow(nodeId)).node_link_state).toBe("controller_lost");
 
     // The card must stop claiming a linked Node it no longer hosts.
-    const listRes = await req("/api/controllers", { headers: { Cookie: cookie } });
+    const listRes = await req("/api/board-instances", { headers: { Cookie: cookie } });
     const { controllers } = (await listRes.json()) as {
       controllers: Array<{ id: string; connected_node_count: number }>;
     };
@@ -381,7 +381,7 @@ describe("Unified Controller & Node roles", () => {
 
   it("relays a linked Node's switch command through its Controller instead of a silent MQTT publish", async () => {
     const swRes = await postJson("/api/switches", {
-      controllerId: nodeId,
+      boardInstanceId: nodeId,
       name: "Node Lamp",
       gpioPin: 4,
     });
@@ -390,7 +390,7 @@ describe("Unified Controller & Node roles", () => {
 
     // The Node is linked over ESP-NOW, so it has no EMQX session of its own.
     await dbHarness.pg.query(
-      "update controllers set mqtt_connected = false, node_link_state = 'linked' where id = $1",
+      "update board_instances set mqtt_connected = false, node_link_state = 'linked' where id = $1",
       [nodeId]
     );
 
@@ -438,7 +438,7 @@ describe("Unified Controller & Node roles", () => {
     expect(row.node_link_state).toBe("standalone");
     expect(row.comm_mode).toBe("wifi_mqtt");
     // Still a Node: falling back never promotes the device.
-    expect(row.device_role).toBe("node");
+    expect(row.board_role).toBe("node");
   });
 
   it("refuses to demote a Controller that still hosts Nodes, and releases them when acknowledged", async () => {
@@ -449,7 +449,7 @@ describe("Unified Controller & Node roles", () => {
       body: JSON.stringify({ w: true, m: true, role: "controller", nodes: [{ id: nodeId, link: "linked" }] }),
     });
 
-    const blocked = await postJson(`/api/controllers/${hubId}/role`, { role: "node" }, "PATCH");
+    const blocked = await postJson(`/api/board-instances/${hubId}/role`, { role: "node" }, "PATCH");
     expect(blocked.status).toBe(409);
     const blockedBody = (await blocked.json()) as {
       code: string;
@@ -461,11 +461,11 @@ describe("Unified Controller & Node roles", () => {
     expect(blockedBody.attachedNodes[0]!.name).toBe("Hallway Sensor Node");
 
     // Nothing changed while the change was refused.
-    expect((await deviceRow(hubId)).device_role).toBe("controller");
+    expect((await deviceRow(hubId)).board_role).toBe("controller");
     expect((await deviceRow(nodeId)).assigned_controller_id).toBe(hubId);
 
     const confirmed = await postJson(
-      `/api/controllers/${hubId}/role`,
+      `/api/board-instances/${hubId}/role`,
       { role: "node", acknowledgeAttachedNodes: true },
       "PATCH"
     );
@@ -473,57 +473,57 @@ describe("Unified Controller & Node roles", () => {
 
     // Both are Nodes now; the released Node is explicitly unassigned, never
     // silently orphaned onto a Controller that stopped hosting.
-    expect((await deviceRow(hubId)).device_role).toBe("node");
+    expect((await deviceRow(hubId)).board_role).toBe("node");
     const released = await deviceRow(nodeId);
-    expect(released.device_role).toBe("node");
+    expect(released.board_role).toBe("node");
     expect(released.assigned_controller_id).toBeNull();
     expect(released.node_link_state).toBe("unassigned");
   });
 
   it("promotes a Node back to Controller and keeps its identity and history", async () => {
     const before = await deviceRow(nodeId);
-    const res = await postJson(`/api/controllers/${nodeId}/role`, { role: "controller" }, "PATCH");
+    const res = await postJson(`/api/board-instances/${nodeId}/role`, { role: "controller" }, "PATCH");
     expect(res.status).toBe(200);
 
     const after = await deviceRow(nodeId);
-    expect(after.device_role).toBe("controller");
+    expect(after.board_role).toBe("controller");
     expect(after.assigned_controller_id).toBeNull();
     expect(after.id).toBe(before.id);
     expect(after.hardware_uid).toBe(before.hardware_uid);
 
     // Put it back to a Node for the OTA test below.
-    await postJson(`/api/controllers/${nodeId}/role`, { role: "node" }, "PATCH");
-    await postJson(`/api/controllers/${hubId}/role`, { role: "controller" }, "PATCH");
-    await postJson(`/api/controllers/${nodeId}/assign-controller`, { controllerId: hubId });
+    await postJson(`/api/board-instances/${nodeId}/role`, { role: "node" }, "PATCH");
+    await postJson(`/api/board-instances/${hubId}/role`, { role: "controller" }, "PATCH");
+    await postJson(`/api/board-instances/${nodeId}/assign-controller`, { boardInstanceId: hubId });
   });
 
   it("rejects assigning a Node to another Node or to an offline Controller", async () => {
     const demote = await postJson(
-      `/api/controllers/${hubId}/role`,
+      `/api/board-instances/${hubId}/role`,
       { role: "node", acknowledgeAttachedNodes: true },
       "PATCH"
     );
     expect(demote.status).toBe(200);
-    const res = await postJson(`/api/controllers/${nodeId}/assign-controller`, {
-      controllerId: hubId,
+    const res = await postJson(`/api/board-instances/${nodeId}/assign-controller`, {
+      boardInstanceId: hubId,
     });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toMatch(/operating as a Controller/i);
 
-    await postJson(`/api/controllers/${hubId}/role`, { role: "controller" }, "PATCH");
+    await postJson(`/api/board-instances/${hubId}/role`, { role: "controller" }, "PATCH");
     // Re-assign so the offline check has a real target.
-    await postJson(`/api/controllers/${nodeId}/assign-controller`, { controllerId: null });
+    await postJson(`/api/board-instances/${nodeId}/assign-controller`, { boardInstanceId: null });
     const offlineRes = await dbHarness.pg.query<{ id: string }>(
-      "update controllers set status = 'offline' where id = $1 returning id",
+      "update board_instances set status = 'offline' where id = $1 returning id",
       [hubId]
     );
     expect(offlineRes.rows).toHaveLength(1);
-    const offline = await postJson(`/api/controllers/${nodeId}/assign-controller`, {
-      controllerId: hubId,
+    const offline = await postJson(`/api/board-instances/${nodeId}/assign-controller`, {
+      boardInstanceId: hubId,
     });
     expect(offline.status).toBe(409);
     expect(((await offline.json()) as { error: string }).error).toMatch(/must be online/i);
-    await dbHarness.pg.query("update controllers set status = 'online' where id = $1", [hubId]);
+    await dbHarness.pg.query("update board_instances set status = 'online' where id = $1", [hubId]);
   });
 
   it("relays a Node OTA instruction through its Controller when the Node has no MQTT session", async () => {
@@ -531,25 +531,25 @@ describe("Unified Controller & Node roles", () => {
 
     // Re-establish the agreed topology: Hub hosts the Node over ESP-NOW, and the
     // Node runs no MQTT session of its own.
-    await postJson(`/api/controllers/${hubId}/role`, { role: "controller" }, "PATCH");
-    await postJson(`/api/controllers/${nodeId}/assign-controller`, { controllerId: hubId });
+    await postJson(`/api/board-instances/${hubId}/role`, { role: "controller" }, "PATCH");
+    await postJson(`/api/board-instances/${nodeId}/assign-controller`, { boardInstanceId: hubId });
     await dbHarness.pg.query(
-      "update controllers set status = 'online', mqtt_connected = true where id = $1",
+      "update board_instances set status = 'online', mqtt_connected = true where id = $1",
       [hubId]
     );
     await dbHarness.pg.query(
-      "update controllers set status = 'online', mqtt_connected = false, node_link_state = 'linked' where id = $1",
+      "update board_instances set status = 'online', mqtt_connected = false, node_link_state = 'linked' where id = $1",
       [nodeId]
     );
 
     // The Node is linked over ESP-NOW: its own MQTT session is not connected.
     await dbHarness.pg.query(
-      "update controllers set mqtt_connected = false where id = $1",
+      "update board_instances set mqtt_connected = false where id = $1",
       [nodeId]
     );
 
     emqx.state.published.length = 0;
-    const res = await postJson("/api/firmware/ota/start", { controllerId: nodeId, releaseId });
+    const res = await postJson("/api/firmware/ota/start", { boardInstanceId: nodeId, releaseId });
     if (res.status !== 201) {
       throw new Error(`OTA start failed: ${res.status} ${await res.text()}`);
     }
@@ -560,11 +560,11 @@ describe("Unified Controller & Node roles", () => {
     const payload = JSON.parse(relay!.payload) as {
       action: string;
       node_id: string;
-      ota: { device_role: string; wifi_window: boolean; ota_url: string };
+      ota: { board_role: string; wifi_window: boolean; ota_url: string };
     };
     expect(payload.action).toBe("ota_relay");
     expect(payload.node_id).toBe(nodeId);
-    expect(payload.ota.device_role).toBe("node");
+    expect(payload.ota.board_role).toBe("node");
     expect(payload.ota.wifi_window).toBe(true);
     expect(payload.ota.ota_url).toContain("/api/device/firmware/ota/");
     // The relay goes to the hosting Controller, not the Node.
@@ -574,7 +574,7 @@ describe("Unified Controller & Node roles", () => {
   it("never lets a device promote or demote itself through a heartbeat", async () => {
     // A Node reports "controller": the persisted (user-owned) role must win.
     const nodeBefore = await deviceRow(nodeId);
-    expect(nodeBefore.device_role).toBe("node");
+    expect(nodeBefore.board_role).toBe("node");
     const nodeRes = await req("/api/device/heartbeat", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${nodeToken}` },
@@ -582,13 +582,13 @@ describe("Unified Controller & Node roles", () => {
     });
     expect(nodeRes.status).toBe(200);
     const nodeAfter = await deviceRow(nodeId);
-    expect(nodeAfter.device_role).toBe("node");
+    expect(nodeAfter.board_role).toBe("node");
     // Its own link/communication reporting is still accepted.
     expect(nodeAfter.comm_mode).toBe("wifi_mqtt");
     expect(nodeAfter.node_link_state).toBe("linked");
 
     // A Controller reporting "node" must not demote itself either.
-    expect((await deviceRow(hubId)).device_role).toBe("controller");
+    expect((await deviceRow(hubId)).board_role).toBe("controller");
     const hubRes = await req("/api/device/heartbeat", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${hubToken}` },
@@ -596,7 +596,7 @@ describe("Unified Controller & Node roles", () => {
     });
     expect(hubRes.status).toBe(200);
     const hubAfter = await deviceRow(hubId);
-    expect(hubAfter.device_role).toBe("controller");
+    expect(hubAfter.board_role).toBe("controller");
     // Uplink columns are Node-only and must not be written onto a Controller.
     expect(hubAfter.comm_mode).toBeNull();
     expect(hubAfter.node_link_state).toBeNull();
@@ -604,7 +604,7 @@ describe("Unified Controller & Node roles", () => {
 
   it("reports sync_published=false to a device with no MQTT session so it pulls the snapshot over HTTPS", async () => {
     await dbHarness.pg.query(
-      `update controllers
+      `update board_instances
           set pending_config_sync = true,
               config_revision = config_revision + 5
         where id = $1`,
@@ -625,7 +625,7 @@ describe("Unified Controller & Node roles", () => {
 
     // The same device with a live MQTT session may rely on the MQTT push.
     await dbHarness.pg.query(
-      "update controllers set pending_config_sync = true where id = $1",
+      "update board_instances set pending_config_sync = true where id = $1",
       [nodeId]
     );
     const mqttRes = await req("/api/device/heartbeat", {
@@ -641,11 +641,11 @@ describe("Unified Controller & Node roles", () => {
     const res = await req("/api/firmware/updates", { headers: { Cookie: cookie } });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      applicableUpdates: Array<{ controllerId: string; deviceRole: string }>;
-      history: Array<{ controller_id: string; status: string }>;
+      applicableUpdates: Array<{ boardInstanceId: string; boardRole: string }>;
+      history: Array<{ board_instance_id: string; status: string }>;
     };
-    const nodeUpdate = body.applicableUpdates.find((u) => u.controllerId === nodeId);
-    expect(nodeUpdate?.deviceRole).toBe("node");
-    expect(body.history.some((h) => h.controller_id === nodeId)).toBe(true);
+    const nodeUpdate = body.applicableUpdates.find((u) => u.boardInstanceId === nodeId);
+    expect(nodeUpdate?.boardRole).toBe("node");
+    expect(body.history.some((h) => h.board_instance_id === nodeId)).toBe(true);
   });
 });

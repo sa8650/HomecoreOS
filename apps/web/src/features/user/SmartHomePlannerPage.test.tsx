@@ -172,7 +172,7 @@ class MockWorker {
     return {
       boards: this.boards,
       releases: this.releases,
-      boardCatalogEnabled: true,
+      boardLibraryEnabled: true,
       account: { existingControllers: 0, existingDevices: 0, maxControllers: 25, maxDevices: 100 },
       revision: this.revision,
     };
@@ -277,7 +277,7 @@ class MockWorker {
     this.calls.push({ method, url, body, headers: new Headers(init?.headers) });
     const fields = (body ?? {}) as { name?: string; requirements?: PlannerRequirementsInput };
 
-    if (url === "/api/boards/catalog") {
+    if (url === "/api/board-library/catalog") {
       const visible = this.boards.filter(
         (board) => board.is_available && board.verification_status === "verified"
       );
@@ -286,7 +286,7 @@ class MockWorker {
       ).map((seed) => ({ ...seed, id: `id-${seed.slug}`, is_available: true }));
       return json({ boards: profiles });
     }
-    if (url === "/api/boards/custom") return json({ boards: [] });
+    if (url === "/api/board-library/custom") return json({ boards: [] });
 
     if (url === "/api/planner/analyze" && method === "POST") {
       if (this.analyzeOverride) return this.analyzeOverride(fields.requirements);
@@ -1511,7 +1511,7 @@ describe("Smart Home Planner page", () => {
             effectiveTimezone: "UTC",
           });
         }
-        if (url.startsWith("/api/planner") || url.startsWith("/api/boards")) return handle(input, init);
+        if (url.startsWith("/api/planner") || url.startsWith("/api/board-library")) return handle(input, init);
         return json({});
       }) as unknown as typeof fetch;
 

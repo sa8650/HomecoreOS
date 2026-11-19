@@ -5,7 +5,7 @@ import type { BleStatusPayload } from "@homecoreos/shared";
 import { BleClientError, HomecoreBleClient } from "../lib/ble-provisioning";
 import { TimezoneContext } from "../lib/timezone";
 import { ControllerSetupModal } from "./controllers/ControllerSetupModal";
-import { ControllersPage } from "../features/user/ControllersPage";
+import { MyBoardsPage } from "../features/user/MyBoardsPage";
 import type { BoardProfileItem, ControllerItem, HomeItem } from "../features/types";
 
 const originalFetch = globalThis.fetch;
@@ -58,8 +58,8 @@ function makeController(overrides: Partial<ControllerItem> = {}): ControllerItem
     id: "ctrl-ble-1",
     account_id: "acct-1",
     home_id: "home-1",
-    board_catalog_id: "board-s3",
-    custom_board_id: null,
+    board_profile_id: "board-s3",
+    custom_board_profile_id: null,
     name: "Studio S3 Hub",
     board_model: "ESP32-S3-DevKitC-1-N16R8",
     chip_variant: "ESP32-S3",
@@ -120,7 +120,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
         controllers={[]}
         homes={sampleHomes}
         catalogBoards={sampleCatalogBoards}
-        customBoards={[]}
+        customBoardProfiles={[]}
       />
     );
 
@@ -218,7 +218,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/controllers" && init?.method === "POST") {
+      if (url === "/api/board-instances" && init?.method === "POST") {
         return new Response(
           JSON.stringify({
             controller: makeController({
@@ -232,7 +232,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
           { status: 201, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/controllers/ctrl-new-1") {
+      if (url === "/api/board-instances/ctrl-new-1") {
         return new Response(
           JSON.stringify({
             controller: makeController({
@@ -257,7 +257,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
         controllers={[]}
         homes={sampleHomes}
         catalogBoards={sampleCatalogBoards}
-        customBoards={[]}
+        customBoardProfiles={[]}
         onSuccess={onSuccess}
       />
     );
@@ -400,13 +400,13 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/controllers/recover" && init?.method === "POST") {
+      if (url === "/api/board-instances/recover" && init?.method === "POST") {
         return new Response(
           JSON.stringify({ controller: existingCtrl, pairingCode: "334455" }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/controllers/ctrl-rec-1") {
+      if (url === "/api/board-instances/ctrl-rec-1") {
         return new Response(
           JSON.stringify({
             controller: makeController({
@@ -432,7 +432,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
         controllers={[existingCtrl]}
         homes={sampleHomes}
         catalogBoards={sampleCatalogBoards}
-        customBoards={[]}
+        customBoardProfiles={[]}
       />
     );
 
@@ -457,7 +457,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     expect(actionsSent).toEqual(["wifi_only", "recover"]);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/controllers/recover",
+      "/api/board-instances/recover",
       expect.objectContaining({ method: "POST" })
     );
   });
@@ -496,7 +496,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
         controllers={[]}
         homes={sampleHomes}
         catalogBoards={sampleCatalogBoards}
-        customBoards={[]}
+        customBoardProfiles={[]}
       />
     );
 
@@ -527,13 +527,13 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/controllers" && init?.method === "POST") {
+      if (url === "/api/board-instances" && init?.method === "POST") {
         return new Response(
           JSON.stringify({ controller: makeController({ id: "ctrl-wifi-1" }), pairingCode: "908070" }),
           { status: 201, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/controllers/ctrl-wifi-1") {
+      if (url === "/api/board-instances/ctrl-wifi-1") {
         return new Response(
           JSON.stringify({
             controller: makeController({
@@ -602,7 +602,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     );
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/controllers") {
+      if (url === "/api/board-instances") {
         return new Response(
           JSON.stringify({ controller: makeController({ id: "ctrl-disc-1" }), pairingCode: "119988" }),
           { status: 201, headers: { "Content-Type": "application/json" } }
@@ -619,7 +619,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
         controllers={[]}
         homes={sampleHomes}
         catalogBoards={sampleCatalogBoards}
-        customBoards={[]}
+        customBoardProfiles={[]}
       />
     );
 
@@ -698,7 +698,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/controllers") {
+      if (url === "/api/board-instances") {
         return new Response(
           JSON.stringify({ controller: makeController({ id: "ctrl-err-1" }), pairingCode: "112233" }),
           { status: 201, headers: { "Content-Type": "application/json" } }
@@ -715,7 +715,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
         controllers={[]}
         homes={sampleHomes}
         catalogBoards={sampleCatalogBoards}
-        customBoards={[]}
+        customBoardProfiles={[]}
       />
     );
 
@@ -745,7 +745,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
         trashedControllers={[makeController({ id: "ctrl-trash", name: "Garage Hub", deleted_at: "2026-11-01T00:00:00Z" })]}
         homes={sampleHomes}
         catalogBoards={sampleCatalogBoards}
-        customBoards={[]}
+        customBoardProfiles={[]}
       />
     );
 
@@ -772,7 +772,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     expect(screen.getByRole("button", { name: /Setup Controller/i })).toBeInTheDocument();
   });
 
-  it("opens ControllerSetupModal directly from ControllersPage Details modal without showing Setup PIN", async () => {
+  it("opens ControllerSetupModal directly from MyBoardsPage Details modal without showing Setup PIN", async () => {
     const user = userEvent.setup();
     Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
     Object.defineProperty(navigator, "bluetooth", {
@@ -790,25 +790,25 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url.includes("/api/controllers/trash")) {
+      if (url.includes("/api/board-instances/trash")) {
         return new Response(JSON.stringify({ controllers: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url.includes("/api/controllers")) {
+      if (url.includes("/api/board-instances")) {
         return new Response(JSON.stringify({ controllers: mockControllers }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url.includes("/api/boards/catalog")) {
+      if (url.includes("/api/board-library/catalog")) {
         return new Response(JSON.stringify({ boards: sampleCatalogBoards }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url.includes("/api/boards/custom")) {
+      if (url.includes("/api/board-library/custom")) {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -819,7 +819,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     render(
       <TimezoneContext.Provider value="UTC">
-        <ControllersPage canManage={true} canOperate={true} onNavigate={() => {}} />
+        <MyBoardsPage canManage={true} canOperate={true} onNavigate={() => {}} />
       </TimezoneContext.Provider>
     );
 

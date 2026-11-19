@@ -307,13 +307,13 @@ describe("UI, layout, layering, and theme conflict regression tests", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url.includes("/api/boards/catalog")) {
+      if (url.includes("/api/board-library/catalog")) {
         return new Response(JSON.stringify({ boards: [board] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url.includes("/api/boards/custom")) {
+      if (url.includes("/api/board-library/custom")) {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },

@@ -95,7 +95,7 @@ describe("Waveshare import, NodeMCU ESP8266 seeding, Update Board endpoint, and 
     });
 
   it("seeds Waveshare ESP32-S3-Zero and NodeMCU ESP8266 in the public board catalog", async () => {
-    const res = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const res = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
       boards: Array<{ slug: string; manufacturer: string; chip_family: string; gpio_definitions: unknown[] }>;
@@ -166,22 +166,22 @@ describe("Waveshare import, NodeMCU ESP8266 seeding, Update Board endpoint, and 
   });
 
   it("creates, dry-run tests, and manually runs a manual Scene automation rule", async () => {
-    const catalogRes = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const catalogRes = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     const catalogData = (await catalogRes.json()) as {
       boards: Array<{ id: string; slug: string }>;
     };
     const s3BoardId = catalogData.boards.find((b) => b.slug === "esp32-s3-devkitc-1-n16r8")!.id;
 
-    const ctrlRes = await userJson("/api/controllers", {
+    const ctrlRes = await userJson("/api/board-instances", {
       name: "Scene Hub",
-      boardCatalogId: s3BoardId,
+      boardProfileId: s3BoardId,
     });
     expect(ctrlRes.status).toBe(201);
     const ctrlId = ((await ctrlRes.json()) as { controller: { id: string } }).controller.id;
 
     const swRes = await userJson("/api/switches", {
       name: "Ambient Lamp",
-      controllerId: ctrlId,
+      boardInstanceId: ctrlId,
       gpioPin: 4,
     });
     expect(swRes.status).toBe(201);

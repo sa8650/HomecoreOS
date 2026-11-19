@@ -156,7 +156,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     const cookieB = extractCookie(regB, "hc_user_session");
 
     // Look up ESP32-S3 board and room
-    const catRes = await req("/api/boards/catalog", { headers: { Cookie: cookieA } });
+    const catRes = await req("/api/board-library/catalog", { headers: { Cookie: cookieA } });
     const catJson = (await catRes.json()) as {
       boards: Array<{ id: string; slug: string }>;
     };
@@ -179,13 +179,13 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     const roomId = ((await roomRes.json()) as { room: { id: string } }).room.id;
 
     // 1. Register & initially pair Controller A with persistent hardware identity key
-    const createCtrlA = await req("/api/controllers", {
+    const createCtrlA = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
         name: "Utility ESP32-S3",
         homeId,
-        boardCatalogId: s3Board.id,
+        boardProfileId: s3Board.id,
       }),
     });
     expect(createCtrlA.status).toBe(201);
@@ -218,7 +218,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
-        controllerId: ctrlA.id,
+        boardInstanceId: ctrlA.id,
         roomId,
         name: "Bench Light",
         gpioPin: 4,
@@ -231,7 +231,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
-        controllerId: ctrlA.id,
+        boardInstanceId: ctrlA.id,
         roomId,
         name: "Manual Removed Relay",
         gpioPin: 5,
@@ -260,7 +260,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     });
     expect(hbErr.status).toBe(200);
 
-    const getCtrlDetail = await req(`/api/controllers/${ctrlA.id}`, {
+    const getCtrlDetail = await req(`/api/board-instances/${ctrlA.id}`, {
       headers: { Cookie: cookieA },
     });
     const detailJson = (await getCtrlDetail.json()) as {
@@ -275,12 +275,12 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     expect(detailJson.controller.last_error).toBe("EMQX TLS handshake timeout");
 
     // 4. Duplicate claim protection: Account B CANNOT hijack active Controller A via its MAC/identityKey
-    const createCtrlB = await req("/api/controllers", {
+    const createCtrlB = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieB },
       body: JSON.stringify({
         name: "Hijack Attempt",
-        boardCatalogId: s3Board.id,
+        boardProfileId: s3Board.id,
       }),
     });
     const { pairingCode: codeB } = (await createCtrlB.json()) as { pairingCode: string };
@@ -297,7 +297,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     expect(hijackRes.status).toBe(409);
 
     // 5. Move Controller A to Trash -> cascades to Bench Light, hides both, revokes EMQX
-    const trashRes = await req(`/api/controllers/${ctrlA.id}`, {
+    const trashRes = await req(`/api/board-instances/${ctrlA.id}`, {
       method: "DELETE",
       headers: { Cookie: cookieA },
     });
@@ -309,7 +309,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     });
     expect(((await activeSwitchesAfterTrash.json()) as { switches: unknown[] }).switches).toHaveLength(0);
 
-    const trashListRes = await req("/api/controllers/trash", {
+    const trashListRes = await req("/api/board-instances/trash", {
       headers: { Cookie: cookieA },
     });
     expect(trashListRes.status).toBe(200);
@@ -325,7 +325,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     expect(trashList.controllers[0].recoverable_counts.switches).toBe(1);
 
     // 6. Restore Controller A from Trash -> brings back Bench Light ONLY (NOT manually deleted switch!) & rotates MQTT/recovery code
-    const restoreRes = await req(`/api/controllers/${ctrlA.id}/restore`, {
+    const restoreRes = await req(`/api/board-instances/${ctrlA.id}/restore`, {
       method: "POST",
       headers: { Cookie: cookieA },
     });
@@ -420,13 +420,13 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     expect(updatesRes.status).toBe(200);
     const updatesJson = (await updatesRes.json()) as {
       applicableUpdates: Array<{
-        controllerId: string;
+        boardInstanceId: string;
         currentVersion: string | null;
         availableRelease: { id: string; version: string };
       }>;
     };
     expect(updatesJson.applicableUpdates).toHaveLength(1);
-    expect(updatesJson.applicableUpdates[0].controllerId).toBe(ctrlA.id);
+    expect(updatesJson.applicableUpdates[0].boardInstanceId).toBe(ctrlA.id);
     expect(updatesJson.applicableUpdates[0].availableRelease.version).toBe("1.3.0");
 
     // Start OTA -> pending -> cancel succeeds
@@ -434,7 +434,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
-        controllerId: ctrlA.id,
+        boardInstanceId: ctrlA.id,
         releaseId: newerPkg.release.id,
       }),
     });
@@ -455,7 +455,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
-        controllerId: ctrlA.id,
+        boardInstanceId: ctrlA.id,
         releaseId: newerPkg.release.id,
       }),
     });
@@ -482,31 +482,31 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     expect(cancelActiveRes.status).toBe(409);
 
     // 9. Permanent Delete + Re-add via Existing Controller / Recover Controller
-    await req(`/api/controllers/${ctrlA.id}`, {
+    await req(`/api/board-instances/${ctrlA.id}`, {
       method: "DELETE",
       headers: { Cookie: cookieA },
     });
-    const permRes = await req(`/api/controllers/${ctrlA.id}/permanent`, {
+    const permRes = await req(`/api/board-instances/${ctrlA.id}/permanent`, {
       method: "DELETE",
       headers: { Cookie: cookieA },
     });
     expect(permRes.status).toBe(200);
 
     // Restoring permanently deleted controller fails
-    const restoreAfterPerm = await req(`/api/controllers/${ctrlA.id}/restore`, {
+    const restoreAfterPerm = await req(`/api/board-instances/${ctrlA.id}/restore`, {
       method: "POST",
       headers: { Cookie: cookieA },
     });
     expect(restoreAfterPerm.status).toBe(404);
 
-    // Recover Permanently Deleted physical hardware into a new record via /api/controllers/recover
-    const recNewRes = await req("/api/controllers/recover", {
+    // Recover Permanently Deleted physical hardware into a new record via /api/board-instances/recover
+    const recNewRes = await req("/api/board-instances/recover", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
         name: "Recovered Utility Hub",
         homeId,
-        boardCatalogId: s3Board.id,
+        boardProfileId: s3Board.id,
       }),
     });
     expect(recNewRes.status).toBe(201);
@@ -553,7 +553,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     expect(userLogin.status).toBe(200);
     const userCookie = extractCookie(userLogin, "hc_user_session");
 
-    const catRes = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const catRes = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     const s3Board = (
       (await catRes.json()) as { boards: Array<{ id: string; slug: string }> }
     ).boards.find((b) => b.slug === "esp32-s3-devkitc-1-n16r8")!;
@@ -563,10 +563,10 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     const pkg135 = await publishFirmwarePackage(adminCookie, "1.3.5");
 
     // Register & pair dedicated controller running v1.1.0
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ name: "OTA Sync Hub", boardCatalogId: s3Board.id }),
+      body: JSON.stringify({ name: "OTA Sync Hub", boardProfileId: s3Board.id }),
     });
     expect(ctrlRes.status).toBe(201);
     const { controller, pairingCode } = (await ctrlRes.json()) as {
@@ -607,7 +607,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         releaseId: pkg132.release.id,
       }),
     });
@@ -642,16 +642,16 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     const updatesAfterRollback = (await (
       await req("/api/firmware/updates", { headers: { Cookie: userCookie } })
     ).json()) as {
-      applicableUpdates: Array<{ controllerId: string; currentVersion: string }>;
-      history: Array<{ controller_id: string; status: string; error_message: string | null }>;
+      applicableUpdates: Array<{ boardInstanceId: string; currentVersion: string }>;
+      history: Array<{ board_instance_id: string; status: string; error_message: string | null }>;
     };
     const ctrlHistRollback = updatesAfterRollback.history.filter(
-      (h) => h.controller_id === controller.id
+      (h) => h.board_instance_id === controller.id
     );
     expect(ctrlHistRollback[0]?.status).toBe("rolled_back");
     expect(ctrlHistRollback[0]?.error_message).toMatch(/v1\.1\.0.*v1\.3\.2/i);
     expect(
-      updatesAfterRollback.applicableUpdates.some((u) => u.controllerId === controller.id)
+      updatesAfterRollback.applicableUpdates.some((u) => u.boardInstanceId === controller.id)
     ).toBe(true);
 
     // 3. Retry OTA v1.3.2 -> post succeeded via releaseId fallback (no historyId) + heartbeat v1.3.2
@@ -659,7 +659,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         releaseId: pkg132.release.id,
       }),
     });
@@ -694,7 +694,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     });
 
     const ctrlRes132 = (await (
-      await req(`/api/controllers/${controller.id}`, { headers: { Cookie: userCookie } })
+      await req(`/api/board-instances/${controller.id}`, { headers: { Cookie: userCookie } })
     ).json()) as { controller: { firmware_version: string } };
     expect(ctrlRes132.controller.firmware_version).toBe("1.3.2");
 
@@ -703,7 +703,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         releaseId: pkg135.release.id,
       }),
     });
@@ -738,16 +738,16 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     const updatesPostFalseSuccess = (await (
       await req("/api/firmware/updates", { headers: { Cookie: userCookie } })
     ).json()) as {
-      history: Array<{ controller_id: string; status: string; target_version: string }>;
+      history: Array<{ board_instance_id: string; status: string; target_version: string }>;
     };
     const latestForCtrl = updatesPostFalseSuccess.history.find(
-      (h) => h.controller_id === controller.id
+      (h) => h.board_instance_id === controller.id
     );
     expect(latestForCtrl?.target_version).toBe("1.3.5");
     expect(latestForCtrl?.status).toBe("rolled_back");
 
     const ctrlResFinal = (await (
-      await req(`/api/controllers/${controller.id}`, { headers: { Cookie: userCookie } })
+      await req(`/api/board-instances/${controller.id}`, { headers: { Cookie: userCookie } })
     ).json()) as { controller: { firmware_version: string } };
     expect(ctrlResFinal.controller.firmware_version).toBe("1.3.2");
   });
@@ -773,17 +773,17 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     });
     const userCookie = extractCookie(userLogin, "hc_user_session");
 
-    const catRes = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const catRes = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     const s3Board = (
       (await catRes.json()) as { boards: Array<{ id: string; slug: string }> }
     ).boards.find((b) => b.slug === "esp32-s3-devkitc-1-n16r8")!;
 
     const pkg129 = await publishFirmwarePackage(adminCookie, "1.2.9");
 
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ name: "Strict OTA S3", boardCatalogId: s3Board.id }),
+      body: JSON.stringify({ name: "Strict OTA S3", boardProfileId: s3Board.id }),
     });
     const { controller, pairingCode } = (await ctrlRes.json()) as {
       controller: { id: string };
@@ -816,7 +816,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     const startA = await req("/api/firmware/ota/start", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ controllerId: controller.id, releaseId: pkg129.release.id }),
+      body: JSON.stringify({ boardInstanceId: controller.id, releaseId: pkg129.release.id }),
     });
     expect(startA.status).toBe(201);
     const histIdA = ((await startA.json()) as { update: { id: string } }).update.id;
@@ -837,7 +837,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     expect(spoofedJson.status).toBe("rolled_back");
 
     const ctrlAfterSpoof = (await (
-      await req(`/api/controllers/${controller.id}`, { headers: { Cookie: userCookie } })
+      await req(`/api/board-instances/${controller.id}`, { headers: { Cookie: userCookie } })
     ).json()) as { controller: { firmware_version: string } };
     expect(ctrlAfterSpoof.controller.firmware_version).toBe("1.2.0");
 
@@ -845,7 +845,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     const startB = await req("/api/firmware/ota/start", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ controllerId: controller.id, releaseId: pkg129.release.id }),
+      body: JSON.stringify({ boardInstanceId: controller.id, releaseId: pkg129.release.id }),
     });
     expect(startB.status).toBe(201);
     const histIdB = ((await startB.json()) as { update: { id: string } }).update.id;
@@ -923,7 +923,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     const notifRes = (await (
       await req("/api/notifications", { headers: { Cookie: userCookie } })
     ).json()) as {
-      notifications: Array<{ metadata?: { historyId?: string; controllerId?: string } }>;
+      notifications: Array<{ metadata?: { historyId?: string; boardInstanceId?: string } }>;
     };
     const histBNotifs = notifRes.notifications.filter(
       (n) => n.metadata?.historyId === histIdB
@@ -945,7 +945,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     const startC = await req("/api/firmware/ota/start", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ controllerId: controller.id, releaseId: pkg136.release.id }),
+      body: JSON.stringify({ boardInstanceId: controller.id, releaseId: pkg136.release.id }),
     });
     expect(startC.status).toBe(201);
     const histIdC = ((await startC.json()) as { update: { id: string } }).update.id;
@@ -972,7 +972,7 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
     expect(midRowC?.progress_percent).toBe(96);
 
     const ctrlDuringVerify = (await (
-      await req(`/api/controllers/${controller.id}`, { headers: { Cookie: userCookie } })
+      await req(`/api/board-instances/${controller.id}`, { headers: { Cookie: userCookie } })
     ).json()) as { controller: { firmware_version: string } };
     expect(ctrlDuringVerify.controller.firmware_version).toBe("1.2.0");
 

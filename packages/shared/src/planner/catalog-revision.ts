@@ -68,7 +68,7 @@ export function buildPlannerCatalogRevisionSource(
 
   return stablePlannerStringify({
     engine: PLANNER_ENGINE_VERSION,
-    boardCatalogEnabled: snapshot.boardCatalogEnabled,
+    boardLibraryEnabled: snapshot.boardLibraryEnabled,
     account: snapshot.account,
     boards,
     releases,

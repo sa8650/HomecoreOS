@@ -53,11 +53,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { BoardProfileItem } from "@/features/types";
 
 export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
-  const cachedCat = getCachedSnapshot<{ boards: BoardProfileItem[] }>("/api/boards/catalog");
+  const cachedCat = getCachedSnapshot<{ boards: BoardProfileItem[] }>("/api/board-library/catalog");
   const cachedMy = getCachedSnapshot<{
     catalogBoards: BoardProfileItem[];
-    customBoards: BoardProfileItem[];
-  }>("/api/boards/my-boards");
+    customBoardProfiles: BoardProfileItem[];
+  }>("/api/board-library/saved-profiles");
 
   const [tab, setTab] = useState("catalog");
   const [search, setSearch] = useState("");
@@ -69,7 +69,7 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
     () => cachedMy?.catalogBoards ?? []
   );
   const [myCustom, setMyCustom] = useState<BoardProfileItem[]>(
-    () => cachedMy?.customBoards ?? []
+    () => cachedMy?.customBoardProfiles ?? []
   );
   const [loading, setLoading] = useState(!cachedCat);
   const creatingBoardRef = useRef(false);
@@ -97,23 +97,23 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
   const deletingRef = useRef(false);
 
   async function load(force = false) {
-    if (!getCachedSnapshot("/api/boards/catalog")) {
+    if (!getCachedSnapshot("/api/board-library/catalog")) {
       setLoading(true);
     }
     try {
       const [catRes, myRes] = await Promise.all([
-        cachedGet<{ boards: BoardProfileItem[] }>("/api/boards/catalog", {
+        cachedGet<{ boards: BoardProfileItem[] }>("/api/board-library/catalog", {
           ttlMs: 60_000,
           force,
         }),
         cachedGet<{
           catalogBoards: BoardProfileItem[];
-          customBoards: BoardProfileItem[];
-        }>("/api/boards/my-boards", { ttlMs: 60_000, force }),
+          customBoardProfiles: BoardProfileItem[];
+        }>("/api/board-library/saved-profiles", { ttlMs: 60_000, force }),
       ]);
       setCatalog(catRes.boards);
       setMyCatalog(myRes.catalogBoards);
-      setMyCustom(myRes.customBoards);
+      setMyCustom(myRes.customBoardProfiles);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to load boards.");
     } finally {
@@ -127,8 +127,8 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
 
   async function handleSaveToMyBoards(boardId: string) {
     try {
-      await apiFetch(`/api/boards/my-boards/${boardId}`, { method: "POST" });
-      toast.success("Board saved to My Boards.");
+      await apiFetch(`/api/board-library/saved-profiles/${boardId}`, { method: "POST" });
+      toast.success("Profile saved to your library.");
       await load();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save board.");
@@ -137,8 +137,8 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
 
   async function handleRemoveFromMyBoards(boardId: string) {
     try {
-      await apiFetch(`/api/boards/my-boards/${boardId}`, { method: "DELETE" });
-      toast.success("Board removed from My Boards.");
+      await apiFetch(`/api/board-library/saved-profiles/${boardId}`, { method: "DELETE" });
+      toast.success("Profile removed from Saved Profiles.");
       await load();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to remove board.");
@@ -203,7 +203,7 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
     }
     creatingBoardRef.current = true;
     try {
-      await apiFetch("/api/boards/custom", {
+      await apiFetch("/api/board-library/custom", {
         method: "POST",
         body: JSON.stringify({
           manufacturer: spec.manufacturer,
@@ -219,7 +219,7 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
       setManufacturer("");
       setModel("");
       toast.success("Validated custom board profile saved.");
-      setTab("my-boards");
+      setTab("saved");
       await load();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to save custom board.");
@@ -233,7 +233,7 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
     deletingRef.current = true;
     setDeleting(true);
     try {
-      await apiFetch(`/api/boards/custom/${deleteTarget.id}`, { method: "DELETE" });
+      await apiFetch(`/api/board-library/custom/${deleteTarget.id}`, { method: "DELETE" });
       toast.success(`Deleted custom board "${deleteTarget.model}".`);
       setDeleteTarget(null);
       await load(true);
@@ -314,8 +314,8 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
             <TabsTrigger value="catalog">
               Board Catalog ({catalog.length})
             </TabsTrigger>
-            <TabsTrigger value="my-boards">
-              My Boards ({savedTotal})
+            <TabsTrigger value="saved">
+              Saved Profiles ({savedTotal})
             </TabsTrigger>
             <TabsTrigger value="custom">Custom Board Builder</TabsTrigger>
           </TabsList>
@@ -400,7 +400,7 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
                         size="sm"
                         className="h-8 shrink-0 text-xs"
                         disabled={!canManage}
-                        aria-label={`Remove ${b.model} from My Boards`}
+                        aria-label={`Remove ${b.model} from Saved Profiles`}
                         onClick={() => void handleRemoveFromMyBoards(b.id)}
                       >
                         <RiBookmarkFill className="size-3.5 text-primary" aria-hidden="true" />
@@ -411,7 +411,7 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
                         variant="ghost"
                         size="sm"
                         className="h-8 shrink-0 text-xs"
-                        aria-label={`Save ${b.model} to My Boards`}
+                        aria-label={`Save ${b.model} to Saved Profiles`}
                         onClick={() => void handleSaveToMyBoards(b.id)}
                       >
                         <RiBookmarkLine className="size-3.5" aria-hidden="true" />
@@ -425,12 +425,12 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
           )}
         </TabsContent>
 
-        <TabsContent value="my-boards" className="pt-2">
+        <TabsContent value="saved" className="pt-2">
           {myCatalog.length === 0 && myCustom.length === 0 ? (
             <EmptyStatePanel
               icon={<RiCpuLine className="size-6" />}
-              title="No boards saved yet"
-              description="Save a catalog board or build a validated custom board profile to attach controllers."
+              title="No profiles saved yet"
+              description="Bookmark a catalog profile or build a validated custom profile so it is one click away when you register a new board."
             />
           ) : (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -446,7 +446,7 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
                         variant="ghost"
                         size="sm"
                         className="h-8 shrink-0 text-xs"
-                        aria-label={`Remove ${b.model} from My Boards`}
+                        aria-label={`Remove ${b.model} from Saved Profiles`}
                         onClick={() => void handleRemoveFromMyBoards(b.id)}
                       >
                         Unsave

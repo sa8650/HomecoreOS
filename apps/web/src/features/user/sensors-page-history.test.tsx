@@ -18,8 +18,8 @@ const controller: Partial<ControllerItem> = {
   id: "c1",
   account_id: "a1",
   home_id: "h1",
-  board_catalog_id: "b1",
-  custom_board_id: null,
+  board_profile_id: "b1",
+  custom_board_profile_id: null,
   name: "Living Hub",
   hardware_uid: "esp-1",
   board_model: "ESP32-S3-N16R8",
@@ -43,7 +43,7 @@ const sensor = {
   account_id: "a1",
   home_id: "h1",
   room_id: null,
-  controller_id: "c1",
+  board_instance_id: "c1",
   name: "Living Room Temp",
   sensor_type: "temperature_bme280",
   gpio_pin: null,
@@ -62,7 +62,7 @@ function mockFetch(historyBody: unknown) {
     calls.push(url);
     if (url.startsWith("/api/sensors/history")) return jsonResponse(historyBody);
     if (url === "/api/sensors") return jsonResponse({ sensors: [sensor] });
-    if (url === "/api/controllers") return jsonResponse({ controllers: [controller] });
+    if (url === "/api/board-instances") return jsonResponse({ controllers: [controller] });
     if (url === "/api/homes/rooms") return jsonResponse({ rooms: [] });
     return jsonResponse({ ok: true });
   });

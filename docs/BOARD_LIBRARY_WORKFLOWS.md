@@ -112,7 +112,7 @@ listed as not supported and cannot be selected.
 - **"Publish verified boards right away"** decides whether imported boards are
   visible in the user Board Library at once. Boards that need verification are
   added hidden in either case.
-- Every import is recorded as a run in `board_catalog_sync_runs` (the Board
+- Every import is recorded as a run in `board_profile_sync_runs` (the Board
   Library page shows the latest run) and in the admin activity log
   (`admin.boards_imported`).
 
@@ -123,9 +123,9 @@ asks the Worker what depends on the board:
 
 - **Controllers run on it:** removal is refused (HTTP 409). A controller reads
   its pin map through the board. Hide the board instead.
-- **Accounts saved it to My Boards, or firmware releases name it as a target:**
+- **Accounts saved it to their Saved Profiles, or firmware releases name it as a target:**
   removal is allowed, and the dialog says what happens. The board disappears
-  from My Boards until it is restored. The releases stay, without this target.
+  from Saved Profiles until it is restored. The releases stay, without this target.
 
 A removed board is kept in the database. The catalog sync does not bring it
 back. "Import Official Boards" restores it.
@@ -271,7 +271,7 @@ Every card has the same structure, so a row of cards lines up:
    the "Verified" badge.
 2. Model, then maker and revision.
 3. Five fields in a fixed order: Chip, Memory, Wireless, Pins, Firmware.
-4. "Details" and the second action (save, remove from My Boards, or delete a
+4. "Details" and the second action (save, remove from Saved Profiles, or delete a
    custom board) at the bottom.
 
 Cards in one row have the same height, in light and dark mode and on phones.

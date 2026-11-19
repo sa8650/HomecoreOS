@@ -18,7 +18,7 @@ export async function recordActivity(
   entry: {
     accountId?: string | null;
     actorUserId?: string | null;
-    controllerId?: string | null;
+    boardInstanceId?: string | null;
     category: ActivityCategory;
     action: string;
     summary: string;
@@ -28,7 +28,7 @@ export async function recordActivity(
   await db.from("activity_logs").insert({
     account_id: entry.accountId ?? null,
     actor_user_id: entry.actorUserId ?? null,
-    controller_id: entry.controllerId ?? null,
+    board_instance_id: entry.boardInstanceId ?? null,
     category: entry.category,
     action: entry.action,
     summary: entry.summary,

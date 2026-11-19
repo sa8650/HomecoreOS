@@ -115,11 +115,11 @@ function normalizeHexSuffix(value?: string | null): string {
 function matchBoardForDeviceInfo(
   deviceInfo: BleDeviceInfoPayload | null,
   catalogBoards: BoardProfileItem[],
-  customBoards: BoardProfileItem[]
+  customBoardProfiles: BoardProfileItem[]
 ): { kind: "catalog" | "custom"; board: BoardProfileItem } | null {
   const all: Array<{ kind: "catalog" | "custom"; board: BoardProfileItem }> = [
     ...catalogBoards.map((board) => ({ kind: "catalog" as const, board })),
-    ...customBoards.map((board) => ({ kind: "custom" as const, board })),
+    ...customBoardProfiles.map((board) => ({ kind: "custom" as const, board })),
   ];
   if (all.length === 0) return null;
 
@@ -559,7 +559,7 @@ export function ControllerSetupModal({
   trashedControllers = [],
   homes = [],
   catalogBoards = [],
-  customBoards = [],
+  customBoardProfiles = [],
   canManage = true,
   onSuccess,
 }: {
@@ -571,7 +571,7 @@ export function ControllerSetupModal({
   trashedControllers?: ControllerItem[];
   homes?: HomeItem[];
   catalogBoards?: BoardProfileItem[];
-  customBoards?: BoardProfileItem[];
+  customBoardProfiles?: BoardProfileItem[];
   /** Owners/admins may install factory firmware over USB. */
   canManage?: boolean;
   onSuccess?: (message: string) => void;
@@ -699,14 +699,14 @@ export function ControllerSetupModal({
         board: b,
         label: `${b.manufacturer} ${b.model}`,
       })),
-      ...customBoards.map((b) => ({
+      ...customBoardProfiles.map((b) => ({
         id: `custom:${b.id}`,
         board: b,
         label: `Custom: ${b.manufacturer} ${b.model}`,
       })),
     ];
     return list;
-  }, [catalogBoards, customBoards]);
+  }, [catalogBoards, customBoardProfiles]);
 
   useEffect(() => {
     if (!wifiPortalBoardChoice && boardOptions.length > 0) {
@@ -729,7 +729,7 @@ export function ControllerSetupModal({
     const poll = async () => {
       try {
         const res = await apiFetch<{ controller: ControllerItem }>(
-          `/api/controllers/${wifiPortalControllerId}`
+          `/api/board-instances/${wifiPortalControllerId}`
         );
         if (
           active &&
@@ -921,7 +921,7 @@ export function ControllerSetupModal({
     isRecovery: boolean,
     info: BleDeviceInfoPayload | null,
     deviceLabel: string
-  ): Promise<{ controllerId: string; pairingCode: string }> {
+  ): Promise<{ boardInstanceId: string; pairingCode: string }> {
     const matched = matchControllerByBleInfo(
       info,
       controllers,
@@ -933,45 +933,45 @@ export function ControllerSetupModal({
       if (matched.kind === "active") {
         activeControllerIdRef.current = matched.controller.id;
         const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-          "/api/controllers/recover",
+          "/api/board-instances/recover",
           {
             method: "POST",
-            body: JSON.stringify({ controllerId: matched.controller.id }),
+            body: JSON.stringify({ boardInstanceId: matched.controller.id }),
           }
         );
-        return { controllerId: res.controller.id, pairingCode: res.pairingCode };
+        return { boardInstanceId: res.controller.id, pairingCode: res.pairingCode };
       }
 
       if (matched.kind === "trashed") {
         const res = await apiFetch<{
           controller: ControllerItem;
           pairingCode?: string | null;
-        }>(`/api/controllers/${matched.controller.id}/restore`, {
+        }>(`/api/board-instances/${matched.controller.id}/restore`, {
           method: "POST",
         });
         activeControllerIdRef.current = res.controller.id;
         if (res.pairingCode) {
-          return { controllerId: res.controller.id, pairingCode: res.pairingCode };
+          return { boardInstanceId: res.controller.id, pairingCode: res.pairingCode };
         }
         const rec = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-          "/api/controllers/recover",
+          "/api/board-instances/recover",
           {
             method: "POST",
-            body: JSON.stringify({ controllerId: res.controller.id }),
+            body: JSON.stringify({ boardInstanceId: res.controller.id }),
           }
         );
-        return { controllerId: rec.controller.id, pairingCode: rec.pairingCode };
+        return { boardInstanceId: rec.controller.id, pairingCode: rec.pairingCode };
       }
 
       // Permanently deleted or missing from account -> create a fresh recovery slot bound to user's account
-      const matchedBoard = matchBoardForDeviceInfo(info, catalogBoards, customBoards);
+      const matchedBoard = matchBoardForDeviceInfo(info, catalogBoards, customBoardProfiles);
       if (!matchedBoard) {
         throw new Error(
           "No compatible board profile is available in your catalog for this controller."
         );
       }
       const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-        "/api/controllers/recover",
+        "/api/board-instances/recover",
         {
           method: "POST",
           body: JSON.stringify({
@@ -981,13 +981,13 @@ export function ControllerSetupModal({
                 : deviceLabel || "Recovered Controller",
             homeId: homes[0]?.id,
             ...(matchedBoard.kind === "catalog"
-              ? { boardCatalogId: matchedBoard.board.id }
-              : { customBoardId: matchedBoard.board.id }),
+              ? { boardProfileId: matchedBoard.board.id }
+              : { customBoardProfileId: matchedBoard.board.id }),
           }),
         }
       );
       activeControllerIdRef.current = res.controller.id;
-      return { controllerId: res.controller.id, pairingCode: res.pairingCode };
+      return { boardInstanceId: res.controller.id, pairingCode: res.pairingCode };
     }
 
     // New Controller Setup authorization
@@ -995,13 +995,13 @@ export function ControllerSetupModal({
       const existingId = activeControllerIdRef.current ?? targetController!.id;
       activeControllerIdRef.current = existingId;
       const res = await apiFetch<{ pairingCode: string }>(
-        `/api/controllers/${existingId}/regenerate-pairing-code`,
+        `/api/board-instances/${existingId}/regenerate-pairing-code`,
         { method: "POST" }
       );
-      return { controllerId: existingId, pairingCode: res.pairingCode };
+      return { boardInstanceId: existingId, pairingCode: res.pairingCode };
     }
 
-    const matchedBoard = matchBoardForDeviceInfo(info, catalogBoards, customBoards);
+    const matchedBoard = matchBoardForDeviceInfo(info, catalogBoards, customBoardProfiles);
     if (!matchedBoard) {
       throw new Error(
         "No compatible board profile is available in your catalog for this controller."
@@ -1009,29 +1009,29 @@ export function ControllerSetupModal({
     }
 
     const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-      "/api/controllers",
+      "/api/board-instances",
       {
         method: "POST",
         body: JSON.stringify({
           name: deviceLabel || matchedBoard.board.model,
           homeId: homes[0]?.id,
           ...(matchedBoard.kind === "catalog"
-            ? { boardCatalogId: matchedBoard.board.id }
-            : { customBoardId: matchedBoard.board.id }),
+            ? { boardProfileId: matchedBoard.board.id }
+            : { customBoardProfileId: matchedBoard.board.id }),
         }),
       }
     );
     activeControllerIdRef.current = res.controller.id;
-    return { controllerId: res.controller.id, pairingCode: res.pairingCode };
+    return { boardInstanceId: res.controller.id, pairingCode: res.pairingCode };
   }
 
-  async function waitForControllerOnlineOnBackend(controllerId: string): Promise<boolean> {
+  async function waitForControllerOnlineOnBackend(boardInstanceId: string): Promise<boolean> {
     const deadline = Date.now() + 18_000;
     while (Date.now() < deadline) {
       if (!isMountedRef.current) return false;
       try {
         const res = await apiFetch<{ controller: ControllerItem }>(
-          `/api/controllers/${controllerId}`
+          `/api/board-instances/${boardInstanceId}`
         );
         const ctrl = res.controller;
         if (ctrl && ctrl.pairing_status === "paired" && ctrl.mqtt_connected) {
@@ -1183,7 +1183,7 @@ export function ControllerSetupModal({
 
       if (!isRecoveryBle) {
         // Setup with BLE: auto-generate pairing code from authenticated account & send encrypted payload
-        const { controllerId, pairingCode } = await issuePairingAuthorization(
+        const { boardInstanceId, pairingCode } = await issuePairingAuthorization(
           false,
           deviceInfo,
           connectedDeviceName
@@ -1204,7 +1204,7 @@ export function ControllerSetupModal({
         currentErrorStep = 4;
         setStepProgress(5, 5);
         const backendVerified =
-          status.mqtt_connected && (await waitForControllerOnlineOnBackend(controllerId));
+          status.mqtt_connected && (await waitForControllerOnlineOnBackend(boardInstanceId));
         if (!backendVerified) {
           const err = new Error(
             "Controller did not complete MQTT verification. Please check your network and retry."
@@ -1248,12 +1248,12 @@ export function ControllerSetupModal({
             // If Wi-Fi connected (step >= 3) but MQTT / pairing verification failed, auto-escalate to Case B re-pair!
             if (failStep >= 3 && client.isConnected) {
               setStepProgress(3, 3);
-              const { controllerId, pairingCode } = await issuePairingAuthorization(
+              const { boardInstanceId, pairingCode } = await issuePairingAuthorization(
                 true,
                 deviceInfo,
                 connectedDeviceName
               );
-              verifiedControllerId = controllerId;
+              verifiedControllerId = boardInstanceId;
               currentErrorStep = 3;
               await sendAndAwaitBleStatus(
                 client,
@@ -1273,12 +1273,12 @@ export function ControllerSetupModal({
           }
         } else {
           // Case B: Controller was deleted, in Trash, recovery_pending, or factory reset
-          const { controllerId, pairingCode } = await issuePairingAuthorization(
+          const { boardInstanceId, pairingCode } = await issuePairingAuthorization(
             true,
             deviceInfo,
             connectedDeviceName
           );
-          verifiedControllerId = controllerId;
+          verifiedControllerId = boardInstanceId;
           currentErrorStep = 2;
           await sendAndAwaitBleStatus(
             client,
@@ -1349,14 +1349,14 @@ export function ControllerSetupModal({
           throw new Error("Select a board model for this controller.");
         }
         const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-          "/api/controllers",
+          "/api/board-instances",
           {
             method: "POST",
             body: JSON.stringify({
               name: wifiPortalName.trim() || "HomecoreOS Controller",
               homeId: homes[0]?.id,
-              boardCatalogId: kind === "catalog" ? id : undefined,
-              customBoardId: kind === "custom" ? id : undefined,
+              boardProfileId: kind === "catalog" ? id : undefined,
+              customBoardProfileId: kind === "custom" ? id : undefined,
             }),
           }
         );
@@ -1365,10 +1365,10 @@ export function ControllerSetupModal({
       } else if (view === "recover_wifi") {
         if (!wifiPortalRecoverDeleted && wifiPortalTargetId) {
           const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-            "/api/controllers/recover",
+            "/api/board-instances/recover",
             {
               method: "POST",
-              body: JSON.stringify({ controllerId: wifiPortalTargetId }),
+              body: JSON.stringify({ boardInstanceId: wifiPortalTargetId }),
             }
           );
           setWifiPortalControllerId(res.controller.id);
@@ -1379,14 +1379,14 @@ export function ControllerSetupModal({
             throw new Error("Select the controller board model.");
           }
           const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-            "/api/controllers/recover",
+            "/api/board-instances/recover",
             {
               method: "POST",
               body: JSON.stringify({
                 name: wifiPortalName.trim() || "Recovered Controller",
                 homeId: homes[0]?.id,
-                boardCatalogId: kind === "catalog" ? id : undefined,
-                customBoardId: kind === "custom" ? id : undefined,
+                boardProfileId: kind === "catalog" ? id : undefined,
+                customBoardProfileId: kind === "custom" ? id : undefined,
               }),
             }
           );

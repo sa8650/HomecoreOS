@@ -8,7 +8,7 @@ import { HERO_SPOTLIGHT_PALETTES } from "./ui/magic-card";
 import { Toaster } from "./ui/sonner";
 import { AutomationsPage } from "../features/user/AutomationsPage";
 import { BoardLibraryPage } from "../features/user/BoardLibraryPage";
-import { ControllersPage } from "../features/user/ControllersPage";
+import { MyBoardsPage } from "../features/user/MyBoardsPage";
 import {
   DevicesPage,
   SensorsPage,
@@ -76,8 +76,8 @@ function makeSampleFixtures() {
       id: "c1",
       account_id: "a1",
       home_id: "h1",
-      board_catalog_id: "cat-s3",
-      custom_board_id: null,
+      board_profile_id: "cat-s3",
+      custom_board_profile_id: null,
       name: "Living Room Hub",
       hardware_uid: "AA:BB:CC:DD:EE:01",
       board_model: "ESP32-S3-DevKitC-1",
@@ -114,8 +114,8 @@ function makeSampleFixtures() {
       id: "c2",
       account_id: "a1",
       home_id: "h1",
-      board_catalog_id: "cat-s3",
-      custom_board_id: null,
+      board_profile_id: "cat-s3",
+      custom_board_profile_id: null,
       name: "Garage Node",
       hardware_uid: "AA:BB:CC:DD:EE:02",
       board_model: "ESP32-S3-DevKitC-1",
@@ -144,7 +144,7 @@ function makeSampleFixtures() {
       account_id: "a1",
       home_id: "h1",
       room_id: "r1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Hallway Lamp",
       gpio_pin: 4,
       inverted: false,
@@ -157,7 +157,7 @@ function makeSampleFixtures() {
       account_id: "a1",
       home_id: "h1",
       room_id: "r2",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Porch Relay",
       gpio_pin: 5,
       inverted: false,
@@ -172,7 +172,7 @@ function makeSampleFixtures() {
       account_id: "a1",
       home_id: "h1",
       room_id: "r1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Ceiling Fan",
       device_type: "fan",
       gpio_pin: 12,
@@ -184,7 +184,7 @@ function makeSampleFixtures() {
       account_id: "a1",
       home_id: "h1",
       room_id: "r2",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Front Door Lock",
       device_type: "lock",
       gpio_pin: 13,
@@ -198,7 +198,7 @@ function makeSampleFixtures() {
       account_id: "a1",
       home_id: "h1",
       room_id: "r1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Room Thermometer",
       sensor_type: "dht22_temp",
       gpio_pin: 6,
@@ -213,7 +213,7 @@ function makeSampleFixtures() {
       account_id: "a1",
       home_id: "h1",
       room_id: "r2",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Window Contact",
       sensor_type: "contact",
       gpio_pin: 7,
@@ -307,15 +307,15 @@ function installDefaultFetchMock(fixtures = makeSampleFixtures()) {
     const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
 
-    if (url === "/api/boards/catalog") return jsonResponse({ boards: fixtures.catalogBoards });
-    if (url === "/api/boards/my-boards") return jsonResponse({ catalogBoards: [], customBoards: [] });
-    if (url === "/api/boards/custom") return jsonResponse({ boards: [] });
+    if (url === "/api/board-library/catalog") return jsonResponse({ boards: fixtures.catalogBoards });
+    if (url === "/api/board-library/saved-profiles") return jsonResponse({ catalogBoards: [], customBoardProfiles: [] });
+    if (url === "/api/board-library/custom") return jsonResponse({ boards: [] });
     if (url === "/api/homes") return jsonResponse({ homes: fixtures.homes });
     if (url === "/api/homes/rooms" && method === "GET") return jsonResponse({ rooms: fixtures.rooms });
     if (url.startsWith("/api/homes/rooms/") && method === "DELETE") return jsonResponse({ ok: true });
-    if (url === "/api/controllers") return jsonResponse({ controllers: fixtures.controllers });
-    if (url === "/api/controllers/trash") return jsonResponse({ controllers: [] });
-    if (url.match(/^\/api\/controllers\/[^/]+\/(restart|disconnect|reconnect|reset)$/) && method === "POST") {
+    if (url === "/api/board-instances") return jsonResponse({ controllers: fixtures.controllers });
+    if (url === "/api/board-instances/trash") return jsonResponse({ controllers: [] });
+    if (url.match(/^\/api\/board-instances\/[^/]+\/(restart|disconnect|reconnect|reset)$/) && method === "POST") {
       return jsonResponse({ ok: true });
     }
     if (url === "/api/switches" && method === "GET") return jsonResponse({ switches: fixtures.switches });
@@ -425,13 +425,13 @@ describe("4-Part UI Overhaul: Heroes, Board Library Layout, Sonner Toasts & Magi
     expect(screen.getByRole("heading", { name: "Bedroom" })).toBeInTheDocument();
     rmView.unmount();
 
-    // 7. ControllersPage -> blue + hero search filters controllers
+    // 7. MyBoardsPage -> blue + hero search filters controllers
     const ctView = render(
       <TimezoneContext.Provider value="UTC">
-        <ControllersPage canManage canOperate onNavigate={vi.fn()} />
+        <MyBoardsPage canManage canOperate onNavigate={vi.fn()} />
       </TimezoneContext.Provider>
     );
-    expect(await screen.findByRole("region", { name: "Controllers Header" })).toHaveAttribute("data-hero-tone", "blue");
+    expect(await screen.findByRole("region", { name: "My Boards Header" })).toHaveAttribute("data-hero-tone", "blue");
     expect(ctView.container.querySelector(".hc-hero-blue")).not.toBeNull();
     await user.type(screen.getByRole("textbox", { name: /Search controllers/i }), "Garage");
     expect(screen.queryByText("Living Room Hub")).not.toBeInTheDocument();
@@ -479,17 +479,17 @@ describe("4-Part UI Overhaul: Heroes, Board Library Layout, Sonner Toasts & Magi
     expect(screen.queryByText(/XIAO/i)).not.toBeInTheDocument();
 
     // Switching to My Boards hides catalog filter dropdowns cleanly
-    await user.click(screen.getByRole("tab", { name: /My Boards/i }));
+    await user.click(screen.getByRole("tab", { name: /Saved Profiles/i }));
     expect(screen.queryByRole("combobox", { name: /Filter by board source/i })).not.toBeInTheDocument();
   });
 
-  it("renders MagicCard (orb mode) on ControllersPage active controller cards and preserves click, dropdown actions, and toasts", async () => {
+  it("renders MagicCard (orb mode) on MyBoardsPage active controller cards and preserves click, dropdown actions, and toasts", async () => {
     const user = userEvent.setup();
     installDefaultFetchMock();
 
     const { container } = render(
       <TimezoneContext.Provider value="UTC">
-        <ControllersPage canManage canOperate onNavigate={vi.fn()} />
+        <MyBoardsPage canManage canOperate onNavigate={vi.fn()} />
         <Toaster />
       </TimezoneContext.Provider>
     );
@@ -659,10 +659,10 @@ describe("4-Part UI Overhaul: Heroes, Board Library Layout, Sonner Toasts & Magi
     expect(roomsGrid.querySelectorAll('[data-slot="magic-card"][data-spotlight-tone="teal"]').length).toBe(2);
     rmView.unmount();
 
-    // 7. ControllersPage -> blue
+    // 7. MyBoardsPage -> blue
     const ctView = render(
       <TimezoneContext.Provider value="UTC">
-        <ControllersPage canManage canOperate onNavigate={vi.fn()} />
+        <MyBoardsPage canManage canOperate onNavigate={vi.fn()} />
       </TimezoneContext.Provider>
     );
     await screen.findByText("Living Room Hub");

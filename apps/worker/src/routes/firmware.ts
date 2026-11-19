@@ -18,7 +18,7 @@ import { requireStaffRole, requireUserSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
 
 const otaStartSchema = z.object({
-  controllerId: z.string().uuid(),
+  boardInstanceId: z.string().uuid(),
   releaseId: z.string().uuid(),
 });
 
@@ -37,7 +37,7 @@ const usbBoardCheckSchema = z.object({
 
 const usbFlashLogSchema = z.object({
   releaseId: z.string().uuid(),
-  controllerId: z.string().uuid().optional(),
+  boardInstanceId: z.string().uuid().optional(),
   status: z.enum(["succeeded", "failed"]),
   chipDetected: z.string().max(120).optional(),
   detectedFlashSizeMb: z.number().int().min(1).max(64).optional(),
@@ -50,8 +50,8 @@ interface ControllerCompatRow {
   id: string;
   name: string;
   status: string;
-  board_catalog_id: string | null;
-  custom_board_id: string | null;
+  board_profile_id: string | null;
+  custom_board_profile_id: string | null;
   board_model: string;
   firmware_version: string | null;
   chip_variant: string;
@@ -146,7 +146,7 @@ export function createFirmwareRoutes() {
         : Promise.resolve({ data: null }),
       allBoardIds.size > 0
         ? db
-            .from("board_catalog")
+            .from("board_profiles")
             .select(
               "id,slug,manufacturer,model,chip_family,chip_variant,flash_size_mb,psram_size_mb,psram_mode,partition_scheme,bootloader_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ble,supports_ble_wifi_provisioning"
             )
@@ -195,9 +195,9 @@ export function createFirmwareRoutes() {
 
     const [ctrlRes, relRes, catRes, customRes, histRes] = await Promise.all([
       db
-        .from("controllers")
+        .from("board_instances")
         .select(
-          "id,name,status,device_role,assigned_controller_id,board_catalog_id,custom_board_id,board_model,firmware_version,chip_variant"
+          "id,name,status,board_role,assigned_controller_id,board_profile_id,custom_board_profile_id,board_model,firmware_version,chip_variant"
         )
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
@@ -211,13 +211,13 @@ export function createFirmwareRoutes() {
         .is("deleted_at", null)
         .order("published_at", { ascending: false }),
       db
-        .from("board_catalog")
+        .from("board_profiles")
         .select(
           "id,slug,manufacturer,model,revision,chip_family,chip_variant,flash_size_mb,psram_size_mb,firmware_status,partition_scheme,psram_mode,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ble,supports_ble_wifi_provisioning,supports_ota_rollback,firmware_compat_key"
         )
         .is("deleted_at", null),
       db
-        .from("custom_boards")
+        .from("custom_board_profiles")
         .select(
           "id,slug,manufacturer,model,revision,chip_family,chip_variant,flash_size_mb,psram_size_mb,partition_scheme,psram_mode,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ble,supports_ble_wifi_provisioning,supports_ota_rollback,firmware_compat_key"
         )
@@ -248,7 +248,7 @@ export function createFirmwareRoutes() {
 
     const historyRows = (histRes.data ?? []) as Array<{
       id: string;
-      controller_id: string;
+      board_instance_id: string;
       release_id: string;
       update_type: string;
       previous_version: string | null;
@@ -275,8 +275,8 @@ export function createFirmwareRoutes() {
           h.status = "failed";
           h.error_message = h.error_message ?? "OTA update timed out without completion.";
           h.completed_at = new Date().toISOString();
-        } else if (!activeHistoryByController.has(h.controller_id)) {
-          activeHistoryByController.set(h.controller_id, h);
+        } else if (!activeHistoryByController.has(h.board_instance_id)) {
+          activeHistoryByController.set(h.board_instance_id, h);
         }
       }
     }
@@ -316,9 +316,9 @@ export function createFirmwareRoutes() {
     }
 
     const applicableUpdates: Array<{
-      controllerId: string;
+      boardInstanceId: string;
       controllerName: string;
-      deviceRole: "controller" | "node";
+      boardRole: "controller" | "node";
       boardModel: string;
       controllerStatus: string;
       currentVersion: string | null;
@@ -339,10 +339,10 @@ export function createFirmwareRoutes() {
     }> = [];
 
     for (const ctrl of controllers) {
-      const compatBoard = ctrl.board_catalog_id
-        ? catalogById.get(ctrl.board_catalog_id) ?? null
-        : ctrl.custom_board_id
-          ? customById.get(ctrl.custom_board_id) ?? null
+      const compatBoard = ctrl.board_profile_id
+        ? catalogById.get(ctrl.board_profile_id) ?? null
+        : ctrl.custom_board_profile_id
+          ? customById.get(ctrl.custom_board_profile_id) ?? null
           : null;
 
       const compatibleNewer = otaReleases
@@ -363,10 +363,10 @@ export function createFirmwareRoutes() {
       if (!bestRelease) continue;
 
       applicableUpdates.push({
-        controllerId: ctrl.id,
+        boardInstanceId: ctrl.id,
         controllerName: ctrl.name,
-        deviceRole:
-          (ctrl as { device_role?: string | null }).device_role === "node"
+        boardRole:
+          (ctrl as { board_role?: string | null }).board_role === "node"
             ? "node"
             : "controller",
         boardModel: ctrl.board_model,
@@ -392,7 +392,7 @@ export function createFirmwareRoutes() {
     const ctrlNameById = new Map(controllers.map((ctrl) => [ctrl.id, ctrl.name]));
     const enrichedHistory = historyRows.map((h) => ({
       ...h,
-      controller_name: ctrlNameById.get(h.controller_id) ?? "Removed controller",
+      controller_name: ctrlNameById.get(h.board_instance_id) ?? "Removed controller",
     }));
 
     return c.json({
@@ -494,7 +494,7 @@ export function createFirmwareRoutes() {
       const body = await c.req.json().catch(() => null);
       const parsed = otaStartSchema.safeParse(body);
       if (!parsed.success) {
-        return c.json({ error: "controllerId and releaseId are required." }, 400);
+        return c.json({ error: "boardInstanceId and releaseId are required." }, 400);
       }
 
       const auth = c.get("userAuth")!;
@@ -502,9 +502,9 @@ export function createFirmwareRoutes() {
       const deps = c.get("deps") ?? {};
 
       const { data: ctrl } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("*")
-        .eq("id", parsed.data.controllerId)
+        .eq("id", parsed.data.boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .is("permanently_deleted_at", null)
@@ -573,7 +573,7 @@ export function createFirmwareRoutes() {
       }
 
       const isNode =
-        (ctrlRow as { device_role?: string | null }).device_role === "node";
+        (ctrlRow as { board_role?: string | null }).board_role === "node";
       const assignedControllerId = isNode
         ? ((ctrlRow as { assigned_controller_id?: string | null }).assigned_controller_id ?? null)
         : null;
@@ -584,7 +584,7 @@ export function createFirmwareRoutes() {
       const { data: cred } = await db
         .from("mqtt_credentials_metadata")
         .select("topic_prefix,status")
-        .eq("controller_id", ctrlRow.id)
+        .eq("board_instance_id", ctrlRow.id)
         .eq("account_id", auth.accountId)
         .eq("status", "active")
         .maybeSingle();
@@ -607,7 +607,7 @@ export function createFirmwareRoutes() {
         const { data: parentCred } = await db
           .from("mqtt_credentials_metadata")
           .select("topic_prefix,status")
-          .eq("controller_id", assignedControllerId)
+          .eq("board_instance_id", assignedControllerId)
           .eq("account_id", auth.accountId)
           .eq("status", "active")
           .maybeSingle();
@@ -638,14 +638,14 @@ export function createFirmwareRoutes() {
           completed_at: new Date().toISOString(),
         })
         .eq("account_id", auth.accountId)
-        .eq("controller_id", ctrlRow.id)
+        .eq("board_instance_id", ctrlRow.id)
         .in("status", ["pending", "downloading", "flashing", "verifying", "rebooting"]);
 
       const { data: historyRow } = await db
         .from("firmware_update_history")
         .insert({
           account_id: auth.accountId,
-          controller_id: ctrlRow.id,
+          board_instance_id: ctrlRow.id,
           release_id: release.id,
           update_type: "ota",
           previous_version: ctrlRow.firmware_version,
@@ -668,7 +668,7 @@ export function createFirmwareRoutes() {
         ota_url: otaUrl,
         sha256: f.sha256,
         size_bytes: f.size_bytes,
-        device_role: isNode ? ("node" as const) : ("controller" as const),
+        board_role: isNode ? ("node" as const) : ("controller" as const),
         // Nodes coordinate a temporary Wi-Fi/EMQX window for the download.
         wifi_window: isNode,
       };
@@ -695,7 +695,7 @@ export function createFirmwareRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId: ctrlRow.id,
+        boardInstanceId: ctrlRow.id,
         category: "firmware",
         action: "firmware.ota_started",
         summary: `Started OTA update to v${release.version} for ${isNode ? "Node" : "Controller"} "${ctrlRow.name}"`,
@@ -715,7 +715,7 @@ export function createFirmwareRoutes() {
 
       const { data: row } = await db
         .from("firmware_update_history")
-        .select("id,controller_id,target_version,status")
+        .select("id,board_instance_id,target_version,status")
         .eq("id", historyId)
         .eq("account_id", auth.accountId)
         .maybeSingle();
@@ -723,7 +723,7 @@ export function createFirmwareRoutes() {
       if (!row) return c.json({ error: "Update record not found." }, 404);
       const h = row as {
         id: string;
-        controller_id: string;
+        board_instance_id: string;
         target_version: string;
         status: string;
       };
@@ -749,7 +749,7 @@ export function createFirmwareRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId: h.controller_id,
+        boardInstanceId: h.board_instance_id,
         category: "firmware",
         action: "firmware.ota_cancelled",
         summary: `Cancelled pending OTA update to v${h.target_version}`,
@@ -786,18 +786,18 @@ export function createFirmwareRoutes() {
       const targetVersion =
         (rel as { version?: string } | null)?.version ?? "usb-factory";
 
-      if (parsed.data.controllerId) {
+      if (parsed.data.boardInstanceId) {
         const { data: ctrl } = await db
-          .from("controllers")
+          .from("board_instances")
           .select("id")
-          .eq("id", parsed.data.controllerId)
+          .eq("id", parsed.data.boardInstanceId)
           .eq("account_id", auth.accountId)
           .maybeSingle();
 
         if (ctrl) {
           await db.from("firmware_update_history").insert({
             account_id: auth.accountId,
-            controller_id: parsed.data.controllerId,
+            board_instance_id: parsed.data.boardInstanceId,
             release_id: parsed.data.releaseId,
             update_type: "usb_factory",
             target_version: targetVersion,
@@ -823,9 +823,9 @@ export function createFirmwareRoutes() {
               ctrlUpdates.reported_board_slug = parsed.data.reportedBoardSlug;
             }
             await db
-              .from("controllers")
+              .from("board_instances")
               .update(ctrlUpdates)
-              .eq("id", parsed.data.controllerId)
+              .eq("id", parsed.data.boardInstanceId)
               .eq("account_id", auth.accountId);
           }
         }
@@ -834,7 +834,7 @@ export function createFirmwareRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId: parsed.data.controllerId ?? null,
+        boardInstanceId: parsed.data.boardInstanceId ?? null,
         category: "firmware",
         action:
           parsed.data.status === "succeeded"
@@ -892,7 +892,7 @@ export function createFirmwareRoutes() {
                   parsed.data.errorMessage ? `: ${parsed.data.errorMessage}` : "."
                 }`,
         metadata: {
-          controllerId: parsed.data.controllerId ?? null,
+          boardInstanceId: parsed.data.boardInstanceId ?? null,
           releaseId: parsed.data.releaseId,
           status: parsed.data.status,
           chipDetected: parsed.data.chipDetected ?? null,

@@ -64,16 +64,16 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
     const cookie = extractCookie(regRes, "hc_user_session");
 
     // Pick catalog board & create + pair controller
-    const catRes = await req("/api/boards/catalog", { headers: { Cookie: cookie } });
+    const catRes = await req("/api/board-library/catalog", { headers: { Cookie: cookie } });
     const firstBoard = ((await catRes.json()) as {
       boards: Array<{ id: string; slug: string; chip_family: "esp32s3" }>;
     }).boards[0]!;
     const boardId = firstBoard.id;
 
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
-      body: JSON.stringify({ name: "Auto Hub", boardCatalogId: boardId }),
+      body: JSON.stringify({ name: "Auto Hub", boardProfileId: boardId }),
     });
     const ctrlJson = (await ctrlRes.json()) as {
       controller: { id: string };
@@ -88,7 +88,7 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
     const pairJson = (await pairRes.json()) as { device_api_token: string };
     await seedInstalledFirmwareWithDrivers({
       pg: dbHarness.pg,
-      controllerId: ctrlJson.controller.id,
+      boardInstanceId: ctrlJson.controller.id,
       boardId: firstBoard.id,
       boardSlug: firstBoard.slug,
       chipFamily: firstBoard.chip_family,
@@ -99,7 +99,7 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({
-        controllerId: ctrlJson.controller.id,
+        boardInstanceId: ctrlJson.controller.id,
         name: "Main Wall Switch",
         gpioPin: 4,
       }),
@@ -110,7 +110,7 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({
-        controllerId: ctrlJson.controller.id,
+        boardInstanceId: ctrlJson.controller.id,
         name: "Night Lamp",
         gpioPin: 5,
       }),
@@ -121,7 +121,7 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({
-        controllerId: ctrlJson.controller.id,
+        boardInstanceId: ctrlJson.controller.id,
         name: "Exhaust Fan",
         deviceType: "fan",
         gpioPin: 6,
@@ -281,7 +281,7 @@ describe("Automations Engine (Switch OFF, Device Telemetry, Chaining Loop Guard,
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({
-        controllerId: ctrlJson.controller.id,
+        boardInstanceId: ctrlJson.controller.id,
         name: "Media Room Temp",
         sensorType: "temperature_dht22",
         gpioPin: 7,

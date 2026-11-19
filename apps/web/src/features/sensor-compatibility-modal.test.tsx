@@ -51,8 +51,8 @@ function makeController(
     id,
     account_id: "acc-1",
     home_id: "home-1",
-    board_catalog_id: board.id,
-    custom_board_id: null,
+    board_profile_id: board.id,
+    custom_board_profile_id: null,
     name,
     hardware_uid: "AA:BB:CC:DD:EE:01",
     board_model: board.model,
@@ -155,7 +155,7 @@ describe("SensorEditorModal — Board + Installed Firmware Compatibility", () =>
         body: {
           name: "Panel Climate",
           sensorType: "temperature_bme280",
-          controllerId: "ctrl-relay",
+          boardInstanceId: "ctrl-relay",
           roomId: null,
           gpioPin: null,
           i2cAddress: "0x76",
@@ -242,7 +242,7 @@ describe("SensorEditorModal — Board + Installed Firmware Compatibility", () =>
     };
 
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ controllerId: ctrl.id, ...liveReport }), {
+      new Response(JSON.stringify({ boardInstanceId: ctrl.id, ...liveReport }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       })
@@ -261,7 +261,7 @@ describe("SensorEditorModal — Board + Installed Firmware Compatibility", () =>
 
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/controllers/ctrl-live/sensor-compatibility",
+        "/api/board-instances/ctrl-live/sensor-compatibility",
         expect.anything()
       )
     );
@@ -328,7 +328,7 @@ describe("SensorEditorModal — Board + Installed Firmware Compatibility", () =>
       account_id: "acc-1",
       home_id: "home-1",
       room_id: null,
-      controller_id: ctrl.id,
+      board_instance_id: ctrl.id,
       name: "Panel DHT Humidity",
       sensor_type: "humidity_dht22",
       gpio_pin: 5,
@@ -427,7 +427,7 @@ describe("SensorEditorModal — Board + Installed Firmware Compatibility", () =>
       account_id: "acc-1",
       home_id: "home-1",
       room_id: null,
-      controller_id: ctrl.id,
+      board_instance_id: ctrl.id,
       name: "Panel BME",
       sensor_type: "temperature_bme280",
       gpio_pin: null,

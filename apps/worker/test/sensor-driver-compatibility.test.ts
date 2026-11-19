@@ -84,7 +84,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
     const { homes } = (await homesRes.json()) as { homes: Array<{ id: string }> };
     const home = homes[0]!;
 
-    const boardsRes = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const boardsRes = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     expect(boardsRes.status).toBe(200);
     const { boards } = (await boardsRes.json()) as {
       boards: Array<{ id: string; slug: string; chip_family: string }>;
@@ -93,13 +93,13 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
     expect(s3Board).toBeTruthy();
 
     // 3. Create controller & pair device
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
         name: "Lab S3 Hub",
         homeId: home.id,
-        boardCatalogId: s3Board.id,
+        boardProfileId: s3Board.id,
       }),
     });
     expect(ctrlRes.status).toBe(201);
@@ -126,7 +126,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
     const deviceToken = pairJson.device_api_token;
 
     // 4. Before any verified firmware release exists for v1.4.0, controller has NO verified drivers
-    const compatBefore = await req(`/api/controllers/${controller.id}/sensor-compatibility`, {
+    const compatBefore = await req(`/api/board-instances/${controller.id}/sensor-compatibility`, {
       headers: { Cookie: userCookie },
     });
     expect(compatBefore.status).toBe(200);
@@ -143,7 +143,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Early Temp",
         sensorType: "temperature_bme280",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: null,
         i2cAddress: "0x76",
       }),
@@ -153,7 +153,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
     // 5. Seed a partial firmware release v1.4.0 (ONLY bme280 + pir) and send device heartbeat to auto-link
     const seededPartial = await seedInstalledFirmwareWithDrivers({
       pg: dbHarness.pg,
-      controllerId: controller.id,
+      boardInstanceId: controller.id,
       boardId: s3Board.id,
       boardSlug: s3Board.slug,
       chipFamily: "esp32s3",
@@ -162,7 +162,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
     });
     // Clear link first to test heartbeat auto-linking + diagnostic hash recording
     await dbHarness.pg.query(
-      `UPDATE public.controllers SET installed_firmware_release_id = NULL WHERE id = $1`,
+      `UPDATE public.board_instances SET installed_firmware_release_id = NULL WHERE id = $1`,
       [controller.id]
     );
 
@@ -189,14 +189,14 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       installed_firmware_release_id: string | null;
       reported_driver_manifest_hash: string | null;
     }>(
-      `SELECT installed_firmware_release_id, reported_driver_manifest_hash FROM public.controllers WHERE id = $1`,
+      `SELECT installed_firmware_release_id, reported_driver_manifest_hash FROM public.board_instances WHERE id = $1`,
       [controller.id]
     );
     expect(ctrlRow.rows[0]?.installed_firmware_release_id).toBe(seededPartial.releaseId);
     expect(ctrlRow.rows[0]?.reported_driver_manifest_hash).toBe("deadbeef1234");
 
-    // 6. GET /api/controllers returns batched sensor_compatibility matching ONLY bme280 + pir
-    const listRes = await req("/api/controllers", { headers: { Cookie: userCookie } });
+    // 6. GET /api/board-instances returns batched sensor_compatibility matching ONLY bme280 + pir
+    const listRes = await req("/api/board-instances", { headers: { Cookie: userCookie } });
     expect(listRes.status).toBe(200);
     const listJson = (await listRes.json()) as {
       controllers: Array<{
@@ -223,7 +223,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Lab BME Temp",
         sensorType: "temperature_bme280",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: null,
         i2cAddress: "0x76",
       }),
@@ -237,7 +237,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Lab BME Humidity",
         sensorType: "humidity_bme280",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: null,
         i2cAddress: "0x76",
       }),
@@ -250,7 +250,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Lab PIR",
         sensorType: "motion_pir",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: 4,
       }),
     });
@@ -263,7 +263,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Blocked DHT",
         sensorType: "temperature_dht22",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: 5,
       }),
     });
@@ -275,7 +275,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Bad Pin PIR",
         sensorType: "motion_pir",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: 35,
       }),
     });
@@ -352,7 +352,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
     // 11. Metadata-only PATCH rename succeeds even if controller firmware lacks that driver,
     //     while hardware-binding change to an unsupported sensor fails.
     await dbHarness.pg.query(
-      `UPDATE public.controllers SET installed_firmware_release_id = NULL, firmware_version = '0.9.0' WHERE id = $1`,
+      `UPDATE public.board_instances SET installed_firmware_release_id = NULL, firmware_version = '0.9.0' WHERE id = $1`,
       [controller.id]
     );
     const renameOk = await req(`/api/sensors/${tempSensor.id}`, {
@@ -500,20 +500,20 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
     expect(roomRes.status).toBe(201);
     const { room } = (await roomRes.json()) as { room: { id: string } };
 
-    const boardsRes = await req("/api/boards/catalog", { headers: { Cookie: cookie } });
+    const boardsRes = await req("/api/board-library/catalog", { headers: { Cookie: cookie } });
     const { boards } = (await boardsRes.json()) as {
       boards: Array<{ id: string; slug: string }>;
     };
     const s3Board = boards.find((b) => b.slug === "esp32-s3-devkitc-1-n16r8")!;
 
     // 2. Create controller, pair device, and seed full-driver firmware
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({
         name: "Living Room Hub",
         homeId: home.id,
-        boardCatalogId: s3Board.id,
+        boardProfileId: s3Board.id,
       }),
     });
     expect(ctrlRes.status).toBe(201);
@@ -542,7 +542,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
 
     await seedInstalledFirmwareWithDrivers({
       pg: dbHarness.pg,
-      controllerId: controller.id,
+      boardInstanceId: controller.id,
       boardId: s3Board.id,
       boardSlug: s3Board.slug,
       chipFamily: "esp32s3",
@@ -555,7 +555,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({
         name: "Ceiling Light",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         roomId: room.id,
         gpioPin: 4,
         invertedLogic: true,
@@ -600,7 +600,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Conflicting Fan",
         deviceType: "fan",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         roomId: room.id,
         gpioPin: 4,
       }),
@@ -614,7 +614,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Standing Fan",
         deviceType: "fan",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         roomId: room.id,
         gpioPin: 6,
       }),
@@ -663,7 +663,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Living DHT Temp",
         sensorType: "temperature_dht22",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         roomId: room.id,
         gpioPin: 5,
       }),
@@ -677,7 +677,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Living DHT Humidity",
         sensorType: "humidity_dht22",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         roomId: room.id,
         gpioPin: 5,
       }),
@@ -691,7 +691,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Duplicate DHT Temp",
         sensorType: "temperature_dht22",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: 5,
       }),
     });
@@ -704,7 +704,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "PIR on DHT pin",
         sensorType: "motion_pir",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: 5,
       }),
     });
@@ -717,7 +717,7 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
       body: JSON.stringify({
         name: "Room BME280",
         sensorType: "temperature_bme280",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         roomId: room.id,
         gpioPin: null,
         i2cAddress: "0X76",

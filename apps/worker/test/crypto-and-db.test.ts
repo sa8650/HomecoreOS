@@ -61,7 +61,7 @@ describe("Argon2id crypto and PostgreSQL schema migrations", () => {
     expect(settings.pairing_code_expiration_seconds).toBe(300);
 
     const { data: board, error: boardErr } = await db
-      .from("board_catalog")
+      .from("board_profiles")
       .select("*")
       .eq("slug", "esp32-s3-devkitc-1-n16r8")
       .single();
@@ -72,7 +72,7 @@ describe("Argon2id crypto and PostgreSQL schema migrations", () => {
     const { data: gpios, error: gpioErr } = await db
       .from("board_gpio_definitions")
       .select("pin")
-      .eq("board_catalog_id", board.id);
+      .eq("board_profile_id", board.id);
     expect(gpioErr).toBeNull();
     expect(gpios?.length).toBe(45); // 0..48 excluding 22..25
   });

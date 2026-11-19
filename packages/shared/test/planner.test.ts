@@ -119,7 +119,7 @@ function catalog(
   releases: PlannerFirmwareReleaseRecord[] = [],
   overrides: Partial<PlannerCatalogSnapshot> = {}
 ): PlannerCatalogSnapshot {
-  return { boards, releases, boardCatalogEnabled: true, account: null, revision: "rev-test", ...overrides };
+  return { boards, releases, boardLibraryEnabled: true, account: null, revision: "rev-test", ...overrides };
 }
 
 type RoomDevices = NonNullable<NonNullable<PlannerRequirementsInput["home"]>["rooms"]>[number]["devices"];
@@ -1024,14 +1024,14 @@ describe("planner: recommendations", () => {
     const custom = board(S2, { id: "custom-1", source: "custom", firmware_status: "custom", verification_status: null });
     const disabled = runPlannerAnalysis(
       relays(4),
-      catalog([board(S3_N16R8), custom], [release()], { boardCatalogEnabled: false })
+      catalog([board(S3_N16R8), custom], [release()], { boardLibraryEnabled: false })
     );
     expect(disabled.evaluatedBoards.map((b) => b.boardId)).toEqual(["custom-1"]);
     expect(disabled.state).toBe("partially_ready");
     expect(disabled.plans[0]!.detailLevel).toBe("full");
     expect(codes(disabled.plans[0]!.warnings)).toContain("unverified_board_specs");
 
-    const empty = runPlannerAnalysis(relays(4), catalog([board(S3_N16R8)], [release()], { boardCatalogEnabled: false }));
+    const empty = runPlannerAnalysis(relays(4), catalog([board(S3_N16R8)], [release()], { boardLibraryEnabled: false }));
     expect(empty.state).toBe("not_supported");
     expect(empty.plans).toEqual([]);
     expect(codes(empty.warnings)).toContain("no_boards_available");
@@ -1383,7 +1383,7 @@ describe("planner: catalog revision", () => {
   const base = () => ({
     boards: allSeedBoards(),
     releases: [release(), release({ id: "rel-2", version: "1.1.0", status: "draft" })],
-    boardCatalogEnabled: true,
+    boardLibraryEnabled: true,
     account: { existingControllers: 1, existingDevices: 4, maxControllers: 25, maxDevices: 100 },
   });
   const fingerprint = (mutate?: (snapshot: ReturnType<typeof base>) => void) => {
@@ -1425,7 +1425,7 @@ describe("planner: catalog revision", () => {
     ["an artifact fails validation", (s: ReturnType<typeof base>) => { s.releases[0]!.files = s.releases[0]!.files.map((f) => ({ ...f, validated: false })); }],
     ["a release is verified on hardware", (s: ReturnType<typeof base>) => { s.releases[1]!.verified_board_slugs = [S3_N16R8]; }],
     ["a release is added", (s: ReturnType<typeof base>) => { s.releases.push(release({ id: "rel-9" })); }],
-    ["the Board Library is disabled", (s: ReturnType<typeof base>) => { s.boardCatalogEnabled = false; }],
+    ["the Board Library is disabled", (s: ReturnType<typeof base>) => { s.boardLibraryEnabled = false; }],
     ["the account limit changes", (s: ReturnType<typeof base>) => { s.account.maxControllers = 2; }],
     ["the account adds a controller", (s: ReturnType<typeof base>) => { s.account.existingControllers = 2; }],
   ])("changes when %s", (_label, mutate) => {

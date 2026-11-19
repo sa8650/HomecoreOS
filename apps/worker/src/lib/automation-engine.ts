@@ -354,7 +354,7 @@ async function executeSwitchTarget(params: {
   const { db, emqx, accountId, ruleId, switchId, desired, errors, downstreamEvents } = params;
   const { data: swData } = await db
     .from("switches")
-    .select("id,name,controller_id,gpio_pin,inverted,is_on")
+    .select("id,name,board_instance_id,gpio_pin,inverted,is_on")
     .eq("id", switchId)
     .eq("account_id", accountId)
     .is("deleted_at", null)
@@ -367,7 +367,7 @@ async function executeSwitchTarget(params: {
   const sw = swData as {
     id: string;
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     gpio_pin: number;
     inverted: boolean;
     is_on: boolean;
@@ -387,7 +387,7 @@ async function executeSwitchTarget(params: {
     // ESP-NOW (no EMQX session) gets it relayed through its Controller.
     const delivery = await resolveDeviceCommandDelivery(db, {
       accountId,
-      deviceId: sw.controller_id,
+      deviceId: sw.board_instance_id,
       kind: "switch",
       payload: {
         switch_id: sw.id,
@@ -428,7 +428,7 @@ async function executeDeviceTarget(params: {
   const { db, emqx, accountId, ruleId, deviceId, targetState, errors, downstreamEvents } = params;
   const { data: devData } = await db
     .from("devices")
-    .select("id,name,controller_id,gpio_pin,device_type,state")
+    .select("id,name,board_instance_id,gpio_pin,device_type,state")
     .eq("id", deviceId)
     .eq("account_id", accountId)
     .is("deleted_at", null)
@@ -441,7 +441,7 @@ async function executeDeviceTarget(params: {
   const dev = devData as {
     id: string;
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     gpio_pin: number;
     device_type: string;
     state: string;
@@ -456,7 +456,7 @@ async function executeDeviceTarget(params: {
   if (emqx) {
     const delivery = await resolveDeviceCommandDelivery(db, {
       accountId,
-      deviceId: dev.controller_id,
+      deviceId: dev.board_instance_id,
       kind: "device",
       payload: {
         device_id: dev.id,
@@ -946,7 +946,7 @@ export async function executeOrTestFlowGraph(params: {
   trace: FlowExecutionTrace;
   executedCount: number;
   errors: string[];
-  localExecution: { supported: boolean; controllerId: string | null; reasons: string[] };
+  localExecution: { supported: boolean; boardInstanceId: string | null; reasons: string[] };
 }> {
   const now = params.now ?? new Date();
   const { db, env, emqxFetch, webhookFetch, accountId, graph, dryRun } = params;
@@ -955,17 +955,17 @@ export async function executeOrTestFlowGraph(params: {
   const [swRes, devRes, senRes, homeRes] = await Promise.all([
     db
       .from("switches")
-      .select("id,name,controller_id,is_on")
+      .select("id,name,board_instance_id,is_on")
       .eq("account_id", accountId)
       .is("deleted_at", null),
     db
       .from("devices")
-      .select("id,name,controller_id,state")
+      .select("id,name,board_instance_id,state")
       .eq("account_id", accountId)
       .is("deleted_at", null),
     db
       .from("sensors")
-      .select("id,name,controller_id,last_value,unit")
+      .select("id,name,board_instance_id,last_value,unit")
       .eq("account_id", accountId)
       .is("deleted_at", null),
     db
@@ -980,19 +980,19 @@ export async function executeOrTestFlowGraph(params: {
   const switches = (swRes.data ?? []) as Array<{
     id: string;
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     is_on: boolean;
   }>;
   const devices = (devRes.data ?? []) as Array<{
     id: string;
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     state: string;
   }>;
   const sensors = (senRes.data ?? []) as Array<{
     id: string;
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     last_value: number | null;
     unit: string;
   }>;
@@ -1003,9 +1003,9 @@ export async function executeOrTestFlowGraph(params: {
 
   const localExecution = analyzeFlowGraphLocalCapability({
     graph,
-    switchControllerById: new Map(switches.map((s) => [s.id, s.controller_id])),
-    deviceControllerById: new Map(devices.map((d) => [d.id, d.controller_id])),
-    sensorControllerById: new Map(sensors.map((s) => [s.id, s.controller_id])),
+    switchControllerById: new Map(switches.map((s) => [s.id, s.board_instance_id])),
+    deviceControllerById: new Map(devices.map((d) => [d.id, d.board_instance_id])),
+    sensorControllerById: new Map(sensors.map((s) => [s.id, s.board_instance_id])),
   });
 
   const variablesSnapshot: Record<string, string | number | boolean> = {};
@@ -1517,7 +1517,7 @@ export async function testAutomationRule(params: {
     conditions: Array<{ type: string; matched: boolean; detail: string }>;
   }>;
   triggerPreview: Array<{ type: string; matchedNow: boolean; summary: string }>;
-  localExecution: { supported: boolean; controllerId: string | null; reasons: string[] };
+  localExecution: { supported: boolean; boardInstanceId: string | null; reasons: string[] };
   executedCount: number;
   errors: string[];
 }> {
@@ -1525,17 +1525,17 @@ export async function testAutomationRule(params: {
   const [swRes, devRes, senRes, homeRes] = await Promise.all([
     params.db
       .from("switches")
-      .select("id,name,controller_id,is_on")
+      .select("id,name,board_instance_id,is_on")
       .eq("account_id", params.accountId)
       .is("deleted_at", null),
     params.db
       .from("devices")
-      .select("id,name,controller_id,state")
+      .select("id,name,board_instance_id,state")
       .eq("account_id", params.accountId)
       .is("deleted_at", null),
     params.db
       .from("sensors")
-      .select("id,name,controller_id,last_value,unit")
+      .select("id,name,board_instance_id,last_value,unit")
       .eq("account_id", params.accountId)
       .is("deleted_at", null),
     params.db
@@ -1550,19 +1550,19 @@ export async function testAutomationRule(params: {
   const switches = (swRes.data ?? []) as Array<{
     id: string;
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     is_on: boolean;
   }>;
   const devices = (devRes.data ?? []) as Array<{
     id: string;
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     state: string;
   }>;
   const sensors = (senRes.data ?? []) as Array<{
     id: string;
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     last_value: number | null;
     unit: string;
   }>;
@@ -1652,9 +1652,9 @@ export async function testAutomationRule(params: {
     triggers,
     conditions: normalizeConditionGroups(params.conditionsConfig),
     actions: params.actionsConfig,
-    switchControllerById: new Map(switches.map((s) => [s.id, s.controller_id])),
-    deviceControllerById: new Map(devices.map((d) => [d.id, d.controller_id])),
-    sensorControllerById: new Map(sensors.map((s) => [s.id, s.controller_id])),
+    switchControllerById: new Map(switches.map((s) => [s.id, s.board_instance_id])),
+    deviceControllerById: new Map(devices.map((d) => [d.id, d.board_instance_id])),
+    sensorControllerById: new Map(sensors.map((s) => [s.id, s.board_instance_id])),
   });
 
   const conditionTrace = condEval.groupResults.map((grp, groupIndex) => ({

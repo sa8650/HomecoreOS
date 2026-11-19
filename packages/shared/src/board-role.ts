@@ -12,7 +12,7 @@
  */
 
 export const DEVICE_ROLES = ["controller", "node"] as const;
-export type DeviceRole = (typeof DEVICE_ROLES)[number];
+export type BoardRole = (typeof DEVICE_ROLES)[number];
 
 /** How a Node currently reaches HomecoreOS. */
 export const NODE_COMM_MODES = ["espnow", "wifi_mqtt", "offline"] as const;
@@ -74,7 +74,7 @@ export function boardSupportsControllerRole(board: {
  * Legacy rows have no role stored. They are Controllers: every device that
  * existed before roles were introduced was one, and that must not change.
  */
-export function normalizeDeviceRole(value: unknown): DeviceRole {
+export function normalizeBoardRole(value: unknown): BoardRole {
   return value === "node" ? "node" : "controller";
 }
 
@@ -88,7 +88,7 @@ export function normalizeNodeLinkState(value: unknown): NodeLinkState {
     : "unassigned";
 }
 
-export function deviceRoleLabel(role: DeviceRole): string {
+export function boardRoleLabel(role: BoardRole): string {
   return role === "node" ? "Node" : "Controller";
 }
 
@@ -110,7 +110,7 @@ export function nodeCommModeLabel(mode: NodeCommMode | null | undefined): string
  * described as a Controller: it stays a Node that lost its Controller.
  */
 export function deviceStatusLabel(input: {
-  role: DeviceRole;
+  role: BoardRole;
   online: boolean;
   commMode?: NodeCommMode | null;
   linkState?: NodeLinkState | null;
@@ -139,7 +139,7 @@ export function deviceStatusLabel(input: {
 
 /** True when a Node is running its Wi-Fi/MQTT fallback. */
 export function isNodeStandalone(input: {
-  role: DeviceRole;
+  role: BoardRole;
   commMode?: NodeCommMode | null;
   linkState?: NodeLinkState | null;
 }): boolean {
@@ -153,7 +153,7 @@ export function isNodeStandalone(input: {
  * a Node that lost its Controller reports its Wi-Fi/MQTT fallback instead.
  */
 export function deriveCommMode(input: {
-  role: DeviceRole;
+  role: BoardRole;
   online: boolean;
   espNowLinked?: boolean | null;
   linkState?: NodeLinkState | null;
@@ -174,8 +174,8 @@ export type RoleChangeBlocker =
   | { code: "unknown_controller"; message: string };
 
 export function roleChangeBlocker(input: {
-  targetRole: DeviceRole;
-  currentRole: DeviceRole;
+  targetRole: BoardRole;
+  currentRole: BoardRole;
   boardSupported: boolean;
   attachedNodeCount: number;
   acknowledgeAttachedNodes?: boolean;
@@ -215,12 +215,12 @@ export function roleChangeBlocker(input: {
  */
 export function canAssignNodeToController(input: {
   nodeId: string;
-  controllerId: string;
-  controllerRole: DeviceRole;
+  boardInstanceId: string;
+  controllerRole: BoardRole;
   controllerOnline: boolean;
   sameHome: boolean;
 }): { ok: true } | { ok: false; message: string } {
-  if (input.controllerId === input.nodeId) {
+  if (input.boardInstanceId === input.nodeId) {
     return { ok: false, message: "A device cannot be assigned to itself." };
   }
   if (input.controllerRole !== "controller") {

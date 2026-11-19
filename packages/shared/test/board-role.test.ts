@@ -4,30 +4,30 @@ import {
   boardSupportsEspNow,
   canAssignNodeToController,
   deriveCommMode,
-  deviceRoleLabel,
+  boardRoleLabel,
   deviceStatusLabel,
   isNodeStandalone,
   nodeCommModeLabel,
-  normalizeDeviceRole,
+  normalizeBoardRole,
   normalizeNodeLinkState,
   roleChangeBlocker,
-} from "../src/device-role";
+} from "../src/board-role";
 
 describe("device roles", () => {
   it("treats legacy rows without a stored role as Controllers", () => {
-    expect(normalizeDeviceRole(null)).toBe("controller");
-    expect(normalizeDeviceRole(undefined)).toBe("controller");
-    expect(normalizeDeviceRole("")).toBe("controller");
-    expect(normalizeDeviceRole("controller")).toBe("controller");
-    expect(normalizeDeviceRole("node")).toBe("node");
-    expect(normalizeDeviceRole("NODE")).toBe("controller");
+    expect(normalizeBoardRole(null)).toBe("controller");
+    expect(normalizeBoardRole(undefined)).toBe("controller");
+    expect(normalizeBoardRole("")).toBe("controller");
+    expect(normalizeBoardRole("controller")).toBe("controller");
+    expect(normalizeBoardRole("node")).toBe("node");
+    expect(normalizeBoardRole("NODE")).toBe("controller");
     expect(normalizeNodeLinkState("nonsense")).toBe("unassigned");
     expect(normalizeNodeLinkState("standalone")).toBe("standalone");
   });
 
   it("labels roles and communication modes", () => {
-    expect(deviceRoleLabel("controller")).toBe("Controller");
-    expect(deviceRoleLabel("node")).toBe("Node");
+    expect(boardRoleLabel("controller")).toBe("Controller");
+    expect(boardRoleLabel("node")).toBe("Node");
     expect(nodeCommModeLabel("espnow")).toBe("ESP-NOW");
     expect(nodeCommModeLabel("wifi_mqtt")).toBe("Wi-Fi / MQTT");
     expect(nodeCommModeLabel(null)).toBe("Unknown");
@@ -177,13 +177,13 @@ describe("device roles", () => {
   it("only assigns Nodes to an online Controller in the same home", () => {
     const base = {
       nodeId: "node-1",
-      controllerId: "ctrl-1",
+      boardInstanceId: "ctrl-1",
       controllerRole: "controller" as const,
       controllerOnline: true,
       sameHome: true,
     };
     expect(canAssignNodeToController(base)).toEqual({ ok: true });
-    expect(canAssignNodeToController({ ...base, controllerId: "node-1" })).toMatchObject({
+    expect(canAssignNodeToController({ ...base, boardInstanceId: "node-1" })).toMatchObject({
       ok: false,
     });
     expect(canAssignNodeToController({ ...base, controllerOnline: false })).toMatchObject({
@@ -193,7 +193,7 @@ describe("device roles", () => {
     expect(
       canAssignNodeToController({
         ...base,
-        controllerId: "other-node",
+        boardInstanceId: "other-node",
         controllerRole: "node",
       })
     ).toMatchObject({ ok: false });

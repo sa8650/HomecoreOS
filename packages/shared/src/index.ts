@@ -592,7 +592,7 @@ export * from "./usb-board-identity";
 export * from "./board-firmware-compat";
 export * from "./sensor-drivers";
 export * from "./ble-provisioning";
-export * from "./device-role";
+export * from "./board-role";
 export * from "./automations";
 export * from "./flow-graph";
 export * from "./action-button";

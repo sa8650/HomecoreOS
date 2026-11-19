@@ -5,7 +5,7 @@
  *
  * One firmware image runs either role. This module decides, for every tick,
  * which transport a device should keep alive, and it owns the rules that the
- * Worker and the web console apply too (see packages/shared/src/device-role.ts):
+ * Worker and the web console apply too (see packages/shared/src/board-role.ts):
  *
  *   Controller : Wi-Fi + EMQX MQTT + ESP-NOW peer hosting.
  *   Node       : ESP-NOW link to its assigned Controller, no MQTT session.
@@ -45,7 +45,7 @@ typedef enum {
 #define HC_ROLE_ACT_REPORT_STATE  (1u << 5) /* push role/link state to the cloud */
 #define HC_ROLE_ACT_OTA_WINDOW    (1u << 6) /* keep Wi-Fi/MQTT for an OTA download */
 
-/* Timing mirrors packages/shared/src/device-role.ts and the firmware Kconfig. */
+/* Timing mirrors packages/shared/src/board-role.ts and the firmware Kconfig. */
 #ifndef HC_ROLE_LINK_TIMEOUT_MS
 #define HC_ROLE_LINK_TIMEOUT_MS 10000u
 #endif

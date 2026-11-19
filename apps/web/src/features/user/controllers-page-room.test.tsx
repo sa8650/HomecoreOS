@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetApiCache } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
-import { ControllersPage } from "./ControllersPage";
+import { MyBoardsPage } from "./MyBoardsPage";
 import type { ControllerItem } from "@/features/types";
 
 const originalFetch = globalThis.fetch;
@@ -20,8 +20,8 @@ const controller: ControllerItem = {
   account_id: "a1",
   home_id: "h1",
   room_id: "r1",
-  board_catalog_id: "b1",
-  custom_board_id: null,
+  board_profile_id: "b1",
+  custom_board_profile_id: null,
   name: "Living Hub",
   hardware_uid: "esp-1",
   board_model: "ESP32-S3-N16R8",
@@ -55,15 +55,15 @@ function mockFetch(current: { controller: ControllerItem }) {
       method,
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
-    if (url.startsWith("/api/controllers/c1/room") && method === "PATCH") {
+    if (url.startsWith("/api/board-instances/c1/room") && method === "PATCH") {
       const parsed = JSON.parse(String(init!.body)) as { roomId: string | null };
       current.controller = { ...current.controller, room_id: parsed.roomId };
       return jsonResponse({ controller: current.controller });
     }
-    if (url === "/api/controllers") return jsonResponse({ controllers: [current.controller] });
-    if (url === "/api/controllers/trash") return jsonResponse({ controllers: [] });
-    if (url === "/api/boards/catalog") return jsonResponse({ boards: [] });
-    if (url === "/api/boards/custom") return jsonResponse({ boards: [] });
+    if (url === "/api/board-instances") return jsonResponse({ controllers: [current.controller] });
+    if (url === "/api/board-instances/trash") return jsonResponse({ controllers: [] });
+    if (url === "/api/board-library/catalog") return jsonResponse({ boards: [] });
+    if (url === "/api/board-library/custom") return jsonResponse({ boards: [] });
     if (url === "/api/homes")
       return jsonResponse({ homes: [{ id: "h1", account_id: "a1", name: "Main Home", timezone: "UTC" }] });
     if (url === "/api/homes/rooms") return jsonResponse({ rooms });
@@ -73,7 +73,7 @@ function mockFetch(current: { controller: ControllerItem }) {
   return calls;
 }
 
-describe("ControllersPage room assignment", () => {
+describe("MyBoardsPage room assignment", () => {
   beforeEach(() => {
     resetApiCache();
   });
@@ -90,7 +90,7 @@ describe("ControllersPage room assignment", () => {
 
     render(
       <TimezoneContext.Provider value="UTC">
-        <ControllersPage canManage={true} canOperate={true} onNavigate={vi.fn()} />
+        <MyBoardsPage canManage={true} canOperate={true} onNavigate={vi.fn()} />
       </TimezoneContext.Provider>
     );
 
@@ -107,7 +107,7 @@ describe("ControllersPage room assignment", () => {
     await user.click(screen.getByRole("button", { name: /Save Assignment/i }));
 
     await waitFor(() => {
-      const patch = calls.find((c) => c.url === "/api/controllers/c1/room" && c.method === "PATCH");
+      const patch = calls.find((c) => c.url === "/api/board-instances/c1/room" && c.method === "PATCH");
       expect(patch?.body).toEqual({ roomId: "r2" });
     });
     // Card reflects the new room immediately
@@ -121,7 +121,7 @@ describe("ControllersPage room assignment", () => {
 
     render(
       <TimezoneContext.Provider value="UTC">
-        <ControllersPage canManage={true} canOperate={true} onNavigate={vi.fn()} />
+        <MyBoardsPage canManage={true} canOperate={true} onNavigate={vi.fn()} />
       </TimezoneContext.Provider>
     );
 
@@ -132,7 +132,7 @@ describe("ControllersPage room assignment", () => {
     await user.click(screen.getByRole("button", { name: /Remove Assignment/i }));
 
     await waitFor(() => {
-      const patch = calls.find((c) => c.url === "/api/controllers/c1/room" && c.method === "PATCH");
+      const patch = calls.find((c) => c.url === "/api/board-instances/c1/room" && c.method === "PATCH");
       expect(patch?.body).toEqual({ roomId: null });
     });
   });
@@ -143,7 +143,7 @@ describe("ControllersPage room assignment", () => {
 
     render(
       <TimezoneContext.Provider value="UTC">
-        <ControllersPage canManage={false} canOperate={false} onNavigate={vi.fn()} />
+        <MyBoardsPage canManage={false} canOperate={false} onNavigate={vi.fn()} />
       </TimezoneContext.Provider>
     );
 

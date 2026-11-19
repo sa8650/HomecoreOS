@@ -21,8 +21,8 @@ import type { DbClient } from "./db";
 
 export interface ControllerFirmwareLookupRow {
   id: string;
-  board_catalog_id: string | null;
-  custom_board_id: string | null;
+  board_profile_id: string | null;
+  custom_board_profile_id: string | null;
   firmware_version?: string | null;
   installed_firmware_release_id?: string | null;
 }
@@ -297,8 +297,8 @@ export async function findMatchingFirmwareReleaseIdForDevice(
     board,
     {
       id: "",
-      board_catalog_id: board.id ?? null,
-      custom_board_id: null,
+      board_profile_id: board.id ?? null,
+      custom_board_profile_id: null,
       firmware_version: firmwareVersion,
       installed_firmware_release_id: null,
     }
@@ -325,7 +325,7 @@ export async function getControllerSensorCompatibilityReport(
 }
 
 /**
- * Batched sensor compatibility lookup for `GET /api/controllers` (avoids N+1 queries).
+ * Batched sensor compatibility lookup for `GET /api/board-instances` (avoids N+1 queries).
  */
 export async function getControllersSensorCompatibilityMap(
   db: DbClient,
@@ -337,19 +337,19 @@ export async function getControllersSensorCompatibilityMap(
   const boardsByCtrl = new Map<string, BoardProfileSpec | null>();
   const uniqueBoardKeys = new Map<
     string,
-    { board_catalog_id: string | null; custom_board_id: string | null }
+    { board_profile_id: string | null; custom_board_profile_id: string | null }
   >();
 
   for (const ctrl of controllers) {
-    const key = ctrl.board_catalog_id
-      ? `catalog:${ctrl.board_catalog_id}`
-      : ctrl.custom_board_id
-        ? `custom:${ctrl.custom_board_id}`
+    const key = ctrl.board_profile_id
+      ? `catalog:${ctrl.board_profile_id}`
+      : ctrl.custom_board_profile_id
+        ? `custom:${ctrl.custom_board_profile_id}`
         : "none";
     if (key !== "none" && !uniqueBoardKeys.has(key)) {
       uniqueBoardKeys.set(key, {
-        board_catalog_id: ctrl.board_catalog_id,
-        custom_board_id: ctrl.custom_board_id,
+        board_profile_id: ctrl.board_profile_id,
+        custom_board_profile_id: ctrl.custom_board_profile_id,
       });
     }
   }
@@ -364,10 +364,10 @@ export async function getControllersSensorCompatibilityMap(
 
   const chipFamilies = new Set<string>();
   for (const ctrl of controllers) {
-    const key = ctrl.board_catalog_id
-      ? `catalog:${ctrl.board_catalog_id}`
-      : ctrl.custom_board_id
-        ? `custom:${ctrl.custom_board_id}`
+    const key = ctrl.board_profile_id
+      ? `catalog:${ctrl.board_profile_id}`
+      : ctrl.custom_board_profile_id
+        ? `custom:${ctrl.custom_board_profile_id}`
         : "none";
     const board = key === "none" ? null : (resolvedBoards.get(key) ?? null);
     boardsByCtrl.set(ctrl.id, board);
@@ -407,7 +407,7 @@ export async function getControllersSensorCompatibilityMap(
 export async function getControllerSensorOccupancy(
   db: DbClient,
   accountId: string,
-  controllerId: string
+  boardInstanceId: string
 ): Promise<{
   nonSensorUsedPins: number[];
   existingSensors: ExistingControllerSensorSummary[];
@@ -417,19 +417,19 @@ export async function getControllerSensorOccupancy(
       .from("devices")
       .select("id,gpio_pin")
       .eq("account_id", accountId)
-      .eq("controller_id", controllerId)
+      .eq("board_instance_id", boardInstanceId)
       .is("deleted_at", null),
     db
       .from("switches")
       .select("id,gpio_pin")
       .eq("account_id", accountId)
-      .eq("controller_id", controllerId)
+      .eq("board_instance_id", boardInstanceId)
       .is("deleted_at", null),
     db
       .from("sensors")
       .select("id,name,sensor_type,gpio_pin,last_raw_payload")
       .eq("account_id", accountId)
-      .eq("controller_id", controllerId)
+      .eq("board_instance_id", boardInstanceId)
       .is("deleted_at", null),
   ]);
 

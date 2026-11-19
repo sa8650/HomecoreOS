@@ -13,7 +13,7 @@ import { Toaster } from "./ui/sonner";
 import { AutomationsPage } from "../features/user/AutomationsPage";
 import { BoardLibraryPage } from "../features/user/BoardLibraryPage";
 import { AdminBoardsPage } from "../features/admin/AdminAccountsAndBoardsPages";
-import { ControllersPage } from "../features/user/ControllersPage";
+import { MyBoardsPage } from "../features/user/MyBoardsPage";
 import {
   DevicesPage,
   SensorsPage,
@@ -102,7 +102,7 @@ describe("HomecoreOS interactive UI workflows", () => {
         account_id: "a1",
         home_id: "h1",
         room_id: "r1",
-        controller_id: "c1",
+        board_instance_id: "c1",
         name: "Chandelier",
         gpio_pin: 4,
         inverted: false,
@@ -115,7 +115,7 @@ describe("HomecoreOS interactive UI workflows", () => {
         account_id: "a1",
         home_id: "h1",
         room_id: "r2",
-        controller_id: "c1",
+        board_instance_id: "c1",
         name: "Under Cabinet",
         gpio_pin: 5,
         inverted: false,
@@ -172,7 +172,7 @@ describe("HomecoreOS interactive UI workflows", () => {
     const otaUpdate: FirmwareUpdateHistoryItem = {
       id: "upd1",
       account_id: "a1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       release_id: "rel1",
       previous_version: "1.1.0",
       target_version: "1.2.0",
@@ -264,7 +264,7 @@ describe("HomecoreOS interactive UI workflows", () => {
                 account_id: "a1",
                 home_id: "h1",
                 room_id: null,
-                controller_id: "c1",
+                board_instance_id: "c1",
                 name: "Wall Switch",
                 gpio_pin: 4,
                 is_on: true,
@@ -277,7 +277,7 @@ describe("HomecoreOS interactive UI workflows", () => {
                 account_id: "a1",
                 home_id: "h1",
                 room_id: null,
-                controller_id: "c1",
+                board_instance_id: "c1",
                 name: "Night Light",
                 gpio_pin: 5,
                 is_on: false,
@@ -349,7 +349,7 @@ describe("HomecoreOS interactive UI workflows", () => {
       account_id: "a1",
       home_id: "h1",
       room_id: "r1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Hallway Sconce",
       gpio_pin: 4,
       inverted: false,
@@ -376,8 +376,8 @@ describe("HomecoreOS interactive UI workflows", () => {
           account_id: "a1",
           home_id: "h1",
           name: "Hallway Hub",
-          board_catalog_id: "b1",
-          custom_board_id: null,
+          board_profile_id: "b1",
+          custom_board_profile_id: null,
           board_model: "ESP32-S3",
           chip_variant: "ESP32-S3",
           flash_size_mb: 16,
@@ -458,7 +458,7 @@ describe("HomecoreOS interactive UI workflows", () => {
           method: "PATCH",
           body: JSON.stringify({
             name: "Hallway Lamp",
-            controllerId: "c1",
+            boardInstanceId: "c1",
             roomId: "r1",
             gpioPin: 6,
             invertedLogic: false,
@@ -469,13 +469,13 @@ describe("HomecoreOS interactive UI workflows", () => {
     });
   });
 
-  it("renders ControllersPage Add Controller dropdown, Connection & Recovery details, Trash restore/permanent delete, and ReUI IconStack empty state", async () => {
+  it("renders MyBoardsPage Add Controller dropdown, Connection & Recovery details, Trash restore/permanent delete, and ReUI IconStack empty state", async () => {
     const user = userEvent.setup();
     let restored = false;
 
     const fetchMock = vi.fn(async (input, init) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/controllers") {
+      if (url === "/api/board-instances") {
         return new Response(
           JSON.stringify({
             controllers: [
@@ -484,8 +484,8 @@ describe("HomecoreOS interactive UI workflows", () => {
                 account_id: "a1",
                 home_id: "h1",
                 name: "Living Room Hub",
-                board_catalog_id: "b1",
-                custom_board_id: null,
+                board_profile_id: "b1",
+                custom_board_profile_id: null,
                 board_model: "ESP32-S3-DevKitC-1 N16R8",
                 chip_variant: "ESP32-S3-N16R8",
                 flash_size_mb: 16,
@@ -512,7 +512,7 @@ describe("HomecoreOS interactive UI workflows", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/controllers/trash") {
+      if (url === "/api/board-instances/trash") {
         return new Response(
           JSON.stringify({
             controllers: restored
@@ -523,8 +523,8 @@ describe("HomecoreOS interactive UI workflows", () => {
                     account_id: "a1",
                     home_id: "h1",
                     name: "Garage Deleted Hub",
-                    board_catalog_id: "b1",
-                    custom_board_id: null,
+                    board_profile_id: "b1",
+                    custom_board_profile_id: null,
                     board_model: "ESP32-S3",
                     chip_variant: "ESP32-S3",
                     flash_size_mb: 16,
@@ -549,7 +549,7 @@ describe("HomecoreOS interactive UI workflows", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/controllers/c-trash/restore" && init?.method === "POST") {
+      if (url === "/api/board-instances/c-trash/restore" && init?.method === "POST") {
         restored = true;
         return new Response(
           JSON.stringify({
@@ -561,13 +561,13 @@ describe("HomecoreOS interactive UI workflows", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/boards/catalog") {
+      if (url === "/api/board-library/catalog") {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/api/boards/custom") {
+      if (url === "/api/board-library/custom") {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -594,7 +594,7 @@ describe("HomecoreOS interactive UI workflows", () => {
 
     render(
       <TimezoneContext.Provider value="UTC">
-        <ControllersPage canManage canOperate onNavigate={vi.fn()} />
+        <MyBoardsPage canManage canOperate onNavigate={vi.fn()} />
       </TimezoneContext.Provider>
     );
 
@@ -618,8 +618,8 @@ describe("HomecoreOS interactive UI workflows", () => {
     expect(screen.getByText(/Setup with Wi-Fi/i)).toBeInTheDocument();
     await user.keyboard("{Escape}");
 
-    // Switch to Trash tab, verify recoverable counts & restore -> renders IconStack empty state afterward
-    await user.click(screen.getByRole("tab", { name: /Trash \(1\)/i }));
+    // Trash lives behind a button, not a third tab: verify recoverable counts & restore.
+    await user.click(screen.getByRole("button", { name: /Trash \(1\)/i }));
     expect(screen.getByText("Garage Deleted Hub")).toBeInTheDocument();
     expect(screen.getByText(/29 days left/i)).toBeInTheDocument();
 
@@ -629,7 +629,7 @@ describe("HomecoreOS interactive UI workflows", () => {
     });
 
     await user.click(screen.getByRole("button", { name: /Done/i }));
-    await user.click(screen.getByRole("tab", { name: /Trash \(0\)/i }));
+    await user.click(screen.getByRole("button", { name: /Trash \(0\)/i }));
     expect(screen.getByText(/Controller Trash is empty/i)).toBeInTheDocument();
     expect(document.querySelector('[data-slot="icon-stack"]')).not.toBeNull();
   });
@@ -677,7 +677,7 @@ describe("HomecoreOS interactive UI workflows", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/boards/catalog") {
+      if (url === "/api/board-library/catalog") {
         return new Response(
           JSON.stringify({
             boards: [
@@ -698,7 +698,7 @@ describe("HomecoreOS interactive UI workflows", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/boards/custom") {
+      if (url === "/api/board-library/custom") {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -711,7 +711,7 @@ describe("HomecoreOS interactive UI workflows", () => {
               updatesCount > 0
                 ? [
                     {
-                      controllerId: "c1",
+                      boardInstanceId: "c1",
                       controllerName: "Hallway Hub",
                       boardModel: "ESP32-S3-DevKitC-1",
                       controllerStatus: "online",
@@ -728,7 +728,7 @@ describe("HomecoreOS interactive UI workflows", () => {
                       activeUpdate: {
                         id: "upd-1",
                         account_id: "a1",
-                        controller_id: "c1",
+                        board_instance_id: "c1",
                         release_id: "rel-1",
                         update_type: "ota",
                         previous_version: "1.1.0",
@@ -846,7 +846,7 @@ describe("HomecoreOS interactive UI workflows", () => {
         account_id: "a1",
         home_id: "h1",
         room_id: "r1",
-        controller_id: "c1",
+        board_instance_id: "c1",
         name: "OLED TV",
         device_type: "tv",
         gpio_pin: 12,
@@ -860,7 +860,7 @@ describe("HomecoreOS interactive UI workflows", () => {
         account_id: "a1",
         home_id: "h1",
         room_id: "r2",
-        controller_id: "c1",
+        board_instance_id: "c1",
         name: "Desk Lamp",
         gpio_pin: 4,
         inverted: false,
@@ -1241,7 +1241,7 @@ describe("HomecoreOS interactive UI workflows", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/controllers" || url === "/api/controllers/trash") {
+      if (url === "/api/board-instances" || url === "/api/board-instances/trash") {
         return new Response(JSON.stringify({ controllers: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -1251,13 +1251,13 @@ describe("HomecoreOS interactive UI workflows", () => {
         // Keep download pending so flashing=true remains active during close test
         return new Promise<Response>(() => {});
       }
-      if (url === "/api/boards/catalog") {
+      if (url === "/api/board-library/catalog") {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/api/boards/custom") {
+      if (url === "/api/board-library/custom") {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -1278,7 +1278,7 @@ describe("HomecoreOS interactive UI workflows", () => {
 
     render(
       <TimezoneContext.Provider value="UTC">
-        <ControllersPage canManage canOperate onNavigate={vi.fn()} />
+        <MyBoardsPage canManage canOperate onNavigate={vi.fn()} />
       </TimezoneContext.Provider>
     );
 
@@ -1377,7 +1377,7 @@ describe("HomecoreOS interactive UI workflows", () => {
       account_id: "a1",
       home_id: "h1",
       room_id: "r1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Living Temp",
       sensor_type: "dht22",
       gpio_pin: 5,
@@ -1392,7 +1392,7 @@ describe("HomecoreOS interactive UI workflows", () => {
       account_id: "a1",
       home_id: "h1",
       room_id: "r1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Porch Light",
       gpio_pin: 4,
       is_on: false,
@@ -1442,7 +1442,7 @@ describe("HomecoreOS interactive UI workflows", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/api/controllers") {
+      if (url === "/api/board-instances") {
         return new Response(
           JSON.stringify({
             controllers: [
@@ -1450,8 +1450,8 @@ describe("HomecoreOS interactive UI workflows", () => {
                 id: "c1",
                 account_id: "a1",
                 home_id: "h1",
-                board_catalog_id: null,
-                custom_board_id: null,
+                board_profile_id: null,
+                custom_board_profile_id: null,
                 name: "Main Hub",
                 hardware_uid: "esp-1",
                 board_model: "ESP32-S3",
@@ -1608,8 +1608,8 @@ describe("HomecoreOS interactive UI workflows", () => {
       id: "c1",
       account_id: "a1",
       home_id: "h1",
-      board_catalog_id: null,
-      custom_board_id: null,
+      board_profile_id: null,
+      custom_board_profile_id: null,
       name: "Living Hub",
       hardware_uid: "esp-01",
       board_model: "ESP32-S3",
@@ -1632,7 +1632,7 @@ describe("HomecoreOS interactive UI workflows", () => {
       account_id: "a1",
       home_id: "h1",
       room_id: "r1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Ceiling Fan",
       device_type: "fan",
       gpio_pin: 12,
@@ -1644,7 +1644,7 @@ describe("HomecoreOS interactive UI workflows", () => {
       account_id: "a1",
       home_id: "h1",
       room_id: "r1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Hallway Lamp",
       gpio_pin: 4,
       is_on: false,
@@ -1657,7 +1657,7 @@ describe("HomecoreOS interactive UI workflows", () => {
       account_id: "a1",
       home_id: "h1",
       room_id: "r1",
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Room Thermometer",
       sensor_type: "dht22",
       gpio_pin: 5,
@@ -1689,7 +1689,7 @@ describe("HomecoreOS interactive UI workflows", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/api/controllers") {
+      if (url === "/api/board-instances") {
         return new Response(JSON.stringify({ controllers: [ctrl] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -1701,7 +1701,7 @@ describe("HomecoreOS interactive UI workflows", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/api/boards/catalog" || url === "/api/boards/my-boards") {
+      if (url === "/api/board-library/catalog" || url === "/api/board-library/saved-profiles") {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -1834,14 +1834,14 @@ describe("HomecoreOS interactive UI workflows", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/boards/catalog") {
+      if (url === "/api/board-library/catalog") {
         return new Response(JSON.stringify({ boards: catalogPayload }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/api/boards/my-boards") {
-        return new Response(JSON.stringify({ catalogBoards: [], customBoards: [] }), {
+      if (url === "/api/board-library/saved-profiles") {
+        return new Response(JSON.stringify({ catalogBoards: [], customBoardProfiles: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -2001,8 +2001,8 @@ describe("HomecoreOS interactive UI workflows", () => {
         id: "c-card-1",
         account_id: "a1",
         home_id: "h1",
-        board_catalog_id: "b1",
-        custom_board_id: null,
+        board_profile_id: "b1",
+        custom_board_profile_id: null,
         board_model: "ESP32-S3-DevKitC-1",
         chip_variant: "ESP32-S3",
         flash_size_mb: 16,
@@ -2045,19 +2045,19 @@ describe("HomecoreOS interactive UI workflows", () => {
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/controllers") {
+      if (url === "/api/board-instances") {
         return new Response(JSON.stringify({ controllers: ctrlList }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/api/controllers/trash") {
+      if (url === "/api/board-instances/trash") {
         return new Response(JSON.stringify({ controllers: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/api/boards/catalog" || url === "/api/boards/custom") {
+      if (url === "/api/board-library/catalog" || url === "/api/board-library/custom") {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -2147,7 +2147,7 @@ describe("HomecoreOS interactive UI workflows", () => {
       <TimezoneContext.Provider value="UTC">
         <div>
           <NotificationBellPopover scope="user" onNavigate={onNavigate} />
-          <ControllersPage canManage canOperate onNavigate={onNavigate} />
+          <MyBoardsPage canManage canOperate onNavigate={onNavigate} />
           <FirmwarePage canManage onNavigate={onNavigate} />
         </div>
       </TimezoneContext.Provider>

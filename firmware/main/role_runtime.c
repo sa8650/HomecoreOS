@@ -46,17 +46,17 @@ const char *hc_role_comm_mode_name(const homecore_config_t *cfg) {
     if (!cfg) return "offline";
     // A linked Node is reachable over ESP-NOW even when its STA is between
     // router associations, so the link wins over the Wi-Fi state.
-    if (cfg->device_role == HC_ROLE_NODE && s_state.link == HC_NODE_LINKED) {
+    if (cfg->board_role == HC_ROLE_NODE && s_state.link == HC_NODE_LINKED) {
         return "espnow";
     }
     if (!hc_wifi_is_connected()) return "offline";
     if (!cfg->paired) return "offline";
-    if (cfg->device_role == HC_ROLE_NODE) return "wifi_mqtt";
+    if (cfg->board_role == HC_ROLE_NODE) return "wifi_mqtt";
     return "wifi_mqtt";
 }
 
 hc_role_t hc_role_current(void) {
-    return s_cfg ? (hc_role_t)s_cfg->device_role : HC_ROLE_CONTROLLER;
+    return s_cfg ? (hc_role_t)s_cfg->board_role : HC_ROLE_CONTROLLER;
 }
 
 bool hc_role_is_node(void) {
@@ -64,7 +64,7 @@ bool hc_role_is_node(void) {
 }
 
 bool hc_role_wants_mqtt(void) {
-    if (!s_cfg || s_cfg->device_role != HC_ROLE_NODE) return true;
+    if (!s_cfg || s_cfg->board_role != HC_ROLE_NODE) return true;
     if (!s_initialized) return false;
     /* Standalone fallback, an OTA window, or no Controller assigned at all: the
        Node must stay reachable over EMQX. Otherwise (linked or retrying) it
@@ -74,7 +74,7 @@ bool hc_role_wants_mqtt(void) {
 }
 
 hc_node_link_t hc_role_link_state(void) {
-    if (!s_cfg || s_cfg->device_role != HC_ROLE_NODE) return HC_NODE_UNASSIGNED;
+    if (!s_cfg || s_cfg->board_role != HC_ROLE_NODE) return HC_NODE_UNASSIGNED;
     return s_state.link;
 }
 
@@ -83,7 +83,7 @@ uint16_t hc_role_epoch(void) {
 }
 
 uint8_t hc_role_linked_node_count(void) {
-    if (!s_cfg || s_cfg->device_role != HC_ROLE_CONTROLLER) return 0;
+    if (!s_cfg || s_cfg->board_role != HC_ROLE_CONTROLLER) return 0;
     uint8_t count = 0;
     for (uint8_t i = 0; i < s_node_count; ++i) {
         if (!hc_role_node_is_stale(s_now_ms, s_nodes[i].last_seen_ms)) count++;
@@ -292,7 +292,7 @@ esp_err_t hc_role_init(homecore_config_t *cfg) {
     s_cmd_seq = cfg->last_cmd_seq;
     s_remote_epoch = 0;
 
-    hc_role_t role = (hc_role_t)cfg->device_role;
+    hc_role_t role = (hc_role_t)cfg->board_role;
     hc_role_state_init(&s_state, role);
     s_state.epoch = cfg->link_epoch;
     s_state.link = (hc_node_link_t)cfg->node_link_state;
@@ -322,7 +322,7 @@ void hc_role_open_ota_window(uint32_t duration_ms) {
 }
 
 void hc_role_request_relink(homecore_config_t *cfg) {
-    if (!cfg || cfg->device_role != HC_ROLE_NODE) return;
+    if (!cfg || cfg->board_role != HC_ROLE_NODE) return;
     ESP_LOGW(TAG, "Re-link requested: clearing the Wi-Fi/MQTT fallback");
     hc_role_state_clear_fallback(&s_state);
     s_controller_fresh = false;
@@ -335,7 +335,7 @@ void hc_role_request_relink(homecore_config_t *cfg) {
 }
 
 esp_err_t hc_role_relay_command_to_node(homecore_config_t *cfg, const char *node_id, const char *json) {
-    if (!cfg || cfg->device_role != HC_ROLE_CONTROLLER) return ESP_ERR_INVALID_STATE;
+    if (!cfg || cfg->board_role != HC_ROLE_CONTROLLER) return ESP_ERR_INVALID_STATE;
     if (!node_id || !json) return ESP_ERR_INVALID_ARG;
     for (uint8_t i = 0; i < s_node_count; ++i) {
         if (strcmp(s_nodes[i].id, node_id) != 0) continue;
@@ -381,12 +381,12 @@ static void node_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
             // The body carries this Node's device id, which is what lets the
             // Controller address it in its roster and relay commands to it.
             char keepalive[72];
-            if (cfg->controller_id[0]) {
+            if (cfg->board_instance_id[0]) {
                 snprintf(
                     keepalive,
                     sizeof(keepalive),
                     "{\"id\":\"%s\"}",
-                    cfg->controller_id
+                    cfg->board_instance_id
                 );
             } else {
                 keepalive[0] = '\0';
@@ -483,7 +483,7 @@ void hc_role_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
         }
     }
 
-    if (cfg->device_role == HC_ROLE_NODE) {
+    if (cfg->board_role == HC_ROLE_NODE) {
         node_tick(cfg, elapsed_ms);
     } else {
         controller_tick(cfg, elapsed_ms);
@@ -526,9 +526,9 @@ bool hc_role_apply_snapshot(homecore_config_t *cfg, const char *snapshot_json) {
         if (ch >= 1 && ch <= 13) new_channel = (uint8_t)ch;
     }
 
-    uint8_t old_role = cfg->device_role;
-    if (cfg->device_role != (uint8_t)new_role) {
-        cfg->device_role = (uint8_t)new_role;
+    uint8_t old_role = cfg->board_role;
+    if (cfg->board_role != (uint8_t)new_role) {
+        cfg->board_role = (uint8_t)new_role;
         changed = true;
         ESP_LOGW(TAG, "Role changed by user: %s", hc_role_name(new_role));
     }
@@ -564,10 +564,10 @@ bool hc_role_apply_snapshot(homecore_config_t *cfg, const char *snapshot_json) {
     s_espnow_started = false;
     s_controller_fresh = false;
     s_ms_since_controller = 0;
-    hc_role_state_init(&s_state, (hc_role_t)cfg->device_role);
+    hc_role_state_init(&s_state, (hc_role_t)cfg->board_role);
     s_state.epoch = cfg->link_epoch;
 
-    if (cfg->device_role == HC_ROLE_CONTROLLER) {
+    if (cfg->board_role == HC_ROLE_CONTROLLER) {
         if (old_role != HC_ROLE_CONTROLLER) {
             // Promoting to Controller opens a fresh command window: Nodes that
             // link to it must not reject its first commands as stale.
@@ -602,13 +602,13 @@ void hc_role_fill_heartbeat(const homecore_config_t *cfg, cJSON *root) {
     cJSON_AddStringToObject(
         root,
         "role",
-        hc_role_name((hc_role_t)cfg->device_role)
+        hc_role_name((hc_role_t)cfg->board_role)
     );
     if (!cfg->paired) return;
 
     cJSON_AddStringToObject(root, "cm", hc_role_comm_mode_name(cfg));
 
-    if (cfg->device_role == HC_ROLE_NODE) {
+    if (cfg->board_role == HC_ROLE_NODE) {
         cJSON_AddStringToObject(root, "ls", hc_node_link_name(s_state.link));
         return;
     }

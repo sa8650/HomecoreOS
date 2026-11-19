@@ -36,17 +36,17 @@ export interface CompatBoardRecord {
 export async function resolveControllerCompatBoard(
   db: DbClient,
   controller: {
-    board_catalog_id: string | null;
-    custom_board_id: string | null;
+    board_profile_id: string | null;
+    custom_board_profile_id: string | null;
   }
 ): Promise<CompatBoardRecord | null> {
-  if (controller.board_catalog_id) {
+  if (controller.board_profile_id) {
     const { data } = await db
-      .from("board_catalog")
+      .from("board_profiles")
       .select(
         "id,slug,manufacturer,model,revision,chip_family,chip_variant,flash_size_mb,psram_size_mb,firmware_status,partition_scheme,psram_mode,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ble,supports_ble_wifi_provisioning,supports_ota_rollback,firmware_compat_key,connectivity_note,board_layout"
       )
-      .eq("id", controller.board_catalog_id)
+      .eq("id", controller.board_profile_id)
       .is("deleted_at", null)
       .maybeSingle();
     if (!data) return null;
@@ -57,13 +57,13 @@ export async function resolveControllerCompatBoard(
     };
   }
 
-  if (controller.custom_board_id) {
+  if (controller.custom_board_profile_id) {
     const { data } = await db
-      .from("custom_boards")
+      .from("custom_board_profiles")
       .select(
         "id,slug,manufacturer,model,revision,chip_family,chip_variant,flash_size_mb,psram_size_mb,partition_scheme,psram_mode,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ble,supports_ble_wifi_provisioning,supports_ota_rollback,firmware_compat_key,connectivity_note,board_layout"
       )
-      .eq("id", controller.custom_board_id)
+      .eq("id", controller.custom_board_profile_id)
       .is("deleted_at", null)
       .maybeSingle();
     if (!data) return null;
@@ -132,7 +132,7 @@ export function checkControllerReleaseCompatibility(params: {
 }
 
 /**
- * Synchronizes board_catalog.firmware_status with published, hardware-verified releases.
+ * Synchronizes board_profiles.firmware_status with published, hardware-verified releases.
  * - Never promotes unverified boards to 'firmware_supported'.
  * - Preserves 'esp32-s3-devkitc-1-n16r8' baseline 'firmware_supported' status unless explicitly marked unsupported.
  * - Demotes non-baseline boards back to 'catalog_only' if all verified published releases covering them are removed/unpublished/archived.
@@ -143,7 +143,7 @@ export async function syncBoardFirmwareStatuses(
 ): Promise<void> {
   const [boardsRes, releasesRes, filesRes] = await Promise.all([
     db
-      .from("board_catalog")
+      .from("board_profiles")
       .select(
         "id,slug,manufacturer,model,chip_family,chip_variant,flash_size_mb,psram_size_mb,firmware_status,verification_status,partition_scheme,psram_mode,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ble,supports_ble_wifi_provisioning,supports_ota_rollback,firmware_compat_key"
       )
@@ -228,7 +228,7 @@ export async function syncBoardFirmwareStatuses(
 
     if (nextStatus !== board.firmware_status) {
       await db
-        .from("board_catalog")
+        .from("board_profiles")
         .update({ firmware_status: nextStatus })
         .eq("id", board.id);
     }
