@@ -476,7 +476,7 @@ jobs:
             rm -rf sdkconfig sdkconfig.version build
             python3 scripts/verify_firmware_image.py --write-sdkconfig-version "${HOMECORE_FW_VERSION}" --out sdkconfig.version
             SDKCFG="sdkconfig.defaults;boards/${{ matrix.board_slug }}.sdkconfig;sdkconfig.version"
-            BUILD_LOG="${{ github.workspace }}/firmware/build.log"
+            BUILD_LOG="build.log"
             : > "${BUILD_LOG}"
             { idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" set-target "${{ matrix.chip_family }}" && idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" build; } 2>&1 | tee -a "${BUILD_LOG}"
             python3 scripts/verify_firmware_image.py \
@@ -500,7 +500,8 @@ jobs:
         run: |
           LOG="${{ github.workspace }}/firmware/build.log"
           if [ ! -f "${LOG}" ]; then
-            echo "No build log was written to ${LOG}."
+            echo "::error::No build log was written to ${LOG}; listing firmware/ instead."
+            ls -la "${{ github.workspace }}/firmware" || true
             exit 0
           fi
           echo "----- last 80 lines -----"
