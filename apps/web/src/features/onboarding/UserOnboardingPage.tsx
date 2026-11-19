@@ -299,7 +299,7 @@ export function UserOnboardingPage({
               onValueChange={handleStepChange}
               totalSteps={ONBOARDING_TOTAL_STEPS}
               onComplete={handleComplete}
-              canGoNext={() => true}
+              canGoNext={() => saveState !== "saving" && !completing}
               className="mx-auto w-full max-w-5xl gap-5 rounded-3xl border-border/70 bg-card/95 p-4 shadow-xl backdrop-blur-sm sm:gap-6 sm:p-6 lg:p-8"
             >
               <Onboarding.Header className="text-left">
@@ -476,6 +476,17 @@ function StepRail({ currentStep }: { currentStep: number }) {
 }
 
 function SaveIndicator({ state }: { state: SaveState }) {
+  if (state === "idle") return null;
+  return (
+    <span role="status" aria-live="polite" className="contents">
+      {state === "saving" ? <SaveIndicatorBody state={state} /> : null}
+      {state === "saved" ? <SaveIndicatorBody state={state} /> : null}
+      {state === "error" ? <SaveIndicatorBody state={state} /> : null}
+    </span>
+  );
+}
+
+function SaveIndicatorBody({ state }: { state: Exclude<SaveState, "idle"> }) {
   if (state === "saving") {
     return (
       <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -492,13 +503,10 @@ function SaveIndicator({ state }: { state: SaveState }) {
       </span>
     );
   }
-  if (state === "error") {
-    return (
-      <span className="flex items-center gap-1.5 text-[11px] text-destructive">
-        <RiErrorWarningLine className="size-3.5" aria-hidden="true" />
-        Not saved
-      </span>
-    );
-  }
-  return null;
+  return (
+    <span className="flex items-center gap-1.5 text-[11px] text-destructive">
+      <RiErrorWarningLine className="size-3.5" aria-hidden="true" />
+      Not saved
+    </span>
+  );
 }
