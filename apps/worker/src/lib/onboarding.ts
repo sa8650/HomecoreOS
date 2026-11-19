@@ -1,4 +1,5 @@
 import {
+  ONBOARDING_COMPLETED_STATE,
   ONBOARDING_TOTAL_STEPS,
   isOnboardingStep,
   normalizeOnboardingStep,
@@ -23,11 +24,15 @@ export async function readOnboardingState(
   db: DbClient,
   userId: string
 ): Promise<OnboardingState> {
-  const { data } = await db
+  const { data, error } = await db
     .from("users")
     .select(ONBOARDING_COLUMNS)
     .eq("id", userId)
     .maybeSingle();
+
+  // Fail open: if onboarding state cannot be read (a database that has not run
+  // migration 0003 yet), never lock an existing customer out of their home.
+  if (error) return ONBOARDING_COMPLETED_STATE;
 
   return resolveOnboardingState(data as OnboardingRow | null);
 }
