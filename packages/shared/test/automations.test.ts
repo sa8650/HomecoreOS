@@ -74,7 +74,7 @@ describe("Shared Automation Helpers & NOAA Solar Calculator", () => {
       sensorControllerById,
     });
     expect(localOk.supported).toBe(true);
-    expect(localOk.controllerId).toBe("ctrl-a");
+    expect(localOk.boardInstanceId).toBe("ctrl-a");
 
     const crossCtrl = analyzeLocalAutomationCapability({
       triggers: [{ type: "sensor_value", sensorId: "sen1", operator: "gt", threshold: 25 }],

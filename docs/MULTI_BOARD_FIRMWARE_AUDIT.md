@@ -2,13 +2,13 @@
 
 Date: 2026-11-10
 
-This document captures the Step 1 & Step 2 audit of HomecoreOS's existing firmware pipeline, database schema, R2 storage layout, Web Serial USB flasher, OTA system, and board catalog, alongside the target multi-board compatibility specification for all 11 cataloged hardware boards.
+This document captures the Step 1 & Step 2 audit of HomecoreOS's existing firmware pipeline, database schema, R2 storage layout, Web Serial USB flasher, OTA system, and Board Library, alongside the target multi-board compatibility specification for all 11 cataloged hardware boards.
 
 ---
 
 ## 1. Existing Functionality Inventory
 
-### 1.1 Board Catalog & Hardware Profiles (`packages/shared`, board-catalog tables in `database/migrations/0001_init.sql`)
+### 1.1 Board Library profiles (`packages/shared`, `board_profiles` / `board_gpio_definitions` in `database/migrations/0001_init.sql`)
 - `VERIFIED_BOARD_CATALOG` defines **11 hardware boards** across 9 chip families (`esp32s3`, `esp32c6`, `esp32c3`, `esp32`, `esp32s2`, `esp32c5`, `esp32c61`, `esp32c2`, `esp32h2`), with complete GPIO pin definitions, header layouts (`J1`/`J3`/`P1`/`P2`), USB VID/PID, flash/PSRAM sizes, and `BoardVectorSvg` hardware specs.
 - Only `esp32-s3-devkitc-1-n16r8` currently has `firmware_status = 'firmware_supported'`. All other 10 boards are seeded as `'catalog_only'`.
 - `SUPPORTED_CHIP_FAMILIES` in `packages/shared/src/index.ts` enumerates 13 chip families (`esp32`, `esp32s2`, `esp32s3`, `esp32s31`, `esp32c2`, `esp32c3`, `esp32c5`, `esp32c6`, `esp32c61`, `esp32h2`, `esp32h21`, `esp32h4`, `esp32p4`).
@@ -52,9 +52,9 @@ This document captures the Step 1 & Step 2 audit of HomecoreOS's existing firmwa
 ### 2.2 Database & Schema Gaps (`database/migrations/0001_init.sql`)
 1. **`firmware_releases_name_ver_chip_unique` constraint**: `UNIQUE (name, version, chip_family)` prevents creating independent per-board releases that share a `chip_family` (e.g., `esp32-s3-devkitc-1-n16r8` 16MB vs `seeed-xiao-esp32s3` 8MB vs `esp32-s3-devkitc-1-v1-0` 8MB).
 2. **Missing compatibility & release lifecycle fields**:
-   - `board_catalog` lacks structured firmware compatibility columns: `partition_scheme`, `psram_mode`, `flash_mode`, `flash_freq`, `bootloader_offset`, `boot_button_gpio`, `usb_interface`, `supports_wifi`, `supports_ota_rollback`, and `firmware_compat_key`.
+   - `board_profiles` lacks structured firmware compatibility columns: `partition_scheme`, `psram_mode`, `flash_mode`, `flash_freq`, `bootloader_offset`, `boot_button_gpio`, `usb_interface`, `supports_wifi`, `supports_ota_rollback`, and `firmware_compat_key`.
    - `firmware_releases` lacks `target_board_slug`, `partition_scheme`, `psram_mode`, `flash_mode`, `flash_freq`, `flash_size_mb`, `build_status`, `hardware_verified`, `verified_board_ids`, `rollback_from_release_id`, and `deprecated` status.
-3. **Catalog status drift**: `board_catalog.firmware_status` is static in migrations and not synchronized when verified releases are published, unpublished, deprecated, or archived.
+3. **Catalog status drift**: `board_profiles.firmware_status` is static in migrations and not synchronized when verified releases are published, unpublished, deprecated, or archived.
 
 ### 2.3 Admin & User API / UI Gaps
 1. **Admin Firmware Lifecycle**:
@@ -118,7 +118,7 @@ Only `seeed-xiao-esp32s3` and `esp32-s3-devkitc-1-v1-0` share an identical hardw
    - Pure-C protocol decoders & math unit-tested on host via `firmware/test/test_sensor_driver_logic.c`.
 3. **CI Manifest & Worker Enforcement (`verify_firmware_image.py`, the sensor-driver tables in `database/migrations/0001_init.sql`, `apps/worker`)**:
    - `verify_firmware_image.py --build-release-manifest` extracts compiled `CONFIG_HOMECORE_DRIVER_*` flags from `sdkconfig` and computes a canonical SHA-256 `manifest_hash` matching TypeScript bit-for-bit.
-   - Worker resolves a controller's installed drivers strictly from its verified `firmware_releases` record (never trusting device-reported driver lists), exposes `GET /api/controllers/:id/sensor-compatibility` + batched `sensor_compatibility` on `GET /api/controllers`, enforces strict compatibility on `POST/PATCH /api/sensors`, emits `driver_id` in consolidated device config, and handles ok/error readings in `POST /api/device/telemetry`.
+   - Worker resolves a controller's installed drivers strictly from its verified `firmware_releases` record (never trusting device-reported driver lists), exposes `GET /api/board-instances/:id/sensor-compatibility` + batched `sensor_compatibility` on `GET /api/board-instances`, enforces strict compatibility on `POST/PATCH /api/sensors`, emits `driver_id` in consolidated device config, and handles ok/error readings in `POST /api/device/telemetry`.
 4. **Frontend UI (`apps/web/src/components/hardware/EntityModals.tsx`)**:
    - `SensorEditorModal` filters selectable sensors to board + installed firmware drivers, shows interface & driver badges, surfaces default I2C bus pin hints, and displays an amber firmware update banner when additional hardware-supported drivers require a firmware update.
 

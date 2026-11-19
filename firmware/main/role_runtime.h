@@ -4,7 +4,7 @@
  * Runtime glue between the persisted configuration, the role state machine
  * (role_logic.c) and the transports (Wi-Fi / MQTT / ESP-NOW).
  *
- * Rules implemented here (see packages/shared/src/device-role.ts):
+ * Rules implemented here (see packages/shared/src/board-role.ts):
  *   Controller : Wi-Fi + EMQX MQTT + ESP-NOW hosting.
  *   Node       : ESP-NOW link to its Controller; no MQTT session while linked.
  *                After HC_ROLE_RECONNECT_WINDOW_MS without its Controller it

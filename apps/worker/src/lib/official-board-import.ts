@@ -311,7 +311,7 @@ export function boardModelKey(manufacturer: string, model: string): string {
 
 async function loadLibraryState(db: DbClient): Promise<LibraryState> {
   const { data } = await db
-    .from("board_catalog")
+    .from("board_profiles")
     .select("id,slug,manufacturer,model,is_available,verification_status,deleted_at");
   const rows = (data ?? []) as LibraryRow[];
   const bySlug = new Map<string, LibraryRow>();
@@ -1160,7 +1160,7 @@ export async function importOfficialBoards(params: {
 
     if (candidate.status === "removed" && candidate.existingBoardId) {
       const { data: existing } = await params.db
-        .from("board_catalog")
+        .from("board_profiles")
         .select("id,verification_status")
         .eq("id", candidate.existingBoardId)
         .maybeSingle();
@@ -1178,7 +1178,7 @@ export async function importOfficialBoards(params: {
       }
       const published = params.publish && row.verification_status === "verified";
       const { data: restored, error } = await params.db
-        .from("board_catalog")
+        .from("board_profiles")
         .update({ deleted_at: null, is_available: published, last_synced_at: nowIso })
         .eq("id", row.id)
         .select("id")
@@ -1244,7 +1244,7 @@ export async function importOfficialBoards(params: {
     }
 
     const { data: created, error } = await params.db
-      .from("board_catalog")
+      .from("board_profiles")
       .insert(rowPayload)
       .select("id")
       .maybeSingle();
@@ -1269,7 +1269,7 @@ export async function importOfficialBoards(params: {
         .from("board_gpio_definitions")
         .insert(buildGpioDefinitionRows(boardId, pinSource.gpio_definitions));
       if (gpioError) {
-        await params.db.from("board_catalog").delete().eq("id", boardId);
+        await params.db.from("board_profiles").delete().eq("id", boardId);
         outcomes.push({
           ...base,
           action: "skipped",
@@ -1309,7 +1309,7 @@ export async function importOfficialBoards(params: {
   ].join(" · ");
 
   const { data: runRow } = await params.db
-    .from("board_catalog_sync_runs")
+    .from("board_profile_sync_runs")
     .insert({
       source_name: `${preview.providerLabel} (official import)`,
       status,
@@ -1349,7 +1349,7 @@ export async function importOfficialBoards(params: {
 export interface BoardUsage {
   /** Controllers that run on this board. They block a removal. */
   controllerCount: number;
-  /** Accounts that saved the board to My Boards. */
+  /** Accounts that saved the board profile to their Saved Profiles. */
   savedByAccountCount: number;
   /** Firmware releases that name the board as a target. */
   firmwareReleaseCount: number;
@@ -1364,8 +1364,8 @@ export async function inspectBoardUsage(
   board: { id: string; slug: string }
 ): Promise<BoardUsage> {
   const [controllersRes, savedRes, releasesRes] = await Promise.all([
-    db.from("controllers").select("id").eq("board_catalog_id", board.id).is("deleted_at", null),
-    db.from("account_saved_boards").select("account_id").eq("board_catalog_id", board.id),
+    db.from("board_instances").select("id").eq("board_profile_id", board.id).is("deleted_at", null),
+    db.from("account_saved_boards").select("account_id").eq("board_profile_id", board.id),
     db
       .from("firmware_releases")
       .select("id,compatible_board_ids,target_board_slug")
@@ -1396,7 +1396,7 @@ export async function inspectBoardUsage(
   ];
   if (savedByAccountCount > 0) {
     consequences.push(
-      `${savedByAccountCount} account${savedByAccountCount === 1 ? " has" : "s have"} it in My Boards. It is hidden there until the board is restored.`
+      `${savedByAccountCount} account${savedByAccountCount === 1 ? " has" : "s have"} it in Saved Profiles. It is hidden there until the board is restored.`
     );
   }
   if (firmwareReleaseCount > 0) {

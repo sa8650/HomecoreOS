@@ -333,7 +333,7 @@ const automationCreateSchema = z
     name: z.string().trim().min(1).max(120),
     folderName: z.string().trim().min(1).max(60).default("General"),
     description: z.string().trim().max(500).default(""),
-    controllerId: z.string().uuid().optional().nullable(),
+    boardInstanceId: z.string().uuid().optional().nullable(),
     enabled: z.boolean().default(true),
     executionMode: z.enum(["cloud", "controller", "hybrid"]).default("cloud"),
     triggerConfig: triggerSchema.optional(),
@@ -593,11 +593,11 @@ export function createAutomationRoutes() {
       if (refError) return c.json({ error: refError }, 400);
 
       let homeId: string | null = null;
-      if (parsed.data.controllerId) {
+      if (parsed.data.boardInstanceId) {
         const { data: ctrl } = await db
-          .from("controllers")
+          .from("board_instances")
           .select("id,home_id")
-          .eq("id", parsed.data.controllerId)
+          .eq("id", parsed.data.boardInstanceId)
           .eq("account_id", auth.accountId)
           .is("deleted_at", null)
           .maybeSingle();

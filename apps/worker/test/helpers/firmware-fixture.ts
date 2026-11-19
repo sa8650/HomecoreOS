@@ -17,7 +17,7 @@ import { sha256Hex } from "../../src/lib/crypto";
  */
 export async function seedInstalledFirmwareWithDrivers(params: {
   pg: PGlite;
-  controllerId: string;
+  boardInstanceId: string;
   boardId: string;
   boardSlug: string;
   chipFamily: ChipFamily;
@@ -100,10 +100,10 @@ export async function seedInstalledFirmwareWithDrivers(params: {
   }
 
   await params.pg.query(
-    `UPDATE public.controllers
+    `UPDATE public.board_instances
      SET firmware_version = $1, installed_firmware_release_id = $2
      WHERE id = $3`,
-    [version, releaseId, params.controllerId]
+    [version, releaseId, params.boardInstanceId]
   );
 
   return { releaseId, version };

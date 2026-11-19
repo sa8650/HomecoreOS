@@ -36,16 +36,16 @@ export class EmqxApiError extends Error {
 
 export function buildControllerTopicPrefix(
   accountId: string,
-  controllerId: string
+  boardInstanceId: string
 ): string {
-  return `homecore/${accountId}/controllers/${controllerId}`;
+  return `homecore/${accountId}/board-instances/${boardInstanceId}`;
 }
 
 export function buildControllerAclRules(
   accountId: string,
-  controllerId: string
+  boardInstanceId: string
 ): EmqxAclRule[] {
-  const prefix = buildControllerTopicPrefix(accountId, controllerId);
+  const prefix = buildControllerTopicPrefix(accountId, boardInstanceId);
   return [
     {
       permission: "allow",
@@ -171,7 +171,7 @@ export class EmqxClient {
 
   async provisionControllerCredentials(params: {
     accountId: string;
-    controllerId: string;
+    boardInstanceId: string;
     username: string;
     password: string;
   }): Promise<void> {
@@ -203,7 +203,7 @@ export class EmqxClient {
     }
 
     // Set strict account + controller scoped topic ACL
-    const rules = buildControllerAclRules(params.accountId, params.controllerId);
+    const rules = buildControllerAclRules(params.accountId, params.boardInstanceId);
     const aclPayload = {
       username: params.username,
       rules,

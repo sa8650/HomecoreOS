@@ -29,7 +29,7 @@ export interface AuthenticatedAdminContext {
 }
 
 export interface AuthenticatedDeviceContext {
-  controllerId: string;
+  boardInstanceId: string;
   accountId: string;
   homeId: string;
   mqttUsername: string;

@@ -125,6 +125,6 @@ describe("Board Catalog & Visual Flow Graph Shared Engine", () => {
       sensorControllerById: new Map([["11111111-1111-1111-1111-111111111111", "c1"]]),
     });
     expect(localCap.supported).toBe(true);
-    expect(localCap.controllerId).toBe("c1");
+    expect(localCap.boardInstanceId).toBe("c1");
   });
 });

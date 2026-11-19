@@ -4,7 +4,7 @@ import {
   CONTROLLER_TRASH_RETENTION_DAYS,
   defaultBootButtonGpioForChip,
   deriveCommMode,
-  normalizeDeviceRole,
+  normalizeBoardRole,
   normalizeNodeCommMode,
   normalizeNodeLinkState,
   resolveBoardFirmwareCompatibility,
@@ -13,9 +13,9 @@ import {
 import { recordActivity } from "../lib/audit";
 import {
   assignNodeToController,
-  changeDeviceRole,
+  changeBoardRole,
   listAttachedNodes,
-} from "../lib/device-roles";
+} from "../lib/board-roles";
 import { syncControllerConfigSnapshot } from "../lib/controller-config";
 import {
   generateRandomToken,
@@ -46,16 +46,16 @@ import type { AppEnv } from "../types/context";
 const createControllerSchema = z.object({
   name: z.string().trim().min(1).max(120),
   homeId: z.string().uuid().optional(),
-  boardCatalogId: z.string().uuid().optional(),
-  customBoardId: z.string().uuid().optional(),
+  boardProfileId: z.string().uuid().optional(),
+  customBoardProfileId: z.string().uuid().optional(),
 });
 
 const recoverControllerSchema = z.object({
-  controllerId: z.string().uuid().optional(),
+  boardInstanceId: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(120).optional(),
   homeId: z.string().uuid().optional(),
-  boardCatalogId: z.string().uuid().optional(),
-  customBoardId: z.string().uuid().optional(),
+  boardProfileId: z.string().uuid().optional(),
+  customBoardProfileId: z.string().uuid().optional(),
 });
 
 const updateControllerSchema = z.object({
@@ -79,7 +79,7 @@ const changeRoleSchema = z.object({
 });
 
 const assignNodeSchema = z.object({
-  controllerId: z.string().uuid().nullable(),
+  boardInstanceId: z.string().uuid().nullable(),
 });
 
 const wifiConfigSchema = z.object({
@@ -152,7 +152,7 @@ function summarizeBoardCompat(board: CompatBoardRecord | null) {
 
 const TRASH_MS = CONTROLLER_TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
-export function createControllerRoutes() {
+export function createBoardInstanceRoutes() {
   const app = new Hono<AppEnv>();
   app.use("*", requireUserSession());
 
@@ -174,7 +174,7 @@ export function createControllerRoutes() {
 
     const [ctrlRes, credsRes] = await Promise.all([
       db
-        .from("controllers")
+        .from("board_instances")
         .select("*")
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
@@ -183,21 +183,21 @@ export function createControllerRoutes() {
       db
         .from("mqtt_credentials_metadata")
         .select(
-          "controller_id,mqtt_username,mqtt_client_id,topic_prefix,emqx_synced,status,last_rotated_at"
+          "board_instance_id,mqtt_username,mqtt_client_id,topic_prefix,emqx_synced,status,last_rotated_at"
         )
         .eq("account_id", auth.accountId),
     ]);
 
     const credByController = new Map(
       ((credsRes.data ?? []) as Array<{
-        controller_id: string;
+        board_instance_id: string;
         mqtt_username: string;
         mqtt_client_id: string;
         topic_prefix: string;
         emqx_synced: boolean;
         status: string;
         last_rotated_at?: string;
-      }>).map((m) => [m.controller_id, m])
+      }>).map((m) => [m.board_instance_id, m])
     );
 
     const liveEmqxByClientId = new Map<string, boolean>();
@@ -213,14 +213,14 @@ export function createControllerRoutes() {
     const catalogIds = Array.from(
       new Set(
         ctrlRows
-          .map((r) => (r.board_catalog_id ? String(r.board_catalog_id) : ""))
+          .map((r) => (r.board_profile_id ? String(r.board_profile_id) : ""))
           .filter(Boolean)
       )
     );
     const customIds = Array.from(
       new Set(
         ctrlRows
-          .map((r) => (r.custom_board_id ? String(r.custom_board_id) : ""))
+          .map((r) => (r.custom_board_profile_id ? String(r.custom_board_profile_id) : ""))
           .filter(Boolean)
       )
     );
@@ -228,7 +228,7 @@ export function createControllerRoutes() {
     const [catBoardsRes, custBoardsRes] = await Promise.all([
       catalogIds.length > 0
         ? db
-            .from("board_catalog")
+            .from("board_profiles")
             .select(
               "id,slug,manufacturer,model,revision,chip_family,chip_variant,flash_size_mb,psram_size_mb,firmware_status,partition_scheme,psram_mode,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ble,supports_ble_wifi_provisioning,supports_ota_rollback,firmware_compat_key,connectivity_note"
             )
@@ -236,7 +236,7 @@ export function createControllerRoutes() {
         : Promise.resolve({ data: [] as unknown[] }),
       customIds.length > 0
         ? db
-            .from("custom_boards")
+            .from("custom_board_profiles")
             .select(
               "id,slug,manufacturer,model,revision,chip_family,chip_variant,flash_size_mb,psram_size_mb,partition_scheme,psram_mode,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ble,supports_ble_wifi_provisioning,supports_ota_rollback,firmware_compat_key,connectivity_note"
             )
@@ -262,8 +262,8 @@ export function createControllerRoutes() {
       db,
       ctrlRows.map((r) => ({
         id: String(r.id),
-        board_catalog_id: r.board_catalog_id ? String(r.board_catalog_id) : null,
-        custom_board_id: r.custom_board_id ? String(r.custom_board_id) : null,
+        board_profile_id: r.board_profile_id ? String(r.board_profile_id) : null,
+        custom_board_profile_id: r.custom_board_profile_id ? String(r.custom_board_profile_id) : null,
         firmware_version:
           typeof r.firmware_version === "string" ? r.firmware_version : null,
         installed_firmware_release_id:
@@ -274,7 +274,7 @@ export function createControllerRoutes() {
     );
 
     // Unified role bookkeeping (single pass, no per-device queries).
-    const roleById = new Map<string, ReturnType<typeof normalizeDeviceRole>>();
+    const roleById = new Map<string, ReturnType<typeof normalizeBoardRole>>();
     const nameById = new Map<string, string>();
     // "Connected nodes" is what the card claims ("N linked"): only Nodes that
     // actually report a live ESP-NOW link. Assigned-but-lost Nodes are counted
@@ -282,12 +282,12 @@ export function createControllerRoutes() {
     const attachedNodeCount = new Map<string, number>();
     for (const row of ctrlRows) {
       const id = String(row.id);
-      const role = normalizeDeviceRole(row.device_role);
+      const role = normalizeBoardRole(row.board_role);
       roleById.set(id, role);
       nameById.set(id, String(row.name ?? "Device"));
     }
     for (const row of ctrlRows) {
-      if (normalizeDeviceRole(row.device_role) !== "node") continue;
+      if (normalizeBoardRole(row.board_role) !== "node") continue;
       const parentId = row.assigned_controller_id ? String(row.assigned_controller_id) : "";
       if (!parentId) continue;
       if (normalizeNodeLinkState(row.node_link_state) !== "linked") continue;
@@ -307,10 +307,10 @@ export function createControllerRoutes() {
           emqxConnected = listedState;
         }
       }
-      const board = ctrl.board_catalog_id
-        ? (boardMap.get(`catalog:${String(ctrl.board_catalog_id)}`) ?? null)
-        : ctrl.custom_board_id
-          ? (boardMap.get(`custom:${String(ctrl.custom_board_id)}`) ?? null)
+      const board = ctrl.board_profile_id
+        ? (boardMap.get(`catalog:${String(ctrl.board_profile_id)}`) ?? null)
+        : ctrl.custom_board_profile_id
+          ? (boardMap.get(`custom:${String(ctrl.custom_board_profile_id)}`) ?? null)
           : null;
       const role = roleById.get(id) ?? "controller";
       const assignedControllerId =
@@ -345,7 +345,7 @@ export function createControllerRoutes() {
             ? undefined
             : buildOfflineRecoveryInstructions(board),
         // Unified Controller / Node fields
-        device_role: role,
+        board_role: role,
         node_comm_mode: nodeCommMode,
         node_link_state:
           role === "node" ? normalizeNodeLinkState(ctrl.node_link_state) : null,
@@ -366,14 +366,14 @@ export function createControllerRoutes() {
   app.get("/:id/sensor-compatibility", async (c) => {
     const auth = c.get("userAuth")!;
     const db = c.get("db");
-    const controllerId = c.req.param("id");
+    const boardInstanceId = c.req.param("id");
 
     const { data: ctrl } = await db
-      .from("controllers")
+      .from("board_instances")
       .select(
-        "id,name,board_catalog_id,custom_board_id,firmware_version,installed_firmware_release_id"
+        "id,name,board_profile_id,custom_board_profile_id,firmware_version,installed_firmware_release_id"
       )
-      .eq("id", controllerId)
+      .eq("id", boardInstanceId)
       .eq("account_id", auth.accountId)
       .is("deleted_at", null)
       .maybeSingle();
@@ -385,15 +385,15 @@ export function createControllerRoutes() {
     const row = ctrl as {
       id: string;
       name: string;
-      board_catalog_id: string | null;
-      custom_board_id: string | null;
+      board_profile_id: string | null;
+      custom_board_profile_id: string | null;
       firmware_version: string | null;
       installed_firmware_release_id: string | null;
     };
 
     const compatibility = await getControllerSensorCompatibilityReport(db, row);
     return c.json({
-      controllerId: row.id,
+      boardInstanceId: row.id,
       controllerName: row.name,
       ...compatibility,
     });
@@ -405,7 +405,7 @@ export function createControllerRoutes() {
     const db = c.get("db");
 
     const { data: rows } = await db
-      .from("controllers")
+      .from("board_instances")
       .select("*")
       .eq("account_id", auth.accountId)
       .not("deleted_at", "is", null)
@@ -433,7 +433,7 @@ export function createControllerRoutes() {
     if (expiredIds.length > 0) {
       await Promise.all([
         db
-          .from("controllers")
+          .from("board_instances")
           .update({ permanently_deleted_at: nowIso })
           .in("id", expiredIds)
           .eq("account_id", auth.accountId),
@@ -443,7 +443,7 @@ export function createControllerRoutes() {
             permanently_deleted_at: nowIso,
             deleted_reason: "controller_permanently_deleted",
           })
-          .in("controller_id", expiredIds)
+          .in("board_instance_id", expiredIds)
           .eq("account_id", auth.accountId)
           .is("permanently_deleted_at", null),
         db
@@ -452,7 +452,7 @@ export function createControllerRoutes() {
             permanently_deleted_at: nowIso,
             deleted_reason: "controller_permanently_deleted",
           })
-          .in("controller_id", expiredIds)
+          .in("board_instance_id", expiredIds)
           .eq("account_id", auth.accountId)
           .is("permanently_deleted_at", null),
         db
@@ -461,7 +461,7 @@ export function createControllerRoutes() {
             permanently_deleted_at: nowIso,
             deleted_reason: "controller_permanently_deleted",
           })
-          .in("controller_id", expiredIds)
+          .in("board_instance_id", expiredIds)
           .eq("account_id", auth.accountId)
           .is("permanently_deleted_at", null),
       ]);
@@ -475,22 +475,22 @@ export function createControllerRoutes() {
     const [swRows, devRows, senRows] = await Promise.all([
       db
         .from("switches")
-        .select("controller_id")
-        .in("controller_id", activeIds)
+        .select("board_instance_id")
+        .in("board_instance_id", activeIds)
         .eq("account_id", auth.accountId)
         .eq("deleted_reason", "controller_trashed")
         .is("permanently_deleted_at", null),
       db
         .from("devices")
-        .select("controller_id")
-        .in("controller_id", activeIds)
+        .select("board_instance_id")
+        .in("board_instance_id", activeIds)
         .eq("account_id", auth.accountId)
         .eq("deleted_reason", "controller_trashed")
         .is("permanently_deleted_at", null),
       db
         .from("sensors")
-        .select("controller_id")
-        .in("controller_id", activeIds)
+        .select("board_instance_id")
+        .in("board_instance_id", activeIds)
         .eq("account_id", auth.accountId)
         .eq("deleted_reason", "controller_trashed")
         .is("permanently_deleted_at", null),
@@ -498,8 +498,8 @@ export function createControllerRoutes() {
 
     const countByCtrl = (list: unknown[] | null) => {
       const m = new Map<string, number>();
-      for (const item of (list ?? []) as Array<{ controller_id: string }>) {
-        m.set(item.controller_id, (m.get(item.controller_id) ?? 0) + 1);
+      for (const item of (list ?? []) as Array<{ board_instance_id: string }>) {
+        m.set(item.board_instance_id, (m.get(item.board_instance_id) ?? 0) + 1);
       }
       return m;
     };
@@ -545,12 +545,12 @@ export function createControllerRoutes() {
 
       const { data: settings } = await db
         .from("platform_settings")
-        .select("max_controllers_per_account,pairing_code_expiration_seconds")
+        .select("max_board_instances_per_account,pairing_code_expiration_seconds")
         .eq("id", 1)
         .maybeSingle();
 
       const cfg = settings as {
-        max_controllers_per_account?: number;
+        max_board_instances_per_account?: number;
         pairing_code_expiration_seconds?: number;
       } | null;
 
@@ -559,11 +559,11 @@ export function createControllerRoutes() {
 
       let targetController: Record<string, unknown>;
 
-      if (parsed.data.controllerId) {
+      if (parsed.data.boardInstanceId) {
         const { data: existing } = await db
-          .from("controllers")
+          .from("board_instances")
           .select("*")
-          .eq("id", parsed.data.controllerId)
+          .eq("id", parsed.data.boardInstanceId)
           .eq("account_id", auth.accountId)
           .is("deleted_at", null)
           .is("permanently_deleted_at", null)
@@ -574,13 +574,13 @@ export function createControllerRoutes() {
         }
 
         const cRow = existing as Record<string, unknown>;
-        const controllerId = String(cRow.id);
+        const boardInstanceId = String(cRow.id);
 
         // Revoke any previous MQTT/device credentials cleanly before re-pairing
         const { data: oldCred } = await db
           .from("mqtt_credentials_metadata")
           .select("id,mqtt_username,mqtt_client_id,status")
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .maybeSingle();
 
@@ -616,12 +616,12 @@ export function createControllerRoutes() {
         await db
           .from("pairing_codes")
           .update({ used_at: new Date().toISOString() })
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .is("used_at", null);
 
         const { data: updated } = await db
-          .from("controllers")
+          .from("board_instances")
           .update({
             status: "pending",
             pairing_status: "recovery_pending",
@@ -629,7 +629,7 @@ export function createControllerRoutes() {
             last_error: null,
             last_error_at: null,
           })
-          .eq("id", controllerId)
+          .eq("id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .select("*")
           .single();
@@ -644,21 +644,21 @@ export function createControllerRoutes() {
           );
         }
 
-        const { boardCatalogId, customBoardId } = parsed.data;
-        if ((!boardCatalogId && !customBoardId) || (boardCatalogId && customBoardId)) {
+        const { boardProfileId, customBoardProfileId } = parsed.data;
+        if ((!boardProfileId && !customBoardProfileId) || (boardProfileId && customBoardProfileId)) {
           return c.json(
-            { error: "Specify either boardCatalogId or customBoardId." },
+            { error: "Specify either boardProfileId or customBoardProfileId." },
             400
           );
         }
 
         const { count: currentCount } = await db
-          .from("controllers")
+          .from("board_instances")
           .select("id", { count: "exact", head: true })
           .eq("account_id", auth.accountId)
           .is("deleted_at", null);
 
-        if ((currentCount ?? 0) >= (cfg?.max_controllers_per_account ?? 25)) {
+        if ((currentCount ?? 0) >= (cfg?.max_board_instances_per_account ?? 25)) {
           return c.json(
             { error: "Controller limit reached for this account." },
             403
@@ -671,20 +671,20 @@ export function createControllerRoutes() {
         const boardSpec = await resolveBoardSpec(
           db,
           auth.accountId,
-          boardCatalogId,
-          customBoardId
+          boardProfileId,
+          customBoardProfileId
         );
         if (!boardSpec) {
           return c.json({ error: "Selected board profile is unavailable." }, 404);
         }
 
         const { data: created, error: cErr } = await db
-          .from("controllers")
+          .from("board_instances")
           .insert({
             account_id: auth.accountId,
             home_id: homeId,
-            board_catalog_id: boardCatalogId ?? null,
-            custom_board_id: customBoardId ?? null,
+            board_profile_id: boardProfileId ?? null,
+            custom_board_profile_id: customBoardProfileId ?? null,
             name: parsed.data.name,
             board_model: boardSpec.model,
             chip_variant: boardSpec.chip_variant,
@@ -715,13 +715,13 @@ export function createControllerRoutes() {
         targetController = created as Record<string, unknown>;
       }
 
-      const controllerId = String(targetController.id);
+      const boardInstanceId = String(targetController.id);
       const recoveryCode = generateSixDigitPairingCode();
       const codeHash = await sha256Hex(recoveryCode);
 
       await db.from("pairing_codes").insert({
         account_id: auth.accountId,
-        controller_id: controllerId,
+        board_instance_id: boardInstanceId,
         code_hash: codeHash,
         purpose: "recovery",
         requires_physical_confirmation: true,
@@ -732,7 +732,7 @@ export function createControllerRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId,
+        boardInstanceId,
         category: "pairing",
         action: "controller.recovery_initiated",
         summary: `Initiated secure recovery re-pairing for "${String(targetController.name)}" (physical confirmation required)`,
@@ -747,15 +747,15 @@ export function createControllerRoutes() {
         severity: "warning",
         title: `Recovery Initiated: ${String(targetController.name)}`,
         message: "A single-use recovery pairing code was generated; physical button or setup AP confirmation is required.",
-        metadata: { controllerId },
+        metadata: { boardInstanceId },
       });
 
       const recBoard = await resolveControllerCompatBoard(db, {
-        board_catalog_id: targetController.board_catalog_id
-          ? String(targetController.board_catalog_id)
+        board_profile_id: targetController.board_profile_id
+          ? String(targetController.board_profile_id)
           : null,
-        custom_board_id: targetController.custom_board_id
-          ? String(targetController.custom_board_id)
+        custom_board_profile_id: targetController.custom_board_profile_id
+          ? String(targetController.custom_board_profile_id)
           : null,
       });
       const recBootGpio = recBoard
@@ -801,7 +801,7 @@ export function createControllerRoutes() {
     const id = c.req.param("id");
 
     const { data: controller } = await db
-      .from("controllers")
+      .from("board_instances")
       .select("*")
       .eq("id", id)
       .eq("account_id", auth.accountId)
@@ -818,15 +818,15 @@ export function createControllerRoutes() {
         .select(
           "mqtt_username,mqtt_client_id,topic_prefix,emqx_synced,status,last_rotated_at"
         )
-        .eq("controller_id", id)
+        .eq("board_instance_id", id)
         .eq("account_id", auth.accountId)
         .maybeSingle(),
       resolveControllerCompatBoard(db, {
-        board_catalog_id: ctrlRow.board_catalog_id
-          ? String(ctrlRow.board_catalog_id)
+        board_profile_id: ctrlRow.board_profile_id
+          ? String(ctrlRow.board_profile_id)
           : null,
-        custom_board_id: ctrlRow.custom_board_id
-          ? String(ctrlRow.custom_board_id)
+        custom_board_profile_id: ctrlRow.custom_board_profile_id
+          ? String(ctrlRow.custom_board_profile_id)
           : null,
       }),
     ]);
@@ -851,10 +851,10 @@ export function createControllerRoutes() {
         return c.json({ error: "Invalid controller creation fields." }, 400);
       }
 
-      const { boardCatalogId, customBoardId } = parsed.data;
-      if ((!boardCatalogId && !customBoardId) || (boardCatalogId && customBoardId)) {
+      const { boardProfileId, customBoardProfileId } = parsed.data;
+      if ((!boardProfileId && !customBoardProfileId) || (boardProfileId && customBoardProfileId)) {
         return c.json(
-          { error: "Specify either boardCatalogId or customBoardId." },
+          { error: "Specify either boardProfileId or customBoardProfileId." },
           400
         );
       }
@@ -865,22 +865,22 @@ export function createControllerRoutes() {
       const [{ data: settings }, { count: currentCount }] = await Promise.all([
         db
           .from("platform_settings")
-          .select("max_controllers_per_account,pairing_code_expiration_seconds")
+          .select("max_board_instances_per_account,pairing_code_expiration_seconds")
           .eq("id", 1)
           .maybeSingle(),
         db
-          .from("controllers")
+          .from("board_instances")
           .select("id", { count: "exact", head: true })
           .eq("account_id", auth.accountId)
           .is("deleted_at", null),
       ]);
 
       const cfg = settings as {
-        max_controllers_per_account?: number;
+        max_board_instances_per_account?: number;
         pairing_code_expiration_seconds?: number;
       } | null;
 
-      if ((currentCount ?? 0) >= (cfg?.max_controllers_per_account ?? 25)) {
+      if ((currentCount ?? 0) >= (cfg?.max_board_instances_per_account ?? 25)) {
         return c.json(
           { error: "Controller limit reached for this account." },
           403
@@ -893,8 +893,8 @@ export function createControllerRoutes() {
       const boardSpec = await resolveBoardSpec(
         db,
         auth.accountId,
-        boardCatalogId,
-        customBoardId
+        boardProfileId,
+        customBoardProfileId
       );
       if (!boardSpec) {
         return c.json(
@@ -904,12 +904,12 @@ export function createControllerRoutes() {
       }
 
       const { data: controller, error: cErr } = await db
-        .from("controllers")
+        .from("board_instances")
         .insert({
           account_id: auth.accountId,
           home_id: homeId,
-          board_catalog_id: boardCatalogId ?? null,
-          custom_board_id: customBoardId ?? null,
+          board_profile_id: boardProfileId ?? null,
+          custom_board_profile_id: customBoardProfileId ?? null,
           name: parsed.data.name,
           board_model: boardSpec.model,
           chip_variant: boardSpec.chip_variant,
@@ -930,7 +930,7 @@ export function createControllerRoutes() {
         return c.json({ error: cErr?.message ?? "Failed to create controller." }, 400);
       }
 
-      const controllerId = (controller as { id: string }).id;
+      const boardInstanceId = (controller as { id: string }).id;
       const pairingCode = generateSixDigitPairingCode();
       const codeHash = await sha256Hex(pairingCode);
       const ttlSeconds = cfg?.pairing_code_expiration_seconds ?? 300;
@@ -938,7 +938,7 @@ export function createControllerRoutes() {
 
       await db.from("pairing_codes").insert({
         account_id: auth.accountId,
-        controller_id: controllerId,
+        board_instance_id: boardInstanceId,
         code_hash: codeHash,
         purpose: "initial_pair",
         requires_physical_confirmation: false,
@@ -949,7 +949,7 @@ export function createControllerRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId,
+        boardInstanceId,
         category: "pairing",
         action: "controller.pairing_initiated",
         summary: `Created pending controller "${parsed.data.name}" (${boardSpec.model}) with 6-digit pairing code`,
@@ -973,12 +973,12 @@ export function createControllerRoutes() {
     async (c) => {
       const auth = c.get("userAuth")!;
       const db = c.get("db");
-      const controllerId = c.req.param("id");
+      const boardInstanceId = c.req.param("id");
 
       const { data: controller } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("id,name,paired_at,pairing_status")
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .maybeSingle();
@@ -1005,7 +1005,7 @@ export function createControllerRoutes() {
       await db
         .from("pairing_codes")
         .update({ used_at: new Date().toISOString() })
-        .eq("controller_id", controllerId)
+        .eq("board_instance_id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("used_at", null);
 
@@ -1015,7 +1015,7 @@ export function createControllerRoutes() {
 
       await db.from("pairing_codes").insert({
         account_id: auth.accountId,
-        controller_id: controllerId,
+        board_instance_id: boardInstanceId,
         code_hash: codeHash,
         purpose: isRecovery ? "recovery" : "initial_pair",
         requires_physical_confirmation: isRecovery,
@@ -1026,7 +1026,7 @@ export function createControllerRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId,
+        boardInstanceId,
         category: "pairing",
         action: "controller.pairing_code_regenerated",
         summary: `Generated new ${isRecovery ? "recovery " : ""}pairing code for "${cRow.name}"`,
@@ -1050,12 +1050,12 @@ export function createControllerRoutes() {
       const auth = c.get("userAuth")!;
       const db = c.get("db");
       const deps = c.get("deps") ?? {};
-      const controllerId = c.req.param("id");
+      const boardInstanceId = c.req.param("id");
 
       const { data: trashed } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("*")
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .not("deleted_at", "is", null)
         .is("permanently_deleted_at", null)
@@ -1081,9 +1081,9 @@ export function createControllerRoutes() {
 
       if (expiresMs <= nowMs) {
         await db
-          .from("controllers")
+          .from("board_instances")
           .update({ permanently_deleted_at: nowIso })
-          .eq("id", controllerId)
+          .eq("id", boardInstanceId)
           .eq("account_id", auth.accountId);
         return c.json(
           {
@@ -1097,22 +1097,22 @@ export function createControllerRoutes() {
       const [{ data: settings }, { count: currentCount }] = await Promise.all([
         db
           .from("platform_settings")
-          .select("max_controllers_per_account,pairing_code_expiration_seconds")
+          .select("max_board_instances_per_account,pairing_code_expiration_seconds")
           .eq("id", 1)
           .maybeSingle(),
         db
-          .from("controllers")
+          .from("board_instances")
           .select("id", { count: "exact", head: true })
           .eq("account_id", auth.accountId)
           .is("deleted_at", null),
       ]);
 
       const cfg = settings as {
-        max_controllers_per_account?: number;
+        max_board_instances_per_account?: number;
         pairing_code_expiration_seconds?: number;
       } | null;
 
-      if ((currentCount ?? 0) >= (cfg?.max_controllers_per_account ?? 25)) {
+      if ((currentCount ?? 0) >= (cfg?.max_board_instances_per_account ?? 25)) {
         return c.json(
           { error: "Controller limit reached for this account; remove an active controller before restoring." },
           403
@@ -1134,21 +1134,21 @@ export function createControllerRoutes() {
         db
           .from("switches")
           .select("id,room_id")
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .eq("deleted_reason", "controller_trashed")
           .is("permanently_deleted_at", null),
         db
           .from("devices")
           .select("id,room_id")
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .eq("deleted_reason", "controller_trashed")
           .is("permanently_deleted_at", null),
         db
           .from("sensors")
           .select("id,room_id")
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .eq("deleted_reason", "controller_trashed")
           .is("permanently_deleted_at", null),
@@ -1195,7 +1195,7 @@ export function createControllerRoutes() {
       const { data: credRow } = await db
         .from("mqtt_credentials_metadata")
         .select("*")
-        .eq("controller_id", controllerId)
+        .eq("board_instance_id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .maybeSingle();
 
@@ -1207,19 +1207,19 @@ export function createControllerRoutes() {
       if (!credRow || (credRow as { status: string }).status !== "active") {
         credentialsRotated = true;
         const suffix = generateRandomToken(3).toLowerCase().slice(0, 4);
-        const mqttUsername = `hc_${controllerId.replace(/-/g, "").slice(0, 12)}_${suffix}`;
-        const mqttClientId = `hc_esp_${controllerId.replace(/-/g, "").slice(0, 12)}_${suffix}`;
+        const mqttUsername = `hc_${boardInstanceId.replace(/-/g, "").slice(0, 12)}_${suffix}`;
+        const mqttClientId = `hc_esp_${boardInstanceId.replace(/-/g, "").slice(0, 12)}_${suffix}`;
         const mqttPassword = generateRandomToken(24);
         const deviceApiToken = generateRandomToken(32);
         const deviceTokenHash = await sha256Hex(deviceApiToken);
-        const topicPrefix = buildControllerTopicPrefix(auth.accountId, controllerId);
+        const topicPrefix = buildControllerTopicPrefix(auth.accountId, boardInstanceId);
 
         let emqxSynced = false;
         if (isEmqxConfigured(c.env ?? {})) {
           const emqx = new EmqxClient(c.env!, deps.emqxFetch);
           await emqx.provisionControllerCredentials({
             accountId: auth.accountId,
-            controllerId,
+            boardInstanceId,
             username: mqttUsername,
             password: mqttPassword,
           });
@@ -1231,7 +1231,7 @@ export function createControllerRoutes() {
           .upsert(
             {
               account_id: auth.accountId,
-              controller_id: controllerId,
+              board_instance_id: boardInstanceId,
               mqtt_username: mqttUsername,
               mqtt_client_id: mqttClientId,
               device_token_hash: deviceTokenHash,
@@ -1241,7 +1241,7 @@ export function createControllerRoutes() {
               last_rotated_at: nowIso,
               revoked_at: null,
             },
-            { onConflict: "controller_id" }
+            { onConflict: "board_instance_id" }
           )
           .select("mqtt_username,mqtt_client_id,topic_prefix,emqx_synced,status")
           .single();
@@ -1260,7 +1260,7 @@ export function createControllerRoutes() {
         recoveryExpiresAt = new Date(nowMs + ttlSeconds * 1000).toISOString();
         await db.from("pairing_codes").insert({
           account_id: auth.accountId,
-          controller_id: controllerId,
+          board_instance_id: boardInstanceId,
           code_hash: await sha256Hex(recoveryPairingCode),
           purpose: "recovery",
           requires_physical_confirmation: true,
@@ -1274,7 +1274,7 @@ export function createControllerRoutes() {
         : [];
 
       const { data: restoredCtrl } = await db
-        .from("controllers")
+        .from("board_instances")
         .update({
           deleted_at: null,
           trash_expires_at: null,
@@ -1289,7 +1289,7 @@ export function createControllerRoutes() {
             { event: "restored_from_trash", at: nowIso },
           ],
         })
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .select("*")
         .single();
@@ -1297,7 +1297,7 @@ export function createControllerRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId,
+        boardInstanceId,
         category: "controller",
         action: "controller.restored",
         summary: `Restored controller "${cRow.name}" from Trash (${swList.length} switches, ${devList.length} devices, ${senList.length} sensors)${
@@ -1315,7 +1315,7 @@ export function createControllerRoutes() {
           severity: "warning",
           title: `Credentials Rotated: ${cRow.name}`,
           message: "Controller restored from Trash with freshly rotated MQTT credentials.",
-          metadata: { controllerId },
+          metadata: { boardInstanceId },
         });
       }
 
@@ -1357,7 +1357,7 @@ export function createControllerRoutes() {
       const auth = c.get("userAuth")!;
       const db = c.get("db");
       const { data, error } = await db
-        .from("controllers")
+        .from("board_instances")
         .update(patch)
         .eq("id", c.req.param("id"))
         .eq("account_id", auth.accountId)
@@ -1370,7 +1370,7 @@ export function createControllerRoutes() {
 
       await syncControllerConfigSnapshot(db, c.env ?? {}, c.get("deps") ?? {}, {
         accountId: auth.accountId,
-        controllerId: c.req.param("id"),
+        boardInstanceId: c.req.param("id"),
         reason: "config_change",
       }).catch(() => null);
 
@@ -1381,7 +1381,7 @@ export function createControllerRoutes() {
           hosted.map((n) =>
             syncControllerConfigSnapshot(db, c.env ?? {}, c.get("deps") ?? {}, {
               accountId: auth.accountId,
-              controllerId: n.id,
+              boardInstanceId: n.id,
               reason: "config_change",
             }).catch(() => null)
           )
@@ -1408,11 +1408,11 @@ export function createControllerRoutes() {
 
       const auth = c.get("userAuth")!;
       const db = c.get("db");
-      const controllerId = c.req.param("id");
+      const boardInstanceId = c.req.param("id");
       const { data: ctrlData } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("id,home_id,name")
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .is("permanently_deleted_at", null)
@@ -1429,9 +1429,9 @@ export function createControllerRoutes() {
       if (!loc.ok) return c.json({ error: loc.error }, 400);
 
       const { data, error } = await db
-        .from("controllers")
+        .from("board_instances")
         .update({ room_id: loc.roomId })
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .select("*")
@@ -1443,13 +1443,13 @@ export function createControllerRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId,
+        boardInstanceId,
         category: "controller",
         action: roomId ? "controller.room_assigned" : "controller.room_unassigned",
         summary: roomId
           ? `Controller "${ctrl.name}" assigned to a room.`
           : `Controller "${ctrl.name}" removed from its room assignment.`,
-        metadata: { controllerId, roomId: loc.roomId },
+        metadata: { boardInstanceId, roomId: loc.roomId },
       }).catch(() => null);
 
       return c.json({ controller: data });
@@ -1463,12 +1463,12 @@ export function createControllerRoutes() {
       const auth = c.get("userAuth")!;
       const db = c.get("db");
       const deps = c.get("deps") ?? {};
-      const controllerId = c.req.param("id");
+      const boardInstanceId = c.req.param("id");
 
       const { data: ctrl } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("id")
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .is("permanently_deleted_at", null)
@@ -1478,7 +1478,7 @@ export function createControllerRoutes() {
 
       const result = await syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
         accountId: auth.accountId,
-        controllerId,
+        boardInstanceId,
         reason: "explicit_sync",
         forcePublish: true,
       });
@@ -1495,12 +1495,12 @@ export function createControllerRoutes() {
       const auth = c.get("userAuth")!;
       const db = c.get("db");
       const deps = c.get("deps") ?? {};
-      const controllerId = c.req.param("id");
+      const boardInstanceId = c.req.param("id");
 
       const { data: controller } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("id,name")
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .is("permanently_deleted_at", null)
@@ -1513,7 +1513,7 @@ export function createControllerRoutes() {
         c.env ?? {},
         deps,
         auth.accountId,
-        controllerId
+        boardInstanceId
       );
 
       const nowMs = Date.now();
@@ -1522,7 +1522,7 @@ export function createControllerRoutes() {
 
       await Promise.all([
         db
-          .from("controllers")
+          .from("board_instances")
           .update({
             deleted_at: nowIso,
             trash_expires_at: trashExpiresAt,
@@ -1531,24 +1531,24 @@ export function createControllerRoutes() {
             mqtt_connected: false,
             wifi_connected: false,
           })
-          .eq("id", controllerId)
+          .eq("id", boardInstanceId)
           .eq("account_id", auth.accountId),
         db
           .from("switches")
           .update({ deleted_at: nowIso, deleted_reason: "controller_trashed" })
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .is("deleted_at", null),
         db
           .from("devices")
           .update({ deleted_at: nowIso, deleted_reason: "controller_trashed" })
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .is("deleted_at", null),
         db
           .from("sensors")
           .update({ deleted_at: nowIso, deleted_reason: "controller_trashed" })
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .is("deleted_at", null),
       ]);
@@ -1556,7 +1556,7 @@ export function createControllerRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId,
+        boardInstanceId,
         category: "controller",
         action: "controller.deleted",
         summary: `Moved controller "${(controller as { name: string }).name}" to Trash (30-day recovery window) and revoked MQTT credentials`,
@@ -1574,12 +1574,12 @@ export function createControllerRoutes() {
       const auth = c.get("userAuth")!;
       const db = c.get("db");
       const deps = c.get("deps") ?? {};
-      const controllerId = c.req.param("id");
+      const boardInstanceId = c.req.param("id");
 
       const { data: controller } = await db
-        .from("controllers")
+        .from("board_instances")
         .select("id,name,deleted_at")
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("permanently_deleted_at", null)
         .maybeSingle();
@@ -1591,7 +1591,7 @@ export function createControllerRoutes() {
         c.env ?? {},
         deps,
         auth.accountId,
-        controllerId
+        boardInstanceId
       );
 
       const nowIso = new Date().toISOString();
@@ -1599,7 +1599,7 @@ export function createControllerRoutes() {
 
       await Promise.all([
         db
-          .from("controllers")
+          .from("board_instances")
           .update({
             deleted_at: existingDeletedAt ?? nowIso,
             permanently_deleted_at: nowIso,
@@ -1608,7 +1608,7 @@ export function createControllerRoutes() {
             mqtt_connected: false,
             wifi_connected: false,
           })
-          .eq("id", controllerId)
+          .eq("id", boardInstanceId)
           .eq("account_id", auth.accountId),
         db
           .from("switches")
@@ -1617,7 +1617,7 @@ export function createControllerRoutes() {
             permanently_deleted_at: nowIso,
             deleted_reason: "controller_permanently_deleted",
           })
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .is("permanently_deleted_at", null),
         db
@@ -1627,7 +1627,7 @@ export function createControllerRoutes() {
             permanently_deleted_at: nowIso,
             deleted_reason: "controller_permanently_deleted",
           })
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .is("permanently_deleted_at", null),
         db
@@ -1637,7 +1637,7 @@ export function createControllerRoutes() {
             permanently_deleted_at: nowIso,
             deleted_reason: "controller_permanently_deleted",
           })
-          .eq("controller_id", controllerId)
+          .eq("board_instance_id", boardInstanceId)
           .eq("account_id", auth.accountId)
           .is("permanently_deleted_at", null),
       ]);
@@ -1645,7 +1645,7 @@ export function createControllerRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId,
+        boardInstanceId,
         category: "controller",
         action: "controller.permanently_deleted",
         summary: `Permanently deleted controller "${(controller as { name: string }).name}" and revoked all credentials`,
@@ -1664,12 +1664,12 @@ export function createControllerRoutes() {
     const auth = c.get("userAuth")!;
     const db = c.get("db");
     const deps = c.get("deps") ?? {};
-    const controllerId = c.req.param("id");
+    const boardInstanceId = c.req.param("id");
 
     const { data: ctrlData } = await db
-      .from("controllers")
+      .from("board_instances")
       .select("*")
-      .eq("id", controllerId)
+      .eq("id", boardInstanceId)
       .eq("account_id", auth.accountId)
       .is("deleted_at", null)
       .is("permanently_deleted_at", null)
@@ -1682,20 +1682,20 @@ export function createControllerRoutes() {
       status: string;
       mqtt_connected: boolean;
       connection_history: unknown[];
-      board_catalog_id?: string | null;
-      custom_board_id?: string | null;
+      board_profile_id?: string | null;
+      custom_board_profile_id?: string | null;
     };
 
     const { data: cred } = await db
       .from("mqtt_credentials_metadata")
       .select("mqtt_client_id,topic_prefix,status")
-      .eq("controller_id", controllerId)
+      .eq("board_instance_id", boardInstanceId)
       .eq("account_id", auth.accountId)
       .maybeSingle();
 
     const board = await resolveControllerCompatBoard(db, {
-      board_catalog_id: ctrl.board_catalog_id ? String(ctrl.board_catalog_id) : null,
-      custom_board_id: ctrl.custom_board_id ? String(ctrl.custom_board_id) : null,
+      board_profile_id: ctrl.board_profile_id ? String(ctrl.board_profile_id) : null,
+      custom_board_profile_id: ctrl.custom_board_profile_id ? String(ctrl.custom_board_profile_id) : null,
     });
     const offlineRecovery = buildOfflineRecoveryInstructions(board);
     const bootGpio = board
@@ -1741,7 +1741,7 @@ export function createControllerRoutes() {
     if (command === "disconnect") {
       await emqx.kickClient(credRow.mqtt_client_id);
       await db
-        .from("controllers")
+        .from("board_instances")
         .update({
           status: "disconnected",
           mqtt_connected: false,
@@ -1752,7 +1752,7 @@ export function createControllerRoutes() {
             { event: "disconnected_by_user", at: new Date().toISOString() },
           ],
         })
-        .eq("id", controllerId)
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId);
     } else if (command === "reconnect") {
       await emqx.publish({
@@ -1772,13 +1772,13 @@ export function createControllerRoutes() {
       });
       if (command === "reset") {
         await db
-          .from("controllers")
+          .from("board_instances")
           .update({
             status: "reset_pending",
             pairing_status: "revoked",
             mqtt_connected: false,
           })
-          .eq("id", controllerId)
+          .eq("id", boardInstanceId)
           .eq("account_id", auth.accountId);
       }
     }
@@ -1786,13 +1786,13 @@ export function createControllerRoutes() {
     await recordActivity(db, {
       accountId: auth.accountId,
       actorUserId: auth.userId,
-      controllerId,
+      boardInstanceId,
       category: "controller",
       action: `controller.${command}`,
       summary: `Sent "${command}" command to controller "${ctrl.name}"`,
     });
 
-    return c.json({ ok: true, command, controllerId });
+    return c.json({ ok: true, command, boardInstanceId });
   }
 
   // ---------------------------------------------------------------------------
@@ -1806,21 +1806,21 @@ export function createControllerRoutes() {
     async (c) => {
       const auth = c.get("userAuth")!;
       const db = c.get("db");
-      const controllerId = c.req.param("id");
+      const boardInstanceId = c.req.param("id");
 
       const { data: ctrl } = await db
-        .from("controllers")
-        .select("id,device_role")
-        .eq("id", controllerId)
+        .from("board_instances")
+        .select("id,board_role")
+        .eq("id", boardInstanceId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
         .maybeSingle();
       if (!ctrl) return c.json({ error: "Device not found." }, 404);
 
-      const nodes = await listAttachedNodes(db, auth.accountId, controllerId);
+      const nodes = await listAttachedNodes(db, auth.accountId, boardInstanceId);
       return c.json({
-        controllerId,
-        deviceRole: normalizeDeviceRole((ctrl as { device_role?: string }).device_role),
+        boardInstanceId,
+        boardRole: normalizeBoardRole((ctrl as { board_role?: string }).board_role),
         nodes,
       });
     }
@@ -1842,7 +1842,7 @@ export function createControllerRoutes() {
         return c.json({ error: 'Role must be "controller" or "node".' }, 400);
       }
 
-      const result = await changeDeviceRole(db, c.env!, deps, {
+      const result = await changeBoardRole(db, c.env!, deps, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
         deviceId: c.req.param("id"),
@@ -1879,14 +1879,14 @@ export function createControllerRoutes() {
       const deps = c.get("deps") ?? {};
       const parsed = assignNodeSchema.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
-        return c.json({ error: "controllerId must be a uuid or null." }, 400);
+        return c.json({ error: "boardInstanceId must be a uuid or null." }, 400);
       }
 
       const result = await assignNodeToController(db, c.env!, deps, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
         nodeId: c.req.param("id"),
-        controllerId: parsed.data.controllerId,
+        boardInstanceId: parsed.data.boardInstanceId,
       });
       if (!result.ok) return c.json({ error: result.error }, result.status as 404 | 409);
       return c.json({ node: result.node, controller: result.controller ?? null });
@@ -1908,8 +1908,8 @@ export function createControllerRoutes() {
       const nodeId = c.req.param("id");
 
       const { data: nodeRow } = await db
-        .from("controllers")
-        .select("id,name,device_role,assigned_controller_id,status,mqtt_connected")
+        .from("board_instances")
+        .select("id,name,board_role,assigned_controller_id,status,mqtt_connected")
         .eq("id", nodeId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
@@ -1920,12 +1920,12 @@ export function createControllerRoutes() {
       const node = nodeRow as {
         id: string;
         name: string;
-        device_role?: string | null;
+        board_role?: string | null;
         assigned_controller_id?: string | null;
         status: string;
         mqtt_connected: boolean;
       };
-      if (normalizeDeviceRole(node.device_role) !== "node") {
+      if (normalizeBoardRole(node.board_role) !== "node") {
         return c.json({ error: "Only a Node can re-link to a Controller." }, 409);
       }
       if (!node.assigned_controller_id) {
@@ -1947,7 +1947,7 @@ export function createControllerRoutes() {
         const { data: nodeCred } = await db
           .from("mqtt_credentials_metadata")
           .select("topic_prefix")
-          .eq("controller_id", node.id)
+          .eq("board_instance_id", node.id)
           .eq("account_id", auth.accountId)
           .eq("status", "active")
           .maybeSingle();
@@ -1965,7 +1965,7 @@ export function createControllerRoutes() {
         const { data: parentCred } = await db
           .from("mqtt_credentials_metadata")
           .select("topic_prefix")
-          .eq("controller_id", node.assigned_controller_id)
+          .eq("board_instance_id", node.assigned_controller_id)
           .eq("account_id", auth.accountId)
           .eq("status", "active")
           .maybeSingle();
@@ -1987,7 +1987,7 @@ export function createControllerRoutes() {
       }
 
       await db
-        .from("controllers")
+        .from("board_instances")
         .update({
           node_link_state: "reconnecting",
           updated_at: now,
@@ -1998,7 +1998,7 @@ export function createControllerRoutes() {
       await recordActivity(db, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
-        controllerId: node.id,
+        boardInstanceId: node.id,
         category: "controller",
         action: "controller.node_relink_requested",
         summary: `Asked Node "${node.name}" to re-link to its Controller`,
@@ -2077,19 +2077,19 @@ async function resolveAccountHomeId(
 async function resolveBoardSpec(
   db: AppEnv["Variables"]["db"],
   accountId: string,
-  boardCatalogId?: string,
-  customBoardId?: string
+  boardProfileId?: string,
+  customBoardProfileId?: string
 ): Promise<{
   model: string;
   chip_variant: string;
   flash_size_mb: number;
   psram_size_mb: number;
 } | null> {
-  if (boardCatalogId) {
+  if (boardProfileId) {
     const { data: b } = await db
-      .from("board_catalog")
+      .from("board_profiles")
       .select("model,chip_variant,flash_size_mb,psram_size_mb,is_available")
-      .eq("id", boardCatalogId)
+      .eq("id", boardProfileId)
       .is("deleted_at", null)
       .maybeSingle();
     if (!b || !(b as { is_available: boolean }).is_available) return null;
@@ -2100,11 +2100,11 @@ async function resolveBoardSpec(
       psram_size_mb: number;
     };
   }
-  if (customBoardId) {
+  if (customBoardProfileId) {
     const { data: cb } = await db
-      .from("custom_boards")
+      .from("custom_board_profiles")
       .select("model,chip_variant,flash_size_mb,psram_size_mb,is_validated")
-      .eq("id", customBoardId)
+      .eq("id", customBoardProfileId)
       .eq("account_id", accountId)
       .is("deleted_at", null)
       .maybeSingle();
@@ -2124,12 +2124,12 @@ async function revokeControllerCredentialsAndCodes(
   env: AppEnv["Bindings"],
   deps: NonNullable<AppEnv["Variables"]["deps"]>,
   accountId: string,
-  controllerId: string
+  boardInstanceId: string
 ) {
   const { data: cred } = await db
     .from("mqtt_credentials_metadata")
     .select("id,mqtt_username,mqtt_client_id,status")
-    .eq("controller_id", controllerId)
+    .eq("board_instance_id", boardInstanceId)
     .eq("account_id", accountId)
     .maybeSingle();
 
@@ -2164,7 +2164,7 @@ async function revokeControllerCredentialsAndCodes(
   await db
     .from("pairing_codes")
     .update({ used_at: new Date().toISOString() })
-    .eq("controller_id", controllerId)
+    .eq("board_instance_id", boardInstanceId)
     .eq("account_id", accountId)
     .is("used_at", null);
 }

@@ -215,7 +215,7 @@ export async function fetchOfficialSource(
       headers: {
         Accept: options?.accept ?? "text/html",
         // api.github.com rejects requests without a User-Agent.
-        "User-Agent": "HomecoreOS-BoardCatalog",
+        "User-Agent": "HomecoreOS-BoardProfile",
       },
       signal: controller.signal,
     });
@@ -271,7 +271,7 @@ export async function fetchEspressifLiveSources(fetcher: CustomFetch): Promise<E
   return { discovered, boardManagerBoards, liveSuccessCount, notes };
 }
 
-/** board_catalog row of a verified profile (catalog seed or official reference). */
+/** board_profiles row of a verified profile (catalog seed or official reference). */
 export function buildVerifiedCatalogRow(
   board: CatalogBoardSeed,
   options: {
@@ -325,7 +325,7 @@ export function buildVerifiedCatalogRow(
   };
 }
 
-/** board_catalog row of a discovered board whose pin map is still unverified. */
+/** board_profiles row of a discovered board whose pin map is still unverified. */
 export function buildUnverifiedCatalogRow(
   entry: DiscoveredDevKitEntry,
   nowIso: string
@@ -371,11 +371,11 @@ export function buildUnverifiedCatalogRow(
 }
 
 export function buildGpioDefinitionRows(
-  boardCatalogId: string,
+  boardProfileId: string,
   definitions: GpioPinDefinition[]
 ): Array<Record<string, unknown>> {
   return definitions.map((g) => ({
-    board_catalog_id: boardCatalogId,
+    board_profile_id: boardProfileId,
     pin: g.pin,
     label: g.label,
     board_pin_name: g.board_pin_name ?? null,
@@ -425,7 +425,7 @@ export async function runOfficialCatalogSync(params: {
   // Every row counts here, removed ones included: a slug stays unique after a
   // soft delete, and a board an admin removed must not come back on its own.
   const { data: allRows } = await params.db
-    .from("board_catalog")
+    .from("board_profiles")
     .select(
       "id,slug,firmware_status,is_available,verification_status,image_url,pinout_image_url,docs_url,revision_notes,deleted_at"
     );
@@ -480,13 +480,13 @@ export async function runOfficialCatalogSync(params: {
 
     if (existing) {
       await params.db
-        .from("board_catalog")
+        .from("board_profiles")
         .update(payload)
         .eq("id", existing.id);
       if (!keepUnverified && board.gpio_definitions.length > 0) {
         await replaceBoardGpioDefinitions(
           params.db,
-          { boardCatalogId: existing.id },
+          { boardProfileId: existing.id },
           board.gpio_definitions
         );
       }
@@ -496,7 +496,7 @@ export async function runOfficialCatalogSync(params: {
       updatedCount += 1;
     } else {
       const { data: created } = await params.db
-        .from("board_catalog")
+        .from("board_profiles")
         .insert(payload)
         .select("id")
         .single();
@@ -506,7 +506,7 @@ export async function runOfficialCatalogSync(params: {
         .from("board_gpio_definitions")
         .insert(buildGpioDefinitionRows(boardId, board.gpio_definitions));
       if (gpioErr) {
-        await params.db.from("board_catalog").delete().eq("id", boardId);
+        await params.db.from("board_profiles").delete().eq("id", boardId);
         continue;
       }
       insertedCount += 1;
@@ -524,7 +524,7 @@ export async function runOfficialCatalogSync(params: {
     const existing = existingBySlug.get(entry.slug);
     if (existing) {
       await params.db
-        .from("board_catalog")
+        .from("board_profiles")
         .update({
           image_url: entry.image_url ?? existing.image_url ?? null,
           docs_url: entry.docs_url ?? existing.docs_url ?? null,
@@ -538,7 +538,7 @@ export async function runOfficialCatalogSync(params: {
       }
       updatedCount += 1;
     } else {
-      await params.db.from("board_catalog").insert(buildUnverifiedCatalogRow(entry, nowIso));
+      await params.db.from("board_profiles").insert(buildUnverifiedCatalogRow(entry, nowIso));
       insertedCount += 1;
       needsVerificationCount += 1;
     }
@@ -558,7 +558,7 @@ export async function runOfficialCatalogSync(params: {
   ].join(" · ");
 
   const { data: runRow } = await params.db
-    .from("board_catalog_sync_runs")
+    .from("board_profile_sync_runs")
     .insert({
       source_name: "Espressif Official Catalog & Board Manager",
       status,
@@ -600,7 +600,7 @@ export interface CatalogUpdateResult {
 
 /**
  * Refreshes metadata, compatibility fields, and verified pin maps for boards
- * that are ALREADY present in `board_catalog` (non-deleted). Never inserts
+ * that are ALREADY present in `board_profiles` (non-deleted). Never inserts
  * unimported boards and never resurrects admin-removed boards.
  */
 export async function updateExistingBoardCatalog(params: {
@@ -612,7 +612,7 @@ export async function updateExistingBoardCatalog(params: {
   const fetcher: CustomFetch = params.syncFetch ?? fetch;
 
   const { data: existingRows } = await params.db
-    .from("board_catalog")
+    .from("board_profiles")
     .select(
       "id,slug,is_available,firmware_status,verification_status,image_url,pinout_image_url,docs_url,revision_notes"
     )
@@ -658,7 +658,7 @@ export async function updateExistingBoardCatalog(params: {
       });
 
       await params.db
-        .from("board_catalog")
+        .from("board_profiles")
         .update({
           ...basePayload,
           image_url: row.image_url ?? basePayload.image_url,
@@ -674,7 +674,7 @@ export async function updateExistingBoardCatalog(params: {
       if (!keepUnverified && verifiedSeed.gpio_definitions.length > 0) {
         const gpioRes = await replaceBoardGpioDefinitions(
           params.db,
-          { boardCatalogId: row.id },
+          { boardProfileId: row.id },
           verifiedSeed.gpio_definitions
         );
         if (!gpioRes.ok) {
@@ -692,7 +692,7 @@ export async function updateExistingBoardCatalog(params: {
     const unverifiedEntry = unverifiedPool.get(row.slug);
     if (unverifiedEntry) {
       await params.db
-        .from("board_catalog")
+        .from("board_profiles")
         .update({
           image_url: unverifiedEntry.image_url ?? row.image_url ?? null,
           docs_url: unverifiedEntry.docs_url ?? row.docs_url ?? null,
@@ -729,7 +729,7 @@ export async function updateExistingBoardCatalog(params: {
   ].join(" · ");
 
   const { data: runRow } = await params.db
-    .from("board_catalog_sync_runs")
+    .from("board_profile_sync_runs")
     .insert({
       source_name: "Board Library Catalog Update",
       status,

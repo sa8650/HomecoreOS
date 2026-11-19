@@ -149,7 +149,7 @@ describe("Official Board Catalog Sync, XIAO ESP32-S3, and Visual Flow Graph Exec
     });
     const userCookie = extractCookie(regRes, "hc_user_session");
 
-    const catRes = await req("/api/boards/catalog", {
+    const catRes = await req("/api/board-library/catalog", {
       headers: { Cookie: userCookie },
     });
     const catJson = (await catRes.json()) as {
@@ -173,16 +173,16 @@ describe("Official Board Catalog Sync, XIAO ESP32-S3, and Visual Flow Graph Exec
     expect(xiao.board_layout.leftHeader.pins).toHaveLength(7);
 
     // 5. Create controller, switches, sensor, and test multi-branch Visual Flow Graph
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ name: "XIAO Node", boardCatalogId: xiao.id }),
+      body: JSON.stringify({ name: "XIAO Node", boardProfileId: xiao.id }),
     });
     expect(ctrlRes.status).toBe(201);
     const ctrlId = ((await ctrlRes.json()) as { controller: { id: string } }).controller.id;
     await seedInstalledFirmwareWithDrivers({
       pg: dbHarness.pg,
-      controllerId: ctrlId,
+      boardInstanceId: ctrlId,
       boardId: xiao.id,
       boardSlug: xiao.slug,
       chipFamily: "esp32s3",
@@ -191,18 +191,18 @@ describe("Official Board Catalog Sync, XIAO ESP32-S3, and Visual Flow Graph Exec
     const swTrueRes = await req("/api/switches", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ controllerId: ctrlId, name: "Cool Fan", gpioPin: 1 }),
+      body: JSON.stringify({ boardInstanceId: ctrlId, name: "Cool Fan", gpioPin: 1 }),
     });
     const swFalseRes = await req("/api/switches", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ controllerId: ctrlId, name: "Heater Relay", gpioPin: 2 }),
+      body: JSON.stringify({ boardInstanceId: ctrlId, name: "Heater Relay", gpioPin: 2 }),
     });
     const senRes = await req("/api/sensors", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: ctrlId,
+        boardInstanceId: ctrlId,
         name: "Room Temp",
         sensorType: "temperature_dht22",
         gpioPin: 3,
@@ -358,7 +358,7 @@ describe("Official Board Catalog Sync, XIAO ESP32-S3, and Visual Flow Graph Exec
     expect(webhookCalls).toHaveLength(1);
 
     // Custom board creation + PATCH preserves header layout & pin annotations
-    const customCreateRes = await req("/api/boards/custom", {
+    const customCreateRes = await req("/api/board-library/custom", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
@@ -399,8 +399,8 @@ describe("Official Board Catalog Sync, XIAO ESP32-S3, and Visual Flow Graph Exec
       }),
     });
     expect(customCreateRes.status).toBe(201);
-    const customBoardId = ((await customCreateRes.json()) as { board: { id: string } }).board.id;
-    const customPatchRes = await req(`/api/boards/custom/${customBoardId}`, {
+    const customBoardProfileId = ((await customCreateRes.json()) as { board: { id: string } }).board.id;
+    const customPatchRes = await req(`/api/board-library/custom/${customBoardProfileId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({

@@ -56,12 +56,12 @@ import type {
 /** Slice of `/api/firmware/updates` the controller cards need for version badges. */
 type FirmwareUpdatesPayload = {
   applicableUpdates?: Array<{
-    controllerId: string;
+    boardInstanceId: string;
     availableRelease?: { version?: string } | null;
   }>;
 };
 
-export function ControllersPage({
+export function MyBoardsPage({
   canManage,
   canOperate,
   onNavigate,
@@ -71,7 +71,7 @@ export function ControllersPage({
   onNavigate: (path: string) => void;
 }) {
   const timezone = useEffectiveTimezone();
-  const cachedCtrls = getCachedSnapshot<{ controllers: ControllerItem[] }>("/api/controllers");
+  const cachedCtrls = getCachedSnapshot<{ controllers: ControllerItem[] }>("/api/board-instances");
   const [activeTab, setActiveTab] = useState<"active" | "nodes" | "trash">("active");
   const [search, setSearch] = useState("");
   const [controllers, setControllers] = useState<ControllerItem[]>(
@@ -79,7 +79,7 @@ export function ControllersPage({
   );
   const [trashedControllers, setTrashedControllers] = useState<ControllerItem[]>([]);
   const [catalogBoards, setCatalogBoards] = useState<BoardProfileItem[]>([]);
-  const [customBoards, setCustomBoards] = useState<BoardProfileItem[]>([]);
+  const [customBoardProfiles, setCustomBoards] = useState<BoardProfileItem[]>([]);
   const [updateVersionByController, setUpdateVersionByController] = useState<
     Map<string, string>
   >(new Map());
@@ -102,7 +102,7 @@ export function ControllersPage({
   });
 
   const [pairingModal, setPairingModal] = useState<{
-    controllerId: string;
+    boardInstanceId: string;
     controllerName: string;
     code: string;
     expiresAt: string;
@@ -140,12 +140,12 @@ export function ControllersPage({
   }
 
   const load = useCallback(async (force = false) => {
-    if (!getCachedSnapshot("/api/controllers")) {
+    if (!getCachedSnapshot("/api/board-instances")) {
       setLoading(true);
     }
     try {
       const primaryPromise = cachedGet<{ controllers: ControllerItem[] }>(
-        "/api/controllers",
+        "/api/board-instances",
         { ttlMs: 15_000, force }
       ).then((cRes) => {
         setControllers(cRes.controllers);
@@ -154,15 +154,15 @@ export function ControllersPage({
       });
 
       const secondaryPromise = Promise.allSettled([
-        cachedGet<{ controllers: ControllerItem[] }>("/api/controllers/trash", {
+        cachedGet<{ controllers: ControllerItem[] }>("/api/board-instances/trash", {
           ttlMs: 15_000,
           force,
         }),
-        cachedGet<{ boards: BoardProfileItem[] }>("/api/boards/catalog", {
+        cachedGet<{ boards: BoardProfileItem[] }>("/api/board-library/catalog", {
           ttlMs: 60_000,
           force,
         }),
-        cachedGet<{ boards: BoardProfileItem[] }>("/api/boards/custom", {
+        cachedGet<{ boards: BoardProfileItem[] }>("/api/board-library/custom", {
           ttlMs: 60_000,
           force,
         }),
@@ -198,7 +198,7 @@ export function ControllersPage({
           const next = new Map<string, string>();
           for (const update of updatesOut.value?.applicableUpdates ?? []) {
             const version = update?.availableRelease?.version;
-            if (version) next.set(update.controllerId, version);
+            if (version) next.set(update.boardInstanceId, version);
           }
           setUpdateVersionByController(next);
         }
@@ -223,19 +223,19 @@ export function ControllersPage({
   const boardById = useMemo(() => {
     const map = new Map<string, BoardProfileItem>();
     for (const board of catalogBoards) map.set(board.id, board);
-    for (const board of customBoards) map.set(board.id, board);
+    for (const board of customBoardProfiles) map.set(board.id, board);
     return map;
-  }, [catalogBoards, customBoards]);
+  }, [catalogBoards, customBoardProfiles]);
   const boardBySlug = useMemo(
     () => new Map([...boardById.values()].map((board) => [board.slug, board])),
     [boardById]
   );
   const boardForController = useCallback(
     (ctrl: ControllerItem): BoardProfileItem | null => {
-      const byId = ctrl.board_catalog_id
-        ? boardById.get(ctrl.board_catalog_id)
-        : ctrl.custom_board_id
-          ? boardById.get(ctrl.custom_board_id)
+      const byId = ctrl.board_profile_id
+        ? boardById.get(ctrl.board_profile_id)
+        : ctrl.custom_board_profile_id
+          ? boardById.get(ctrl.custom_board_profile_id)
           : undefined;
       if (byId) return byId;
       const slug = ctrl.board_compat?.slug ?? ctrl.reported_board_slug;
@@ -259,7 +259,7 @@ export function ControllersPage({
     try {
       const nextRoomId = roomSelection === "" ? null : roomSelection;
       const res = await apiFetch<{ controller: ControllerItem }>(
-        `/api/controllers/${roomTarget.id}/room`,
+        `/api/board-instances/${roomTarget.id}/room`,
         {
           method: "PATCH",
           body: JSON.stringify({ roomId: nextRoomId }),
@@ -281,11 +281,11 @@ export function ControllersPage({
   // Every device is either a Controller or a Node; the console keeps them apart
   // instead of showing one mixed list.
   const controllerDevices = useMemo(
-    () => controllers.filter((c) => (c.device_role ?? "controller") !== "node"),
+    () => controllers.filter((c) => (c.board_role ?? "controller") !== "node"),
     [controllers]
   );
   const nodeDevices = useMemo(
-    () => controllers.filter((c) => c.device_role === "node"),
+    () => controllers.filter((c) => c.board_role === "node"),
     [controllers]
   );
 
@@ -330,7 +330,7 @@ export function ControllersPage({
     acknowledgeAttachedNodes = false
   ) {
     try {
-      await apiFetch(`/api/controllers/${device.id}/role`, {
+      await apiFetch(`/api/board-instances/${device.id}/role`, {
         method: "PATCH",
         body: JSON.stringify({ role, acknowledgeAttachedNodes }),
       });
@@ -363,14 +363,14 @@ export function ControllersPage({
     }
   }
 
-  async function handleAssignNode(node: ControllerItem, controllerId: string | null) {
+  async function handleAssignNode(node: ControllerItem, boardInstanceId: string | null) {
     try {
-      await apiFetch(`/api/controllers/${node.id}/assign-controller`, {
+      await apiFetch(`/api/board-instances/${node.id}/assign-controller`, {
         method: "POST",
-        body: JSON.stringify({ controllerId }),
+        body: JSON.stringify({ boardInstanceId }),
       });
       toast.success(
-        controllerId ? `${node.name} assigned to its Controller.` : "Controller assignment cleared."
+        boardInstanceId ? `${node.name} assigned to its Controller.` : "Controller assignment cleared."
       );
       setAssignNodeTarget(null);
       await load(true);
@@ -382,7 +382,7 @@ export function ControllersPage({
   async function handleRelink(node: ControllerItem) {
     try {
       const res = await apiFetch<{ deliveredVia: "node" | "controller" }>(
-        `/api/controllers/${node.id}/relink`,
+        `/api/board-instances/${node.id}/relink`,
         { method: "POST" }
       );
       toast.success(
@@ -405,7 +405,7 @@ export function ControllersPage({
   }, [trashedControllers, search]);
 
   // Live poll while recovery/pairing modal is open
-  const pairingControllerId = pairingModal?.controllerId ?? null;
+  const pairingControllerId = pairingModal?.boardInstanceId ?? null;
   useEffect(() => {
     if (!pairingControllerId) {
       setLivePairedStatus(null);
@@ -416,7 +416,7 @@ export function ControllersPage({
     const poll = async () => {
       try {
         const res = await apiFetch<{ controller: ControllerItem }>(
-          `/api/controllers/${pairingControllerId}`
+          `/api/board-instances/${pairingControllerId}`
         );
         if (active && res.controller) {
           setLivePairedStatus(res.controller);
@@ -446,7 +446,7 @@ export function ControllersPage({
     action: "disconnect" | "reconnect" | "restart" | "reset"
   ) {
     try {
-      await apiFetch(`/api/controllers/${ctrl.id}/${action}`, { method: "POST" });
+      await apiFetch(`/api/board-instances/${ctrl.id}/${action}`, { method: "POST" });
       toast.success(`Dispatched "${action}" to ${ctrl.name}.`);
       await load();
     } catch (err) {
@@ -458,7 +458,7 @@ export function ControllersPage({
     if (!trashTarget) return;
     setDeleting(true);
     try {
-      await apiFetch(`/api/controllers/${trashTarget.id}`, { method: "DELETE" });
+      await apiFetch(`/api/board-instances/${trashTarget.id}`, { method: "DELETE" });
       toast.success(
         `Moved "${trashTarget.name}" to Trash (retained for 30 days) and paused its MQTT credentials.`
       );
@@ -480,7 +480,7 @@ export function ControllersPage({
         pairingCode?: string | null;
         expiresAt?: string | null;
         restoredCounts?: { switches: number; devices: number; sensors: number };
-      }>(`/api/controllers/${ctrl.id}/restore`, { method: "POST" });
+      }>(`/api/board-instances/${ctrl.id}/restore`, { method: "POST" });
 
       const counts = res.restoredCounts;
       const countNote = counts
@@ -492,7 +492,7 @@ export function ControllersPage({
       if (res.pairingCode) {
         const bootGpio = ctrl.board_compat?.boot_button_gpio ?? 0;
         setPairingModal({
-          controllerId: ctrl.id,
+          boardInstanceId: ctrl.id,
           controllerName: ctrl.name,
           code: res.pairingCode,
           expiresAt: res.expiresAt ?? "",
@@ -515,7 +515,7 @@ export function ControllersPage({
     if (!permanentDeleteTarget) return;
     setDeleting(true);
     try {
-      await apiFetch(`/api/controllers/${permanentDeleteTarget.id}/permanent`, {
+      await apiFetch(`/api/board-instances/${permanentDeleteTarget.id}/permanent`, {
         method: "DELETE",
       });
       toast.success(
@@ -534,7 +534,7 @@ export function ControllersPage({
     e.preventDefault();
     if (!wifiTarget) return;
     try {
-      await apiFetch(`/api/controllers/${wifiTarget.id}/wifi`, {
+      await apiFetch(`/api/board-instances/${wifiTarget.id}/wifi`, {
         method: "POST",
         body: JSON.stringify({ ssid: wifiSsid.trim(), password: wifiPassword }),
       });
@@ -569,19 +569,19 @@ export function ControllersPage({
     <div className="space-y-6">
       <PageHeroHeader
         tone="blue"
-        ariaLabel="Controllers Header"
-        title="Controllers"
+        ariaLabel="My Boards Header"
+        title="My Boards"
         subtitle={
           <>
-            Pair new{" "}
+            Every{" "}
             <span className="font-medium text-foreground/85">
-              ESP32 Boards over BLE or Wi-Fi,
+              physical board registered to this account,
             </span>{" "}
-            recover existing nodes,{" "}
+            grouped by the role it is running right now.{" "}
             <br className="hidden sm:inline" />
-            inspect{" "}
+            Controllers host Nodes over ESP-NOW;{" "}
             <span className="font-semibold text-blue-700 dark:text-sky-400">
-              Live MQTT &amp; Signal Health,
+              any compatible board can switch role from its Actions menu.
             </span>{" "}
             and restore from 30-day Trash
           </>
@@ -613,18 +613,29 @@ export function ControllersPage({
         onValueChange={(v) => setActiveTab(v as "active" | "nodes" | "trash")}
         className="space-y-4"
       >
-        <TabsList>
-          <TabsTrigger value="active">
-            Controllers ({controllerDevices.length})
-          </TabsTrigger>
-          <TabsTrigger value="nodes">
-            Nodes ({nodeDevices.length})
-          </TabsTrigger>
-          <TabsTrigger value="trash">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <TabsList>
+            <TabsTrigger value="active">
+              Controllers ({controllerDevices.length})
+            </TabsTrigger>
+            <TabsTrigger value="nodes">
+              Nodes ({nodeDevices.length})
+            </TabsTrigger>
+          </TabsList>
+          {/* My Boards has exactly two role tabs. Deleted boards live behind
+              this control so restoring them never turns into a third tab. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-pressed={activeTab === "trash"}
+            onClick={() => setActiveTab(activeTab === "trash" ? "active" : "trash")}
+          >
             <RiHistoryLine className="size-3.5" aria-hidden="true" />
-            Trash ({trashedControllers.length})
-          </TabsTrigger>
-        </TabsList>
+            {activeTab === "trash"
+              ? "Back to boards"
+              : `Trash (${trashedControllers.length})`}
+          </Button>
+        </div>
 
         <TabsContent value="active" className="space-y-4">
           {filteredControllers.length === 0 ? (
@@ -1544,7 +1555,7 @@ export function ControllersPage({
           <DialogFooter className="flex-wrap justify-between gap-2">
             {(() => {
               const modalCtrl = controllers.find(
-                (c) => c.id === pairingModal?.controllerId
+                (c) => c.id === pairingModal?.boardInstanceId
               );
               const bleCapable = modalCtrl?.board_compat?.supports_ble !== false;
               return bleCapable ? (
@@ -1588,7 +1599,7 @@ export function ControllersPage({
         trashedControllers={trashedControllers}
         homes={homes}
         catalogBoards={catalogBoards}
-        customBoards={customBoards}
+        customBoardProfiles={customBoardProfiles}
         canManage={canManage}
         onClose={() =>
           setSetupModal({ open: false, initialView: "entry", targetController: null })

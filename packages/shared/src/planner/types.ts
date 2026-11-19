@@ -374,7 +374,7 @@ export interface PlannerBoardRecord {
   chip_variant: string;
   flash_size_mb: number;
   psram_size_mb: number;
-  /** Catalog publication flag (board_catalog.is_available). */
+  /** Catalog publication flag (board_profiles.is_available). */
   is_available: boolean;
   verification_status: BoardVerificationStatus | null;
   firmware_status: BoardFirmwareStatus | "custom" | null;
@@ -441,7 +441,7 @@ export interface PlannerFirmwareReleaseRecord {
 export interface PlannerAccountContext {
   existingControllers: number;
   existingDevices: number;
-  /** platform_settings.max_controllers_per_account */
+  /** platform_settings.max_board_instances_per_account */
   maxControllers: number | null;
   /** platform_settings.max_devices_per_account */
   maxDevices: number | null;
@@ -450,8 +450,8 @@ export interface PlannerAccountContext {
 export interface PlannerCatalogSnapshot {
   boards: PlannerBoardRecord[];
   releases: PlannerFirmwareReleaseRecord[];
-  /** platform_settings.board_catalog_enabled */
-  boardCatalogEnabled: boolean;
+  /** platform_settings.board_library_enabled */
+  boardLibraryEnabled: boolean;
   account: PlannerAccountContext | null;
   /** Fingerprint of every record above; drives cache invalidation. */
   revision: string | null;

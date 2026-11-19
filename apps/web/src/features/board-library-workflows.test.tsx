@@ -504,7 +504,7 @@ const freeUsage: BoardUsageInfo = {
   blockers: [],
   consequences: [
     "The board disappears from the user Board Library and from new controller setups.",
-    "1 account has it in My Boards. It is hidden there until the board is restored.",
+    "1 account has it in Saved Profiles. It is hidden there until the board is restored.",
   ],
 };
 
@@ -551,7 +551,7 @@ describe("Removing a board from the Board Library", () => {
     releaseUsage(json({ usage: freeUsage }));
     const consequences = await within(dialog).findByRole("list", { name: /What removing the board does/ });
     expect(within(consequences).getAllByRole("listitem")).toHaveLength(2);
-    expect(within(dialog).getByText(/1 account has it in My Boards/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/1 account has it in Saved Profiles/)).toBeInTheDocument();
     expect(within(dialog).getByText("Saved by accounts").previousElementSibling).toHaveTextContent("1");
 
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
@@ -856,8 +856,8 @@ function controller(id: string, name: string, boardId: string, board: BoardProfi
     account_id: "a1",
     home_id: "h1",
     name,
-    board_catalog_id: boardId,
-    custom_board_id: null,
+    board_profile_id: boardId,
+    custom_board_profile_id: null,
     board_model: board.model,
     chip_variant: board.chip_variant,
     flash_size_mb: board.flash_size_mb,
@@ -994,7 +994,7 @@ describe("GPIO pin selector", () => {
       {
         url: "/api/switches",
         method: "POST",
-        body: { name: "Porch Light", controllerId: "c1", roomId: null, gpioPin: 9, invertedLogic: false },
+        body: { name: "Porch Light", boardInstanceId: "c1", roomId: null, gpioPin: 9, invertedLogic: false },
       },
     ]);
   });
@@ -1047,7 +1047,7 @@ describe("GPIO pin selector", () => {
       account_id: "a1",
       home_id: "h1",
       room_id: null,
-      controller_id: "c2",
+      board_instance_id: "c2",
       name: "Desk Climate",
       sensor_type: "temperature_bme280",
       gpio_pin: 6,
@@ -1100,7 +1100,7 @@ describe("GPIO pin selector", () => {
         body: {
           name: "Desk Climate",
           sensorType: "temperature_bme280",
-          controllerId: "c2",
+          boardInstanceId: "c2",
           roomId: null,
           gpioPin: null,
           i2cAddress: "0x76",

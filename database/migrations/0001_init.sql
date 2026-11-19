@@ -36,10 +36,10 @@
 CREATE TABLE public.account_saved_boards (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
   account_id uuid NOT NULL,
-  board_catalog_id uuid NOT NULL,
+  board_profile_id uuid NOT NULL,
   created_at timestamp with time zone DEFAULT now() NOT NULL,
   CONSTRAINT account_saved_boards_pkey PRIMARY KEY (id),
-  CONSTRAINT account_saved_boards_unique UNIQUE (account_id, board_catalog_id)
+  CONSTRAINT account_saved_boards_unique UNIQUE (account_id, board_profile_id)
 );
 
 -- accounts
@@ -92,7 +92,7 @@ CREATE TABLE public.activity_logs (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
   account_id uuid,
   actor_user_id uuid,
-  controller_id uuid,
+  board_instance_id uuid,
   category text NOT NULL,
   action text NOT NULL,
   summary text NOT NULL,
@@ -134,8 +134,8 @@ CREATE INDEX idx_automation_rules_account ON public.automation_rules USING btree
 CREATE INDEX idx_automation_rules_account_enabled ON public.automation_rules USING btree (account_id, enabled) WHERE ((deleted_at IS NULL) AND (enabled = true));
 CREATE INDEX idx_automation_rules_folder ON public.automation_rules USING btree (account_id, folder_name) WHERE (deleted_at IS NULL);
 
--- board_catalog
-CREATE TABLE public.board_catalog (
+-- board_profiles
+CREATE TABLE public.board_profiles (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
   slug text NOT NULL,
   manufacturer text NOT NULL,
@@ -180,22 +180,22 @@ CREATE TABLE public.board_catalog (
   supports_ble boolean DEFAULT true NOT NULL,
   supports_ble_wifi_provisioning boolean DEFAULT true NOT NULL,
   build_platform text DEFAULT 'esp_idf'::text NOT NULL,
-  CONSTRAINT board_catalog_pkey PRIMARY KEY (id),
-  CONSTRAINT board_catalog_slug_key UNIQUE (slug),
-  CONSTRAINT board_catalog_build_platform_check CHECK ((build_platform = ANY (ARRAY['esp_idf'::text, 'esp8266_rtos_sdk'::text]))),
-  CONSTRAINT board_catalog_category_check CHECK ((catalog_category = ANY (ARRAY['official_espressif'::text, 'partner'::text, 'custom'::text]))),
-  CONSTRAINT board_catalog_chip_family_check CHECK ((chip_family = ANY (ARRAY['esp32'::text, 'esp32s2'::text, 'esp32s3'::text, 'esp32s31'::text, 'esp32c2'::text, 'esp32c3'::text, 'esp32c5'::text, 'esp32c6'::text, 'esp32c61'::text, 'esp32h2'::text, 'esp32h21'::text, 'esp32h4'::text, 'esp32p4'::text, 'esp8266'::text]))),
-  CONSTRAINT board_catalog_firmware_status_check CHECK ((firmware_status = ANY (ARRAY['firmware_supported'::text, 'catalog_only'::text, 'build_pending'::text, 'unsupported'::text]))),
-  CONSTRAINT board_catalog_flash_mode_check CHECK ((flash_mode = ANY (ARRAY['qio'::text, 'qout'::text, 'dio'::text, 'dout'::text]))),
-  CONSTRAINT board_catalog_flash_size_mb_check CHECK (((flash_size_mb >= 2) AND (flash_size_mb <= 64))),
-  CONSTRAINT board_catalog_psram_mode_check CHECK ((psram_mode = ANY (ARRAY['none'::text, 'quad'::text, 'octal'::text]))),
-  CONSTRAINT board_catalog_psram_size_mb_check CHECK (((psram_size_mb >= 0) AND (psram_size_mb <= 32))),
-  CONSTRAINT board_catalog_verification_check CHECK ((verification_status = ANY (ARRAY['verified'::text, 'needs_verification'::text])))
+  CONSTRAINT board_profiles_pkey PRIMARY KEY (id),
+  CONSTRAINT board_profiles_slug_key UNIQUE (slug),
+  CONSTRAINT board_profiles_build_platform_check CHECK ((build_platform = ANY (ARRAY['esp_idf'::text, 'esp8266_rtos_sdk'::text]))),
+  CONSTRAINT board_profiles_category_check CHECK ((catalog_category = ANY (ARRAY['official_espressif'::text, 'partner'::text, 'custom'::text]))),
+  CONSTRAINT board_profiles_chip_family_check CHECK ((chip_family = ANY (ARRAY['esp32'::text, 'esp32s2'::text, 'esp32s3'::text, 'esp32s31'::text, 'esp32c2'::text, 'esp32c3'::text, 'esp32c5'::text, 'esp32c6'::text, 'esp32c61'::text, 'esp32h2'::text, 'esp32h21'::text, 'esp32h4'::text, 'esp32p4'::text, 'esp8266'::text]))),
+  CONSTRAINT board_profiles_firmware_status_check CHECK ((firmware_status = ANY (ARRAY['firmware_supported'::text, 'catalog_only'::text, 'build_pending'::text, 'unsupported'::text]))),
+  CONSTRAINT board_profiles_flash_mode_check CHECK ((flash_mode = ANY (ARRAY['qio'::text, 'qout'::text, 'dio'::text, 'dout'::text]))),
+  CONSTRAINT board_profiles_flash_size_mb_check CHECK (((flash_size_mb >= 2) AND (flash_size_mb <= 64))),
+  CONSTRAINT board_profiles_psram_mode_check CHECK ((psram_mode = ANY (ARRAY['none'::text, 'quad'::text, 'octal'::text]))),
+  CONSTRAINT board_profiles_psram_size_mb_check CHECK (((psram_size_mb >= 0) AND (psram_size_mb <= 32))),
+  CONSTRAINT board_profiles_verification_check CHECK ((verification_status = ANY (ARRAY['verified'::text, 'needs_verification'::text])))
 );
-CREATE INDEX idx_board_catalog_available ON public.board_catalog USING btree (chip_family, is_available) WHERE (deleted_at IS NULL);
+CREATE INDEX idx_board_profiles_available ON public.board_profiles USING btree (chip_family, is_available) WHERE (deleted_at IS NULL);
 
--- board_catalog_sync_runs
-CREATE TABLE public.board_catalog_sync_runs (
+-- board_profile_sync_runs
+CREATE TABLE public.board_profile_sync_runs (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
   source_name text NOT NULL,
   status text NOT NULL,
@@ -209,16 +209,16 @@ CREATE TABLE public.board_catalog_sync_runs (
   error_message text,
   started_at timestamp with time zone DEFAULT now() NOT NULL,
   completed_at timestamp with time zone,
-  CONSTRAINT board_catalog_sync_runs_pkey PRIMARY KEY (id),
-  CONSTRAINT board_catalog_sync_runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'partial'::text, 'failed'::text])))
+  CONSTRAINT board_profile_sync_runs_pkey PRIMARY KEY (id),
+  CONSTRAINT board_profile_sync_runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'partial'::text, 'failed'::text])))
 );
-CREATE INDEX idx_board_sync_runs_started ON public.board_catalog_sync_runs USING btree (started_at DESC);
+CREATE INDEX idx_board_sync_runs_started ON public.board_profile_sync_runs USING btree (started_at DESC);
 
 -- board_gpio_definitions
 CREATE TABLE public.board_gpio_definitions (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
-  board_catalog_id uuid,
-  custom_board_id uuid,
+  board_profile_id uuid,
+  custom_board_profile_id uuid,
   pin integer NOT NULL,
   label text NOT NULL,
   capabilities jsonb NOT NULL,
@@ -230,18 +230,18 @@ CREATE TABLE public.board_gpio_definitions (
   board_note text,
   CONSTRAINT board_gpio_definitions_pkey PRIMARY KEY (id),
   CONSTRAINT board_gpio_definitions_pin_check CHECK (((pin >= 0) AND (pin <= 54))),
-  CONSTRAINT board_gpio_parent_check CHECK ((((board_catalog_id IS NOT NULL) AND (custom_board_id IS NULL)) OR ((board_catalog_id IS NULL) AND (custom_board_id IS NOT NULL))))
+  CONSTRAINT board_gpio_parent_check CHECK ((((board_profile_id IS NOT NULL) AND (custom_board_profile_id IS NULL)) OR ((board_profile_id IS NULL) AND (custom_board_profile_id IS NOT NULL))))
 );
-CREATE UNIQUE INDEX idx_gpio_catalog_pin ON public.board_gpio_definitions USING btree (board_catalog_id, pin) WHERE (board_catalog_id IS NOT NULL);
-CREATE UNIQUE INDEX idx_gpio_custom_pin ON public.board_gpio_definitions USING btree (custom_board_id, pin) WHERE (custom_board_id IS NOT NULL);
+CREATE UNIQUE INDEX idx_gpio_catalog_pin ON public.board_gpio_definitions USING btree (board_profile_id, pin) WHERE (board_profile_id IS NOT NULL);
+CREATE UNIQUE INDEX idx_gpio_custom_pin ON public.board_gpio_definitions USING btree (custom_board_profile_id, pin) WHERE (custom_board_profile_id IS NOT NULL);
 
--- controllers
-CREATE TABLE public.controllers (
+-- board_instances
+CREATE TABLE public.board_instances (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
   account_id uuid NOT NULL,
   home_id uuid NOT NULL,
-  board_catalog_id uuid,
-  custom_board_id uuid,
+  board_profile_id uuid,
+  custom_board_profile_id uuid,
   name text NOT NULL,
   hardware_uid text,
   board_model text NOT NULL,
@@ -269,7 +269,7 @@ CREATE TABLE public.controllers (
   mqtt_last_connected_at timestamp with time zone,
   trash_expires_at timestamp with time zone,
   permanently_deleted_at timestamp with time zone,
-  controller_identity_secret_hash text,
+  board_instance_identity_secret_hash text,
   config_revision integer DEFAULT 1 NOT NULL,
   config_hash text,
   last_synced_config_revision integer DEFAULT 0 NOT NULL,
@@ -285,23 +285,23 @@ CREATE TABLE public.controllers (
   installed_firmware_release_id uuid,
   reported_driver_manifest_hash text,
   room_id uuid,
-  CONSTRAINT controllers_pkey PRIMARY KEY (id),
-  CONSTRAINT controllers_board_ref_check CHECK ((((board_catalog_id IS NOT NULL) AND (custom_board_id IS NULL)) OR ((board_catalog_id IS NULL) AND (custom_board_id IS NOT NULL)))),
-  CONSTRAINT controllers_pairing_status_check CHECK ((pairing_status = ANY (ARRAY['pending'::text, 'paired'::text, 'revoked'::text, 'recovery_pending'::text]))),
-  CONSTRAINT controllers_provisioning_transport_check CHECK (((provisioning_transport IS NULL) OR (provisioning_transport = ANY (ARRAY['ble'::text, 'softap'::text, 'usb'::text, 'manual'::text])))),
-  CONSTRAINT controllers_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'online'::text, 'offline'::text, 'disconnected'::text, 'reset_pending'::text, 'updating'::text])))
+  CONSTRAINT board_instances_pkey PRIMARY KEY (id),
+  CONSTRAINT board_instances_board_ref_check CHECK ((((board_profile_id IS NOT NULL) AND (custom_board_profile_id IS NULL)) OR ((board_profile_id IS NULL) AND (custom_board_profile_id IS NOT NULL)))),
+  CONSTRAINT board_instances_pairing_status_check CHECK ((pairing_status = ANY (ARRAY['pending'::text, 'paired'::text, 'revoked'::text, 'recovery_pending'::text]))),
+  CONSTRAINT board_instances_provisioning_transport_check CHECK (((provisioning_transport IS NULL) OR (provisioning_transport = ANY (ARRAY['ble'::text, 'softap'::text, 'usb'::text, 'manual'::text])))),
+  CONSTRAINT board_instances_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'online'::text, 'offline'::text, 'disconnected'::text, 'reset_pending'::text, 'updating'::text])))
 );
-CREATE INDEX controllers_installed_fw_release_idx ON public.controllers USING btree (installed_firmware_release_id) WHERE ((deleted_at IS NULL) AND (installed_firmware_release_id IS NOT NULL));
-CREATE INDEX idx_controllers_account ON public.controllers USING btree (account_id) WHERE (deleted_at IS NULL);
-CREATE INDEX idx_controllers_active_created ON public.controllers USING btree (account_id, created_at DESC) WHERE ((deleted_at IS NULL) AND (permanently_deleted_at IS NULL));
-CREATE INDEX idx_controllers_online_heartbeat ON public.controllers USING btree (status, last_heartbeat_at) WHERE ((deleted_at IS NULL) AND (permanently_deleted_at IS NULL) AND (status = 'online'::text));
-CREATE INDEX idx_controllers_pending_sync ON public.controllers USING btree (account_id, pending_config_sync) WHERE ((deleted_at IS NULL) AND (pending_config_sync = true));
-CREATE INDEX idx_controllers_room ON public.controllers USING btree (room_id) WHERE ((room_id IS NOT NULL) AND (deleted_at IS NULL));
-CREATE INDEX idx_controllers_status ON public.controllers USING btree (status) WHERE (deleted_at IS NULL);
-CREATE INDEX idx_controllers_trash ON public.controllers USING btree (account_id, deleted_at) WHERE ((deleted_at IS NOT NULL) AND (permanently_deleted_at IS NULL));
+CREATE INDEX board_instances_installed_fw_release_idx ON public.board_instances USING btree (installed_firmware_release_id) WHERE ((deleted_at IS NULL) AND (installed_firmware_release_id IS NOT NULL));
+CREATE INDEX idx_board_instances_account ON public.board_instances USING btree (account_id) WHERE (deleted_at IS NULL);
+CREATE INDEX idx_board_instances_active_created ON public.board_instances USING btree (account_id, created_at DESC) WHERE ((deleted_at IS NULL) AND (permanently_deleted_at IS NULL));
+CREATE INDEX idx_board_instances_online_heartbeat ON public.board_instances USING btree (status, last_heartbeat_at) WHERE ((deleted_at IS NULL) AND (permanently_deleted_at IS NULL) AND (status = 'online'::text));
+CREATE INDEX idx_board_instances_pending_sync ON public.board_instances USING btree (account_id, pending_config_sync) WHERE ((deleted_at IS NULL) AND (pending_config_sync = true));
+CREATE INDEX idx_board_instances_room ON public.board_instances USING btree (room_id) WHERE ((room_id IS NOT NULL) AND (deleted_at IS NULL));
+CREATE INDEX idx_board_instances_status ON public.board_instances USING btree (status) WHERE (deleted_at IS NULL);
+CREATE INDEX idx_board_instances_trash ON public.board_instances USING btree (account_id, deleted_at) WHERE ((deleted_at IS NOT NULL) AND (permanently_deleted_at IS NULL));
 
--- custom_boards
-CREATE TABLE public.custom_boards (
+-- custom_board_profiles
+CREATE TABLE public.custom_board_profiles (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
   account_id uuid NOT NULL,
   slug text NOT NULL,
@@ -336,14 +336,14 @@ CREATE TABLE public.custom_boards (
   supports_ble boolean DEFAULT true NOT NULL,
   supports_ble_wifi_provisioning boolean DEFAULT true NOT NULL,
   build_platform text DEFAULT 'esp_idf'::text NOT NULL,
-  CONSTRAINT custom_boards_pkey PRIMARY KEY (id),
-  CONSTRAINT custom_boards_account_slug_unique UNIQUE (account_id, slug),
-  CONSTRAINT custom_boards_build_platform_check CHECK ((build_platform = ANY (ARRAY['esp_idf'::text, 'esp8266_rtos_sdk'::text]))),
-  CONSTRAINT custom_boards_chip_family_check CHECK ((chip_family = ANY (ARRAY['esp32'::text, 'esp32s2'::text, 'esp32s3'::text, 'esp32s31'::text, 'esp32c2'::text, 'esp32c3'::text, 'esp32c5'::text, 'esp32c6'::text, 'esp32c61'::text, 'esp32h2'::text, 'esp32h21'::text, 'esp32h4'::text, 'esp32p4'::text, 'esp8266'::text]))),
-  CONSTRAINT custom_boards_flash_size_mb_check CHECK (((flash_size_mb >= 2) AND (flash_size_mb <= 64))),
-  CONSTRAINT custom_boards_psram_size_mb_check CHECK (((psram_size_mb >= 0) AND (psram_size_mb <= 32)))
+  CONSTRAINT custom_board_profiles_pkey PRIMARY KEY (id),
+  CONSTRAINT custom_board_profiles_account_slug_unique UNIQUE (account_id, slug),
+  CONSTRAINT custom_board_profiles_build_platform_check CHECK ((build_platform = ANY (ARRAY['esp_idf'::text, 'esp8266_rtos_sdk'::text]))),
+  CONSTRAINT custom_board_profiles_chip_family_check CHECK ((chip_family = ANY (ARRAY['esp32'::text, 'esp32s2'::text, 'esp32s3'::text, 'esp32s31'::text, 'esp32c2'::text, 'esp32c3'::text, 'esp32c5'::text, 'esp32c6'::text, 'esp32c61'::text, 'esp32h2'::text, 'esp32h21'::text, 'esp32h4'::text, 'esp32p4'::text, 'esp8266'::text]))),
+  CONSTRAINT custom_board_profiles_flash_size_mb_check CHECK (((flash_size_mb >= 2) AND (flash_size_mb <= 64))),
+  CONSTRAINT custom_board_profiles_psram_size_mb_check CHECK (((psram_size_mb >= 0) AND (psram_size_mb <= 32)))
 );
-CREATE INDEX idx_custom_boards_account ON public.custom_boards USING btree (account_id) WHERE (deleted_at IS NULL);
+CREATE INDEX idx_custom_board_profiles_account ON public.custom_board_profiles USING btree (account_id) WHERE (deleted_at IS NULL);
 
 -- devices
 CREATE TABLE public.devices (
@@ -351,7 +351,7 @@ CREATE TABLE public.devices (
   account_id uuid NOT NULL,
   home_id uuid NOT NULL,
   room_id uuid,
-  controller_id uuid NOT NULL,
+  board_instance_id uuid NOT NULL,
   name text NOT NULL,
   device_type text NOT NULL,
   gpio_pin integer NOT NULL,
@@ -368,7 +368,7 @@ CREATE TABLE public.devices (
   CONSTRAINT devices_gpio_pin_check CHECK (((gpio_pin >= 0) AND (gpio_pin <= 54)))
 );
 CREATE INDEX idx_devices_account_created ON public.devices USING btree (account_id, created_at DESC) WHERE (deleted_at IS NULL);
-CREATE UNIQUE INDEX idx_devices_unique_pin ON public.devices USING btree (controller_id, gpio_pin) WHERE (deleted_at IS NULL);
+CREATE UNIQUE INDEX idx_devices_unique_pin ON public.devices USING btree (board_instance_id, gpio_pin) WHERE (deleted_at IS NULL);
 
 -- firmware_files
 CREATE TABLE public.firmware_files (
@@ -451,7 +451,7 @@ CREATE INDEX idx_firmware_releases_status ON public.firmware_releases USING btre
 CREATE TABLE public.firmware_update_history (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
   account_id uuid NOT NULL,
-  controller_id uuid NOT NULL,
+  board_instance_id uuid NOT NULL,
   release_id uuid NOT NULL,
   update_type text NOT NULL,
   previous_version text,
@@ -467,7 +467,7 @@ CREATE TABLE public.firmware_update_history (
   CONSTRAINT firmware_update_history_update_type_check CHECK ((update_type = ANY (ARRAY['ota'::text, 'usb_factory'::text])))
 );
 CREATE INDEX idx_fw_history_account ON public.firmware_update_history USING btree (account_id, started_at DESC);
-CREATE INDEX idx_fw_history_controller ON public.firmware_update_history USING btree (controller_id, started_at DESC);
+CREATE INDEX idx_fw_history_controller ON public.firmware_update_history USING btree (board_instance_id, started_at DESC);
 
 -- homes
 CREATE TABLE public.homes (
@@ -499,7 +499,7 @@ CREATE TABLE public.login_attempts (
 CREATE TABLE public.mqtt_credentials_metadata (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
   account_id uuid NOT NULL,
-  controller_id uuid NOT NULL,
+  board_instance_id uuid NOT NULL,
   mqtt_username text NOT NULL,
   mqtt_client_id text NOT NULL,
   device_token_hash text,
@@ -511,14 +511,14 @@ CREATE TABLE public.mqtt_credentials_metadata (
   created_at timestamp with time zone DEFAULT now() NOT NULL,
   updated_at timestamp with time zone DEFAULT now() NOT NULL,
   CONSTRAINT mqtt_credentials_metadata_pkey PRIMARY KEY (id),
-  CONSTRAINT mqtt_credentials_metadata_controller_id_key UNIQUE (controller_id),
+  CONSTRAINT mqtt_credentials_metadata_board_instance_id_key UNIQUE (board_instance_id),
   CONSTRAINT mqtt_credentials_metadata_device_token_hash_key UNIQUE (device_token_hash),
   CONSTRAINT mqtt_credentials_metadata_mqtt_client_id_key UNIQUE (mqtt_client_id),
   CONSTRAINT mqtt_credentials_metadata_mqtt_username_key UNIQUE (mqtt_username),
   CONSTRAINT mqtt_credentials_metadata_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text, 'pending_sync'::text])))
 );
 CREATE INDEX idx_mqtt_creds_account ON public.mqtt_credentials_metadata USING btree (account_id);
-CREATE INDEX idx_mqtt_creds_ctrl_acct_active ON public.mqtt_credentials_metadata USING btree (controller_id, account_id) WHERE (status = 'active'::text);
+CREATE INDEX idx_mqtt_creds_ctrl_acct_active ON public.mqtt_credentials_metadata USING btree (board_instance_id, account_id) WHERE (status = 'active'::text);
 
 -- notification_preferences
 CREATE TABLE public.notification_preferences (
@@ -577,7 +577,7 @@ CREATE INDEX idx_notifications_user_active ON public.notifications USING btree (
 CREATE TABLE public.pairing_codes (
   id uuid DEFAULT gen_random_uuid() NOT NULL,
   account_id uuid NOT NULL,
-  controller_id uuid NOT NULL,
+  board_instance_id uuid NOT NULL,
   code_hash text NOT NULL,
   attempt_count integer DEFAULT 0 NOT NULL,
   max_attempts integer DEFAULT 5 NOT NULL,
@@ -591,7 +591,7 @@ CREATE TABLE public.pairing_codes (
   CONSTRAINT pairing_codes_code_hash_key UNIQUE (code_hash),
   CONSTRAINT pairing_codes_purpose_check CHECK ((purpose = ANY (ARRAY['initial_pair'::text, 'recovery'::text])))
 );
-CREATE INDEX idx_pairing_codes_controller ON public.pairing_codes USING btree (controller_id) WHERE (used_at IS NULL);
+CREATE INDEX idx_pairing_codes_controller ON public.pairing_codes USING btree (board_instance_id) WHERE (used_at IS NULL);
 
 -- planner_plans
 CREATE TABLE public.planner_plans (
@@ -624,10 +624,10 @@ CREATE TABLE public.platform_settings (
   controller_heartbeat_interval_seconds integer DEFAULT 30 NOT NULL,
   controller_offline_timeout_seconds integer DEFAULT 90 NOT NULL,
   max_devices_per_account integer DEFAULT 100 NOT NULL,
-  max_controllers_per_account integer DEFAULT 25 NOT NULL,
+  max_board_instances_per_account integer DEFAULT 25 NOT NULL,
   supported_firmware_channels text[] DEFAULT ARRAY['stable'::text, 'beta'::text, 'development'::text] NOT NULL,
   maintenance_mode boolean DEFAULT false NOT NULL,
-  board_catalog_enabled boolean DEFAULT true NOT NULL,
+  board_library_enabled boolean DEFAULT true NOT NULL,
   updated_by uuid,
   updated_at timestamp with time zone DEFAULT now() NOT NULL,
   default_timezone text DEFAULT 'UTC'::text NOT NULL,
@@ -637,7 +637,7 @@ CREATE TABLE public.platform_settings (
   CONSTRAINT platform_settings_controller_offline_timeout_seconds_check CHECK (((controller_offline_timeout_seconds >= 30) AND (controller_offline_timeout_seconds <= 900))),
   CONSTRAINT platform_settings_default_account_status_check CHECK ((default_account_status = ANY (ARRAY['active'::text, 'paused'::text]))),
   CONSTRAINT platform_settings_id_check CHECK ((id = 1)),
-  CONSTRAINT platform_settings_max_controllers_per_account_check CHECK (((max_controllers_per_account >= 1) AND (max_controllers_per_account <= 500))),
+  CONSTRAINT platform_settings_max_board_instances_per_account_check CHECK (((max_board_instances_per_account >= 1) AND (max_board_instances_per_account <= 500))),
   CONSTRAINT platform_settings_max_devices_per_account_check CHECK (((max_devices_per_account >= 1) AND (max_devices_per_account <= 5000))),
   CONSTRAINT platform_settings_pairing_code_expiration_seconds_check CHECK (((pairing_code_expiration_seconds >= 60) AND (pairing_code_expiration_seconds <= 1800)))
 );
@@ -700,7 +700,7 @@ CREATE TABLE public.sensors (
   account_id uuid NOT NULL,
   home_id uuid NOT NULL,
   room_id uuid,
-  controller_id uuid NOT NULL,
+  board_instance_id uuid NOT NULL,
   name text NOT NULL,
   sensor_type text NOT NULL,
   gpio_pin integer,
@@ -718,8 +718,8 @@ CREATE TABLE public.sensors (
   CONSTRAINT sensors_gpio_pin_check CHECK (((gpio_pin >= 0) AND (gpio_pin <= 54)))
 );
 CREATE INDEX idx_sensors_account_created ON public.sensors USING btree (account_id, created_at DESC) WHERE (deleted_at IS NULL);
-CREATE INDEX idx_sensors_controller ON public.sensors USING btree (controller_id) WHERE (deleted_at IS NULL);
-CREATE INDEX idx_sensors_controller_pin ON public.sensors USING btree (controller_id, gpio_pin) WHERE ((deleted_at IS NULL) AND (gpio_pin IS NOT NULL));
+CREATE INDEX idx_sensors_controller ON public.sensors USING btree (board_instance_id) WHERE (deleted_at IS NULL);
+CREATE INDEX idx_sensors_controller_pin ON public.sensors USING btree (board_instance_id, gpio_pin) WHERE ((deleted_at IS NULL) AND (gpio_pin IS NOT NULL));
 
 -- sessions
 CREATE TABLE public.sessions (
@@ -786,7 +786,7 @@ CREATE TABLE public.switches (
   account_id uuid NOT NULL,
   home_id uuid NOT NULL,
   room_id uuid,
-  controller_id uuid NOT NULL,
+  board_instance_id uuid NOT NULL,
   name text NOT NULL,
   gpio_pin integer NOT NULL,
   is_on boolean DEFAULT false NOT NULL,
@@ -802,7 +802,7 @@ CREATE TABLE public.switches (
   CONSTRAINT switches_gpio_pin_check CHECK (((gpio_pin >= 0) AND (gpio_pin <= 54)))
 );
 CREATE INDEX idx_switches_account_created ON public.switches USING btree (account_id, created_at DESC) WHERE (deleted_at IS NULL);
-CREATE UNIQUE INDEX idx_switches_unique_pin ON public.switches USING btree (controller_id, gpio_pin) WHERE (deleted_at IS NULL);
+CREATE UNIQUE INDEX idx_switches_unique_pin ON public.switches USING btree (board_instance_id, gpio_pin) WHERE (deleted_at IS NULL);
 
 -- users
 CREATE TABLE public.users (
@@ -862,7 +862,7 @@ END;
 $function$;
 
 CREATE OR REPLACE FUNCTION public.claim_pairing_code(p_code_hash text)
- RETURNS TABLE(pairing_code_id uuid, account_id uuid, controller_id uuid, account_status text, purpose text, requires_physical_confirmation boolean)
+ RETURNS TABLE(pairing_code_id uuid, account_id uuid, board_instance_id uuid, account_status text, purpose text, requires_physical_confirmation boolean)
  LANGUAGE plpgsql
 AS $function$
 DECLARE
@@ -901,7 +901,7 @@ BEGIN
   RETURN QUERY SELECT
     v_row.id,
     v_row.account_id,
-    v_row.controller_id,
+    v_row.board_instance_id,
     v_account_status,
     v_row.purpose,
     v_row.requires_physical_confirmation;
@@ -1069,9 +1069,9 @@ $function$;
 
 CREATE TRIGGER trg_accounts_updated_at BEFORE UPDATE ON public.accounts FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE TRIGGER trg_automation_rules_updated_at BEFORE UPDATE ON public.automation_rules FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE TRIGGER trg_board_catalog_updated_at BEFORE UPDATE ON public.board_catalog FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE TRIGGER trg_controllers_updated_at BEFORE UPDATE ON public.controllers FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE TRIGGER trg_custom_boards_updated_at BEFORE UPDATE ON public.custom_boards FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_board_profiles_updated_at BEFORE UPDATE ON public.board_profiles FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_board_instances_updated_at BEFORE UPDATE ON public.board_instances FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_custom_board_profiles_updated_at BEFORE UPDATE ON public.custom_board_profiles FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE TRIGGER trg_devices_updated_at BEFORE UPDATE ON public.devices FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE TRIGGER trg_firmware_releases_updated_at BEFORE UPDATE ON public.firmware_releases FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE TRIGGER trg_homes_updated_at BEFORE UPDATE ON public.homes FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -1090,28 +1090,28 @@ CREATE TRIGGER trg_users_updated_at BEFORE UPDATE ON public.users FOR EACH ROW E
 -- ============================================================================
 
 ALTER TABLE public.account_saved_boards ADD CONSTRAINT account_saved_boards_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
-ALTER TABLE public.account_saved_boards ADD CONSTRAINT account_saved_boards_board_catalog_id_fkey FOREIGN KEY (board_catalog_id) REFERENCES board_catalog(id) ON DELETE CASCADE;
+ALTER TABLE public.account_saved_boards ADD CONSTRAINT account_saved_boards_board_profile_id_fkey FOREIGN KEY (board_profile_id) REFERENCES board_profiles(id) ON DELETE CASCADE;
 ALTER TABLE public.accounts ADD CONSTRAINT accounts_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE RESTRICT;
 ALTER TABLE public.action_button_configs ADD CONSTRAINT action_button_configs_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
 ALTER TABLE public.action_button_configs ADD CONSTRAINT action_button_configs_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 ALTER TABLE public.activity_logs ADD CONSTRAINT activity_logs_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
 ALTER TABLE public.activity_logs ADD CONSTRAINT activity_logs_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL;
-ALTER TABLE public.activity_logs ADD CONSTRAINT activity_logs_controller_id_fkey FOREIGN KEY (controller_id) REFERENCES controllers(id) ON DELETE SET NULL;
+ALTER TABLE public.activity_logs ADD CONSTRAINT activity_logs_board_instance_id_fkey FOREIGN KEY (board_instance_id) REFERENCES board_instances(id) ON DELETE SET NULL;
 ALTER TABLE public.automation_rules ADD CONSTRAINT automation_rules_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
 ALTER TABLE public.automation_rules ADD CONSTRAINT automation_rules_home_id_fkey FOREIGN KEY (home_id) REFERENCES homes(id) ON DELETE CASCADE;
-ALTER TABLE public.board_catalog_sync_runs ADD CONSTRAINT board_catalog_sync_runs_triggered_by_admin_id_fkey FOREIGN KEY (triggered_by_admin_id) REFERENCES users(id) ON DELETE SET NULL;
-ALTER TABLE public.board_gpio_definitions ADD CONSTRAINT board_gpio_definitions_board_catalog_id_fkey FOREIGN KEY (board_catalog_id) REFERENCES board_catalog(id) ON DELETE CASCADE;
-ALTER TABLE public.board_gpio_definitions ADD CONSTRAINT board_gpio_definitions_custom_board_id_fkey FOREIGN KEY (custom_board_id) REFERENCES custom_boards(id) ON DELETE CASCADE;
-ALTER TABLE public.controllers ADD CONSTRAINT controllers_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
-ALTER TABLE public.controllers ADD CONSTRAINT controllers_board_catalog_id_fkey FOREIGN KEY (board_catalog_id) REFERENCES board_catalog(id) ON DELETE RESTRICT;
-ALTER TABLE public.controllers ADD CONSTRAINT controllers_custom_board_id_fkey FOREIGN KEY (custom_board_id) REFERENCES custom_boards(id) ON DELETE RESTRICT;
-ALTER TABLE public.controllers ADD CONSTRAINT controllers_home_id_fkey FOREIGN KEY (home_id) REFERENCES homes(id) ON DELETE CASCADE;
-ALTER TABLE public.controllers ADD CONSTRAINT controllers_installed_firmware_release_id_fkey FOREIGN KEY (installed_firmware_release_id) REFERENCES firmware_releases(id) ON DELETE SET NULL;
-ALTER TABLE public.controllers ADD CONSTRAINT controllers_room_id_fkey FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL;
-ALTER TABLE public.custom_boards ADD CONSTRAINT custom_boards_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
-ALTER TABLE public.custom_boards ADD CONSTRAINT custom_boards_created_by_fkey FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE public.board_profile_sync_runs ADD CONSTRAINT board_profile_sync_runs_triggered_by_admin_id_fkey FOREIGN KEY (triggered_by_admin_id) REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE public.board_gpio_definitions ADD CONSTRAINT board_gpio_definitions_board_profile_id_fkey FOREIGN KEY (board_profile_id) REFERENCES board_profiles(id) ON DELETE CASCADE;
+ALTER TABLE public.board_gpio_definitions ADD CONSTRAINT board_gpio_definitions_custom_board_profile_id_fkey FOREIGN KEY (custom_board_profile_id) REFERENCES custom_board_profiles(id) ON DELETE CASCADE;
+ALTER TABLE public.board_instances ADD CONSTRAINT board_instances_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
+ALTER TABLE public.board_instances ADD CONSTRAINT board_instances_board_profile_id_fkey FOREIGN KEY (board_profile_id) REFERENCES board_profiles(id) ON DELETE RESTRICT;
+ALTER TABLE public.board_instances ADD CONSTRAINT board_instances_custom_board_profile_id_fkey FOREIGN KEY (custom_board_profile_id) REFERENCES custom_board_profiles(id) ON DELETE RESTRICT;
+ALTER TABLE public.board_instances ADD CONSTRAINT board_instances_home_id_fkey FOREIGN KEY (home_id) REFERENCES homes(id) ON DELETE CASCADE;
+ALTER TABLE public.board_instances ADD CONSTRAINT board_instances_installed_firmware_release_id_fkey FOREIGN KEY (installed_firmware_release_id) REFERENCES firmware_releases(id) ON DELETE SET NULL;
+ALTER TABLE public.board_instances ADD CONSTRAINT board_instances_room_id_fkey FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL;
+ALTER TABLE public.custom_board_profiles ADD CONSTRAINT custom_board_profiles_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
+ALTER TABLE public.custom_board_profiles ADD CONSTRAINT custom_board_profiles_created_by_fkey FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE public.devices ADD CONSTRAINT devices_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
-ALTER TABLE public.devices ADD CONSTRAINT devices_controller_id_fkey FOREIGN KEY (controller_id) REFERENCES controllers(id) ON DELETE CASCADE;
+ALTER TABLE public.devices ADD CONSTRAINT devices_board_instance_id_fkey FOREIGN KEY (board_instance_id) REFERENCES board_instances(id) ON DELETE CASCADE;
 ALTER TABLE public.devices ADD CONSTRAINT devices_home_id_fkey FOREIGN KEY (home_id) REFERENCES homes(id) ON DELETE CASCADE;
 ALTER TABLE public.devices ADD CONSTRAINT devices_room_id_fkey FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL;
 ALTER TABLE public.firmware_files ADD CONSTRAINT firmware_files_release_id_fkey FOREIGN KEY (release_id) REFERENCES firmware_releases(id) ON DELETE CASCADE;
@@ -1119,11 +1119,11 @@ ALTER TABLE public.firmware_releases ADD CONSTRAINT firmware_releases_created_by
 ALTER TABLE public.firmware_releases ADD CONSTRAINT firmware_releases_rollback_from_release_id_fkey FOREIGN KEY (rollback_from_release_id) REFERENCES firmware_releases(id) ON DELETE SET NULL;
 ALTER TABLE public.firmware_releases ADD CONSTRAINT firmware_releases_superseded_by_release_id_fkey FOREIGN KEY (superseded_by_release_id) REFERENCES firmware_releases(id) ON DELETE SET NULL;
 ALTER TABLE public.firmware_update_history ADD CONSTRAINT firmware_update_history_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
-ALTER TABLE public.firmware_update_history ADD CONSTRAINT firmware_update_history_controller_id_fkey FOREIGN KEY (controller_id) REFERENCES controllers(id) ON DELETE CASCADE;
+ALTER TABLE public.firmware_update_history ADD CONSTRAINT firmware_update_history_board_instance_id_fkey FOREIGN KEY (board_instance_id) REFERENCES board_instances(id) ON DELETE CASCADE;
 ALTER TABLE public.firmware_update_history ADD CONSTRAINT firmware_update_history_release_id_fkey FOREIGN KEY (release_id) REFERENCES firmware_releases(id) ON DELETE RESTRICT;
 ALTER TABLE public.homes ADD CONSTRAINT homes_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
 ALTER TABLE public.mqtt_credentials_metadata ADD CONSTRAINT mqtt_credentials_metadata_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
-ALTER TABLE public.mqtt_credentials_metadata ADD CONSTRAINT mqtt_credentials_metadata_controller_id_fkey FOREIGN KEY (controller_id) REFERENCES controllers(id) ON DELETE CASCADE;
+ALTER TABLE public.mqtt_credentials_metadata ADD CONSTRAINT mqtt_credentials_metadata_board_instance_id_fkey FOREIGN KEY (board_instance_id) REFERENCES board_instances(id) ON DELETE CASCADE;
 ALTER TABLE public.notification_preferences ADD CONSTRAINT notification_preferences_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
 ALTER TABLE public.notification_preferences ADD CONSTRAINT notification_preferences_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 ALTER TABLE public.notification_user_states ADD CONSTRAINT notification_user_states_notification_id_fkey FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE;
@@ -1131,7 +1131,7 @@ ALTER TABLE public.notification_user_states ADD CONSTRAINT notification_user_sta
 ALTER TABLE public.notifications ADD CONSTRAINT notifications_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
 ALTER TABLE public.notifications ADD CONSTRAINT notifications_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 ALTER TABLE public.pairing_codes ADD CONSTRAINT pairing_codes_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
-ALTER TABLE public.pairing_codes ADD CONSTRAINT pairing_codes_controller_id_fkey FOREIGN KEY (controller_id) REFERENCES controllers(id) ON DELETE CASCADE;
+ALTER TABLE public.pairing_codes ADD CONSTRAINT pairing_codes_board_instance_id_fkey FOREIGN KEY (board_instance_id) REFERENCES board_instances(id) ON DELETE CASCADE;
 ALTER TABLE public.pairing_codes ADD CONSTRAINT pairing_codes_created_by_fkey FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE public.planner_plans ADD CONSTRAINT planner_plans_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
 ALTER TABLE public.planner_plans ADD CONSTRAINT planner_plans_created_by_fkey FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL;
@@ -1143,7 +1143,7 @@ ALTER TABLE public.rooms ADD CONSTRAINT rooms_home_id_fkey FOREIGN KEY (home_id)
 ALTER TABLE public.sensor_readings ADD CONSTRAINT sensor_readings_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
 ALTER TABLE public.sensor_readings ADD CONSTRAINT sensor_readings_sensor_id_fkey FOREIGN KEY (sensor_id) REFERENCES sensors(id) ON DELETE CASCADE;
 ALTER TABLE public.sensors ADD CONSTRAINT sensors_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
-ALTER TABLE public.sensors ADD CONSTRAINT sensors_controller_id_fkey FOREIGN KEY (controller_id) REFERENCES controllers(id) ON DELETE CASCADE;
+ALTER TABLE public.sensors ADD CONSTRAINT sensors_board_instance_id_fkey FOREIGN KEY (board_instance_id) REFERENCES board_instances(id) ON DELETE CASCADE;
 ALTER TABLE public.sensors ADD CONSTRAINT sensors_home_id_fkey FOREIGN KEY (home_id) REFERENCES homes(id) ON DELETE CASCADE;
 ALTER TABLE public.sensors ADD CONSTRAINT sensors_room_id_fkey FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL;
 ALTER TABLE public.sessions ADD CONSTRAINT sessions_active_account_id_fkey FOREIGN KEY (active_account_id) REFERENCES accounts(id) ON DELETE SET NULL;
@@ -1154,7 +1154,7 @@ ALTER TABLE public.staff ADD CONSTRAINT staff_user_id_fkey FOREIGN KEY (user_id)
 ALTER TABLE public.staff_invitations ADD CONSTRAINT staff_invitations_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
 ALTER TABLE public.staff_invitations ADD CONSTRAINT staff_invitations_created_by_fkey FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE public.switches ADD CONSTRAINT switches_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE;
-ALTER TABLE public.switches ADD CONSTRAINT switches_controller_id_fkey FOREIGN KEY (controller_id) REFERENCES controllers(id) ON DELETE CASCADE;
+ALTER TABLE public.switches ADD CONSTRAINT switches_board_instance_id_fkey FOREIGN KEY (board_instance_id) REFERENCES board_instances(id) ON DELETE CASCADE;
 ALTER TABLE public.switches ADD CONSTRAINT switches_home_id_fkey FOREIGN KEY (home_id) REFERENCES homes(id) ON DELETE CASCADE;
 ALTER TABLE public.switches ADD CONSTRAINT switches_room_id_fkey FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL;
 
@@ -1188,8 +1188,8 @@ END $$;
 -- 6. Seed data
 -- ============================================================================
 
--- seed: board_catalog (13 rows)
-INSERT INTO public.board_catalog (id, slug, manufacturer, model, revision, chip_family, chip_variant, flash_size_mb, psram_size_mb, usb_vid, usb_pid, is_available, description, deleted_at, catalog_category, series, image_url, pinout_image_url, docs_url, datasheet_url, source_url, source_provider, verification_status, firmware_status, board_layout, revision_notes, last_synced_at, partition_scheme, psram_mode, flash_mode, flash_freq, bootloader_offset, ota_app_offset, boot_button_gpio, usb_interface, supports_wifi, supports_ota_rollback, firmware_compat_key, connectivity_note, supports_ble, supports_ble_wifi_provisioning, build_platform) VALUES
+-- seed: board_profiles (13 rows)
+INSERT INTO public.board_profiles (id, slug, manufacturer, model, revision, chip_family, chip_variant, flash_size_mb, psram_size_mb, usb_vid, usb_pid, is_available, description, deleted_at, catalog_category, series, image_url, pinout_image_url, docs_url, datasheet_url, source_url, source_provider, verification_status, firmware_status, board_layout, revision_notes, last_synced_at, partition_scheme, psram_mode, flash_mode, flash_freq, bootloader_offset, ota_app_offset, boot_button_gpio, usb_interface, supports_wifi, supports_ota_rollback, firmware_compat_key, connectivity_note, supports_ble, supports_ble_wifi_provisioning, build_platform) VALUES
   ('559d161b-291d-47e3-8c74-c7544b7e3e4f', 'esp32-devkitc-v4', 'Espressif', 'ESP32-DevKitC V4', 'v4.0', 'esp32', 'ESP32-WROOM-32E', 4, 0, '0x10C4', '0xEA60', TRUE, 'Classic dual-core Xtensa ESP32 DevKit. GPIO34-39 are input-only; GPIO6-11 connect internal SPI Flash.', NULL, 'official_espressif', 'ESP32', NULL, NULL, 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html', 'https://www.espressif.com/sites/default/files/documentation/esp32_datasheet_en.pdf', 'https://www.espressif.com/products/devkits', 'espressif_devkits', 'verified', 'catalog_only', '{"usbEdge":"bottom","usbLabel":"Micro-USB UART","formFactor":"devkit","imageFrame":{"pinTopPct":15.5,"pinBottomPct":94},"leftHeader":{"name":"J2","pins":[{"kind":"power","gpioPin":null,"pinName":"3V3","voltage":"3.3V","position":1,"headerName":"J2"},{"kind":"reset","note":"CHIP_PU reset","gpioPin":null,"pinName":"EN","position":2,"headerName":"J2"},{"kind":"gpio","note":"Input-only","aliases":["SENSOR_VP","ADC1_CH0"],"gpioPin":36,"pinName":"VP / 36","position":3,"headerName":"J2"},{"kind":"gpio","note":"Input-only","aliases":["SENSOR_VN","ADC1_CH3"],"gpioPin":39,"pinName":"VN / 39","position":4,"headerName":"J2"},{"kind":"gpio","note":"Input-only","aliases":["ADC1_CH6"],"gpioPin":34,"pinName":"34","position":5,"headerName":"J2"},{"kind":"gpio","note":"Input-only","aliases":["ADC1_CH7"],"gpioPin":35,"pinName":"35","position":6,"headerName":"J2"},{"kind":"gpio","aliases":["ADC1_CH4","TOUCH9"],"gpioPin":32,"pinName":"32","position":7,"headerName":"J2"},{"kind":"gpio","aliases":["ADC1_CH5","TOUCH8"],"gpioPin":33,"pinName":"33","position":8,"headerName":"J2"},{"kind":"gpio","aliases":["DAC_1"],"gpioPin":25,"pinName":"25","position":9,"headerName":"J2"},{"kind":"gpio","aliases":["DAC_2"],"gpioPin":26,"pinName":"26","position":10,"headerName":"J2"},{"kind":"gpio","aliases":["TOUCH7"],"gpioPin":27,"pinName":"27","position":11,"headerName":"J2"},{"kind":"gpio","aliases":["TOUCH6","HSPI_CLK"],"gpioPin":14,"pinName":"14","position":12,"headerName":"J2"},{"kind":"gpio","note":"Strapping (keep LOW at boot)","aliases":["TOUCH5","MTDI"],"gpioPin":12,"pinName":"12","position":13,"headerName":"J2"},{"kind":"ground","gpioPin":null,"pinName":"GND","voltage":"GND","position":14,"headerName":"J2"},{"kind":"gpio","aliases":["TOUCH4","HSPI_MOSI"],"gpioPin":13,"pinName":"13","position":15,"headerName":"J2"},{"kind":"gpio","note":"SPI Flash D2 (reserved)","gpioPin":9,"pinName":"D2 / 9","position":16,"headerName":"J2"},{"kind":"gpio","note":"SPI Flash D3 (reserved)","gpioPin":10,"pinName":"D3 / 10","position":17,"headerName":"J2"},{"kind":"gpio","note":"SPI Flash CMD (reserved)","gpioPin":11,"pinName":"CMD / 11","position":18,"headerName":"J2"},{"kind":"power","gpioPin":null,"pinName":"5V","voltage":"5V","position":19,"headerName":"J2"}]},"antennaEdge":"top","aspectRatio":0.5319148936170213,"orientation":"vertical","rightHeader":{"name":"J3","pins":[{"kind":"ground","gpioPin":null,"pinName":"GND","voltage":"GND","position":1,"headerName":"J3"},{"kind":"gpio","aliases":["VSPI_MOSI"],"gpioPin":23,"pinName":"23","position":2,"headerName":"J3"},{"kind":"gpio","aliases":["I2C_SCL"],"gpioPin":22,"pinName":"22","position":3,"headerName":"J3"},{"kind":"gpio","note":"UART0 TX","gpioPin":1,"pinName":"TXD0 / 1","position":4,"headerName":"J3"},{"kind":"gpio","note":"UART0 RX","gpioPin":3,"pinName":"RXD0 / 3","position":5,"headerName":"J3"},{"kind":"gpio","aliases":["I2C_SDA"],"gpioPin":21,"pinName":"21","position":6,"headerName":"J3"},{"kind":"ground","gpioPin":null,"pinName":"GND","voltage":"GND","position":7,"headerName":"J3"},{"kind":"gpio","aliases":["VSPI_MISO"],"gpioPin":19,"pinName":"19","position":8,"headerName":"J3"},{"kind":"gpio","aliases":["VSPI_CLK"],"gpioPin":18,"pinName":"18","position":9,"headerName":"J3"},{"kind":"gpio","note":"Strapping","aliases":["VSPI_CS0"],"gpioPin":5,"pinName":"5","position":10,"headerName":"J3"},{"kind":"gpio","aliases":["U2TXD"],"gpioPin":17,"pinName":"17","position":11,"headerName":"J3"},{"kind":"gpio","aliases":["U2RXD"],"gpioPin":16,"pinName":"16","position":12,"headerName":"J3"},{"kind":"gpio","aliases":["TOUCH0"],"gpioPin":4,"pinName":"4","position":13,"headerName":"J3"},{"kind":"gpio","note":"BOOT button & strapping","gpioPin":0,"pinName":"0","position":14,"headerName":"J3"},{"kind":"gpio","note":"Strapping / Onboard LED","gpioPin":2,"pinName":"2","position":15,"headerName":"J3"},{"kind":"gpio","note":"Strapping","aliases":["MTDO"],"gpioPin":15,"pinName":"15","position":16,"headerName":"J3"},{"kind":"gpio","note":"SPI Flash D1 (reserved)","gpioPin":8,"pinName":"D1 / 8","position":17,"headerName":"J3"},{"kind":"gpio","note":"SPI Flash D0 (reserved)","gpioPin":7,"pinName":"D0 / 7","position":18,"headerName":"J3"},{"kind":"gpio","note":"SPI Flash CLK (reserved)","gpioPin":6,"pinName":"CLK / 6","position":19,"headerName":"J3"}]},"antennaLabel":"PCB Antenna","hardwareSpecs":{"usb":"1x Micro-USB","buttons":"EN + BOOT","wireless":"Wi-Fi 4, BLE 4.2","processor":"Dual-Core Xtensa LX6 (240 MHz)","resetLabel":"EN","usbConnector":"micro-usb","usbPortCount":1,"hasUartBridge":true,"modulePackage":"wroom"},"onboardFeatures":[{"kind":"button","note":"GPIO0 active-low boot mode","label":"BOOT Button","gpioPin":0},{"kind":"flash","note":"GPIO6-11 internal SPI Flash","label":"SPI Flash","gpioPin":6}]}'::jsonb, 'Classic dual-core Xtensa ESP32 DevKit. GPIO34-39 are input-only; GPIO6-11 connect internal SPI Flash.', '2026-11-18T12:34:41.555Z', 'dual_ota_4mb', 'none', 'dio', '40m', '0x1000', '0x20000', 0, 'USB-UART Bridge (CP2102N)', TRUE, TRUE, 'esp32-4m-dio-none-dual_ota_4mb-b0', NULL, TRUE, TRUE, 'esp_idf'),
   ('c70dc168-947b-415e-b86a-19298331b90e', 'esp32-s3-devkitc-1-n16r8', 'Espressif', 'ESP32-S3-DevKitC-1 N16R8', 'v1.1', 'esp32s3', 'ESP32-S3-WROOM-1-N16R8', 16, 8, '0x303A', '0x1001', TRUE, 'Dual-core Xtensa LX7 with 16 MB QIO Flash and 8 MB Octal (OPI) PSRAM. GPIO 26-37 are reserved for Flash/Octal PSRAM.', NULL, 'official_espressif', 'ESP32-S3', NULL, NULL, 'https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.1.html', 'https://www.espressif.com/sites/default/files/documentation/esp32-s3-wroom-1_wroom-1u_datasheet_en.pdf', 'https://www.espressif.com/products/devkits', 'espressif_devkits', 'verified', 'firmware_supported', '{"usbEdge":"bottom","usbLabel":"UART + Native USB-C","formFactor":"devkit","imageFrame":{"pinTopPct":14.5,"pinBottomPct":89.5},"leftHeader":{"name":"J1","pins":[{"kind":"power","gpioPin":null,"pinName":"3V3","voltage":"3.3V","position":1,"headerName":"J1"},{"kind":"power","gpioPin":null,"pinName":"3V3","voltage":"3.3V","position":2,"headerName":"J1"},{"kind":"reset","note":"CHIP_PU / EN reset","gpioPin":null,"pinName":"RST","position":3,"headerName":"J1"},{"kind":"gpio","aliases":["ADC1_CH3","TOUCH4"],"gpioPin":4,"pinName":"4","position":4,"headerName":"J1"},{"kind":"gpio","aliases":["ADC1_CH4","TOUCH5"],"gpioPin":5,"pinName":"5","position":5,"headerName":"J1"},{"kind":"gpio","aliases":["ADC1_CH5","TOUCH6"],"gpioPin":6,"pinName":"6","position":6,"headerName":"J1"},{"kind":"gpio","aliases":["ADC1_CH6","TOUCH7"],"gpioPin":7,"pinName":"7","position":7,"headerName":"J1"},{"kind":"gpio","aliases":["XTAL_32K_P"],"gpioPin":15,"pinName":"15","position":8,"headerName":"J1"},{"kind":"gpio","aliases":["XTAL_32K_N"],"gpioPin":16,"pinName":"16","position":9,"headerName":"J1"},{"kind":"gpio","aliases":["UART1_TX"],"gpioPin":17,"pinName":"17","position":10,"headerName":"J1"},{"kind":"gpio","aliases":["UART1_RX"],"gpioPin":18,"pinName":"18","position":11,"headerName":"J1"},{"kind":"gpio","aliases":["ADC1_CH7","TOUCH8"],"gpioPin":8,"pinName":"8","position":12,"headerName":"J1"},{"kind":"gpio","note":"Strapping (JTAG)","aliases":["ADC1_CH2","TOUCH3"],"gpioPin":3,"pinName":"3","position":13,"headerName":"J1"},{"kind":"gpio","note":"Input-only strapping","gpioPin":46,"pinName":"46","position":14,"headerName":"J1"},{"kind":"gpio","aliases":["ADC1_CH8","TOUCH9"],"gpioPin":9,"pinName":"9","position":15,"headerName":"J1"},{"kind":"gpio","aliases":["ADC1_CH9","TOUCH10"],"gpioPin":10,"pinName":"10","position":16,"headerName":"J1"},{"kind":"gpio","aliases":["TOUCH11"],"gpioPin":11,"pinName":"11","position":17,"headerName":"J1"},{"kind":"gpio","aliases":["TOUCH12"],"gpioPin":12,"pinName":"12","position":18,"headerName":"J1"},{"kind":"gpio","aliases":["TOUCH13"],"gpioPin":13,"pinName":"13","position":19,"headerName":"J1"},{"kind":"gpio","aliases":["TOUCH14"],"gpioPin":14,"pinName":"14","position":20,"headerName":"J1"},{"kind":"power","gpioPin":null,"pinName":"5V","voltage":"5V","position":21,"headerName":"J1"},{"kind":"ground","gpioPin":null,"pinName":"G","voltage":"GND","position":22,"headerName":"J1"}]},"antennaEdge":"top","aspectRatio":0.4603174603174603,"orientation":"vertical","rightHeader":{"name":"J3","pins":[{"kind":"ground","gpioPin":null,"pinName":"G","voltage":"GND","position":1,"headerName":"J3"},{"kind":"gpio","note":"UART0 TX","aliases":["U0TXD"],"gpioPin":43,"pinName":"TX","position":2,"headerName":"J3"},{"kind":"gpio","note":"UART0 RX","aliases":["U0RXD"],"gpioPin":44,"pinName":"RX","position":3,"headerName":"J3"},{"kind":"gpio","aliases":["ADC1_CH0","TOUCH1"],"gpioPin":1,"pinName":"1","position":4,"headerName":"J3"},{"kind":"gpio","aliases":["ADC1_CH1","TOUCH2"],"gpioPin":2,"pinName":"2","position":5,"headerName":"J3"},{"kind":"gpio","aliases":["MTMS"],"gpioPin":42,"pinName":"42","position":6,"headerName":"J3"},{"kind":"gpio","aliases":["MTDI"],"gpioPin":41,"pinName":"41","position":7,"headerName":"J3"},{"kind":"gpio","aliases":["MTDO"],"gpioPin":40,"pinName":"40","position":8,"headerName":"J3"},{"kind":"gpio","aliases":["MTCK"],"gpioPin":39,"pinName":"39","position":9,"headerName":"J3"},{"kind":"gpio","note":"Onboard RGB LED (v1.1)","gpioPin":38,"pinName":"38","position":10,"headerName":"J3"},{"kind":"gpio","note":"Octal PSRAM (unavailable on R8)","gpioPin":37,"pinName":"37","position":11,"headerName":"J3"},{"kind":"gpio","note":"Octal PSRAM (unavailable on R8)","gpioPin":36,"pinName":"36","position":12,"headerName":"J3"},{"kind":"gpio","note":"Octal PSRAM (unavailable on R8)","gpioPin":35,"pinName":"35","position":13,"headerName":"J3"},{"kind":"gpio","note":"BOOT button & strapping","gpioPin":0,"pinName":"0","position":14,"headerName":"J3"},{"kind":"gpio","note":"Strapping (VDD_SPI)","gpioPin":45,"pinName":"45","position":15,"headerName":"J3"},{"kind":"gpio","note":"General GPIO","gpioPin":48,"pinName":"48","position":16,"headerName":"J3"},{"kind":"gpio","gpioPin":47,"pinName":"47","position":17,"headerName":"J3"},{"kind":"gpio","gpioPin":21,"pinName":"21","position":18,"headerName":"J3"},{"kind":"gpio","note":"USB D+","aliases":["USB_D+"],"gpioPin":20,"pinName":"20","position":19,"headerName":"J3"},{"kind":"gpio","note":"USB D-","aliases":["USB_D-"],"gpioPin":19,"pinName":"19","position":20,"headerName":"J3"},{"kind":"ground","gpioPin":null,"pinName":"G","voltage":"GND","position":21,"headerName":"J3"},{"kind":"ground","gpioPin":null,"pinName":"G","voltage":"GND","position":22,"headerName":"J3"}]},"antennaLabel":"PCB Antenna","hardwareSpecs":{"usb":"2x USB-C (UART + Native OTG)","buttons":"RST + BOOT","wireless":"Wi-Fi 4, BLE 5.0","processor":"Dual-Core Xtensa LX7 (240 MHz)","resetLabel":"RST","usbConnector":"usb-c","usbPortCount":2,"hasUartBridge":true,"modulePackage":"wroom"},"onboardFeatures":[{"kind":"rgb_led","note":"GPIO38 on v1.1 revision","label":"WS2812 RGB LED","gpioPin":38},{"kind":"button","note":"GPIO0 active-low boot mode","label":"BOOT Button","gpioPin":0},{"kind":"psram","note":"GPIO35-37 reserved (N16R8)","label":"Octal PSRAM","gpioPin":35}]}'::jsonb, 'v1.1 uses GPIO38 for onboard WS2812 RGB LED (v1.0 used GPIO48). GPIO35-37 reserved for 8 MB Octal PSRAM.', '2026-11-18T12:34:41.555Z', 'dual_ota_16mb', 'octal', 'qio', '80m', '0x0', '0x20000', 0, 'Dual USB-C (UART + Native OTG)', TRUE, TRUE, 'esp32s3-16m-qio-octal8m-dual_ota_16mb-b0', NULL, TRUE, TRUE, 'esp_idf'),
   ('ec0706d5-7f03-4586-9c73-dc499371bb5b', 'seeed-xiao-esp32s3', 'Seeed Studio', 'XIAO ESP32-S3', 'v1.0', 'esp32s3', 'ESP32-S3R8', 8, 8, '0x2886', '0x0056', TRUE, 'Ultra-compact 21x17.8mm thumb-sized board. Exposes 11 GPIO pins across 7+7 castellations; onboard orange USER_LED on GPIO21 (active-low). B2B GPIO41/42 are digital-only.', NULL, 'partner', 'ESP32-S3', NULL, NULL, 'https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/', 'https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/esp32-s3_datasheet_en.pdf', 'https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/', 'seeed_partner', 'verified', 'catalog_only', '{"usbEdge":"top","usbLabel":"USB Type-C","formFactor":"xiao","imageFrame":{"pinTopPct":18.5,"pinBottomPct":87.5},"leftHeader":{"name":"Left (D0-D6)","pins":[{"kind":"gpio","aliases":["A0","D0","ADC1_CH0","TOUCH1"],"gpioPin":1,"pinName":"D0 / A0","position":1,"headerName":"Left"},{"kind":"gpio","aliases":["A1","D1","ADC1_CH1","TOUCH2"],"gpioPin":2,"pinName":"D1 / A1","position":2,"headerName":"Left"},{"kind":"gpio","aliases":["A2","D2","ADC1_CH2","TOUCH3"],"gpioPin":3,"pinName":"D2 / A2","position":3,"headerName":"Left"},{"kind":"gpio","aliases":["A3","D3","ADC1_CH3","TOUCH4"],"gpioPin":4,"pinName":"D3 / A3","position":4,"headerName":"Left"},{"kind":"gpio","note":"I2C SDA","aliases":["A4","D4","SDA","ADC1_CH4"],"gpioPin":5,"pinName":"D4 / SDA","position":5,"headerName":"Left"},{"kind":"gpio","note":"I2C SCL","aliases":["A5","D5","SCL","ADC1_CH5"],"gpioPin":6,"pinName":"D5 / SCL","position":6,"headerName":"Left"},{"kind":"gpio","note":"UART TX (free GPIO)","aliases":["D6","TX","U0TXD"],"gpioPin":43,"pinName":"D6 / TX","position":7,"headerName":"Left"}]},"antennaEdge":"bottom","aspectRatio":0.7911975435005117,"orientation":"vertical","rightHeader":{"name":"Right (Power / D7-D10)","pins":[{"kind":"power","note":"USB VBUS 5V","gpioPin":null,"pinName":"5V","voltage":"5V","position":1,"headerName":"Right"},{"kind":"ground","gpioPin":null,"pinName":"GND","voltage":"GND","position":2,"headerName":"Right"},{"kind":"power","note":"Regulated 3.3V out","gpioPin":null,"pinName":"3V3","voltage":"3.3V","position":3,"headerName":"Right"},{"kind":"gpio","note":"SPI MOSI","aliases":["A10","D10","MOSI"],"gpioPin":9,"pinName":"D10 / MOSI","position":4,"headerName":"Right"},{"kind":"gpio","note":"SPI MISO","aliases":["A9","D9","MISO"],"gpioPin":8,"pinName":"D9 / MISO","position":5,"headerName":"Right"},{"kind":"gpio","note":"SPI SCK","aliases":["A8","D8","SCK"],"gpioPin":7,"pinName":"D8 / SCK","position":6,"headerName":"Right"},{"kind":"gpio","note":"UART RX (free GPIO)","aliases":["D7","RX","U0RXD"],"gpioPin":44,"pinName":"D7 / RX","position":7,"headerName":"Right"}]},"antennaLabel":"U.FL / B2B","hardwareSpecs":{"usb":"1x USB-C","buttons":"RESET + BOOT","wireless":"Wi-Fi 4, BLE 5.0","processor":"Dual-Core Xtensa LX7 (240 MHz)","resetLabel":"RESET","usbConnector":"usb-c","usbPortCount":1,"hasUartBridge":false,"modulePackage":"xiao"},"onboardFeatures":[{"kind":"led","note":"Orange LED active-low on GPIO21","label":"USER LED","gpioPin":21},{"kind":"button","note":"Top-right tactile BOOT button","label":"BOOT Button","gpioPin":0},{"kind":"usb","note":"GPIO19/20 USB Type-C","label":"USB Serial / JTAG","gpioPin":19}]}'::jsonb, 'Ultra-compact 21x17.8mm thumb-sized board. Exposes 11 GPIO pins across 7+7 castellations; onboard orange USER_LED on GPIO21 (active-low). B2B GPIO41/42 are digital-only.', '2026-11-18T12:34:41.555Z', 'dual_ota_8mb', 'octal', 'qio', '80m', '0x0', '0x20000', 0, 'Native USB-C (CDC/JTAG)', TRUE, TRUE, 'esp32s3-8m-qio-octal8m-dual_ota_8mb-b0', NULL, TRUE, TRUE, 'esp_idf'),
@@ -1205,7 +1205,7 @@ INSERT INTO public.board_catalog (id, slug, manufacturer, model, revision, chip_
   ('7d3f4dc6-189b-4a8b-a796-87ae10e6fa4e', 'waveshare-esp32-s3-zero', 'Waveshare', 'ESP32-S3-Zero', 'unspecified', 'esp32s3', 'ESP32-S3FH4R2', 4, 2, '0x303A', '0x1001', TRUE, 'Ultra-compact castellated ESP32-S3FH4R2 board with 4MB Flash, 2MB Quad PSRAM, ceramic antenna, USB-C, and onboard WS2812 RGB LED on GPIO21.', NULL, 'partner', 'Waveshare ESP32-Zero', NULL, NULL, 'https://www.waveshare.com/wiki/ESP32-S3-Zero', 'https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf', 'https://www.waveshare.com/wiki/ESP32-S3-Zero', 'waveshare_partner', 'verified', 'catalog_only', '{"usbEdge":"top","usbLabel":"Native USB-C","extraPads":{"name":"Bottom Pads","pins":[{"kind":"gpio","note":"Castellated bottom pad","gpioPin":14,"pinName":"GP14","position":1,"headerName":"Bottom"},{"kind":"gpio","note":"Castellated bottom pad","gpioPin":15,"pinName":"GP15","position":2,"headerName":"Bottom"},{"kind":"gpio","note":"Castellated bottom pad","gpioPin":16,"pinName":"GP16","position":3,"headerName":"Bottom"},{"kind":"gpio","note":"Castellated bottom pad","gpioPin":17,"pinName":"GP17","position":4,"headerName":"Bottom"},{"kind":"gpio","note":"Castellated bottom pad","gpioPin":18,"pinName":"GP18","position":5,"headerName":"Bottom"},{"kind":"gpio","note":"Onboard WS2812 RGB LED","gpioPin":21,"pinName":"GP21","position":6,"headerName":"Bottom"},{"kind":"gpio","note":"Castellated bottom pad (Quad PSRAM free)","gpioPin":33,"pinName":"GP33","position":7,"headerName":"Bottom"},{"kind":"gpio","note":"Castellated bottom pad (Quad PSRAM free)","gpioPin":34,"pinName":"GP34","position":8,"headerName":"Bottom"},{"kind":"gpio","note":"Castellated bottom pad (Quad PSRAM free)","gpioPin":35,"pinName":"GP35","position":9,"headerName":"Bottom"},{"kind":"gpio","note":"Castellated bottom pad (Quad PSRAM free)","gpioPin":36,"pinName":"GP36","position":10,"headerName":"Bottom"}]},"formFactor":"devkit","leftHeader":{"name":"Left","pins":[{"kind":"power","gpioPin":null,"pinName":"5V","voltage":"5V","position":1,"headerName":"Left"},{"kind":"ground","gpioPin":null,"pinName":"GND","position":2,"headerName":"Left"},{"kind":"power","gpioPin":null,"pinName":"3V3","voltage":"3.3V","position":3,"headerName":"Left"},{"kind":"gpio","aliases":["ADC1_CH0","TOUCH1"],"gpioPin":1,"pinName":"GP1","position":4,"headerName":"Left"},{"kind":"gpio","aliases":["ADC1_CH1","TOUCH2"],"gpioPin":2,"pinName":"GP2","position":5,"headerName":"Left"},{"kind":"gpio","aliases":["ADC1_CH2","STRAPPING"],"gpioPin":3,"pinName":"GP3","position":6,"headerName":"Left"},{"kind":"gpio","aliases":["ADC1_CH3","TOUCH4"],"gpioPin":4,"pinName":"GP4","position":7,"headerName":"Left"},{"kind":"gpio","aliases":["ADC1_CH4","TOUCH5"],"gpioPin":5,"pinName":"GP5","position":8,"headerName":"Left"},{"kind":"gpio","aliases":["ADC1_CH5","TOUCH6"],"gpioPin":6,"pinName":"GP6","position":9,"headerName":"Left"}]},"antennaEdge":"bottom","aspectRatio":0.7659574468085106,"orientation":"vertical","rightHeader":{"name":"Right","pins":[{"kind":"gpio","aliases":["U0TXD","GPIO43"],"gpioPin":43,"pinName":"TX","position":1,"headerName":"Right"},{"kind":"gpio","aliases":["U0RXD","GPIO44"],"gpioPin":44,"pinName":"RX","position":2,"headerName":"Right"},{"kind":"gpio","aliases":["SPI_MOSI","TOUCH13"],"gpioPin":13,"pinName":"GP13","position":3,"headerName":"Right"},{"kind":"gpio","aliases":["SPI_CLK","TOUCH12"],"gpioPin":12,"pinName":"GP12","position":4,"headerName":"Right"},{"kind":"gpio","aliases":["SPI_MOSI","TOUCH11"],"gpioPin":11,"pinName":"GP11","position":5,"headerName":"Right"},{"kind":"gpio","aliases":["SPI_CS","ADC1_CH9"],"gpioPin":10,"pinName":"GP10","position":6,"headerName":"Right"},{"kind":"gpio","aliases":["ADC1_CH8","TOUCH9"],"gpioPin":9,"pinName":"GP9","position":7,"headerName":"Right"},{"kind":"gpio","aliases":["I2C_SDA","ADC1_CH7"],"gpioPin":8,"pinName":"GP8","position":8,"headerName":"Right"},{"kind":"gpio","aliases":["I2C_SCL","ADC1_CH6"],"gpioPin":7,"pinName":"GP7","position":9,"headerName":"Right"}]},"antennaLabel":"Ceramic Antenna","hardwareSpecs":{"usb":"1x USB-C (Native OTG / JTAG)","buttons":"RST + BOOT","wireless":"Wi-Fi 4, BLE 5.0","processor":"Dual-Core Xtensa LX7 (240 MHz)","resetLabel":"RST","usbConnector":"usb-c","usbPortCount":1,"hasUartBridge":false,"modulePackage":"mini"},"onboardFeatures":[{"kind":"rgb_led","note":"GPIO21","label":"WS2812 RGB LED","gpioPin":21},{"kind":"button","note":"GPIO0","label":"BOOT Button","gpioPin":0}]}'::jsonb, 'Ultra-compact castellated ESP32-S3FH4R2 board with 4MB Flash, 2MB Quad PSRAM, ceramic antenna, USB-C, and onboard WS2812 RGB LED on GPIO21.', '2026-11-18T12:34:41.650Z', 'dual_ota_4mb', 'quad', 'qio', '80m', '0x0', '0x20000', 0, '1x USB-C (Native OTG / JTAG)', TRUE, TRUE, 'esp32s3-4m-qio-quad2m-dual_ota_4mb-b0', NULL, TRUE, TRUE, 'esp_idf');
 
 -- seed: board_gpio_definitions (331 rows)
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('b04fba93-d950-4cee-9ab6-7e8391a43b34', 'c70dc168-947b-415e-b86a-19298331b90e', NULL, 0, 'GPIO0 (BOOT button & strapping)', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":true,"strapping_note":"Boot mode select (pull-up; LOW enters ROM download mode)","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '0', 'right', 14, 'BOOT button & strapping'),
   ('bb3a9571-2d94-487e-8c20-a0d12dcb014e', 'c70dc168-947b-415e-b86a-19298331b90e', NULL, 1, 'GPIO1', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '1', 'right', 4, NULL),
   ('ba321fca-149f-4aba-a44c-0f7c7590393f', 'c70dc168-947b-415e-b86a-19298331b90e', NULL, 2, 'GPIO2', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '2', 'right', 5, NULL),
@@ -1231,7 +1231,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('540691c4-959d-4269-b7b2-ab20ae6a1824', 'c70dc168-947b-415e-b86a-19298331b90e', NULL, 26, 'GPIO26', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI0/1 Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'GPIO26', NULL, NULL, NULL),
   ('6da08db4-8ffc-4825-84e0-178e6b1d82a7', 'c70dc168-947b-415e-b86a-19298331b90e', NULL, 27, 'GPIO27', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI0/1 Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'GPIO27', NULL, NULL, NULL),
   ('098da4dc-dd64-43b1-8337-d674ca293cf6', 'c70dc168-947b-415e-b86a-19298331b90e', NULL, 28, 'GPIO28', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI0/1 Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'GPIO28', NULL, NULL, NULL);
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('363385fa-c743-4900-8f57-9cbe5b52ae66', 'c70dc168-947b-415e-b86a-19298331b90e', NULL, 29, 'GPIO29', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI0/1 Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'GPIO29', NULL, NULL, NULL),
   ('e9a4bb4f-cdff-4c63-afb2-c41d483c9269', 'c70dc168-947b-415e-b86a-19298331b90e', NULL, 30, 'GPIO30', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI0/1 Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'GPIO30', NULL, NULL, NULL),
   ('291f1471-c7f2-4ff5-9bed-fb64bc536410', 'c70dc168-947b-415e-b86a-19298331b90e', NULL, 31, 'GPIO31', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI0/1 Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'GPIO31', NULL, NULL, NULL),
@@ -1257,7 +1257,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('ce3d75c9-38d3-4923-9f3b-2c375c2779e9', 'ec0706d5-7f03-4586-9c73-dc499371bb5b', NULL, 2, 'GPIO2', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'D1 / A1', 'left', 2, NULL),
   ('0b2d77e6-7c46-4ef7-b30d-00f3f40c4d09', 'ec0706d5-7f03-4586-9c73-dc499371bb5b', NULL, 3, 'GPIO3', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'D2 / A2', 'left', 3, NULL),
   ('89bcdbaa-e89d-4fdb-8cb1-484cf14c0c37', 'ec0706d5-7f03-4586-9c73-dc499371bb5b', NULL, 4, 'GPIO4', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'D3 / A3', 'left', 4, NULL);
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('54d8a40f-f832-4737-b02f-785a86a095db', 'ec0706d5-7f03-4586-9c73-dc499371bb5b', NULL, 5, 'GPIO5 (I2C SDA)', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'D4 / SDA', 'left', 5, 'I2C SDA'),
   ('22c13627-4902-4856-9727-7e785680746e', 'ec0706d5-7f03-4586-9c73-dc499371bb5b', NULL, 6, 'GPIO6 (I2C SCL)', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'D5 / SCL', 'left', 6, 'I2C SCL'),
   ('d5d574c3-737f-4a38-9139-5d9b7b5087a5', 'ec0706d5-7f03-4586-9c73-dc499371bb5b', NULL, 7, 'GPIO7 (SPI SCK)', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'D8 / SCK', 'right', 6, 'SPI SCK'),
@@ -1283,7 +1283,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('4945f24a-54c8-477b-89fe-e1973ccbcb33', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 14, 'GPIO14', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '14', 'left', 20, NULL),
   ('0008a448-5164-4442-a291-fc52a3aae5c1', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 15, 'GPIO15', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '15', 'left', 8, NULL),
   ('90a335cf-ad35-4380-ad20-d705348445ac', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 16, 'GPIO16', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '16', 'left', 9, NULL);
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('ada01ce8-ca84-4928-872a-a221f1d9924b', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 17, 'GPIO17', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '17', 'left', 10, NULL),
   ('0bcf1f64-765c-4ad5-9bfb-4f612d1f72ba', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 18, 'GPIO18', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '18', 'left', 11, NULL),
   ('132c8f0e-f634-479e-9898-7877ffa5d6fa', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 19, 'GPIO19 (USB D-)', '{"adc":false,"i2c":false,"pwm":true,"spi":false,"uart":false,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":true,"flash_psram_conflict":false}'::jsonb, '19', 'right', 20, 'USB D-'),
@@ -1309,7 +1309,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('81c8675f-b555-4ea7-9e64-f27fe133ac91', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 43, 'GPIO43 (UART0 TX)', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"UART0 console (UART0 TX)","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'TX', 'right', 2, 'UART0 TX'),
   ('59ccc0bc-822f-47aa-aa3a-721e8fe5aa42', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 44, 'GPIO44 (UART0 RX)', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"UART0 console (UART0 RX)","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'RX', 'right', 3, 'UART0 RX'),
   ('5ffe75a1-a2a7-4975-bb50-58bfa1ed2daf', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 45, 'GPIO45 (Strapping (VDD_SPI))', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":true,"strapping_note":"VDD_SPI flash voltage select (keep LOW for 3.3V)","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '45', 'right', 15, 'Strapping (VDD_SPI)');
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('290f2974-d500-4085-9459-8655ef9c61c7', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 46, 'GPIO46 (Input-only strapping)', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":true,"digital_out":false}'::jsonb, '{"reserved":false,"input_only":true,"strapping_pin":true,"strapping_note":"Boot mode / ROM print enable (input-only strapping)","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '46', 'left', 14, 'Input-only strapping'),
   ('6530b014-f8c0-4992-8195-ca90bb930620', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 47, 'GPIO47', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '47', 'right', 17, NULL),
   ('f30986cb-fa54-43ae-9f95-49c581a07ffa', '51dd4142-a8ee-4b09-acd7-a487eba79aa7', NULL, 48, 'GPIO48 (Onboard RGB LED (v1.0))', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '48', 'right', 16, 'Onboard RGB LED (v1.0)'),
@@ -1335,7 +1335,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('1e531131-663b-486b-91da-ba4114ad0295', '35e465f2-2f3e-4606-8e75-15c750bc6924', NULL, 19, 'GPIO19', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '19', 'right', 8, NULL),
   ('4ffb4da3-95dd-4233-ad9e-db3e6aff297a', '35e465f2-2f3e-4606-8e75-15c750bc6924', NULL, 20, 'GPIO20', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '20', 'right', 7, NULL),
   ('10d78ab1-3284-4154-868d-6a3a3f5b7b18', '35e465f2-2f3e-4606-8e75-15c750bc6924', NULL, 21, 'GPIO21', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '21', 'right', 6, NULL);
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('9295bcf7-efc1-4b8d-a024-0366fbdca81f', '35e465f2-2f3e-4606-8e75-15c750bc6924', NULL, 22, 'GPIO22', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '22', 'right', 5, NULL),
   ('d4de351f-5fae-4c22-8caf-67563acb0ba7', '35e465f2-2f3e-4606-8e75-15c750bc6924', NULL, 23, 'GPIO23', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '23', 'right', 4, NULL),
   ('98dc3ce8-65b0-40c7-b250-5e96d64c2cad', 'c655f6fd-8537-4ca4-a8fd-938d9251e27f', NULL, 0, 'GPIO0', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '0', 'left', 9, NULL),
@@ -1361,7 +1361,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('a6f48300-163c-4fa5-97f0-a5c08ea9576d', '559d161b-291d-47e3-8c74-c7544b7e3e4f', NULL, 5, 'GPIO5 (Strapping)', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":true,"strapping_note":"SDIO timing strapping","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '5', 'right', 10, 'Strapping'),
   ('2ce6b4c4-1c07-4dff-a429-84bea09e121f', '559d161b-291d-47e3-8c74-c7544b7e3e4f', NULL, 6, 'GPIO6 (SPI Flash CLK (reserved))', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'CLK / 6', 'right', 19, 'SPI Flash CLK (reserved)'),
   ('7715c7e4-1494-4fbc-a9e7-ed537add856f', '559d161b-291d-47e3-8c74-c7544b7e3e4f', NULL, 7, 'GPIO7 (SPI Flash D0 (reserved))', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'D0 / 7', 'right', 18, 'SPI Flash D0 (reserved)');
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('217d30ae-650d-460d-9c1c-e2f648ef4694', '559d161b-291d-47e3-8c74-c7544b7e3e4f', NULL, 8, 'GPIO8 (SPI Flash D1 (reserved))', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'D1 / 8', 'right', 17, 'SPI Flash D1 (reserved)'),
   ('ce8f3fee-1b10-422b-b850-de43c6e3f25c', '559d161b-291d-47e3-8c74-c7544b7e3e4f', NULL, 9, 'GPIO9 (SPI Flash D2 (reserved))', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'D2 / 9', 'left', 16, 'SPI Flash D2 (reserved)'),
   ('8b2d63f1-c54a-4e4d-9017-678f4e528e54', '559d161b-291d-47e3-8c74-c7544b7e3e4f', NULL, 10, 'GPIO10 (SPI Flash D3 (reserved))', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'D3 / 10', 'left', 17, 'SPI Flash D3 (reserved)'),
@@ -1387,7 +1387,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('b5f5d606-59be-4589-9f92-290a3ba80aed', '559d161b-291d-47e3-8c74-c7544b7e3e4f', NULL, 36, 'GPIO36 (Input-only)', '{"adc":true,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":true,"digital_out":false}'::jsonb, '{"reserved":false,"input_only":true,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'VP / 36', 'left', 3, 'Input-only'),
   ('4d14b661-409e-4176-ba0f-882a0ff83f2f', '559d161b-291d-47e3-8c74-c7544b7e3e4f', NULL, 39, 'GPIO39 (Input-only)', '{"adc":true,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":true,"digital_out":false}'::jsonb, '{"reserved":false,"input_only":true,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'VN / 39', 'left', 4, 'Input-only'),
   ('29b2c517-acc5-4a3f-960b-c7fae94a9938', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 0, 'GPIO0 (BOOT button & strapping)', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":true,"strapping_note":"Boot mode select (pull-up; LOW enters download mode)","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '0', 'left', 2, 'BOOT button & strapping');
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('de763d86-6592-4acd-98e7-8f36fe9754ec', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 1, 'GPIO1', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '1', 'left', 3, NULL),
   ('009ff138-f8f5-4ecf-8296-293520c79c53', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 2, 'GPIO2', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '2', 'left', 4, NULL),
   ('429dd5df-1cd5-45aa-b220-a8de02732f63', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 3, 'GPIO3', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '3', 'left', 5, NULL),
@@ -1413,7 +1413,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('6f1bda45-2904-40e8-b4c4-40dff52fedbd', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 26, 'GPIO26 (SPI Flash/PSRAM CS1 (reserved))', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, '26', 'right', 3, 'SPI Flash/PSRAM CS1 (reserved)'),
   ('a859cb59-e046-458d-8309-11f295e7f069', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 33, 'GPIO33', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '33', 'right', 4, NULL),
   ('173ddb1d-507a-4e04-81df-1c991c5364ca', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 34, 'GPIO34', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '34', 'right', 5, NULL);
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('8e495807-eb6e-4cba-b444-d02a6c2cff43', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 35, 'GPIO35', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '35', 'right', 6, NULL),
   ('864a9454-1654-41a1-ae8b-29df182272ec', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 36, 'GPIO36', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '36', 'right', 7, NULL),
   ('d0113560-7675-4171-aba6-b3cfab008f9d', '04437f70-f575-4f46-894d-ef9447a42d27', NULL, 37, 'GPIO37', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '37', 'right', 8, NULL),
@@ -1439,7 +1439,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('ec7776e2-10ca-4413-b186-3a1af1521072', '9cbe2200-a27b-4662-8b96-edeec2389374', NULL, 11, 'GPIO11 (UART0 TX)', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"UART0 console (UART0 TX)","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'TX / 11', 'right', 2, 'UART0 TX'),
   ('19e85067-052f-4645-863a-8daec807e1b2', '9cbe2200-a27b-4662-8b96-edeec2389374', NULL, 12, 'GPIO12 (UART0 RX)', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"UART0 console (UART0 RX)","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'RX / 12', 'right', 3, 'UART0 RX'),
   ('fa7dcdfe-990d-4c26-83cc-912805c5d2a6', '9cbe2200-a27b-4662-8b96-edeec2389374', NULL, 13, 'GPIO13 (USB D-)', '{"adc":false,"i2c":false,"pwm":true,"spi":false,"uart":false,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":true,"flash_psram_conflict":false}'::jsonb, '13', 'right', 12, 'USB D-');
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('26156f9d-cce9-40c6-90c5-a2f5b52012f6', '9cbe2200-a27b-4662-8b96-edeec2389374', NULL, 14, 'GPIO14 (USB D+)', '{"adc":false,"i2c":false,"pwm":true,"spi":false,"uart":false,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":true,"flash_psram_conflict":false}'::jsonb, '14', 'right', 11, 'USB D+'),
   ('4273eb36-e2b3-4748-8d30-30c4973bf128', '9cbe2200-a27b-4662-8b96-edeec2389374', NULL, 15, 'GPIO15', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '15', 'right', 9, NULL),
   ('512ca67b-3574-4593-9b3d-ffa8a87af782', '9cbe2200-a27b-4662-8b96-edeec2389374', NULL, 23, 'GPIO23', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '23', 'right', 8, NULL),
@@ -1465,7 +1465,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('15d8ad9d-f805-45f2-9e84-52d9e4e169b8', 'e52f8c12-a762-4e87-93f4-8292c8e8ae88', NULL, 21, 'GPIO21', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '21', 'left', 12, NULL),
   ('f202a559-a5d3-47e9-96cf-3e71719bc84a', 'e52f8c12-a762-4e87-93f4-8292c8e8ae88', NULL, 22, 'GPIO22', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '22', 'right', 10, NULL),
   ('ff16115b-1f4a-4c39-a594-d1759927a9e3', 'e52f8c12-a762-4e87-93f4-8292c8e8ae88', NULL, 23, 'GPIO23', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '23', 'right', 9, NULL);
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('8d58f33b-441b-43a1-a071-7472d92bdb7f', 'e52f8c12-a762-4e87-93f4-8292c8e8ae88', NULL, 24, 'GPIO24', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '24', 'right', 8, NULL),
   ('4ad229a2-a4c2-4e45-b223-e4aad8d08fa6', 'e52f8c12-a762-4e87-93f4-8292c8e8ae88', NULL, 25, 'GPIO25', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '25', 'right', 7, NULL),
   ('febb4a58-1da9-47bd-a091-1745ac88998e', 'e52f8c12-a762-4e87-93f4-8292c8e8ae88', NULL, 26, 'GPIO26', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '26', 'right', 6, NULL),
@@ -1491,7 +1491,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('92ff8c40-54fe-4b76-8b91-31fc74a410b3', 'f2bd2610-9102-4648-8e9c-29a26047e6a7', NULL, 3, 'GPIO3 (Strapping)', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":true,"strapping_note":"Boot strapping pin","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '3', 'left', 6, 'Strapping'),
   ('c8ff0704-b9d1-4581-aaaf-8d0b68794af8', 'f2bd2610-9102-4648-8e9c-29a26047e6a7', NULL, 4, 'GPIO4', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '4', 'left', 7, NULL),
   ('2d5b3510-17b2-4b8e-b27c-7baaf0ddb47f', 'f2bd2610-9102-4648-8e9c-29a26047e6a7', NULL, 5, 'GPIO5', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '5', 'left', 8, NULL);
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('8ee18c46-1776-4b32-897c-6361ab0604e3', 'f2bd2610-9102-4648-8e9c-29a26047e6a7', NULL, 8, 'GPIO8 (Onboard RGB LED & strapping)', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":true,"strapping_note":"Boot strapping / onboard RGB LED","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '8', 'left', 11, 'Onboard RGB LED & strapping'),
   ('b6fea338-7c6f-47c4-b7ec-eed513dc671f', 'f2bd2610-9102-4648-8e9c-29a26047e6a7', NULL, 9, 'GPIO9 (BOOT button & strapping)', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":true,"strapping_note":"BOOT button / download mode strapping","usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '9', 'right', 6, 'BOOT button & strapping'),
   ('c9e28fab-01e0-444a-81e5-bb4df6a626ab', 'f2bd2610-9102-4648-8e9c-29a26047e6a7', NULL, 10, 'GPIO10', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, '10', 'left', 9, NULL),
@@ -1517,7 +1517,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('ecf65d4e-ea8a-45f3-b13a-e0232a19c665', '7d3f4dc6-189b-4a8b-a796-87ae10e6fa4e', NULL, 9, 'GPIO9', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'GP9', 'right', 7, NULL),
   ('b554fc07-873a-4745-8d37-76536f8c3b9f', '7d3f4dc6-189b-4a8b-a796-87ae10e6fa4e', NULL, 10, 'GPIO10', '{"adc":true,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'GP10', 'right', 6, NULL),
   ('82928bd0-a5aa-435b-b4e6-cbfa6a94dd0c', '7d3f4dc6-189b-4a8b-a796-87ae10e6fa4e', NULL, 11, 'GPIO11', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'GP11', 'right', 5, NULL);
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('0c91942e-bf3b-4c4d-9ef0-79bbb678c26d', '7d3f4dc6-189b-4a8b-a796-87ae10e6fa4e', NULL, 12, 'GPIO12', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'GP12', 'right', 4, NULL),
   ('ed6c8db0-c18b-4fa1-91fb-97434f8944d9', '7d3f4dc6-189b-4a8b-a796-87ae10e6fa4e', NULL, 13, 'GPIO13', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'GP13', 'right', 3, NULL),
   ('634207ae-c223-4229-8517-f0c693f91f78', '7d3f4dc6-189b-4a8b-a796-87ae10e6fa4e', NULL, 14, 'GPIO14 (Castellated bottom pad)', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":true,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'GP14', NULL, NULL, 'Castellated bottom pad'),
@@ -1543,7 +1543,7 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('5fb6efee-38a2-45f7-b7ab-c6891e2d5ac3', '00a2679f-ba95-4d82-b591-f3013f457d4d', NULL, 8, 'GPIO8 (Internal SPI Flash)', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'SD1', 'left', 6, 'Internal SPI Flash'),
   ('36f40214-b85b-4f4d-8655-a56ce9e33dde', '00a2679f-ba95-4d82-b591-f3013f457d4d', NULL, 9, 'GPIO9 (Internal SPI Flash (avoid))', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'SD2', 'left', 5, 'Internal SPI Flash (avoid)'),
   ('976e3d78-ddac-460d-9b4f-774402c1b8f9', '00a2679f-ba95-4d82-b591-f3013f457d4d', NULL, 10, 'GPIO10 (Internal SPI Flash (avoid))', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'SD3', 'left', 4, 'Internal SPI Flash (avoid)');
-INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
+INSERT INTO public.board_gpio_definitions (id, board_profile_id, custom_board_profile_id, pin, label, capabilities, restrictions, board_pin_name, header_side, header_position, board_note) VALUES
   ('9d0b19eb-ea5b-4b14-9bf7-2d85dfb95dec', '00a2679f-ba95-4d82-b591-f3013f457d4d', NULL, 11, 'GPIO11 (Internal SPI Flash)', '{"adc":false,"i2c":false,"pwm":false,"spi":false,"uart":false,"touch":false,"pull_up":false,"pull_down":false,"digital_in":false,"digital_out":false}'::jsonb, '{"reserved":true,"input_only":false,"strapping_pin":false,"reserved_reason":"Internal SPI Flash bus","usb_jtag_conflict":false,"flash_psram_conflict":true}'::jsonb, 'CMD', 'left', 7, 'Internal SPI Flash'),
   ('7189864a-5a68-4357-a2f2-8a62d05f576b', '00a2679f-ba95-4d82-b591-f3013f457d4d', NULL, 12, 'GPIO12 (Safe GPIO / SPI MISO)', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'D6', 'right', 9, 'Safe GPIO / SPI MISO'),
   ('aaf77e86-876c-49ad-bb14-1f4fa9247d35', '00a2679f-ba95-4d82-b591-f3013f457d4d', NULL, 13, 'GPIO13 (Safe GPIO / SPI MOSI)', '{"adc":false,"i2c":true,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":true,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'D7', 'right', 10, 'Safe GPIO / SPI MOSI'),
@@ -1552,5 +1552,5 @@ INSERT INTO public.board_gpio_definitions (id, board_catalog_id, custom_board_id
   ('bdf29752-20fd-4128-b33d-b891aeb96760', '00a2679f-ba95-4d82-b591-f3013f457d4d', NULL, 16, 'GPIO16 (Deep-sleep wake / onboard LED (no pull-up/I2C))', '{"adc":false,"i2c":false,"pwm":true,"spi":true,"uart":true,"touch":false,"pull_up":false,"pull_down":true,"digital_in":true,"digital_out":true}'::jsonb, '{"reserved":false,"input_only":false,"strapping_pin":false,"usb_jtag_conflict":false,"flash_psram_conflict":false}'::jsonb, 'D0', 'right', 1, 'Deep-sleep wake / onboard LED (no pull-up/I2C)');
 
 -- seed: platform_settings (1 rows)
-INSERT INTO public.platform_settings (id, customer_registration_enabled, pairing_code_expiration_seconds, default_account_status, controller_heartbeat_interval_seconds, controller_offline_timeout_seconds, max_devices_per_account, max_controllers_per_account, supported_firmware_channels, maintenance_mode, board_catalog_enabled, updated_by, default_timezone, firmware_downloads_enabled) VALUES
+INSERT INTO public.platform_settings (id, customer_registration_enabled, pairing_code_expiration_seconds, default_account_status, controller_heartbeat_interval_seconds, controller_offline_timeout_seconds, max_devices_per_account, max_board_instances_per_account, supported_firmware_channels, maintenance_mode, board_library_enabled, updated_by, default_timezone, firmware_downloads_enabled) VALUES
   (1, TRUE, 300, 'active', 30, 90, 100, 25, ARRAY['stable', 'beta', 'development'], FALSE, TRUE, NULL, 'UTC', TRUE);

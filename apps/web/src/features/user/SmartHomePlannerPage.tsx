@@ -226,8 +226,8 @@ export function SmartHomePlannerPage({
   const loadBoards = useCallback(async (force = false) => {
     // Only used to draw the boards. A failure here never affects the analysis.
     const results = await Promise.allSettled([
-      cachedGet<{ boards?: BoardProfileItem[] }>("/api/boards/catalog", { ttlMs: 60_000, force }),
-      cachedGet<{ boards?: BoardProfileItem[] }>("/api/boards/custom", { ttlMs: 60_000, force }),
+      cachedGet<{ boards?: BoardProfileItem[] }>("/api/board-library/catalog", { ttlMs: 60_000, force }),
+      cachedGet<{ boards?: BoardProfileItem[] }>("/api/board-library/custom", { ttlMs: 60_000, force }),
     ]);
     const next = new Map<string, BoardProfileItem>();
     for (const outcome of results) {

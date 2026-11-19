@@ -40,8 +40,8 @@ function makeController(overrides?: Partial<ControllerItem>): ControllerItem {
     id: "c1",
     account_id: "a1",
     home_id: "h1",
-    board_catalog_id: "b1",
-    custom_board_id: null,
+    board_profile_id: "b1",
+    custom_board_profile_id: null,
     name: "Living Hub",
     hardware_uid: "esp-1",
     board_model: "ESP32-S3-N16R8",
@@ -71,7 +71,7 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
   it("deduplicates concurrent cachedGet requests, reads snapshots, and invalidates affected prefixes on mutation", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/boards/catalog") return jsonResponse({ boards: [{ id: "b1" }] });
+      if (url === "/api/board-library/catalog") return jsonResponse({ boards: [{ id: "b1" }] });
       if (url === "/api/homes/overview") return jsonResponse({ homes: [{ id: "h1" }] });
       if (url === "/api/switches") return jsonResponse({ switches: [{ id: "sw1" }] });
       if (url === "/api/activity") return jsonResponse({ logs: [{ id: "log1" }] });
@@ -89,15 +89,15 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
     expect(b.homes[0]?.id).toBe("h1");
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    await cachedGet("/api/boards/catalog", { ttlMs: 60_000 });
+    await cachedGet("/api/board-library/catalog", { ttlMs: 60_000 });
     await cachedGet("/api/switches", { ttlMs: 15_000 });
     await cachedGet("/api/activity", { ttlMs: 15_000 });
     expect(getCachedSnapshot("/api/homes/overview")).not.toBeNull();
-    expect(getCachedSnapshot("/api/boards/catalog")).not.toBeNull();
+    expect(getCachedSnapshot("/api/board-library/catalog")).not.toBeNull();
     expect(getCachedSnapshot("/api/switches")).not.toBeNull();
     expect(getCachedSnapshot("/api/activity")).not.toBeNull();
 
-    // Toggling a switch invalidates /api/switches, /api/homes/overview, and /api/activity, NOT /api/boards/catalog
+    // Toggling a switch invalidates /api/switches, /api/homes/overview, and /api/activity, NOT /api/board-library/catalog
     await apiFetch("/api/switches/sw1/toggle", {
       method: "POST",
       body: JSON.stringify({ isOn: true }),
@@ -105,14 +105,14 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
     expect(getCachedSnapshot("/api/switches")).toBeNull();
     expect(getCachedSnapshot("/api/homes/overview")).toBeNull();
     expect(getCachedSnapshot("/api/activity")).toBeNull();
-    expect(getCachedSnapshot("/api/boards/catalog")).not.toBeNull();
+    expect(getCachedSnapshot("/api/board-library/catalog")).not.toBeNull();
 
     // Auth boundary mutation (/api/auth/login) clears all cached GET snapshots
     await apiFetch("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email: "next@example.com", password: "pw" }),
     });
-    expect(getCachedSnapshot("/api/boards/catalog")).toBeNull();
+    expect(getCachedSnapshot("/api/board-library/catalog")).toBeNull();
   });
 
   it("applies optimistic switch state immediately on HomeFloorPlan and rolls back with StatusAlert on API failure", async () => {
@@ -155,7 +155,7 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
         account_id: "a1",
         home_id: "h1",
         room_id: "r1",
-        controller_id: "c1",
+        board_instance_id: "c1",
         name: "Porch Light",
         gpio_pin: 4,
         inverted: false,
@@ -214,7 +214,7 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
       account_id: "a1",
       home_id: "h1",
       room_id: null,
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Lamp Alpha",
       gpio_pin: 4,
       inverted: false,
@@ -227,7 +227,7 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
       account_id: "a1",
       home_id: "h1",
       room_id: null,
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Lamp Beta",
       gpio_pin: 5,
       inverted: false,
@@ -244,7 +244,7 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
           jsonResponse({ switches: [{ ...sw1Initial, is_on: serverSw1 }, sw2Initial] })
         );
       }
-      if (url === "/api/controllers") {
+      if (url === "/api/board-instances") {
         return Promise.resolve(jsonResponse({ controllers: [makeController()] }));
       }
       if (url === "/api/homes/rooms") return Promise.resolve(jsonResponse({ rooms: [] }));
@@ -470,7 +470,7 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
       account_id: "a1",
       home_id: "h1",
       room_id: null,
-      controller_id: "c1",
+      board_instance_id: "c1",
       name: "Patio Spotlight",
       gpio_pin: 14,
       inverted: false,
@@ -482,7 +482,7 @@ describe("Phase 2 frontend caching, optimistic controls & concurrency guards", (
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url === "/api/switches") return Promise.resolve(jsonResponse({ switches: [sw] }));
-      if (url === "/api/controllers") return Promise.resolve(jsonResponse({ controllers: [makeController()] }));
+      if (url === "/api/board-instances") return Promise.resolve(jsonResponse({ controllers: [makeController()] }));
       if (url === "/api/homes/rooms") return Promise.resolve(jsonResponse({ rooms: [] }));
       if (url === "/api/switches/sw-dup/toggle") {
         return new Promise<Response>((res) => {

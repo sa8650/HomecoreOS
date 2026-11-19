@@ -99,8 +99,8 @@ export interface ControllerItem {
   account_id: string;
   home_id: string;
   room_id?: string | null;
-  board_catalog_id: string | null;
-  custom_board_id: string | null;
+  board_profile_id: string | null;
+  custom_board_profile_id: string | null;
   name: string;
   hardware_uid: string | null;
   board_model: string;
@@ -158,8 +158,8 @@ export interface ControllerItem {
     connectivity_note: string | null;
   };
   sensor_compatibility?: ControllerSensorCompatibilityReport | null;
-  // Unified Controller / Node role (see packages/shared/src/device-role.ts)
-  device_role?: "controller" | "node";
+  // Unified Controller / Node role (see packages/shared/src/board-role.ts)
+  board_role?: "controller" | "node";
   node_comm_mode?: "espnow" | "wifi_mqtt" | "offline" | null;
   node_link_state?:
     | "linked"
@@ -181,7 +181,7 @@ export interface DeviceItem {
   account_id: string;
   home_id: string;
   room_id: string | null;
-  controller_id: string;
+  board_instance_id: string;
   name: string;
   device_type: string;
   gpio_pin: number;
@@ -194,7 +194,7 @@ export interface SwitchItem {
   account_id: string;
   home_id: string;
   room_id: string | null;
-  controller_id: string;
+  board_instance_id: string;
   name: string;
   gpio_pin: number;
   is_on: boolean;
@@ -208,7 +208,7 @@ export interface SensorItem {
   account_id: string;
   home_id: string;
   room_id: string | null;
-  controller_id: string;
+  board_instance_id: string;
   name: string;
   sensor_type: string;
   gpio_pin: number | null;
@@ -469,7 +469,7 @@ export type NotificationPreferenceKey =
 export interface FirmwareUpdateHistoryItem {
   id: string;
   account_id: string;
-  controller_id: string;
+  board_instance_id: string;
   controller_name?: string;
   release_id: string | null;
   update_type: "ota" | "usb_factory";
@@ -492,10 +492,10 @@ export interface FirmwareUpdateHistoryItem {
 }
 
 export interface ApplicableFirmwareUpdateItem {
-  controllerId: string;
+  boardInstanceId: string;
   controllerName: string;
   /** Unified role: a Node's update is relayed through its Controller. */
-  deviceRole?: "controller" | "node";
+  boardRole?: "controller" | "node";
   boardModel: string;
   controllerStatus: string;
   currentVersion: string | null;
@@ -518,7 +518,7 @@ export interface ApplicableFirmwareUpdateItem {
 export interface ActivityItem {
   id: string;
   account_id: string | null;
-  controller_id: string | null;
+  board_instance_id: string | null;
   category: string;
   action: string;
   summary: string;

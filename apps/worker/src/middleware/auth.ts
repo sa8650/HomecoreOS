@@ -195,7 +195,7 @@ export function requireDeviceBearerAuth(): MiddlewareHandler<AppEnv> {
 
     const { data: cred } = await db
       .from("mqtt_credentials_metadata")
-      .select("controller_id,account_id,mqtt_username,mqtt_client_id,topic_prefix,status")
+      .select("board_instance_id,account_id,mqtt_username,mqtt_client_id,topic_prefix,status")
       .eq("device_token_hash", tokenHash)
       .eq("status", "active")
       .maybeSingle();
@@ -205,7 +205,7 @@ export function requireDeviceBearerAuth(): MiddlewareHandler<AppEnv> {
     }
 
     const row = cred as {
-      controller_id: string;
+      board_instance_id: string;
       account_id: string;
       mqtt_username: string;
       mqtt_client_id: string;
@@ -220,9 +220,9 @@ export function requireDeviceBearerAuth(): MiddlewareHandler<AppEnv> {
         .is("deleted_at", null)
         .maybeSingle(),
       db
-        .from("controllers")
+        .from("board_instances")
         .select("id,home_id,deleted_at")
-        .eq("id", row.controller_id)
+        .eq("id", row.board_instance_id)
         .eq("account_id", row.account_id)
         .is("deleted_at", null)
         .maybeSingle(),
@@ -239,7 +239,7 @@ export function requireDeviceBearerAuth(): MiddlewareHandler<AppEnv> {
     }
 
     c.set("deviceAuth", {
-      controllerId: row.controller_id,
+      boardInstanceId: row.board_instance_id,
       accountId: row.account_id,
       homeId: (controller as { home_id: string }).home_id,
       mqttUsername: row.mqtt_username,

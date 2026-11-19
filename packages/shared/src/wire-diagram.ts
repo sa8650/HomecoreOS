@@ -70,7 +70,7 @@ export interface WireDiagramEntityInput {
   kind: WireDiagramEntityKind;
   id: string;
   name: string;
-  controllerId: string;
+  boardInstanceId: string;
   /** The configured GPIO, or null for an I2C sensor on the controller's default bus. */
   gpioPin: number | null;
   /** Switch only: Active-LOW relay logic when true. */
@@ -89,8 +89,8 @@ export interface WireDiagramEntityInput {
 export interface WireDiagramControllerInput {
   id: string;
   name: string;
-  boardCatalogId?: string | null;
-  customBoardId?: string | null;
+  boardProfileId?: string | null;
+  customBoardProfileId?: string | null;
   boardModel?: string | null;
   firmwareVersion?: string | null;
   status?: string | null;

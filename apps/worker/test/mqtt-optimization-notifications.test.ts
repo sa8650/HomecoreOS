@@ -271,10 +271,10 @@ describe("MQTT Optimization, Consolidated Config Sync, Multi-Board Firmware, and
     );
 
     // 4. Create & Pair Controller for User A -> verify EMQX ACL includes config/# and config/ack
-    const ctrlCreate = await req("/api/controllers", {
+    const ctrlCreate = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
-      body: JSON.stringify({ name: "Main Hub", boardCatalogId: s3Board.id }),
+      body: JSON.stringify({ name: "Main Hub", boardProfileId: s3Board.id }),
     });
     expect(ctrlCreate.status).toBe(201);
     const { controller, pairingCode } = (await ctrlCreate.json()) as {
@@ -358,7 +358,7 @@ describe("MQTT Optimization, Consolidated Config Sync, Multi-Board Firmware, and
       body: JSON.stringify({
         name: "Living Room TV",
         deviceType: "tv",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: 4,
       }),
     });

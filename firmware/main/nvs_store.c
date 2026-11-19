@@ -72,7 +72,7 @@ esp_err_t hc_nvs_load_config(homecore_config_t *out) {
     out->heartbeat_interval_sec = HOMECORE_DEFAULT_HEARTBEAT_SEC;
     // Every device that never received a role behaves as a Controller, which is
     // exactly how the unified firmware behaved before roles existed.
-    out->device_role = HOMECORE_DEFAULT_DEVICE_ROLE;
+    out->board_role = HOMECORE_DEFAULT_BOARD_ROLE;
     out->espnow_channel = HOMECORE_DEFAULT_ESPNOW_CHANNEL;
     out->node_link_state = 0; // HC_NODE_UNASSIGNED
 
@@ -114,7 +114,7 @@ esp_err_t hc_nvs_load_config(homecore_config_t *out) {
     }
 
     read_str_or_empty(h, "account_id", out->account_id, sizeof(out->account_id));
-    read_str_or_empty(h, "ctrl_id", out->controller_id, sizeof(out->controller_id));
+    read_str_or_empty(h, "ctrl_id", out->board_instance_id, sizeof(out->board_instance_id));
     read_str_or_empty(h, "mqtt_host", out->mqtt_host, sizeof(out->mqtt_host));
     uint16_t port_u16 = 8883;
     if (nvs_get_u16(h, "mqtt_port", &port_u16) == ESP_OK) {
@@ -140,9 +140,9 @@ esp_err_t hc_nvs_load_config(homecore_config_t *out) {
     }
 
     // Unified role (absent on devices that never received one -> Controller).
-    uint8_t role_u8 = HOMECORE_DEFAULT_DEVICE_ROLE;
+    uint8_t role_u8 = HOMECORE_DEFAULT_BOARD_ROLE;
     if (nvs_get_u8(h, "role", &role_u8) == ESP_OK && role_u8 <= 1) {
-        out->device_role = role_u8;
+        out->board_role = role_u8;
     }
     read_str_or_empty(h, "asg_ctrl", out->assigned_controller_id, sizeof(out->assigned_controller_id));
     read_str_or_empty(h, "asg_mac", out->assigned_controller_mac, sizeof(out->assigned_controller_mac));
@@ -162,7 +162,7 @@ esp_err_t hc_nvs_load_config(homecore_config_t *out) {
     if (nvs_get_u32(h, "rl_seq", &seq_u32) == ESP_OK) {
         out->last_cmd_seq = seq_u32;
     }
-    if (out->device_role == 1 && out->assigned_controller_id[0] == '\0') {
+    if (out->board_role == 1 && out->assigned_controller_id[0] == '\0') {
         out->node_link_state = 0; // HC_NODE_UNASSIGNED
     }
 
@@ -192,7 +192,7 @@ esp_err_t hc_nvs_save_config(const homecore_config_t *cfg) {
     nvs_set_u8(h, "phys_conf", cfg->physical_confirmed ? 1 : 0);
     nvs_set_u8(h, "paired", cfg->paired ? 1 : 0);
     nvs_set_str(h, "account_id", cfg->account_id);
-    nvs_set_str(h, "ctrl_id", cfg->controller_id);
+    nvs_set_str(h, "ctrl_id", cfg->board_instance_id);
     nvs_set_str(h, "mqtt_host", cfg->mqtt_host);
     nvs_set_u16(h, "mqtt_port", cfg->mqtt_port);
     nvs_set_u8(h, "mqtt_tls", cfg->mqtt_tls ? 1 : 0);
@@ -204,7 +204,7 @@ esp_err_t hc_nvs_save_config(const homecore_config_t *cfg) {
     nvs_set_u32(h, "cfg_rev", cfg->config_revision);
     nvs_set_str(h, "cfg_hash", cfg->config_hash);
     nvs_set_u16(h, "hb_sec", cfg->heartbeat_interval_sec >= 30 ? cfg->heartbeat_interval_sec : HOMECORE_DEFAULT_HEARTBEAT_SEC);
-    nvs_set_u8(h, "role", cfg->device_role);
+    nvs_set_u8(h, "role", cfg->board_role);
     nvs_set_str(h, "asg_ctrl", cfg->assigned_controller_id);
     nvs_set_str(h, "asg_mac", cfg->assigned_controller_mac);
     nvs_set_u8(h, "esp_ch", cfg->espnow_channel);
@@ -225,7 +225,7 @@ esp_err_t hc_nvs_clear_pairing(homecore_config_t *cfg) {
     cfg->physical_confirmed = false;
     cfg->confirm_method[0] = '\0';
     cfg->account_id[0] = '\0';
-    cfg->controller_id[0] = '\0';
+    cfg->board_instance_id[0] = '\0';
     cfg->mqtt_host[0] = '\0';
     cfg->mqtt_username[0] = '\0';
     cfg->mqtt_password[0] = '\0';

@@ -15,15 +15,15 @@ import type { DbClient } from "./db";
 export async function resolveControllerBoardSpec(
   db: DbClient,
   controller: {
-    board_catalog_id: string | null;
-    custom_board_id: string | null;
+    board_profile_id: string | null;
+    custom_board_profile_id: string | null;
   }
 ): Promise<BoardProfileSpec | null> {
-  if (controller.board_catalog_id) {
+  if (controller.board_profile_id) {
     const { data: board } = await db
-      .from("board_catalog")
+      .from("board_profiles")
       .select("*")
-      .eq("id", controller.board_catalog_id)
+      .eq("id", controller.board_profile_id)
       .is("deleted_at", null)
       .maybeSingle();
     if (!board) return null;
@@ -31,7 +31,7 @@ export async function resolveControllerBoardSpec(
     const { data: gpios } = await db
       .from("board_gpio_definitions")
       .select("pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions")
-      .eq("board_catalog_id", controller.board_catalog_id)
+      .eq("board_profile_id", controller.board_profile_id)
       .order("pin", { ascending: true });
 
     const b = board as {
@@ -104,11 +104,11 @@ export async function resolveControllerBoardSpec(
     };
   }
 
-  if (controller.custom_board_id) {
+  if (controller.custom_board_profile_id) {
     const { data: board } = await db
-      .from("custom_boards")
+      .from("custom_board_profiles")
       .select("*")
-      .eq("id", controller.custom_board_id)
+      .eq("id", controller.custom_board_profile_id)
       .is("deleted_at", null)
       .maybeSingle();
     if (!board) return null;
@@ -116,7 +116,7 @@ export async function resolveControllerBoardSpec(
     const { data: gpios } = await db
       .from("board_gpio_definitions")
       .select("pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions")
-      .eq("custom_board_id", controller.custom_board_id)
+      .eq("custom_board_profile_id", controller.custom_board_profile_id)
       .order("pin", { ascending: true });
 
     const b = board as {
@@ -174,7 +174,7 @@ export async function resolveControllerBoardSpec(
 export async function getUsedPinsOnController(
   db: DbClient,
   accountId: string,
-  controllerId: string,
+  boardInstanceId: string,
   exclude?: { table: "devices" | "switches" | "sensors"; id: string }
 ): Promise<number[]> {
   const [devRes, swRes, sensRes] = await Promise.all([
@@ -182,19 +182,19 @@ export async function getUsedPinsOnController(
       .from("devices")
       .select("id,gpio_pin")
       .eq("account_id", accountId)
-      .eq("controller_id", controllerId)
+      .eq("board_instance_id", boardInstanceId)
       .is("deleted_at", null),
     db
       .from("switches")
       .select("id,gpio_pin")
       .eq("account_id", accountId)
-      .eq("controller_id", controllerId)
+      .eq("board_instance_id", boardInstanceId)
       .is("deleted_at", null),
     db
       .from("sensors")
       .select("id,gpio_pin")
       .eq("account_id", accountId)
-      .eq("controller_id", controllerId)
+      .eq("board_instance_id", boardInstanceId)
       .is("deleted_at", null),
   ]);
 
@@ -308,11 +308,11 @@ export function checkPinSelectionPolicy(params: {
  */
 export async function replaceBoardGpioDefinitions(
   db: DbClient,
-  target: { boardCatalogId: string } | { customBoardId: string },
+  target: { boardProfileId: string } | { customBoardProfileId: string },
   gpios: GpioPinDefinition[]
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const fkCol = "boardCatalogId" in target ? "board_catalog_id" : "custom_board_id";
-  const fkVal = "boardCatalogId" in target ? target.boardCatalogId : target.customBoardId;
+  const fkCol = "boardProfileId" in target ? "board_profile_id" : "custom_board_profile_id";
+  const fkVal = "boardProfileId" in target ? target.boardProfileId : target.customBoardProfileId;
 
   const { data: prevData, error: prevErr } = await db
     .from("board_gpio_definitions")
@@ -378,16 +378,16 @@ export async function replaceBoardGpioDefinitions(
 export async function validateBoardGpioUpdateAgainstControllers(
   db: DbClient,
   params: {
-    target: { boardCatalogId: string } | { customBoardId: string };
+    target: { boardProfileId: string } | { customBoardProfileId: string };
     nextGpios: GpioPinDefinition[];
     chipFamilyChanged?: boolean;
   }
 ): Promise<{ ok: true } | { ok: false; error: string; conflicts: string[] }> {
-  const fkCol = "boardCatalogId" in params.target ? "board_catalog_id" : "custom_board_id";
-  const fkVal = "boardCatalogId" in params.target ? params.target.boardCatalogId : params.target.customBoardId;
+  const fkCol = "boardProfileId" in params.target ? "board_profile_id" : "custom_board_profile_id";
+  const fkVal = "boardProfileId" in params.target ? params.target.boardProfileId : params.target.customBoardProfileId;
 
   const { data: ctrlRows } = await db
-    .from("controllers")
+    .from("board_instances")
     .select("id,name")
     .eq(fkCol, fkVal)
     .is("deleted_at", null);
@@ -411,18 +411,18 @@ export async function validateBoardGpioUpdateAgainstControllers(
   const [devRes, swRes, senRes] = await Promise.all([
     db
       .from("devices")
-      .select("id,name,controller_id,device_type,gpio_pin")
-      .in("controller_id", controllerIds)
+      .select("id,name,board_instance_id,device_type,gpio_pin")
+      .in("board_instance_id", controllerIds)
       .is("deleted_at", null),
     db
       .from("switches")
-      .select("id,name,controller_id,gpio_pin")
-      .in("controller_id", controllerIds)
+      .select("id,name,board_instance_id,gpio_pin")
+      .in("board_instance_id", controllerIds)
       .is("deleted_at", null),
     db
       .from("sensors")
-      .select("id,name,controller_id,sensor_type,gpio_pin")
-      .in("controller_id", controllerIds)
+      .select("id,name,board_instance_id,sensor_type,gpio_pin")
+      .in("board_instance_id", controllerIds)
       .is("deleted_at", null),
   ]);
 
@@ -460,7 +460,7 @@ export async function validateBoardGpioUpdateAgainstControllers(
 
   for (const dev of (devRes.data ?? []) as Array<{
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     device_type: string;
     gpio_pin: number;
   }>) {
@@ -470,25 +470,25 @@ export async function validateBoardGpioUpdateAgainstControllers(
     checkPin(
       dev.gpio_pin,
       req,
-      `Device "${dev.name}" on ${ctrlNameById.get(dev.controller_id) ?? "controller"}`
+      `Device "${dev.name}" on ${ctrlNameById.get(dev.board_instance_id) ?? "controller"}`
     );
   }
 
   for (const sw of (swRes.data ?? []) as Array<{
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     gpio_pin: number;
   }>) {
     checkPin(
       sw.gpio_pin,
       "digital_out",
-      `Switch "${sw.name}" on ${ctrlNameById.get(sw.controller_id) ?? "controller"}`
+      `Switch "${sw.name}" on ${ctrlNameById.get(sw.board_instance_id) ?? "controller"}`
     );
   }
 
   for (const sen of (senRes.data ?? []) as Array<{
     name: string;
-    controller_id: string;
+    board_instance_id: string;
     sensor_type: string;
     gpio_pin: number | null;
   }>) {
@@ -500,7 +500,7 @@ export async function validateBoardGpioUpdateAgainstControllers(
     checkPin(
       sen.gpio_pin,
       req,
-      `Sensor "${sen.name}" on ${ctrlNameById.get(sen.controller_id) ?? "controller"}`,
+      `Sensor "${sen.name}" on ${ctrlNameById.get(sen.board_instance_id) ?? "controller"}`,
       Boolean(driver?.requiresBidirectionalGpio)
     );
   }

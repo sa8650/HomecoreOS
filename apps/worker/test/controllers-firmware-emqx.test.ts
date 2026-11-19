@@ -85,7 +85,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
     const userCookie = extractCookie(regRes, "hc_user_session");
 
     // 2. Fetch catalog board (esp32-s3-devkitc-1-n16r8)
-    const catRes = await req("/api/boards/catalog", {
+    const catRes = await req("/api/board-library/catalog", {
       headers: { Cookie: userCookie },
     });
     const catJson = (await catRes.json()) as {
@@ -95,12 +95,12 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
     expect(s3Board).toBeDefined();
 
     // 3. Create controller -> receives 6-digit pairing code
-    const ctrlCreate = await req("/api/controllers", {
+    const ctrlCreate = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
         name: "Lab ESP32-S3",
-        boardCatalogId: s3Board.id,
+        boardProfileId: s3Board.id,
       }),
     });
     expect(ctrlCreate.status).toBe(201);
@@ -125,7 +125,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
     expect(pair1.status).toBe(200);
     await seedInstalledFirmwareWithDrivers({
       pg: dbHarness.pg,
-      controllerId: controller.id,
+      boardInstanceId: controller.id,
       boardId: s3Board.id,
       boardSlug: s3Board.slug,
       chipFamily: "esp32s3",
@@ -157,7 +157,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         name: "Bad Relay",
         gpioPin: 35,
       }),
@@ -169,7 +169,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         name: "Ceiling Relay",
         gpioPin: 4,
       }),
@@ -182,7 +182,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         name: "Conflicting Pump",
         deviceType: "relay",
         gpioPin: 4,
@@ -195,7 +195,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         name: "Magic Quantum Sensor",
         sensorType: "quantum_flux",
         gpioPin: 5,
@@ -207,7 +207,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         name: "Lab Temp",
         sensorType: "temperature_dht22",
         gpioPin: 5,
@@ -232,7 +232,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
       body: JSON.stringify({
         name: "High Temp Shutoff",
         executionMode: "cloud",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         triggerConfig: {
           type: "sensor_value",
           sensorId,
@@ -379,7 +379,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         releaseId: pkgJson.release.id,
       }),
     });
@@ -393,7 +393,7 @@ describe("Controller Pairing, GPIO Validation, EMQX Publish, Automation, and R2 
     expect(espOtaFetch.headers.get("X-Firmware-Sha256")).toBe(otaSha);
 
     // 9. Deleting controller revokes EMQX user and ACL rules
-    const delCtrl = await req(`/api/controllers/${controller.id}`, {
+    const delCtrl = await req(`/api/board-instances/${controller.id}`, {
       method: "DELETE",
       headers: { Cookie: userCookie },
     });

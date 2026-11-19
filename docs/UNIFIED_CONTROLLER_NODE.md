@@ -12,7 +12,7 @@ firmware image that runs either role, chosen at runtime by the user in the web c
 
 | | Controller mode | Node mode |
 |---|---|---|
-| Defined in | `device_role = 'controller'` (default for every existing device) | `device_role = 'node'` |
+| Defined in | `board_role = 'controller'` (default for every existing device) | `board_role = 'node'` |
 | Cloud | Wi-Fi + EMQX MQTT (unchanged) | **no MQTT session** while the ESP-NOW link is healthy; HTTPS heartbeat only |
 | Peer link | hosts Nodes over ESP-NOW | links to **one** assigned Controller over ESP-NOW |
 | Fallback | — | after losing its Controller it retries, then runs as **“Standalone Node — Controller Disconnected”** over Wi-Fi/MQTT |
@@ -20,16 +20,16 @@ firmware image that runs either role, chosen at runtime by the user in the web c
 | OTA | EMQX `ota/cmd` on its own topic | EMQX instruction relayed by the Controller, then a temporary Wi-Fi/EMQX window for the download |
 | Identity | device row, pairing, credentials, firmware history | **same row** — a role change never recreates the device |
 
-The role is a **column on the existing `controllers` table**, not a new device type, so switches,
+The role is a **column on the existing `board_instances` table**, not a new device type, so switches,
 devices, sensors, automations, rooms, audit history, OTA history and MQTT credentials all survive
 a promotion or a demotion untouched.
 
-## 2. Shared contract (`packages/shared/src/device-role.ts`)
+## 2. Shared contract (`packages/shared/src/board-role.ts`)
 
 Exported from `@homecoreos/shared`, used by the Worker, the web console and (in behaviour) the
 firmware, so all three agree on the rules:
 
-- `DeviceRole` (`controller` | `node`), `NodeCommMode` (`espnow` | `wifi_mqtt` | `offline`),
+- `BoardRole` (`controller` | `node`), `NodeCommMode` (`espnow` | `wifi_mqtt` | `offline`),
   `NodeLinkState` (`linked` | `controller_lost` | `reconnecting` | `standalone` | `unassigned`).
 - Timing contract: `ESPNOW_HEARTBEAT_INTERVAL_MS = 2 s`, `ESPNOW_LINK_TIMEOUT_MS = 10 s`,
   `ESPNOW_RECONNECT_WINDOW_MS = 45 s`, `ESPNOW_CONTROLLER_PROBE_MS = 15 s`,
@@ -37,36 +37,36 @@ firmware, so all three agree on the rules:
 - Capability gates: `boardSupportsEspNow`, `boardSupportsControllerRole` (Wi-Fi radio required;
   ESP-NOW shares it).
 - Presentation: `deviceStatusLabel` (the only place “Standalone Node — Controller Disconnected”
-  is produced), `nodeCommModeLabel`, `deviceRoleLabel`, `isNodeStandalone`, `deriveCommMode`.
+  is produced), `nodeCommModeLabel`, `boardRoleLabel`, `isNodeStandalone`, `deriveCommMode`.
 - Guards: `roleChangeBlocker`, `canAssignNodeToController` — the Worker and the console run the
   same functions, so a UI that allows something the API rejects is a bug both sides can catch.
-- 7 unit tests in `packages/shared/test/device-role.test.ts`.
+- 7 unit tests in `packages/shared/test/board-role.test.ts`.
 
-## 3. Database (`database/migrations/0002_device_roles.sql`)
+## 3. Database (`database/migrations/0002_board_roles.sql`)
 
 Additive only (no table rebuild, no data loss):
 
 | Column | Type / constraint |
 |---|---|
-| `device_role` | `text NOT NULL DEFAULT 'controller'`, check `controller \| node` |
-| `assigned_controller_id` | `uuid` FK → `controllers(id)` `ON DELETE SET NULL`, ≠ `id`, only when `device_role='node'` |
+| `board_role` | `text NOT NULL DEFAULT 'controller'`, check `controller \| node` |
+| `assigned_controller_id` | `uuid` FK → `board_instances(id)` `ON DELETE SET NULL`, ≠ `id`, only when `board_role='node'` |
 | `comm_mode` | `espnow \| wifi_mqtt \| offline` |
 | `node_link_state` | `linked \| controller_lost \| reconnecting \| standalone \| unassigned` |
 | `espnow_channel` | `smallint` 1–13, `NULL` = follow the Wi-Fi STA channel |
 | `node_last_linked_at`, `role_changed_at` | timestamps |
 
-Indexes: `idx_controllers_device_role (account_id, device_role)` (partial on non-deleted rows) and
-`idx_controllers_assigned_controller`. `database/verify` snapshot rebaselined
+Indexes: `idx_board_instances_board_role (account_id, board_role)` (partial on non-deleted rows) and
+`idx_board_instances_assigned_controller`. `database/verify` snapshot rebaselined
 (32 tables, 5 functions, 345 seeded rows); `npm run db:verify` → *schema matches snapshot ✓*.
 
 Because the default is `controller`, every pre-existing row keeps behaving exactly as before.
 
 ## 4. Worker (`apps/worker`)
 
-**Role management** — `src/lib/device-roles.ts`:
+**Role management** — `src/lib/board-roles.ts`:
 
 - `listAttachedNodes` — Nodes hosted by one Controller.
-- `changeDeviceRole` — promote/demote with the shared guards (board capability, self-reference,
+- `changeBoardRole` — promote/demote with the shared guards (board capability, self-reference,
   attached Nodes), audit (`controller.role_changed`), explicit release of hosted Nodes to
   `comm_mode='wifi_mqtt'` / `node_link_state='unassigned'`, and forced config sync for the device
   and the released Nodes.
@@ -75,16 +75,16 @@ Because the default is `controller`, every pre-existing row keeps behaving exact
   home**), sets `comm_mode='espnow'` + `node_link_state='reconnecting'`, audits
   (`controller.node_assigned` / `controller.node_unassigned`) and force-syncs both devices.
 
-**Routes** — `src/routes/controllers.ts`:
+**Routes** — `src/routes/board-instances.ts`:
 
 | Route | Purpose |
 |---|---|
-| `GET /api/controllers` | now returns `device_role`, `node_comm_mode`, `node_link_state`, `assigned_controller_id`, `assigned_controller_name`, `connected_node_count`, `role_changed_at`, `node_last_linked_at` (single pass, no N+1) |
-| `GET /api/controllers/:id/nodes` | Nodes hosted by a Controller (used by the demote dialog) |
-| `PATCH /api/controllers/:id/role` | `{role, acknowledgeAttachedNodes}` → 409 `attached_nodes` with the affected Nodes when unacknowledged |
-| `POST /api/controllers/:id/assign-controller` | `{controllerId \| null}` |
-| `POST /api/controllers/:id/relink` | Node re-link request; delivered straight to a standalone Node, or relayed through its Controller when the Node has no MQTT session |
-| `PATCH /api/controllers/:id` | extended with `espnowChannel` (1–13 or `null`); changing it re-syncs every hosted Node |
+| `GET /api/board-instances` | now returns `board_role`, `node_comm_mode`, `node_link_state`, `assigned_controller_id`, `assigned_controller_name`, `connected_node_count`, `role_changed_at`, `node_last_linked_at` (single pass, no N+1) |
+| `GET /api/board-instances/:id/nodes` | Nodes hosted by a Controller (used by the demote dialog) |
+| `PATCH /api/board-instances/:id/role` | `{role, acknowledgeAttachedNodes}` → 409 `attached_nodes` with the affected Nodes when unacknowledged |
+| `POST /api/board-instances/:id/assign-controller` | `{boardInstanceId \| null}` |
+| `POST /api/board-instances/:id/relink` | Node re-link request; delivered straight to a standalone Node, or relayed through its Controller when the Node has no MQTT session |
+| `PATCH /api/board-instances/:id` | extended with `espnowChannel` (1–13 or `null`); changing it re-syncs every hosted Node |
 
 **Config snapshot** (`src/lib/controller-config.ts`) now carries a `role` block:
 
@@ -109,7 +109,7 @@ what keeps its `status`, `comm_mode`, `node_link_state` and `last_heartbeat_at` 
 missing from the roster become `controller_lost` only after `ESPNOW_NODE_STALE_MS`, and a Node
 reporting its own `standalone` state is never overwritten.
 
-**OTA** (`src/routes/firmware.ts`): `applicableUpdates` carry `deviceRole`; a Node whose MQTT
+**OTA** (`src/routes/firmware.ts`): `applicableUpdates` carry `boardRole`; a Node whose MQTT
 session is not connected gets the instruction relayed to its Controller
 (`{action:"ota_relay", node_id, ota:{…, wifi_window:true}}`); the release/history records are the
 same ones used for Controllers.
@@ -289,7 +289,7 @@ item below is fixed and covered by a test where a test can reach it.
 | 3 | Switch/device commands (dashboard, automation, Action Button) were published to a linked Node's own MQTT topic — accepted by EMQX, delivered to nobody. | New `device-command-delivery.ts` resolver plus `relay_to_node` → compact `exec` frame over ESP-NOW, executed by `hc_command_apply()` (the same GPIO code path as MQTT). |
 | 4 | A Controller reporting an **empty** roster sent no `nodes` field at all, so its assigned Nodes stayed "linked" indefinitely after the link died. | The roster array is always present; the Worker reconciles when `nodes` is defined, marking stale Nodes `controller_lost`. |
 | 5 | Config/role changes for a linked Node were published to EMQX (accepted, unsubscribed) and reported as delivered, so a role change could sit unseen until the next manual sync. | The heartbeat reports `sync_published:false` when the device has no MQTT session, and the firmware fetches the snapshot over HTTPS whenever it is not MQTT-connected. |
-| 6 | A device could change its own `device_role` (and write Node uplink columns) through a heartbeat. | The persisted role is authoritative: mismatching reports are logged and ignored, and `comm_mode`/`node_link_state` are only applied to rows that are actually Nodes. |
+| 6 | A device could change its own `board_role` (and write Node uplink columns) through a heartbeat. | The persisted role is authoritative: mismatching reports are logged and ignored, and `comm_mode`/`node_link_state` are only applied to rows that are actually Nodes. |
 | 7 | Relay dedupe could reject every command after a Controller reboot (epoch unchanged, RAM-only sequence restarted). | The epoch is bumped on Controller boot and on promotion to Controller. |
 | 8 | A Node that lost its Controller never re-swept Wi-Fi channels, so a Controller that changed channel was never found again. | `hc_espnow_reseek()` restarts the 1–13 sweep on link loss when no channel is pinned. |
 | 9 | The 10 s factory reset erased the immutable `ident_key` along with the configuration. | The reset preserves `ident_key` (factory identity) while erasing role, pairing, Wi-Fi and MQTT configuration. |

@@ -227,10 +227,10 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
 
   const offlineCount = useMemo(() => {
     const offlineSwitches = effectiveSwitches.filter(
-      (item) => !isEntityOnline(item.is_online, ctrlById.get(item.controller_id))
+      (item) => !isEntityOnline(item.is_online, ctrlById.get(item.board_instance_id))
     ).length;
     const offlineDevices = effectiveDevices.filter(
-      (item) => !isEntityOnline(item.is_online, ctrlById.get(item.controller_id))
+      (item) => !isEntityOnline(item.is_online, ctrlById.get(item.board_instance_id))
     ).length;
     return offlineSwitches + offlineDevices;
   }, [effectiveSwitches, effectiveDevices, ctrlById]);

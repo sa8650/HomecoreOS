@@ -115,10 +115,10 @@ const platformSettingsPatchSchema = z.object({
   controller_heartbeat_interval_seconds: z.number().int().min(10).max(300).optional(),
   controller_offline_timeout_seconds: z.number().int().min(30).max(900).optional(),
   max_devices_per_account: z.number().int().min(1).max(5000).optional(),
-  max_controllers_per_account: z.number().int().min(1).max(500).optional(),
+  max_board_instances_per_account: z.number().int().min(1).max(500).optional(),
   supported_firmware_channels: z.array(z.enum(["stable", "beta", "development"])).min(1).optional(),
   maintenance_mode: z.boolean().optional(),
-  board_catalog_enabled: z.boolean().optional(),
+  board_library_enabled: z.boolean().optional(),
   firmware_downloads_enabled: z.boolean().optional(),
   default_timezone: z.string().trim().min(1).max(64).optional(),
 });
@@ -636,10 +636,10 @@ export function createAdminRoutes() {
     ] = await Promise.all([
       db.from("accounts").select("id", { count: "exact", head: true }).is("deleted_at", null),
       db.from("users").select("id", { count: "exact", head: true }).eq("user_kind", "customer").is("deleted_at", null),
-      db.from("controllers").select("id", { count: "exact", head: true }).is("deleted_at", null),
-      db.from("controllers").select("id", { count: "exact", head: true }).eq("status", "online").is("deleted_at", null),
+      db.from("board_instances").select("id", { count: "exact", head: true }).is("deleted_at", null),
+      db.from("board_instances").select("id", { count: "exact", head: true }).eq("status", "online").is("deleted_at", null),
       db.from("firmware_releases").select("id", { count: "exact", head: true }).is("deleted_at", null),
-      db.from("board_catalog").select("id", { count: "exact", head: true }).is("deleted_at", null),
+      db.from("board_profiles").select("id", { count: "exact", head: true }).is("deleted_at", null),
       db.from("activity_logs").select("*").order("created_at", { ascending: false }).limit(25),
     ]);
 
@@ -1489,7 +1489,7 @@ export function createAdminRoutes() {
       let resolvedBuild: ReturnType<typeof resolveBoardSelectionBuildConfig> | null = null;
       if (compatibleBoardIds.length > 0) {
         const { data: selectedRows } = await db
-          .from("board_catalog")
+          .from("board_profiles")
           .select(
             "id,slug,manufacturer,model,chip_family,chip_variant,flash_size_mb,psram_size_mb,psram_mode,partition_scheme,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,supports_wifi,supports_ble,supports_ble_wifi_provisioning,firmware_status,verification_status"
           )
@@ -2360,7 +2360,7 @@ export function createAdminRoutes() {
       let verifiedBoardSlugs: string[] = [];
       if (verifiedBoardIds.length > 0) {
         const { data: bRows } = await db
-          .from("board_catalog")
+          .from("board_profiles")
           .select("slug")
           .in("id", verifiedBoardIds);
         verifiedBoardSlugs = ((bRows ?? []) as Array<{ slug: string }>).map((b) => b.slug);
@@ -2538,29 +2538,29 @@ export function createAdminRoutes() {
     const db = c.get("db");
     const [boardsRes, gpiosRes, syncRunsRes] = await Promise.all([
       db
-        .from("board_catalog")
+        .from("board_profiles")
         .select("*")
         .is("deleted_at", null)
         .order("manufacturer", { ascending: true }),
       db
         .from("board_gpio_definitions")
         .select(
-          "board_catalog_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions"
+          "board_profile_id,pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions"
         )
-        .not("board_catalog_id", "is", null)
+        .not("board_profile_id", "is", null)
         .order("pin", { ascending: true }),
       db
-        .from("board_catalog_sync_runs")
+        .from("board_profile_sync_runs")
         .select("*")
         .order("started_at", { ascending: false })
         .limit(10),
     ]);
 
     const gpioByBoard = new Map<string, unknown[]>();
-    for (const g of (gpiosRes.data ?? []) as Array<{ board_catalog_id: string }>) {
-      const arr = gpioByBoard.get(g.board_catalog_id) ?? [];
+    for (const g of (gpiosRes.data ?? []) as Array<{ board_profile_id: string }>) {
+      const arr = gpioByBoard.get(g.board_profile_id) ?? [];
       arr.push(g);
-      gpioByBoard.set(g.board_catalog_id, arr);
+      gpioByBoard.set(g.board_profile_id, arr);
     }
 
     const boards = ((boardsRes.data ?? []) as Array<Record<string, unknown>>)
@@ -2616,7 +2616,7 @@ export function createAdminRoutes() {
     }
   );
 
-  // Update already-present boards in board_catalog without adding unimported boards
+  // Update already-present boards in board_profiles without adding unimported boards
   app.post(
     "/boards/update",
     requireAdminSession("super_admin", "operator"),
@@ -2719,7 +2719,7 @@ export function createAdminRoutes() {
   app.get("/boards/:id/usage", async (c) => {
     const db = c.get("db");
     const { data: board } = await db
-      .from("board_catalog")
+      .from("board_profiles")
       .select("id,slug,manufacturer,model")
       .eq("id", c.req.param("id"))
       .is("deleted_at", null)
@@ -2781,7 +2781,7 @@ export function createAdminRoutes() {
       const db = c.get("db");
       const compat = resolveBoardFirmwareCompatibility(spec);
       const { data: board, error } = await db
-        .from("board_catalog")
+        .from("board_profiles")
         .insert({
           slug: spec.slug,
           manufacturer: spec.manufacturer,
@@ -2830,7 +2830,7 @@ export function createAdminRoutes() {
       if (spec.gpio_definitions.length > 0) {
         const { error: gpioError } = await db.from("board_gpio_definitions").insert(
           spec.gpio_definitions.map((g) => ({
-            board_catalog_id: boardId,
+            board_profile_id: boardId,
             pin: g.pin,
             label: g.label,
             board_pin_name: g.board_pin_name ?? null,
@@ -2842,7 +2842,7 @@ export function createAdminRoutes() {
           }))
         );
         if (gpioError) {
-          await db.from("board_catalog").delete().eq("id", boardId);
+          await db.from("board_profiles").delete().eq("id", boardId);
           return c.json(
             { error: `Failed to save board GPIO definitions: ${gpioError.message}` },
             400
@@ -2861,7 +2861,7 @@ export function createAdminRoutes() {
       const admin = c.get("adminAuth")!;
       const db = c.get("db");
       const { data: board } = await db
-        .from("board_catalog")
+        .from("board_profiles")
         .select("id,slug,manufacturer,model")
         .eq("id", c.req.param("id"))
         .is("deleted_at", null)
@@ -2877,7 +2877,7 @@ export function createAdminRoutes() {
       }
 
       const { data: removed, error } = await db
-        .from("board_catalog")
+        .from("board_profiles")
         .update({ deleted_at: new Date().toISOString(), is_available: false })
         .eq("id", row.id)
         .is("deleted_at", null)
@@ -2910,7 +2910,7 @@ export function createAdminRoutes() {
     const deps = c.get("deps") ?? {};
     const { data: credentials } = await db
       .from("mqtt_credentials_metadata")
-      .select("id,account_id,controller_id,mqtt_username,mqtt_client_id,topic_prefix,emqx_synced,status,last_rotated_at,revoked_at")
+      .select("id,account_id,board_instance_id,mqtt_username,mqtt_client_id,topic_prefix,emqx_synced,status,last_rotated_at,revoked_at")
       .order("created_at", { ascending: false })
       .limit(100);
 
@@ -2958,17 +2958,17 @@ export function createAdminRoutes() {
   });
 
   app.post(
-    "/emqx/credentials/:controllerId/revoke",
+    "/emqx/credentials/:boardInstanceId/revoke",
     requireAdminSession("super_admin", "operator"),
     async (c) => {
       const db = c.get("db");
       const deps = c.get("deps") ?? {};
-      const controllerId = c.req.param("controllerId");
+      const boardInstanceId = c.req.param("boardInstanceId");
 
       const { data: cred } = await db
         .from("mqtt_credentials_metadata")
         .select("id,account_id,mqtt_username,mqtt_client_id")
-        .eq("controller_id", controllerId)
+        .eq("board_instance_id", boardInstanceId)
         .maybeSingle();
 
       if (!cred) return c.json({ error: "Credentials not found." }, 404);
@@ -2990,9 +2990,9 @@ export function createAdminRoutes() {
         .eq("id", row.id);
 
       await db
-        .from("controllers")
+        .from("board_instances")
         .update({ status: "disconnected", mqtt_connected: false })
-        .eq("id", controllerId);
+        .eq("id", boardInstanceId);
 
       return c.json({ ok: true });
     }
@@ -3011,7 +3011,7 @@ export function createAdminRoutes() {
         emqx ? emqx.getMetrics().catch(() => null) : Promise.resolve(null),
         emqx ? emqx.listClients(1, 1).catch(() => null) : Promise.resolve(null),
         db.from("accounts").select("id", { count: "exact", head: true }).is("deleted_at", null),
-        db.from("controllers").select("id", { count: "exact", head: true }).is("deleted_at", null),
+        db.from("board_instances").select("id", { count: "exact", head: true }).is("deleted_at", null),
         db.from("devices").select("id", { count: "exact", head: true }).is("deleted_at", null),
         db.from("firmware_files").select("size_bytes"),
       ]);
@@ -3132,7 +3132,7 @@ export function createAdminRoutes() {
   app.get("/accounts/:id/controllers", async (c) => {
     const db = c.get("db");
     const { data } = await db
-      .from("controllers")
+      .from("board_instances")
       .select("*")
       .eq("account_id", c.req.param("id"))
       .is("deleted_at", null)
@@ -3224,7 +3224,7 @@ export function createAdminRoutes() {
       const boardId = c.req.param("id");
 
       const { data: currentBoard } = await db
-        .from("board_catalog")
+        .from("board_profiles")
         .select("*")
         .eq("id", boardId)
         .is("deleted_at", null)
@@ -3238,7 +3238,7 @@ export function createAdminRoutes() {
         .select(
           "pin,label,board_pin_name,header_side,header_position,board_note,capabilities,restrictions"
         )
-        .eq("board_catalog_id", boardId)
+        .eq("board_profile_id", boardId)
         .order("pin", { ascending: true });
 
       const nextGpios = Array.isArray(body.gpio_definitions)
@@ -3280,7 +3280,7 @@ export function createAdminRoutes() {
         }
 
         const conflictCheck = await validateBoardGpioUpdateAgainstControllers(db, {
-          target: { boardCatalogId: boardId },
+          target: { boardProfileId: boardId },
           nextGpios,
         });
         if (!conflictCheck.ok) {
@@ -3330,7 +3330,7 @@ export function createAdminRoutes() {
       if (Array.isArray(body.gpio_definitions)) {
         const replaceRes = await replaceBoardGpioDefinitions(
           db,
-          { boardCatalogId: boardId },
+          { boardProfileId: boardId },
           body.gpio_definitions
         );
         if (!replaceRes.ok) {
@@ -3344,7 +3344,7 @@ export function createAdminRoutes() {
       const { data, error: updateErr } =
         Object.keys(updates).length > 0
           ? await db
-              .from("board_catalog")
+              .from("board_profiles")
               .update(updates)
               .eq("id", boardId)
               .is("deleted_at", null)
@@ -3517,7 +3517,7 @@ async function resolveAndValidateFirmwareBoards(
 
   if (uniqueIds.length > 0) {
     const { data: rowsById } = await db
-      .from("board_catalog")
+      .from("board_profiles")
       .select(
         "id,slug,manufacturer,model,chip_family,chip_variant,flash_size_mb,psram_size_mb,psram_mode,partition_scheme,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,supports_wifi,supports_ble,supports_ble_wifi_provisioning,firmware_status,verification_status"
       )
@@ -3538,7 +3538,7 @@ async function resolveAndValidateFirmwareBoards(
 
   if (uniqueSlugs.length > 0) {
     const { data: rowsBySlug } = await db
-      .from("board_catalog")
+      .from("board_profiles")
       .select(
         "id,slug,manufacturer,model,chip_family,chip_variant,flash_size_mb,psram_size_mb,psram_mode,partition_scheme,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,supports_wifi,supports_ble,supports_ble_wifi_provisioning,firmware_status,verification_status"
       )
@@ -3607,7 +3607,7 @@ async function loadCompatibleBoardMap(
   const boardLookup = new Map<string, FirmwareCompatibleBoardItem>();
   if (allBoardIds.size > 0) {
     const { data: boards } = await db
-      .from("board_catalog")
+      .from("board_profiles")
       .select(
         "id,slug,manufacturer,model,chip_family,chip_variant,flash_size_mb,psram_size_mb,psram_mode,partition_scheme,supports_wifi,supports_ble,supports_ble_wifi_provisioning"
       )
@@ -3653,18 +3653,18 @@ async function notifyFirmwareReleasePublished(
 
   const [ctrlRes, catRes, custRes] = await Promise.all([
     db
-      .from("controllers")
-      .select("id,account_id,name,board_catalog_id,custom_board_id,firmware_version")
+      .from("board_instances")
+      .select("id,account_id,name,board_profile_id,custom_board_profile_id,firmware_version")
       .is("deleted_at", null)
       .is("permanently_deleted_at", null),
     db
-      .from("board_catalog")
+      .from("board_profiles")
       .select(
         "id,slug,manufacturer,model,revision,chip_family,chip_variant,flash_size_mb,psram_size_mb,firmware_status,partition_scheme,psram_mode,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ota_rollback,firmware_compat_key"
       )
       .is("deleted_at", null),
     db
-      .from("custom_boards")
+      .from("custom_board_profiles")
       .select(
         "id,slug,manufacturer,model,revision,chip_family,chip_variant,flash_size_mb,psram_size_mb,partition_scheme,psram_mode,flash_mode,flash_freq,bootloader_offset,ota_app_offset,boot_button_gpio,usb_interface,supports_wifi,supports_ota_rollback,firmware_compat_key"
       )
@@ -3703,14 +3703,14 @@ async function notifyFirmwareReleasePublished(
     id: string;
     account_id: string;
     name: string;
-    board_catalog_id: string | null;
-    custom_board_id: string | null;
+    board_profile_id: string | null;
+    custom_board_profile_id: string | null;
     firmware_version: string | null;
   }>) {
-    const board = c.board_catalog_id
-      ? catBoards.get(c.board_catalog_id) ?? null
-      : c.custom_board_id
-        ? custBoards.get(c.custom_board_id) ?? null
+    const board = c.board_profile_id
+      ? catBoards.get(c.board_profile_id) ?? null
+      : c.custom_board_profile_id
+        ? custBoards.get(c.custom_board_profile_id) ?? null
         : null;
     if (!board) continue;
     const compatCheck = checkControllerReleaseCompatibility({

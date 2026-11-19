@@ -1,9 +1,9 @@
 # Database
 
-## One migration
+## Migrations
 
-`migrations/0001_init.sql` is the complete schema: 32 tables, every constraint,
-index, trigger and RPC function, plus the seeded board catalog and platform
+`migrations/0001_init.sql` is the complete baseline schema: 32 tables, every constraint,
+index, trigger and RPC function, plus the seeded Board Library and platform
 settings row. It is the merged result of the historical `0001`–`0021` chain —
 objects that those migrations created and later dropped (the `areas` table,
 legacy board PNG URLs, superseded CHECK constraints) do not appear, and eight
@@ -24,7 +24,7 @@ Applied migrations:
 | File | Purpose |
 |---|---|
 | `0001_init.sql` | Complete baseline schema (frozen). |
-| `0002_device_roles.sql` | Unified Controller/Node roles: `device_role` (default `controller`, so every existing row keeps its behaviour), `assigned_controller_id`, `comm_mode`, `node_link_state`, `espnow_channel`, `node_last_linked_at`, `role_changed_at`, plus the two role indexes. Purely additive. |
+| `0002_board_roles.sql` | Board roles on `board_instances`: `board_role` (default `controller`), `assigned_controller_id` (Node → hosting Controller), `comm_mode`, `node_link_state`, `espnow_channel`, `node_last_linked_at`, `role_changed_at`, with role/assignment CHECK constraints and the `idx_board_instances_board_role` / `idx_board_instances_assigned_controller` indexes. |
 
 ## Verifying the schema
 

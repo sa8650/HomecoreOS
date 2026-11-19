@@ -111,7 +111,7 @@ function toGpioDefinition(row: Row): GpioPinDefinition {
   };
 }
 
-function groupGpio(list: Row[], key: "board_catalog_id" | "custom_board_id"): Map<string, GpioPinDefinition[]> {
+function groupGpio(list: Row[], key: "board_profile_id" | "custom_board_profile_id"): Map<string, GpioPinDefinition[]> {
   const grouped = new Map<string, GpioPinDefinition[]>();
   for (const row of list) {
     const owner = text(row[key]);
@@ -182,7 +182,7 @@ function toCustomBoard(row: Row, gpio: GpioPinDefinition[]): PlannerBoardRecord 
 
 export interface PlannerBoardData {
   boards: PlannerBoardRecord[];
-  boardCatalogEnabled: boolean;
+  boardLibraryEnabled: boolean;
   account: PlannerAccountContext;
 }
 
@@ -198,18 +198,18 @@ export async function loadPlannerBoards(db: DbClient, accountId: string): Promis
     await Promise.all([
       db
         .from("platform_settings")
-        .select("board_catalog_enabled,max_controllers_per_account,max_devices_per_account")
+        .select("board_library_enabled,max_board_instances_per_account,max_devices_per_account")
         .eq("id", 1)
         .maybeSingle(),
-      db.from("board_catalog").select("*").is("deleted_at", null),
-      db.from("custom_boards").select("*").eq("account_id", accountId).is("deleted_at", null),
+      db.from("board_profiles").select("*").is("deleted_at", null),
+      db.from("custom_board_profiles").select("*").eq("account_id", accountId).is("deleted_at", null),
       db
         .from("board_gpio_definitions")
-        .select(`board_catalog_id,${GPIO_COLUMNS}`)
-        .not("board_catalog_id", "is", null)
+        .select(`board_profile_id,${GPIO_COLUMNS}`)
+        .not("board_profile_id", "is", null)
         .order("pin", { ascending: true }),
       db
-        .from("controllers")
+        .from("board_instances")
         .select("id", { count: "exact", head: true })
         .eq("account_id", accountId)
         .is("deleted_at", null),
@@ -230,19 +230,19 @@ export async function loadPlannerBoards(db: DbClient, accountId: string): Promis
 
   const catalogRows = rows(catalogRes, "The Board Library");
   const customRows = rows(customRes, "Your custom boards");
-  const catalogGpio = groupGpio(rows(catalogGpioRes, "The Board Library pin maps"), "board_catalog_id");
+  const catalogGpio = groupGpio(rows(catalogGpioRes, "The Board Library pin maps"), "board_profile_id");
 
   let customGpio = new Map<string, GpioPinDefinition[]>();
   if (customRows.length > 0) {
     const customGpioRes = await db
       .from("board_gpio_definitions")
-      .select(`custom_board_id,${GPIO_COLUMNS}`)
+      .select(`custom_board_profile_id,${GPIO_COLUMNS}`)
       .in(
-        "custom_board_id",
+        "custom_board_profile_id",
         customRows.map((row) => String(row.id))
       )
       .order("pin", { ascending: true });
-    customGpio = groupGpio(rows(customGpioRes, "Your custom board pin maps"), "custom_board_id");
+    customGpio = groupGpio(rows(customGpioRes, "Your custom board pin maps"), "custom_board_profile_id");
   }
 
   const settings = (settingsRes.data ?? null) as Row | null;
@@ -252,12 +252,12 @@ export async function loadPlannerBoards(db: DbClient, accountId: string): Promis
       ...catalogRows.map((row) => toCatalogBoard(row, catalogGpio.get(String(row.id)) ?? [])),
       ...customRows.map((row) => toCustomBoard(row, customGpio.get(String(row.id)) ?? [])),
     ],
-    boardCatalogEnabled: settings?.board_catalog_enabled !== false,
+    boardLibraryEnabled: settings?.board_library_enabled !== false,
     account: {
       existingControllers: controllersRes.count ?? 0,
       existingDevices: devicesRes.count ?? 0,
       // Same fallbacks the pairing and device routes enforce.
-      maxControllers: int(settings?.max_controllers_per_account, 25),
+      maxControllers: int(settings?.max_board_instances_per_account, 25),
       maxDevices: int(settings?.max_devices_per_account, 100),
     },
   };
@@ -322,7 +322,7 @@ function describeBoards(data: PlannerBoardData): string {
   const catalog = data.boards.filter((b) => b.source === "catalog").length;
   const custom = data.boards.length - catalog;
   const parts = [
-    data.boardCatalogEnabled
+    data.boardLibraryEnabled
       ? `${count(catalog, "board", "boards")} in the Board Library`
       : "The Board Library is switched off by the administrator",
   ];
@@ -371,7 +371,7 @@ export async function loadPlannerCatalog(
   const snapshot = {
     boards: boardsOutcome.value.boards,
     releases: firmwareOutcome.value,
-    boardCatalogEnabled: boardsOutcome.value.boardCatalogEnabled,
+    boardLibraryEnabled: boardsOutcome.value.boardLibraryEnabled,
     account: boardsOutcome.value.account,
   };
 

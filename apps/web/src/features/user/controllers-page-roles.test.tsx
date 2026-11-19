@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetApiCache } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
-import { ControllersPage } from "./ControllersPage";
+import { MyBoardsPage } from "./MyBoardsPage";
 import type { ControllerItem } from "@/features/types";
 
 const originalFetch = globalThis.fetch;
@@ -18,8 +18,8 @@ function jsonResponse(payload: unknown, status = 200) {
 const baseDevice = {
   account_id: "a1",
   home_id: "h1",
-  board_catalog_id: "b1",
-  custom_board_id: null,
+  board_profile_id: "b1",
+  custom_board_profile_id: null,
   flash_size_mb: 16,
   psram_size_mb: 8,
   firmware_version: "1.5.0",
@@ -41,7 +41,7 @@ const hub: ControllerItem = {
   board_model: "ESP32-S3-N16R8",
   chip_variant: "ESP32-S3",
   status: "online",
-  device_role: "controller",
+  board_role: "controller",
   connected_node_count: 1,
 } as ControllerItem;
 
@@ -53,7 +53,7 @@ const standaloneNode: ControllerItem = {
   board_model: "ESP32-S3-N16R8",
   chip_variant: "ESP32-S3",
   status: "online",
-  device_role: "node",
+  board_role: "node",
   node_comm_mode: "wifi_mqtt",
   node_link_state: "standalone",
   assigned_controller_id: "c-hub",
@@ -75,10 +75,10 @@ function mockFetch(state: {
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
 
-    if (url === "/api/controllers") return jsonResponse({ controllers: state.devices });
-    if (url === "/api/controllers/trash") return jsonResponse({ controllers: [] });
-    if (url === "/api/boards/catalog") return jsonResponse({ boards: [] });
-    if (url === "/api/boards/custom") return jsonResponse({ boards: [] });
+    if (url === "/api/board-instances") return jsonResponse({ controllers: state.devices });
+    if (url === "/api/board-instances/trash") return jsonResponse({ controllers: [] });
+    if (url === "/api/board-library/catalog") return jsonResponse({ boards: [] });
+    if (url === "/api/board-library/custom") return jsonResponse({ boards: [] });
     if (url === "/api/homes")
       return jsonResponse({
         homes: [{ id: "h1", account_id: "a1", name: "Main Home", timezone: "UTC" }],
@@ -86,7 +86,7 @@ function mockFetch(state: {
     if (url === "/api/homes/rooms") return jsonResponse({ rooms: [] });
     if (url === "/api/firmware/updates") return jsonResponse({ applicableUpdates: [] });
 
-    const roleMatch = url.match(/^\/api\/controllers\/([^/]+)\/role$/);
+    const roleMatch = url.match(/^\/api\/board-instances\/([^/]+)\/role$/);
     if (roleMatch && method === "PATCH") {
       const body = JSON.parse(String(init!.body)) as {
         role: "controller" | "node";
@@ -103,15 +103,15 @@ function mockFetch(state: {
           409
         );
       }
-      return jsonResponse({ device: { id: roleMatch[1], device_role: body.role } });
+      return jsonResponse({ device: { id: roleMatch[1], board_role: body.role } });
     }
 
-    const assignMatch = url.match(/^\/api\/controllers\/([^/]+)\/assign-controller$/);
+    const assignMatch = url.match(/^\/api\/board-instances\/([^/]+)\/assign-controller$/);
     if (assignMatch && method === "POST") {
       return jsonResponse({ node: { id: assignMatch[1] }, controller: null });
     }
 
-    const relinkMatch = url.match(/^\/api\/controllers\/([^/]+)\/relink$/);
+    const relinkMatch = url.match(/^\/api\/board-instances\/([^/]+)\/relink$/);
     if (relinkMatch && method === "POST") {
       return jsonResponse({ ok: true, deliveredVia: "controller" });
     }
@@ -126,13 +126,13 @@ function renderPage(state: { devices: ControllerItem[]; roleChangeBlocked?: bool
   const calls = mockFetch(state);
   render(
     <TimezoneContext.Provider value="UTC">
-      <ControllersPage canManage={true} canOperate={true} onNavigate={vi.fn()} />
+      <MyBoardsPage canManage={true} canOperate={true} onNavigate={vi.fn()} />
     </TimezoneContext.Provider>
   );
   return calls;
 }
 
-describe("ControllersPage Controller / Node tabs", () => {
+describe("MyBoardsPage Controller / Node tabs", () => {
   beforeEach(() => {
     resetApiCache();
   });
@@ -194,7 +194,7 @@ describe("ControllersPage Controller / Node tabs", () => {
     await user.click(screen.getByRole("button", { name: /Release Nodes and Continue/i }));
     await waitFor(() => {
       const patches = calls.filter(
-        (c) => c.url === "/api/controllers/c-hub/role" && c.method === "PATCH"
+        (c) => c.url === "/api/board-instances/c-hub/role" && c.method === "PATCH"
       );
       expect(patches).toHaveLength(2);
       expect(patches[0]!.body).toEqual({ role: "node", acknowledgeAttachedNodes: false });
@@ -216,9 +216,9 @@ describe("ControllersPage Controller / Node tabs", () => {
 
     await waitFor(() => {
       const post = calls.find(
-        (c) => c.url === "/api/controllers/c-node/assign-controller" && c.method === "POST"
+        (c) => c.url === "/api/board-instances/c-node/assign-controller" && c.method === "POST"
       );
-      expect(post?.body).toEqual({ controllerId: "c-hub" });
+      expect(post?.body).toEqual({ boardInstanceId: "c-hub" });
     });
   });
 
@@ -257,7 +257,7 @@ describe("ControllersPage Controller / Node tabs", () => {
     await waitFor(() => {
       expect(
         calls.some(
-          (c) => c.url === "/api/controllers/c-node/relink" && c.method === "POST"
+          (c) => c.url === "/api/board-instances/c-node/relink" && c.method === "POST"
         )
       ).toBe(true);
     });

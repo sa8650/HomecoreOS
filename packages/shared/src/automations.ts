@@ -404,7 +404,7 @@ export function analyzeLocalAutomationCapability(params: {
   sensorControllerById: Map<string, string>;
 }): {
   supported: boolean;
-  controllerId: string | null;
+  boardInstanceId: string | null;
   reasons: string[];
 } {
   const reasons: string[] = [];
@@ -488,7 +488,7 @@ export function analyzeLocalAutomationCapability(params: {
   const supported = reasons.length === 0 && controllerIds.size === 1;
   return {
     supported,
-    controllerId: supported ? Array.from(controllerIds)[0]! : null,
+    boardInstanceId: supported ? Array.from(controllerIds)[0]! : null,
     reasons,
   };
 }

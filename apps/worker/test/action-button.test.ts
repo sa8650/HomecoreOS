@@ -20,7 +20,7 @@ describe("Action Button (Dynamic Island custom action button)", () => {
   let env: WorkerBindings;
   let app: ReturnType<typeof createWorkerApp>;
   let cookie: string;
-  let controllerId: string;
+  let boardInstanceId: string;
   let switchId1: string;
   let switchId2: string;
   let deviceId: string;
@@ -57,21 +57,21 @@ describe("Action Button (Dynamic Island custom action button)", () => {
     expect(regRes.status).toBe(201);
     cookie = extractCookie(regRes, "hc_user_session");
 
-    const catRes = await req("/api/boards/catalog", { headers: { Cookie: cookie } });
+    const catRes = await req("/api/board-library/catalog", { headers: { Cookie: cookie } });
     const firstBoard = ((await catRes.json()) as {
       boards: Array<{ id: string; slug: string; chip_family: "esp32s3" }>;
     }).boards[0]!;
 
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
-      body: JSON.stringify({ name: "Action Hub", boardCatalogId: firstBoard.id }),
+      body: JSON.stringify({ name: "Action Hub", boardProfileId: firstBoard.id }),
     });
     const ctrlJson = (await ctrlRes.json()) as {
       controller: { id: string };
       pairingCode: string;
     };
-    controllerId = ctrlJson.controller.id;
+    boardInstanceId = ctrlJson.controller.id;
 
     const pairRes = await req("/api/device/pair", {
       method: "POST",
@@ -81,7 +81,7 @@ describe("Action Button (Dynamic Island custom action button)", () => {
     expect(pairRes.status).toBe(200);
     await seedInstalledFirmwareWithDrivers({
       pg: dbHarness.pg,
-      controllerId,
+      boardInstanceId,
       boardId: firstBoard.id,
       boardSlug: firstBoard.slug,
       chipFamily: firstBoard.chip_family,
@@ -90,14 +90,14 @@ describe("Action Button (Dynamic Island custom action button)", () => {
     const sw1Res = await req("/api/switches", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
-      body: JSON.stringify({ controllerId, name: "Porch Light", gpioPin: 4 }),
+      body: JSON.stringify({ boardInstanceId, name: "Porch Light", gpioPin: 4 }),
     });
     switchId1 = ((await sw1Res.json()) as { switch: { id: string } }).switch.id;
 
     const sw2Res = await req("/api/switches", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
-      body: JSON.stringify({ controllerId, name: "Cabinet Strip", gpioPin: 5 }),
+      body: JSON.stringify({ boardInstanceId, name: "Cabinet Strip", gpioPin: 5 }),
     });
     switchId2 = ((await sw2Res.json()) as { switch: { id: string } }).switch.id;
 
@@ -105,7 +105,7 @@ describe("Action Button (Dynamic Island custom action button)", () => {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
       body: JSON.stringify({
-        controllerId,
+        boardInstanceId,
         name: "Ceiling Fan",
         deviceType: "fan",
         gpioPin: 6,
@@ -357,8 +357,8 @@ describe("Action Button (Dynamic Island custom action button)", () => {
     const buttonId = ((await createRes.json()) as { config: { id: string } }).config.id;
 
     await dbHarness.pg.query(
-      "UPDATE controllers SET status = 'offline' WHERE id = $1",
-      [controllerId]
+      "UPDATE board_instances SET status = 'offline' WHERE id = $1",
+      [boardInstanceId]
     );
 
     const execRes = await postJson(
@@ -389,8 +389,8 @@ describe("Action Button (Dynamic Island custom action button)", () => {
     expect(sws.find((s) => s.id === switchId2)?.is_on).toBe(false);
 
     await dbHarness.pg.query(
-      "UPDATE controllers SET status = 'online' WHERE id = $1",
-      [controllerId]
+      "UPDATE board_instances SET status = 'online' WHERE id = $1",
+      [boardInstanceId]
     );
   });
 

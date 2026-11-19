@@ -210,7 +210,7 @@ export function SwitchesPage({
 }) {
   const timezone = useEffectiveTimezone();
   const cachedSw = getCachedSnapshot<{ switches: SwitchItem[] }>("/api/switches");
-  const cachedCtrls = getCachedSnapshot<{ controllers: ControllerItem[] }>("/api/controllers");
+  const cachedCtrls = getCachedSnapshot<{ controllers: ControllerItem[] }>("/api/board-instances");
   const cachedRooms = getCachedSnapshot<{ rooms: RoomItem[] }>("/api/homes/rooms");
 
   const [switches, setSwitches] = useState<SwitchItem[]>(() => cachedSw?.switches ?? []);
@@ -363,7 +363,7 @@ export function SwitchesPage({
     if (!q) return switches;
     return switches.filter((sw) => {
       const roomName = sw.room_id ? roomById.get(sw.room_id)?.name ?? "" : "";
-      const ctrlName = controllerById.get(sw.controller_id)?.name ?? "";
+      const ctrlName = controllerById.get(sw.board_instance_id)?.name ?? "";
       return `${sw.name} ${roomName} ${ctrlName}`.toLowerCase().includes(q);
     });
   }, [switches, search, roomById, controllerById]);
@@ -456,7 +456,7 @@ export function SwitchesPage({
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {filteredSwitches.map((sw) => {
-            const ctrl = controllerById.get(sw.controller_id);
+            const ctrl = controllerById.get(sw.board_instance_id);
             const roomName = sw.room_id
               ? roomById.get(sw.room_id)?.name ?? "Assigned room"
               : "Unassigned";
@@ -549,7 +549,7 @@ export function SwitchesPage({
         open={Boolean(detailsTarget)}
         onOpenChange={(open) => !open && setDetailsTarget(null)}
         subject={detailsSubject}
-        controller={detailsTarget ? controllerById.get(detailsTarget.controller_id) : undefined}
+        controller={detailsTarget ? controllerById.get(detailsTarget.board_instance_id) : undefined}
         room={detailsTarget?.room_id ? roomById.get(detailsTarget.room_id) : undefined}
         timezone={timezone}
         canManage={canManage}
@@ -616,7 +616,7 @@ export function DevicesPage({
 }) {
   const timezone = useEffectiveTimezone();
   const cachedDevs = getCachedSnapshot<{ devices: DeviceItem[] }>("/api/devices");
-  const cachedCtrls = getCachedSnapshot<{ controllers: ControllerItem[] }>("/api/controllers");
+  const cachedCtrls = getCachedSnapshot<{ controllers: ControllerItem[] }>("/api/board-instances");
   const cachedRooms = getCachedSnapshot<{ rooms: RoomItem[] }>("/api/homes/rooms");
 
   const [devices, setDevices] = useState<DeviceItem[]>(() => cachedDevs?.devices ?? []);
@@ -769,7 +769,7 @@ export function DevicesPage({
     if (!q) return devices;
     return devices.filter((dev) => {
       const roomName = dev.room_id ? roomById.get(dev.room_id)?.name ?? "" : "";
-      const ctrlName = controllerById.get(dev.controller_id)?.name ?? "";
+      const ctrlName = controllerById.get(dev.board_instance_id)?.name ?? "";
       return `${dev.name} ${dev.device_type} ${roomName} ${ctrlName}`
         .toLowerCase()
         .includes(q);
@@ -864,7 +864,7 @@ export function DevicesPage({
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {filteredDevices.map((dev) => {
-            const ctrl = controllerById.get(dev.controller_id);
+            const ctrl = controllerById.get(dev.board_instance_id);
             const roomName = dev.room_id
               ? roomById.get(dev.room_id)?.name ?? "Assigned room"
               : "Unassigned";
@@ -958,7 +958,7 @@ export function DevicesPage({
         open={Boolean(detailsTarget)}
         onOpenChange={(open) => !open && setDetailsTarget(null)}
         subject={detailsSubject}
-        controller={detailsTarget ? controllerById.get(detailsTarget.controller_id) : undefined}
+        controller={detailsTarget ? controllerById.get(detailsTarget.board_instance_id) : undefined}
         room={detailsTarget?.room_id ? roomById.get(detailsTarget.room_id) : undefined}
         timezone={timezone}
         canManage={canManage}
@@ -1015,7 +1015,7 @@ function SensorTypeIcon({ type }: { type: string }) {
 export function SensorsPage({ canManage }: { canManage: boolean }) {
   const timezone = useEffectiveTimezone();
   const cachedSen = getCachedSnapshot<{ sensors: SensorItem[] }>("/api/sensors");
-  const cachedCtrls = getCachedSnapshot<{ controllers: ControllerItem[] }>("/api/controllers");
+  const cachedCtrls = getCachedSnapshot<{ controllers: ControllerItem[] }>("/api/board-instances");
   const cachedRooms = getCachedSnapshot<{ rooms: RoomItem[] }>("/api/homes/rooms");
 
   const [sensors, setSensors] = useState<SensorItem[]>(() => cachedSen?.sensors ?? []);
@@ -1144,7 +1144,7 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
     if (!q) return sensors;
     return sensors.filter((sen) => {
       const roomName = sen.room_id ? roomById.get(sen.room_id)?.name ?? "" : "";
-      const ctrlName = controllerById.get(sen.controller_id)?.name ?? "";
+      const ctrlName = controllerById.get(sen.board_instance_id)?.name ?? "";
       return `${sen.name} ${sen.sensor_type} ${sen.unit} ${roomName} ${ctrlName}`
         .toLowerCase()
         .includes(q);
@@ -1238,7 +1238,7 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {filteredSensors.map((sen) => {
-            const ctrl = controllerById.get(sen.controller_id);
+            const ctrl = controllerById.get(sen.board_instance_id);
             const roomName = sen.room_id
               ? roomById.get(sen.room_id)?.name ?? "Assigned room"
               : "Unassigned";
@@ -1330,7 +1330,7 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
         open={Boolean(detailsTarget)}
         onOpenChange={(open) => !open && setDetailsTarget(null)}
         subject={detailsSubject}
-        controller={detailsTarget ? controllerById.get(detailsTarget.controller_id) : undefined}
+        controller={detailsTarget ? controllerById.get(detailsTarget.board_instance_id) : undefined}
         room={detailsTarget?.room_id ? roomById.get(detailsTarget.room_id) : undefined}
         timezone={timezone}
         canManage={canManage}

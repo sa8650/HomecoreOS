@@ -385,19 +385,19 @@ export const ControllerWiringPreview = memo(function ControllerWiringPreview({
     const deviceMap = new Map<string, DeviceItem[]>();
     const sensorMap = new Map<string, SensorItem[]>();
     for (const sw of switches) {
-      const bucket = switchMap.get(sw.controller_id) ?? [];
+      const bucket = switchMap.get(sw.board_instance_id) ?? [];
       bucket.push(sw);
-      switchMap.set(sw.controller_id, bucket);
+      switchMap.set(sw.board_instance_id, bucket);
     }
     for (const dev of devices) {
-      const bucket = deviceMap.get(dev.controller_id) ?? [];
+      const bucket = deviceMap.get(dev.board_instance_id) ?? [];
       bucket.push(dev);
-      deviceMap.set(dev.controller_id, bucket);
+      deviceMap.set(dev.board_instance_id, bucket);
     }
     for (const sen of sensors) {
-      const bucket = sensorMap.get(sen.controller_id) ?? [];
+      const bucket = sensorMap.get(sen.board_instance_id) ?? [];
       bucket.push(sen);
-      sensorMap.set(sen.controller_id, bucket);
+      sensorMap.set(sen.board_instance_id, bucket);
     }
     return { switchMap, deviceMap, sensorMap };
   }, [switches, devices, sensors]);

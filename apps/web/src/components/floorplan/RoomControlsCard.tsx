@@ -510,7 +510,7 @@ export function RoomControlsCard({
     onToggle: (checked: boolean) => void;
   }> = [
     ...switches.map((sw) => {
-      const online = isEntityOnline(sw.is_online, ctrlById.get(sw.controller_id));
+      const online = isEntityOnline(sw.is_online, ctrlById.get(sw.board_instance_id));
       return {
         key: `sw:${sw.id}`,
         name: sw.name,
@@ -523,7 +523,7 @@ export function RoomControlsCard({
       };
     }),
     ...lightDevices.map((dev) => {
-      const online = isEntityOnline(dev.is_online, ctrlById.get(dev.controller_id));
+      const online = isEntityOnline(dev.is_online, ctrlById.get(dev.board_instance_id));
       return {
         key: `dev:${dev.id}`,
         name: dev.name,
@@ -536,7 +536,7 @@ export function RoomControlsCard({
       };
     }),
     ...fanDevices.map((dev) => {
-      const online = isEntityOnline(dev.is_online, ctrlById.get(dev.controller_id));
+      const online = isEntityOnline(dev.is_online, ctrlById.get(dev.board_instance_id));
       return {
         key: `dev:${dev.id}`,
         name: dev.name,
@@ -558,7 +558,7 @@ export function RoomControlsCard({
       };
     }),
     ...otherDevices.map((dev) => {
-      const online = isEntityOnline(dev.is_online, ctrlById.get(dev.controller_id));
+      const online = isEntityOnline(dev.is_online, ctrlById.get(dev.board_instance_id));
       return {
         key: `dev:${dev.id}`,
         name: dev.name,
@@ -654,7 +654,7 @@ export function RoomControlsCard({
               {sensors.map((sensor) => {
                 const online = isEntityOnline(
                   sensor.is_online,
-                  ctrlById.get(sensor.controller_id)
+                  ctrlById.get(sensor.board_instance_id)
                 );
                 const readingStamp = sensor.last_reading_at
                   ? formatShortTime(sensor.last_reading_at, timezone)

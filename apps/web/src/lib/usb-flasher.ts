@@ -379,7 +379,7 @@ export async function flashFreshControllerViaUsb(params: {
   targetBoard?: UsbFlashTargetBoardSpec | null;
   /** Board Library profiles to recommend from when the board does not match. */
   candidateBoards?: UsbFlashTargetBoardSpec[];
-  controllerId?: string;
+  boardInstanceId?: string;
   eraseAll?: boolean;
   baudRate?: number;
   callbacks: UsbFlashCallbacks;
@@ -393,7 +393,7 @@ export async function flashFreshControllerViaUsb(params: {
     release,
     targetBoard,
     candidateBoards = [],
-    controllerId,
+    boardInstanceId,
     eraseAll = false,
     baudRate = 460800,
     callbacks,
@@ -661,7 +661,7 @@ export async function flashFreshControllerViaUsb(params: {
       method: "POST",
       body: JSON.stringify({
         releaseId: release.id,
-        controllerId,
+        boardInstanceId,
         status: "succeeded",
         chipDetected,
         detectedFlashSizeMb: detectedFlashSizeMb ?? undefined,
@@ -681,7 +681,7 @@ export async function flashFreshControllerViaUsb(params: {
       method: "POST",
       body: JSON.stringify({
         releaseId: release.id,
-        controllerId,
+        boardInstanceId,
         status: "failed",
         chipDetected,
         detectedFlashSizeMb: detectedFlashSizeMb ?? undefined,

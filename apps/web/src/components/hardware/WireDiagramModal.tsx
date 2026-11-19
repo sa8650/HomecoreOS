@@ -122,9 +122,9 @@ export function WireDiagramModal({
     if (!target) return null;
     const d = target.data;
     const controller =
-      ctx.controllers.find((c) => c.id === d.controller_id) ?? null;
+      ctx.controllers.find((c) => c.id === d.board_instance_id) ?? null;
     const boardId =
-      controller?.board_catalog_id ?? controller?.custom_board_id ?? null;
+      controller?.board_profile_id ?? controller?.custom_board_profile_id ?? null;
     const board = boardId ? (ctx.boardsById.get(boardId) ?? null) : null;
     const room = d.room_id
       ? (ctx.rooms.find((r) => r.id === d.room_id) ?? null)
@@ -134,7 +134,7 @@ export function WireDiagramModal({
       kind: target.kind,
       id: d.id,
       name: d.name,
-      controllerId: d.controller_id,
+      boardInstanceId: d.board_instance_id,
       isOnline: d.is_online,
     } as const;
     const entity =
@@ -161,15 +161,15 @@ export function WireDiagramModal({
       ? {
           id: controller.id,
           name: controller.name,
-          boardCatalogId: controller.board_catalog_id,
-          customBoardId: controller.custom_board_id,
+          boardProfileId: controller.board_profile_id,
+          customBoardProfileId: controller.custom_board_profile_id,
           boardModel: controller.board_model,
           firmwareVersion: controller.firmware_version,
           status: controller.status,
         }
       : null;
 
-    const siblingPins = (ctx.usedPinsByController?.get(d.controller_id) ?? [])
+    const siblingPins = (ctx.usedPinsByController?.get(d.board_instance_id) ?? [])
       .filter((u) => !(u.entityKind === target.kind && u.id === d.id))
       .map((u) => ({
         pin: u.pin,

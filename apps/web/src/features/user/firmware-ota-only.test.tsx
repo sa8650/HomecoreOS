@@ -52,7 +52,7 @@ const release: FirmwareReleaseItem = {
 
 const pendingUpdate: FirmwareUpdateHistoryItem = {
   id: "hist-1",
-  controller_id: "ctrl-1",
+  board_instance_id: "ctrl-1",
   release_id: "rel-1",
   update_type: "ota",
   method: "ota",
@@ -67,7 +67,7 @@ const pendingUpdate: FirmwareUpdateHistoryItem = {
 } as unknown as FirmwareUpdateHistoryItem;
 
 const applicableUpdate: ApplicableFirmwareUpdateItem = {
-  controllerId: "ctrl-1",
+  boardInstanceId: "ctrl-1",
   controllerName: "Living Room Hub",
   boardModel: "ESP32-S3-DevKitC-1-N16R8",
   controllerStatus: "online",
@@ -89,7 +89,7 @@ const applicableUpdate: ApplicableFirmwareUpdateItem = {
 /** A second controller with the same update available and nothing queued yet. */
 const readyUpdate: ApplicableFirmwareUpdateItem = {
   ...applicableUpdate,
-  controllerId: "ctrl-2",
+  boardInstanceId: "ctrl-2",
   controllerName: "Kitchen Hub",
   activeUpdate: null,
 };
@@ -117,8 +117,8 @@ describe("Firmware & Updates page: OTA only, no USB flashing", () => {
       const url = typeof input === "string" ? input : input.toString();
       calls.push({ url, method: init?.method ?? "GET" });
       if (url === "/api/firmware/releases") return json({ releases: [release] });
-      if (url === "/api/boards/catalog") return json({ boards: [devkit] });
-      if (url === "/api/boards/custom") return json({ boards: [] });
+      if (url === "/api/board-library/catalog") return json({ boards: [devkit] });
+      if (url === "/api/board-library/custom") return json({ boards: [] });
       if (url === "/api/firmware/updates") {
         return json({ applicableUpdates: [applicableUpdate, readyUpdate], history: [pendingUpdate] });
       }

@@ -302,8 +302,8 @@ export async function refreshStaleControllerStates(
   accountId?: string
 ): Promise<number> {
   let onlineQuery = db
-    .from("controllers")
-    .select("id,account_id,name,device_role,last_heartbeat_at,connection_history")
+    .from("board_instances")
+    .select("id,account_id,name,board_role,last_heartbeat_at,connection_history")
     .eq("status", "online")
     .is("deleted_at", null)
     .is("permanently_deleted_at", null);
@@ -330,7 +330,7 @@ export async function refreshStaleControllerStates(
     id: string;
     account_id: string;
     name: string;
-    device_role?: string | null;
+    board_role?: string | null;
     last_heartbeat_at: string | null;
     connection_history: unknown[];
   }>).filter((ctrl) => {
@@ -349,11 +349,11 @@ export async function refreshStaleControllerStates(
         ? ctrl.connection_history.slice(-19)
         : [];
       // A Node that stops reporting is never described as a Controller.
-      const roleLabel = ctrl.device_role === "node" ? "Node" : "Controller";
+      const roleLabel = ctrl.board_role === "node" ? "Node" : "Controller";
 
       await Promise.all([
         db
-          .from("controllers")
+          .from("board_instances")
           .update({
             status: "offline",
             mqtt_connected: false,
@@ -376,7 +376,7 @@ export async function refreshStaleControllerStates(
           dedupKey: `ctrl:${ctrl.id}:offline`,
           dedupWhileUnread: true,
           dedupWindowSeconds: 1800,
-          metadata: { controllerId: ctrl.id, timeoutSec },
+          metadata: { boardInstanceId: ctrl.id, timeoutSec },
         }),
         emitNotification(db, {
           scope: "admin",
@@ -389,7 +389,7 @@ export async function refreshStaleControllerStates(
           dedupKey: `admin:ctrl:${ctrl.id}:offline`,
           dedupWhileUnread: true,
           dedupWindowSeconds: 1800,
-          metadata: { controllerId: ctrl.id, accountId: ctrl.account_id },
+          metadata: { boardInstanceId: ctrl.id, accountId: ctrl.account_id },
         }),
       ]);
 

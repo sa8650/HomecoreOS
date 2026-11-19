@@ -71,17 +71,17 @@ describe("Sensor reading history & controller room assignment", () => {
     const homesRes = await req("/api/homes", { headers: { Cookie: userCookie } });
     const { homes } = (await homesRes.json()) as { homes: Array<{ id: string }> };
     const home = homes[0]!;
-    const boardsRes = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const boardsRes = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     const { boards } = (await boardsRes.json()) as {
       boards: Array<{ id: string; slug: string; chip_family: string }>;
     };
     const s3Board = boards.find((b) => b.slug === "esp32-s3-devkitc-1-n16r8")!;
 
     // Controller + pairing
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ name: "History Hub", homeId: home.id, boardCatalogId: s3Board.id }),
+      body: JSON.stringify({ name: "History Hub", homeId: home.id, boardProfileId: s3Board.id }),
     });
     expect(ctrlRes.status).toBe(201);
     const { controller, pairingCode } = (await ctrlRes.json()) as {
@@ -110,7 +110,7 @@ describe("Sensor reading history & controller room assignment", () => {
     // Link firmware with the bme280 driver so the compatibility gate passes
     const seeded = await seedInstalledFirmwareWithDrivers({
       pg: dbHarness.pg,
-      controllerId: controller.id,
+      boardInstanceId: controller.id,
       boardId: s3Board.id,
       boardSlug: s3Board.slug,
       chipFamily: "esp32s3",
@@ -118,7 +118,7 @@ describe("Sensor reading history & controller room assignment", () => {
       driverIds: ["bme280"],
     });
     await dbHarness.pg.query(
-      `UPDATE public.controllers SET installed_firmware_release_id = $1 WHERE id = $2`,
+      `UPDATE public.board_instances SET installed_firmware_release_id = $1 WHERE id = $2`,
       [seeded.releaseId, controller.id]
     );
 
@@ -128,7 +128,7 @@ describe("Sensor reading history & controller room assignment", () => {
       body: JSON.stringify({
         name: "History Temp",
         sensorType: "temperature_bme280",
-        controllerId: controller.id,
+        boardInstanceId: controller.id,
         gpioPin: null,
         i2cAddress: "0x76",
       }),
@@ -195,16 +195,16 @@ describe("Sensor reading history & controller room assignment", () => {
     const homesRes = await req("/api/homes", { headers: { Cookie: userCookie } });
     const { homes } = (await homesRes.json()) as { homes: Array<{ id: string }> };
     const home = homes[0]!;
-    const boardsRes = await req("/api/boards/catalog", { headers: { Cookie: userCookie } });
+    const boardsRes = await req("/api/board-library/catalog", { headers: { Cookie: userCookie } });
     const { boards } = (await boardsRes.json()) as {
       boards: Array<{ id: string; slug: string }>;
     };
     const s3Board = boards.find((b) => b.slug === "esp32-s3-devkitc-1-n16r8")!;
 
-    const ctrlRes = await req("/api/controllers", {
+    const ctrlRes = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
-      body: JSON.stringify({ name: "Room Hub", homeId: home.id, boardCatalogId: s3Board.id }),
+      body: JSON.stringify({ name: "Room Hub", homeId: home.id, boardProfileId: s3Board.id }),
     });
     expect(ctrlRes.status).toBe(201);
     const { controller } = (await ctrlRes.json()) as { controller: { id: string } };
@@ -224,7 +224,7 @@ describe("Sensor reading history & controller room assignment", () => {
     const roomB = await mkRoom("Room B");
 
     // Assign
-    const assignRes = await req(`/api/controllers/${controller.id}/room`, {
+    const assignRes = await req(`/api/board-instances/${controller.id}/room`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({ roomId: roomA }),
@@ -234,7 +234,7 @@ describe("Sensor reading history & controller room assignment", () => {
     expect(assigned.controller.room_id).toBe(roomA);
 
     // Change assignment
-    const changeRes = await req(`/api/controllers/${controller.id}/room`, {
+    const changeRes = await req(`/api/board-instances/${controller.id}/room`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({ roomId: roomB }),
@@ -244,7 +244,7 @@ describe("Sensor reading history & controller room assignment", () => {
     expect(changed.controller.room_id).toBe(roomB);
 
     // Reflected in the controllers list
-    const listRes = await req("/api/controllers", { headers: { Cookie: userCookie } });
+    const listRes = await req("/api/board-instances", { headers: { Cookie: userCookie } });
     const { controllers } = (await listRes.json()) as {
       controllers: Array<{ id: string; room_id: string | null }>;
     };
@@ -263,7 +263,7 @@ describe("Sensor reading history & controller room assignment", () => {
     });
     expect(otherRoomRes.status).toBe(201);
     const { room: foreignRoom } = (await otherRoomRes.json()) as { room: { id: string } };
-    const foreignAssign = await req(`/api/controllers/${controller.id}/room`, {
+    const foreignAssign = await req(`/api/board-instances/${controller.id}/room`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({ roomId: foreignRoom.id }),
@@ -271,7 +271,7 @@ describe("Sensor reading history & controller room assignment", () => {
     expect(foreignAssign.status).toBe(400);
 
     // Invalid payload rejected
-    const badRes = await req(`/api/controllers/${controller.id}/room`, {
+    const badRes = await req(`/api/board-instances/${controller.id}/room`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({ roomId: "not-a-uuid" }),
@@ -279,7 +279,7 @@ describe("Sensor reading history & controller room assignment", () => {
     expect(badRes.status).toBe(400);
 
     // Remove assignment
-    const removeRes = await req(`/api/controllers/${controller.id}/room`, {
+    const removeRes = await req(`/api/board-instances/${controller.id}/room`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({ roomId: null }),

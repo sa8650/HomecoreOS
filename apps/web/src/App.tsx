@@ -99,9 +99,9 @@ const BoardLibraryPage = lazy(() =>
     default: m.BoardLibraryPage,
   }))
 );
-const ControllersPage = lazy(() =>
-  import("@/features/user/ControllersPage").then((m) => ({
-    default: m.ControllersPage,
+const MyBoardsPage = lazy(() =>
+  import("@/features/user/MyBoardsPage").then((m) => ({
+    default: m.MyBoardsPage,
   }))
 );
 const DevicesPage = lazy(() =>
@@ -161,8 +161,8 @@ const USER_ROUTES: RouteNavDef[] = [
   { id: "devices", label: "Devices", path: "/devices", icon: <RiLightbulbLine className="size-4" /> },
   { id: "switches", label: "Switches", path: "/switches", icon: <RiToggleLine className="size-4" /> },
   { id: "sensors", label: "Sensors", path: "/sensors", icon: <RiSensorLine className="size-4" /> },
-  { id: "controllers", label: "Controllers", path: "/controllers", icon: <RiCpuLine className="size-4" /> },
-  { id: "boards", label: "Board Library", path: "/boards", icon: <RiStackLine className="size-4" /> },
+  { id: "my-boards", label: "My Boards", path: "/my-boards", icon: <RiCpuLine className="size-4" /> },
+  { id: "board-library", label: "Board Library", path: "/board-library", icon: <RiStackLine className="size-4" /> },
   { id: "planner", label: "Smart Home Planner", path: "/planner", icon: <RiHomeGearLine className="size-4" /> },
   { id: "automations", label: "Automation", path: "/automations", icon: <RiFlashlightLine className="size-4" /> },
   { id: "firmware", label: "Firmware & Updates", path: "/firmware", icon: <RiHardDrive2Line className="size-4" /> },
@@ -467,15 +467,15 @@ export function App() {
         return <SwitchesPage canManage={canManage} canOperate={canOperate} />;
       case "/sensors":
         return <SensorsPage canManage={canManage} />;
-      case "/controllers":
+      case "/my-boards":
         return (
-          <ControllersPage
+          <MyBoardsPage
             canManage={canManage}
             canOperate={canOperate}
             onNavigate={navigate}
           />
         );
-      case "/boards":
+      case "/board-library":
         return <BoardLibraryPage canManage={canManage} />;
       case "/planner":
         return (

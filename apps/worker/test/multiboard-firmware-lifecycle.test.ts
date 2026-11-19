@@ -268,11 +268,11 @@ describe("Multi-Board Firmware Compatibility, Release Lifecycle, Verification, R
     expect(boardCheck.find((b) => b.slug === "esp32-c5-devkitc-1")!.firmware_status).toBe("firmware_supported");
 
     // 4. Create & pair controllers on XIAO ESP32-S3 (8MB), ESP32-C5 (BOOT GPIO28), and ESP32-H2 (No Wi-Fi)
-    const createCtrl = async (name: string, boardCatalogId: string) => {
-      const r = await req("/api/controllers", {
+    const createCtrl = async (name: string, boardProfileId: string) => {
+      const r = await req("/api/board-instances", {
         method: "POST",
         headers: { "Content-Type": "application/json", Cookie: userCookie },
-        body: JSON.stringify({ name, boardCatalogId }),
+        body: JSON.stringify({ name, boardProfileId }),
       });
       expect(r.status).toBe(201);
       return (await r.json()) as { controller: { id: string }; pairingCode: string };
@@ -283,7 +283,7 @@ describe("Multi-Board Firmware Compatibility, Release Lifecycle, Verification, R
     const h2Ctrl = await createCtrl("H2 Thread Node", h2Board.id);
 
     // Check board-specific offline recovery instructions before pairing
-    const listBeforePair = await req("/api/controllers", { headers: { Cookie: userCookie } });
+    const listBeforePair = await req("/api/board-instances", { headers: { Cookie: userCookie } });
     expect(listBeforePair.status).toBe(200);
     const listedCtrls = ((await listBeforePair.json()) as {
       controllers: Array<{
@@ -392,12 +392,12 @@ describe("Multi-Board Firmware Compatibility, Release Lifecycle, Verification, R
     expect(updRes.status).toBe(200);
     const updJson = (await updRes.json()) as {
       applicableUpdates: Array<{
-        controllerId: string;
+        boardInstanceId: string;
         availableRelease: { id: string; version: string };
       }>;
     };
     const xiaoUpdate = updJson.applicableUpdates.find(
-      (u) => u.controllerId === xiaoCtrl.controller.id
+      (u) => u.boardInstanceId === xiaoCtrl.controller.id
     );
     expect(xiaoUpdate).toBeDefined();
     expect(xiaoUpdate!.availableRelease.id).toBe(rel8.id);
@@ -408,7 +408,7 @@ describe("Multi-Board Firmware Compatibility, Release Lifecycle, Verification, R
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
-        controllerId: xiaoCtrl.controller.id,
+        boardInstanceId: xiaoCtrl.controller.id,
         releaseId: rel16.id,
       }),
     });
@@ -464,7 +464,7 @@ describe("Multi-Board Firmware Compatibility, Release Lifecycle, Verification, R
       headers: { "Content-Type": "application/json", Cookie: userCookie },
       body: JSON.stringify({
         releaseId: rel8.id,
-        controllerId: xiaoCtrl.controller.id,
+        boardInstanceId: xiaoCtrl.controller.id,
         status: "succeeded",
         chipDetected: "ESP32-S3 (QFN56)",
         detectedFlashSizeMb: 8,

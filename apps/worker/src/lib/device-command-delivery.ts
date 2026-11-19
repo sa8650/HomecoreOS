@@ -1,4 +1,4 @@
-import { normalizeDeviceRole } from "@homecoreos/shared";
+import { normalizeBoardRole } from "@homecoreos/shared";
 import type { DbClient } from "./db";
 
 /**
@@ -7,7 +7,7 @@ import type { DbClient } from "./db";
  * A Controller always has its own EMQX session, so commands go straight to its
  * `cmd/switch` or `cmd/device` topic. A Node that is linked to its Controller
  * over ESP-NOW deliberately keeps **no** EMQX session (see
- * `packages/shared/src/device-role.ts`), so an EMQX publish to its own topic
+ * `packages/shared/src/board-role.ts`), so an EMQX publish to its own topic
  * would be accepted by the broker but never delivered. For those Nodes the
  * command is wrapped as `action: "relay_to_node"` on the **Controller's**
  * `cmd/system` topic; the Controller forwards it over ESP-NOW.
@@ -32,7 +32,7 @@ async function loadActiveCredential(
   const { data } = await db
     .from("mqtt_credentials_metadata")
     .select("topic_prefix,status")
-    .eq("controller_id", deviceId)
+    .eq("board_instance_id", deviceId)
     .eq("account_id", accountId)
     .eq("status", "active")
     .maybeSingle();
@@ -52,8 +52,8 @@ export async function resolveDeviceCommandDelivery(
   }
 ): Promise<DeviceCommandDelivery | null> {
   const { data: row } = await db
-    .from("controllers")
-    .select("id,device_role,assigned_controller_id,mqtt_connected")
+    .from("board_instances")
+    .select("id,board_role,assigned_controller_id,mqtt_connected")
     .eq("id", params.deviceId)
     .eq("account_id", params.accountId)
     .is("deleted_at", null)
@@ -61,7 +61,7 @@ export async function resolveDeviceCommandDelivery(
 
   const device = row as {
     id: string;
-    device_role?: string | null;
+    board_role?: string | null;
     assigned_controller_id?: string | null;
     mqtt_connected?: boolean | null;
   } | null;
@@ -69,7 +69,7 @@ export async function resolveDeviceCommandDelivery(
   const credential =
     params.credential ?? (await loadActiveCredential(db, params.accountId, params.deviceId));
 
-  const isNode = normalizeDeviceRole(device?.device_role) === "node";
+  const isNode = normalizeBoardRole(device?.board_role) === "node";
   const hasOwnSession =
     Boolean(credential) && (credential!.status ?? "active") === "active";
 

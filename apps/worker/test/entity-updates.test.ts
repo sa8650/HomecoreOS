@@ -76,35 +76,35 @@ describe("Validated Entity PATCH updates (Switches, Devices, Sensors, Rooms) wit
     const homesRes = await req("/api/homes", { headers: { Cookie: cookieA } });
     const homeA = ((await homesRes.json()) as { homes: Array<{ id: string }> }).homes[0]!;
 
-    const boardsRes = await req("/api/boards/catalog", { headers: { Cookie: cookieA } });
+    const boardsRes = await req("/api/board-library/catalog", { headers: { Cookie: cookieA } });
     const board = ((await boardsRes.json()) as { boards: Array<{ id: string; slug: string }> }).boards.find(
       (b) => b.slug === "esp32-s3-devkitc-1-n16r8"
     )!;
 
     // 3. Create two controllers on A + one room
-    const ctrl1Res = await req("/api/controllers", {
+    const ctrl1Res = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
-      body: JSON.stringify({ name: "Ctrl 1", homeId: homeA.id, boardCatalogId: board.id }),
+      body: JSON.stringify({ name: "Ctrl 1", homeId: homeA.id, boardProfileId: board.id }),
     });
     const ctrl1 = ((await ctrl1Res.json()) as { controller: { id: string } }).controller;
 
-    const ctrl2Res = await req("/api/controllers", {
+    const ctrl2Res = await req("/api/board-instances", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
-      body: JSON.stringify({ name: "Ctrl 2", homeId: homeA.id, boardCatalogId: board.id }),
+      body: JSON.stringify({ name: "Ctrl 2", homeId: homeA.id, boardProfileId: board.id }),
     });
     const ctrl2 = ((await ctrl2Res.json()) as { controller: { id: string } }).controller;
     await seedInstalledFirmwareWithDrivers({
       pg: dbHarness.pg,
-      controllerId: ctrl1.id,
+      boardInstanceId: ctrl1.id,
       boardId: board.id,
       boardSlug: board.slug,
       chipFamily: "esp32s3",
     });
     await seedInstalledFirmwareWithDrivers({
       pg: dbHarness.pg,
-      controllerId: ctrl2.id,
+      boardInstanceId: ctrl2.id,
       boardId: board.id,
       boardSlug: board.slug,
       chipFamily: "esp32s3",
@@ -122,7 +122,7 @@ describe("Validated Entity PATCH updates (Switches, Devices, Sensors, Rooms) wit
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
-        controllerId: ctrl1.id,
+        boardInstanceId: ctrl1.id,
         roomId: roomA.id,
         name: "Desk Lamp",
         gpioPin: 4,
@@ -136,7 +136,7 @@ describe("Validated Entity PATCH updates (Switches, Devices, Sensors, Rooms) wit
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
-        controllerId: ctrl1.id,
+        boardInstanceId: ctrl1.id,
         roomId: roomA.id,
         name: "Ceiling Fan",
         deviceType: "fan",
@@ -150,7 +150,7 @@ describe("Validated Entity PATCH updates (Switches, Devices, Sensors, Rooms) wit
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
-        controllerId: ctrl1.id,
+        boardInstanceId: ctrl1.id,
         roomId: roomA.id,
         name: "Ambient Temp",
         sensorType: "temperature_dht22",
@@ -182,7 +182,7 @@ describe("Validated Entity PATCH updates (Switches, Devices, Sensors, Rooms) wit
       headers: { "Content-Type": "application/json", Cookie: cookieA },
       body: JSON.stringify({
         name: "Studio Lamp Updated",
-        controllerId: ctrl2.id,
+        boardInstanceId: ctrl2.id,
         roomId: null,
         gpioPin: 12,
         invertedLogic: true,
@@ -190,10 +190,10 @@ describe("Validated Entity PATCH updates (Switches, Devices, Sensors, Rooms) wit
     });
     expect(swValid.status).toBe(200);
     const swUpdated = ((await swValid.json()) as {
-      switch: { name: string; controller_id: string; gpio_pin: number; inverted: boolean; room_id: string | null };
+      switch: { name: string; board_instance_id: string; gpio_pin: number; inverted: boolean; room_id: string | null };
     }).switch;
     expect(swUpdated.name).toBe("Studio Lamp Updated");
-    expect(swUpdated.controller_id).toBe(ctrl2.id);
+    expect(swUpdated.board_instance_id).toBe(ctrl2.id);
     expect(swUpdated.gpio_pin).toBe(12);
     expect(swUpdated.inverted).toBe(true);
     expect(swUpdated.room_id).toBeNull();
