@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { unzipSync, strFromU8 } from "fflate";
 import { z } from "zod";
+import { gpioPinSchema } from "../lib/board-schemas";
 import {
   SUPPORTED_CHIP_FAMILIES,
   chipSupportsBle,
@@ -132,35 +133,6 @@ const boardImportSchema = z.object({
   publish: z.boolean().default(true),
 });
 
-const boardGpioDefinitionSchema = z.object({
-  pin: z.number().int().min(0).max(54),
-  label: z.string().trim().min(1).max(64),
-  board_pin_name: z.string().trim().max(48).nullable().optional(),
-  header_side: z.enum(["left", "right"]).nullable().optional(),
-  header_position: z.number().int().min(1).max(40).nullable().optional(),
-  board_note: z.string().trim().max(160).nullable().optional(),
-  capabilities: z.object({
-    digital_in: z.boolean(),
-    digital_out: z.boolean(),
-    pwm: z.boolean(),
-    adc: z.boolean(),
-    i2c: z.boolean(),
-    spi: z.boolean(),
-    uart: z.boolean(),
-    touch: z.boolean(),
-    pull_up: z.boolean(),
-    pull_down: z.boolean(),
-  }),
-  restrictions: z.object({
-    input_only: z.boolean(),
-    reserved: z.boolean(),
-    reserved_reason: z.string().max(200).optional(),
-    strapping_pin: z.boolean(),
-    strapping_note: z.string().max(200).optional(),
-    flash_psram_conflict: z.boolean(),
-    usb_jtag_conflict: z.boolean(),
-  }),
-});
 
 const boardPatchSchema = z.object({
   is_available: z.boolean().optional(),
@@ -173,7 +145,7 @@ const boardPatchSchema = z.object({
   image_url: z.string().max(500).nullable().optional(),
   docs_url: z.string().max(500).nullable().optional(),
   revision_notes: z.string().max(1000).nullable().optional(),
-  gpio_definitions: z.array(boardGpioDefinitionSchema).optional(),
+  gpio_definitions: z.array(gpioPinSchema).optional(),
 });
 
 const boardCatalogSchema = z.object({
@@ -203,7 +175,7 @@ const boardCatalogSchema = z.object({
     .default("catalog_only"),
   revisionNotes: z.string().max(1000).nullable().optional(),
   boardLayout: z.record(z.unknown()).nullable().optional(),
-  gpioDefinitions: z.array(boardGpioDefinitionSchema),
+  gpioDefinitions: z.array(gpioPinSchema),
 });
 
 const packageManifestSchema = z.object({

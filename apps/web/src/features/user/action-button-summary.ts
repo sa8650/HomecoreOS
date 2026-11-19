@@ -1,7 +1,4 @@
-import type {
-  ActionButtonGestures,
-  ActionButtonStep,
-} from "@homecoreos/shared";
+import type { ActionButtonStep } from "@homecoreos/shared";
 import type { ActionButtonInventory } from "./action-button-inventory";
 
 export function summarizeStep(
@@ -40,22 +37,6 @@ export function summarizeStep(
         ? `Wait ${step.ms / 1000}s`
         : `Wait ${step.ms} ms`;
   }
-}
-
-export function summarizeGestures(
-  gestures: ActionButtonGestures,
-  inventory: ActionButtonInventory
-): Array<{ gesture: "single" | "double" | "long"; steps: string[] }> {
-  const out: Array<{ gesture: "single" | "double" | "long"; steps: string[] }> = [];
-  for (const gesture of ["single", "double", "long"] as const) {
-    const steps = gestures[gesture];
-    if (!steps || steps.length === 0) continue;
-    out.push({
-      gesture,
-      steps: steps.map((s) => summarizeStep(s, inventory)),
-    });
-  }
-  return out;
 }
 
 let stepUidCounter = 0;

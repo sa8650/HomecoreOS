@@ -130,7 +130,3 @@ export function circuitWireDash(wire: CircuitWire): string | undefined {
   if (wire.warnings && wire.warnings.length > 0) return "7 5";
   return undefined;
 }
-
-export function isMainsWire(kind: CircuitWireKind): boolean {
-  return kind === "ac_live" || kind === "ac_neutral";
-}

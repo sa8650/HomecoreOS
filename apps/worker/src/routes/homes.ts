@@ -32,6 +32,16 @@ const layoutConfigSchema = z.object({
   doors: z.array(openingSchema).max(12).optional(),
   windows: z.array(openingSchema).max(12).optional(),
   rotation: z.number().int().min(0).max(270).optional(),
+  /**
+   * Badge positions saved by dragging a device on the 2D floor map. Values are
+   * fractions of the room box so they stay valid when the room is resized.
+   */
+  devicePositions: z
+    .record(
+      z.string().trim().min(1).max(160),
+      z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) })
+    )
+    .optional(),
 });
 
 const roomSchema = z.object({

@@ -86,8 +86,6 @@ export const ACTION_BUTTON_MAX_TOTAL_DELAY_MS = 15_000;
 export const ACTION_BUTTON_COOLDOWN_MS = 2_000;
 
 export type ActionButtonOp = "on" | "off" | "toggle";
-export const ACTION_BUTTON_OPS = ["on", "off", "toggle"] as const;
-
 export type ActionButtonBulkTarget = "switches" | "devices" | "all";
 
 export type ActionButtonStep =
@@ -103,17 +101,6 @@ export type ActionButtonStep =
   | { id: string; kind: "all"; target: ActionButtonBulkTarget; op: ActionButtonOp }
   | { id: string; kind: "automation"; automationId: string }
   | { id: string; kind: "delay"; ms: number };
-
-export const ACTION_BUTTON_STEP_KINDS = [
-  "switch",
-  "device",
-  "room",
-  "all",
-  "automation",
-  "delay",
-] as const;
-export type ActionButtonStepKind = (typeof ACTION_BUTTON_STEP_KINDS)[number];
-
 /** Stored in the `config` JSONB column of action_button_configs. */
 export interface ActionButtonGestures {
   single: ActionButtonStep[];

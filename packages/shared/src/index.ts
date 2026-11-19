@@ -13,8 +13,6 @@ export type PlatformAdminRole = "super_admin" | "operator" | "support";
 
 export type FirmwareChannel = "stable" | "beta" | "development";
 
-export type FirmwareArtifactType = "ota_app" | "usb_factory";
-
 export const SUPPORTED_CHIP_FAMILIES = [
   "esp32",
   "esp32s2",
@@ -203,11 +201,22 @@ export interface FloorWindow {
   width?: number;
 }
 
+/**
+ * Where a device badge sits inside its room, stored as fractions of the room box
+ * (0..1) so the spot survives room moves and resizes.
+ */
+export interface RoomDevicePosition {
+  x: number;
+  y: number;
+}
+
 export interface RoomLayoutConfig {
   floorStyle?: FloorStyle;
   doors?: FloorDoor[];
   windows?: FloorWindow[];
   rotation?: number;
+  /** Badge positions saved from the 2D floor map, keyed by `switch:…`/`device:…`/`sensor:…`. */
+  devicePositions?: Record<string, RoomDevicePosition>;
 }
 
 export interface RegionalTimezoneOption {
@@ -583,6 +592,7 @@ export * from "./usb-board-identity";
 export * from "./board-firmware-compat";
 export * from "./sensor-drivers";
 export * from "./ble-provisioning";
+export * from "./device-role";
 export * from "./automations";
 export * from "./flow-graph";
 export * from "./action-button";

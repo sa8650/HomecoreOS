@@ -22,6 +22,7 @@ import {
   type ControllerSetupView,
 } from "@/components/controllers/ControllerSetupModal";
 import { ControllerCard } from "@/components/controllers/ControllerCard";
+import { NodeCard } from "@/components/controllers/NodeCard";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";
 import {
@@ -71,7 +72,7 @@ export function ControllersPage({
 }) {
   const timezone = useEffectiveTimezone();
   const cachedCtrls = getCachedSnapshot<{ controllers: ControllerItem[] }>("/api/controllers");
-  const [activeTab, setActiveTab] = useState<"active" | "trash">("active");
+  const [activeTab, setActiveTab] = useState<"active" | "nodes" | "trash">("active");
   const [search, setSearch] = useState("");
   const [controllers, setControllers] = useState<ControllerItem[]>(
     () => cachedCtrls?.controllers ?? []
@@ -113,6 +114,18 @@ export function ControllersPage({
   const [wifiTarget, setWifiTarget] = useState<ControllerItem | null>(null);
   const [wifiSsid, setWifiSsid] = useState("");
   const [wifiPassword, setWifiPassword] = useState("");
+
+  const [roleTarget, setRoleTarget] = useState<{
+    device: ControllerItem;
+    role: "controller" | "node";
+  } | null>(null);
+  const [attachedNodeWarning, setAttachedNodeWarning] = useState<{
+    device: ControllerItem;
+    count: number;
+  } | null>(null);
+  const [assignNodeTarget, setAssignNodeTarget] = useState<ControllerItem | null>(null);
+  const [assignNodeSelection, setAssignNodeSelection] = useState<string>("");
+  const [relinkTarget, setRelinkTarget] = useState<ControllerItem | null>(null);
 
   const [trashTarget, setTrashTarget] = useState<ControllerItem | null>(null);
   const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<ControllerItem | null>(null);
@@ -265,15 +278,118 @@ export function ControllersPage({
     }
   }
 
+  // Every device is either a Controller or a Node; the console keeps them apart
+  // instead of showing one mixed list.
+  const controllerDevices = useMemo(
+    () => controllers.filter((c) => (c.device_role ?? "controller") !== "node"),
+    [controllers]
+  );
+  const nodeDevices = useMemo(
+    () => controllers.filter((c) => c.device_role === "node"),
+    [controllers]
+  );
+
+  // A Node can only be hosted by an online Controller in the same home.
+  const nodeTargetCandidates = useMemo(() => {
+    const node = assignNodeTarget;
+    if (!node) return [];
+    return controllerDevices.filter(
+      (c) => c.id !== node.id && (!node.home_id || c.home_id === node.home_id)
+    );
+  }, [assignNodeTarget, controllerDevices]);
+
   const filteredControllers = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return controllers;
-    return controllers.filter((c) =>
+    if (!q) return controllerDevices;
+    return controllerDevices.filter((c) =>
       `${c.name} ${c.board_model} ${c.chip_variant} ${c.wifi_ssid ?? ""} ${c.local_ip ?? ""} ${c.hardware_uid ?? ""}`
         .toLowerCase()
         .includes(q)
     );
-  }, [controllers, search]);
+  }, [controllerDevices, search]);
+
+  const filteredNodes = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return nodeDevices;
+    return nodeDevices.filter((c) =>
+      `${c.name} ${c.board_model} ${c.chip_variant} ${c.assigned_controller_name ?? ""} ${c.hardware_uid ?? ""}`
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [nodeDevices, search]);
+
+  /** Controller -> Node, or Node -> Controller. The device record is preserved. */
+  async function handleRoleChange(
+    device: ControllerItem,
+    role: "controller" | "node",
+    acknowledgeAttachedNodes = false
+  ) {
+    try {
+      await apiFetch(`/api/controllers/${device.id}/role`, {
+        method: "PATCH",
+        body: JSON.stringify({ role, acknowledgeAttachedNodes }),
+      });
+      toast.success(
+        role === "node"
+          ? `${device.name} is now a Node.`
+          : `${device.name} is now a Controller.`
+      );
+      setRoleTarget(null);
+      await load(true);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        // The Worker reports how many Nodes would be released, so the operator
+        // confirms the fallback explicitly instead of silently losing the link.
+        const details = err.details as
+          | { attachedNodeCount?: number }
+          | undefined;
+        if (err.code === "attached_nodes" && !acknowledgeAttachedNodes) {
+          setRoleTarget(null);
+          setAttachedNodeWarning({
+            device,
+            count: details?.attachedNodeCount ?? device.connected_node_count ?? 0,
+          });
+          return;
+        }
+        toast.error(err.message);
+        return;
+      }
+      toast.error("Failed to change the device role.");
+    }
+  }
+
+  async function handleAssignNode(node: ControllerItem, controllerId: string | null) {
+    try {
+      await apiFetch(`/api/controllers/${node.id}/assign-controller`, {
+        method: "POST",
+        body: JSON.stringify({ controllerId }),
+      });
+      toast.success(
+        controllerId ? `${node.name} assigned to its Controller.` : "Controller assignment cleared."
+      );
+      setAssignNodeTarget(null);
+      await load(true);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to assign the Node.");
+    }
+  }
+
+  async function handleRelink(node: ControllerItem) {
+    try {
+      const res = await apiFetch<{ deliveredVia: "node" | "controller" }>(
+        `/api/controllers/${node.id}/relink`,
+        { method: "POST" }
+      );
+      toast.success(
+        res.deliveredVia === "node"
+          ? `Asked ${node.name} to re-link to its Controller.`
+          : `Sent the re-link request through ${node.assigned_controller_name ?? "the Controller"}.`
+      );
+      await load(true);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to re-link the Node.");
+    }
+  }
 
   const filteredTrash = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -479,9 +595,6 @@ export function ControllersPage({
                 Add Controller
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={() => onNavigate("/firmware")}>
-              USB Flasher &amp; OTA
-            </Button>
             <Button variant="outline" size="sm" onClick={() => void load(true)}>
               <RiRefreshLine className="size-4" aria-hidden="true" />
               Refresh
@@ -492,12 +605,15 @@ export function ControllersPage({
 
       <Tabs
         value={activeTab}
-        onValueChange={(v) => setActiveTab(v as "active" | "trash")}
+        onValueChange={(v) => setActiveTab(v as "active" | "nodes" | "trash")}
         className="space-y-4"
       >
         <TabsList>
           <TabsTrigger value="active">
-            Active Controllers ({controllers.length})
+            Controllers ({controllerDevices.length})
+          </TabsTrigger>
+          <TabsTrigger value="nodes">
+            Nodes ({nodeDevices.length})
           </TabsTrigger>
           <TabsTrigger value="trash">
             <RiHistoryLine className="size-3.5" aria-hidden="true" />
@@ -507,11 +623,11 @@ export function ControllersPage({
 
         <TabsContent value="active" className="space-y-4">
           {filteredControllers.length === 0 ? (
-            controllers.length > 0 ? (
+            controllerDevices.length > 0 ? (
               <EmptyStatePanel
                 icon={<RiCpuLine />}
                 title="No matching controllers"
-                description={`No active controllers match "${search}".`}
+                description={`No Controller matches "${search}".`}
                 action={
                   <Button variant="outline" onClick={() => setSearch("")}>
                     Clear Search
@@ -530,10 +646,7 @@ export function ControllersPage({
                         <RiAddLine className="size-4" aria-hidden="true" />
                         Add Controller
                       </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => openSetupFlow("recover_ble")}
-                      >
+                      <Button variant="outline" onClick={() => openSetupFlow("recover")}>
                         <RiShieldCheckLine className="size-4" aria-hidden="true" />
                         Recover Existing Controller
                       </Button>
@@ -562,7 +675,7 @@ export function ControllersPage({
                   canManage={canManage}
                   canOperate={canOperate}
                   onViewDetails={() => setDetailTarget(ctrl)}
-                  onRecover={() => openSetupFlow("entry", ctrl)}
+                  onRecover={() => openSetupFlow("recover", ctrl)}
                   onConfigureWifi={() => {
                     setWifiTarget(ctrl);
                     setWifiSsid(ctrl.wifi_ssid ?? "");
@@ -570,6 +683,61 @@ export function ControllersPage({
                   onAssignRoom={() => openRoomAssign(ctrl)}
                   onAction={(action) => void handleAction(ctrl, action)}
                   onMoveToTrash={() => setTrashTarget(ctrl)}
+                  onMakeNode={() => setRoleTarget({ device: ctrl, role: "node" })}
+                />
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="nodes" className="space-y-4">
+          {filteredNodes.length === 0 ? (
+            nodeDevices.length > 0 ? (
+              <EmptyStatePanel
+                icon={<RiWifiLine />}
+                title="No matching Nodes"
+                description={`No Node matches "${search}".`}
+                action={
+                  <Button variant="outline" onClick={() => setSearch("")}>
+                    Clear Search
+                  </Button>
+                }
+              />
+            ) : (
+              <EmptyStatePanel
+                icon={<RiWifiLine />}
+                title="No Nodes yet"
+                description="A Node runs the same firmware in Node mode: it owns its switches and sensors and reports through its Controller over ESP-NOW, with no separate cloud session. Turn any Controller into a Node from its Actions menu, then assign it to the Controller that will host it."
+                action={
+                  canManage ? (
+                    <Button variant="outline" onClick={() => setActiveTab("active")}>
+                      <RiCpuLine className="size-4" aria-hidden="true" />
+                      Go to Controllers
+                    </Button>
+                  ) : undefined
+                }
+              />
+            )
+          ) : (
+            <div
+              data-testid="nodes-card-grid"
+              className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3"
+            >
+              {filteredNodes.map((node) => (
+                <NodeCard
+                  key={node.id}
+                  node={node}
+                  board={boardForController(node)}
+                  canManage={canManage}
+                  canOperate={canOperate}
+                  timezone={timezone}
+                  onViewDetails={() => setDetailTarget(node)}
+                  onAssignController={() => {
+                    setAssignNodeSelection(node.assigned_controller_id ?? "");
+                    setAssignNodeTarget(node);
+                  }}
+                  onRelink={() => setRelinkTarget(node)}
+                  onPromote={() => setRoleTarget({ device: node, role: "controller" })}
                 />
               ))}
             </div>
@@ -661,6 +829,235 @@ export function ControllersPage({
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Unified Controller / Node role dialogs. A role change never recreates
+          the device: identity, pairing, firmware history and hardware config
+          stay exactly as they are. */}
+      <Dialog
+        open={roleTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRoleTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {roleTarget?.role === "node" ? "Make this a Node?" : "Make this a Controller?"}
+            </DialogTitle>
+            <DialogDescription>
+              {roleTarget?.role === "node"
+                ? `${roleTarget?.device.name ?? "This device"} keeps its switches, sensors and history. As a Node it reaches HomecoreOS through a Controller over ESP-NOW instead of its own cloud connection.`
+                : `${roleTarget?.device.name ?? "This device"} will host its own cloud connection again and can host Nodes over ESP-NOW.`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-xs text-muted-foreground">
+            {roleTarget?.role === "node" ? (
+              <>
+                <p>The device restarts into Node mode and looks for the Controller it is assigned to.</p>
+                <p>
+                  If that Controller is out of range, it keeps working as a Standalone Node on
+                  Wi-Fi until the link comes back. It is never promoted to a Controller on its own.
+                </p>
+              </>
+            ) : (
+              <p>
+                A Controller needs Wi-Fi and ESP-NOW. Devices on boards without a Wi-Fi radio
+                cannot take this role.
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRoleTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!roleTarget) return;
+                const target = roleTarget;
+                void handleRoleChange(target.device, target.role);
+              }}
+            >
+              {roleTarget?.role === "node" ? "Make Node" : "Make Controller"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={attachedNodeWarning !== null}
+        onOpenChange={(open) => {
+          if (!open) setAttachedNodeWarning(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Nodes still rely on this Controller</DialogTitle>
+            <DialogDescription>
+              {attachedNodeWarning?.count ?? 0} Node
+              {(attachedNodeWarning?.count ?? 0) === 1 ? "" : "s"} are linked to{" "}
+              {attachedNodeWarning?.device.name ?? "this Controller"}. Making it a Node releases
+              them: each one switches to its Wi-Fi connection and keeps running as a Standalone
+              Node until you assign it to another Controller.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAttachedNodeWarning(null)}>
+              Keep as Controller
+            </Button>
+            <Button
+              onClick={() => {
+                const warning = attachedNodeWarning;
+                if (!warning) return;
+                setAttachedNodeWarning(null);
+                void handleRoleChange(warning.device, "node", true);
+              }}
+            >
+              Release Nodes and Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={assignNodeTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setAssignNodeTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Assign a Controller</DialogTitle>
+            <DialogDescription>
+              Choose the Controller that will host {assignNodeTarget?.name ?? "this Node"} over
+              ESP-NOW. It must be online and in the same home.
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            role="radiogroup"
+            aria-label="Select a Controller"
+            className="max-h-72 space-y-1.5 overflow-y-auto"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={assignNodeSelection === ""}
+              onClick={() => setAssignNodeSelection("")}
+              className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
+                assignNodeSelection === ""
+                  ? "border-primary/50 bg-primary/6 ring-1 ring-primary/30"
+                  : "hover:bg-muted/50"
+              }`}
+            >
+              <span className="min-w-0">
+                <span className="block truncate font-medium text-foreground">
+                  No Controller (remove assignment)
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  The Node stays reachable over Wi-Fi only
+                </span>
+              </span>
+              {assignNodeSelection === "" && (
+                <RiCheckLine className="size-4 shrink-0 text-primary" aria-hidden="true" />
+              )}
+            </button>
+            {nodeTargetCandidates.map((candidate) => {
+              const selected = assignNodeSelection === candidate.id;
+              return (
+                <button
+                  key={candidate.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setAssignNodeSelection(candidate.id)}
+                  className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
+                    selected
+                      ? "border-primary/50 bg-primary/6 ring-1 ring-primary/30"
+                      : "hover:bg-muted/50"
+                  }`}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <RiCpuLine
+                      className="size-4 shrink-0 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-foreground">
+                        {candidate.name}
+                      </span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {candidate.connected_node_count ?? 0} Node
+                        {(candidate.connected_node_count ?? 0) === 1 ? "" : "s"} linked ·{" "}
+                        {candidate.status}
+                      </span>
+                    </span>
+                  </span>
+                  {selected && (
+                    <RiCheckLine className="size-4 shrink-0 text-primary" aria-hidden="true" />
+                  )}
+                </button>
+              );
+            })}
+            {nodeTargetCandidates.length === 0 && (
+              <EmptyStatePanel
+                compact
+                icon={<RiCpuLine className="size-5" />}
+                tone="neutral"
+                title="No Controller available"
+                description="Add or bring a Controller online first. A Node needs an online Controller in the same home."
+              />
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAssignNodeTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!assignNodeTarget}
+              onClick={() => {
+                if (!assignNodeTarget) return;
+                void handleAssignNode(
+                  assignNodeTarget,
+                  assignNodeSelection === "" ? null : assignNodeSelection
+                );
+              }}
+            >
+              Save Assignment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={relinkTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRelinkTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Re-link this Node?</DialogTitle>
+            <DialogDescription>
+              {relinkTarget?.name ?? "This Node"} will drop its Wi-Fi/MQTT fallback and look for{" "}
+              {relinkTarget?.assigned_controller_name ?? "its Controller"} over ESP-NOW again.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRelinkTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                const target = relinkTarget;
+                if (!target) return;
+                setRelinkTarget(null);
+                void handleRelink(target);
+              }}
+            >
+              Re-link Now
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Wi-Fi Update Modal (Online MQTT + Offline BLE / Portal Guidance) */}
       <Dialog open={Boolean(wifiTarget)} onOpenChange={(o) => !o && setWifiTarget(null)}>
@@ -1048,23 +1445,6 @@ export function ControllersPage({
                           Configure Wi-Fi
                         </Button>
                       )}
-                      {canManage && detailTarget.board_compat?.supports_ble !== false && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            const target = detailTarget;
-                            setDetailTarget(null);
-                            openSetupFlow(
-                              target.paired_at ? "recover_ble" : "setup_ble",
-                              target
-                            );
-                          }}
-                        >
-                          <RiBluetoothConnectLine className="size-4" aria-hidden="true" />
-                          {detailTarget.paired_at ? "Recover with BLE" : "Setup with BLE"}
-                        </Button>
-                      )}
                       {canManage && (
                         <Button
                           variant="outline"
@@ -1072,11 +1452,11 @@ export function ControllersPage({
                           onClick={() => {
                             const target = detailTarget;
                             setDetailTarget(null);
-                            openSetupFlow("entry", target);
+                            openSetupFlow(target.paired_at ? "recover" : "setup", target);
                           }}
                         >
                           <RiShieldCheckLine className="size-4" aria-hidden="true" />
-                          Recover / Re-pair
+                          {detailTarget.paired_at ? "Repair / Recover" : "Setup Controller"}
                         </Button>
                       )}
                       {canOperate && detailTarget.status === "online" && (
@@ -1194,7 +1574,7 @@ export function ControllersPage({
         onConfirm={handlePermanentDelete}
       />
 
-      {/* Unified 4-Option Controller Setup & Recovery Modal */}
+      {/* One modal owns flashing, setup and repair/recovery */}
       <ControllerSetupModal
         open={setupModal.open}
         initialView={setupModal.initialView}
@@ -1204,6 +1584,7 @@ export function ControllersPage({
         homes={homes}
         catalogBoards={catalogBoards}
         customBoards={customBoards}
+        canManage={canManage}
         onClose={() =>
           setSetupModal({ open: false, initialView: "entry", targetController: null })
         }

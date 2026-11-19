@@ -20,7 +20,7 @@ import type {
   SensorItem,
   SwitchItem,
 } from "@/features/types";
-import { isLightingFixture } from "./RoomFurnitureSvg";
+import { isLightingFixture } from "./floor-visuals";
 
 const FAN_SPEED_STEPS = [1, 2, 3, 4, 5] as const;
 type FanSpeedStep = (typeof FAN_SPEED_STEPS)[number];

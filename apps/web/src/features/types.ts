@@ -158,6 +158,21 @@ export interface ControllerItem {
     connectivity_note: string | null;
   };
   sensor_compatibility?: ControllerSensorCompatibilityReport | null;
+  // Unified Controller / Node role (see packages/shared/src/device-role.ts)
+  device_role?: "controller" | "node";
+  node_comm_mode?: "espnow" | "wifi_mqtt" | "offline" | null;
+  node_link_state?:
+    | "linked"
+    | "controller_lost"
+    | "reconnecting"
+    | "standalone"
+    | "unassigned"
+    | null;
+  assigned_controller_id?: string | null;
+  assigned_controller_name?: string | null;
+  connected_node_count?: number;
+  role_changed_at?: string | null;
+  node_last_linked_at?: string | null;
   offline_recovery_instructions?: string[];
 }
 
@@ -479,6 +494,8 @@ export interface FirmwareUpdateHistoryItem {
 export interface ApplicableFirmwareUpdateItem {
   controllerId: string;
   controllerName: string;
+  /** Unified role: a Node's update is relayed through its Controller. */
+  deviceRole?: "controller" | "node";
   boardModel: string;
   controllerStatus: string;
   currentVersion: string | null;

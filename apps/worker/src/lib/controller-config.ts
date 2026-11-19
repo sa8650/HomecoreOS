@@ -1,10 +1,14 @@
 import {
+  ESPNOW_LINK_TIMEOUT_MS,
+  ESPNOW_RECONNECT_WINDOW_MS,
   getSensorDriverForMeasurement,
   normalizeConditionGroups,
+  normalizeDeviceRole,
   normalizeTriggerList,
   type AutomationActionItem,
   type AutomationConditionsConfig,
   type AutomationTriggerConfig,
+  type DeviceRole,
 } from "@homecoreos/shared";
 import type { WorkerBindings } from "../config/env";
 import { sha256Hex } from "./crypto";
@@ -16,6 +20,22 @@ export interface ConsolidatedControllerConfigSnapshot {
   controllerId: string;
   revision: number;
   hash: string;
+  role: {
+    /** "controller" or "node" — one active role at a time. */
+    mode: DeviceRole;
+    /** Node only: the Controller that hosts this device. */
+    assignedControllerId: string | null;
+    /** Node only: the Controller's MQTT-free ESP-NOW identity (MAC derived). */
+    assignedControllerMac: string | null;
+    /** ESP-NOW channel to use; null means "follow the Wi-Fi STA channel". */
+    espnowChannel: number | null;
+    /** Node only: how long to retry its Controller before falling back. */
+    reconnectWindowMs: number;
+    /** Node only: heartbeat timeout for the Controller link. */
+    linkTimeoutMs: number;
+    /** Controller only: Nodes this device is expected to host. */
+    nodeIds: string[];
+  };
   settings: {
     controllerName: string;
     heartbeatIntervalSec: number;
@@ -122,12 +142,12 @@ export async function buildConsolidatedControllerConfig(
     heartbeat_interval_sec: number;
   } | null;
 }> {
-  const [ctrlRes, settingsRes, homesRes, swRes, devRes, senRes, rulesRes] =
+  const [ctrlRes, settingsRes, homesRes, swRes, devRes, senRes, rulesRes, nodesRes] =
     await Promise.all([
       db
         .from("controllers")
         .select(
-          "id,name,home_id,status,mqtt_connected,config_revision,config_hash,last_synced_config_revision,pending_config_sync,heartbeat_interval_sec"
+          "id,name,home_id,status,mqtt_connected,config_revision,config_hash,last_synced_config_revision,pending_config_sync,heartbeat_interval_sec,device_role,assigned_controller_id,espnow_channel"
         )
         .eq("id", controllerId)
         .eq("account_id", accountId)
@@ -175,6 +195,15 @@ export async function buildConsolidatedControllerConfig(
         .in("execution_mode", ["controller", "hybrid"])
         .is("deleted_at", null)
         .order("id", { ascending: true }),
+      // Nodes this device hosts (only meaningful for the Controller role).
+      db
+        .from("controllers")
+        .select("id,name")
+        .eq("account_id", accountId)
+        .eq("assigned_controller_id", controllerId)
+        .is("deleted_at", null)
+        .is("permanently_deleted_at", null)
+        .order("created_at", { ascending: true }),
     ]);
 
   const ctrl = ctrlRes.data as {
@@ -188,6 +217,9 @@ export async function buildConsolidatedControllerConfig(
     last_synced_config_revision: number;
     pending_config_sync: boolean;
     heartbeat_interval_sec: number;
+    device_role?: string | null;
+    assigned_controller_id?: string | null;
+    espnow_channel?: number | null;
   } | null;
 
   const homeTimezone = ctrl?.home_id
@@ -366,6 +398,38 @@ export async function buildConsolidatedControllerConfig(
       })),
   ].sort((a, b) => a.pin - b.pin);
 
+  // Unified role configuration. Nodes learn which Controller hosts them and the
+  // ESP-NOW peer identity to look for; Controllers learn which Nodes they host.
+  const deviceRole: DeviceRole = normalizeDeviceRole(ctrl?.device_role);
+  const assignedControllerId = ctrl?.assigned_controller_id ?? null;
+  let assignedControllerMac: string | null = null;
+  let uplinkChannel: number | null = null;
+  if (deviceRole === "node" && assignedControllerId) {
+    const { data: uplink } = await db
+      .from("controllers")
+      .select("id,hardware_uid,reported_board_slug,espnow_channel")
+      .eq("id", assignedControllerId)
+      .eq("account_id", accountId)
+      .is("deleted_at", null)
+      .maybeSingle();
+    const mac = (uplink as { hardware_uid?: string | null } | null)?.hardware_uid ?? null;
+    assignedControllerMac = mac && mac.trim().length > 0 ? mac.trim() : null;
+    uplinkChannel =
+      (uplink as { espnow_channel?: number | null } | null)?.espnow_channel ?? null;
+  }
+  const hostedNodeIds = ((nodesRes?.data ?? []) as Array<{ id: string }>).map((n) => n.id);
+  const role = {
+    mode: deviceRole,
+    assignedControllerId: deviceRole === "node" ? assignedControllerId : null,
+    assignedControllerMac,
+    // A Node's own override wins; otherwise it adopts the Controller's pinned
+    // channel. null means "find the Controller on any channel".
+    espnowChannel: ctrl?.espnow_channel ?? uplinkChannel ?? null,
+    reconnectWindowMs: ESPNOW_RECONNECT_WINDOW_MS,
+    linkTimeoutMs: ESPNOW_LINK_TIMEOUT_MS,
+    nodeIds: deviceRole === "controller" ? hostedNodeIds : [],
+  };
+
   const settings = {
     controllerName: ctrl?.name ?? "Controller",
     heartbeatIntervalSec,
@@ -373,8 +437,11 @@ export async function buildConsolidatedControllerConfig(
     timezone,
   };
 
-  // Canonical structural state (excludes volatile runtime values)
+  // Canonical structural state (excludes volatile runtime values). The unified
+  // role block participates: changing a role or its assigned Controller bumps the
+  // config revision, so the device is reconfigured exactly once per change.
   const structuralPayload = {
+    role,
     settings,
     switches: switches.map((s) => ({
       id: s.id,
@@ -404,11 +471,13 @@ export async function buildConsolidatedControllerConfig(
   const structuralHash = fullSha.slice(0, 16);
   const revision = ctrl?.config_revision ?? 1;
 
+
   const snapshot: ConsolidatedControllerConfigSnapshot = {
     schema: 2,
     controllerId,
     revision,
     hash: structuralHash,
+    role,
     settings,
     gpioConfig,
     switches,

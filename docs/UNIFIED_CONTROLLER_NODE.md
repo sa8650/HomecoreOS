@@ -1,0 +1,248 @@
+# Unified Controller & Node Architecture
+
+Date: 2026-11-18
+Status: implemented and verified (automated gates green; ESP-NOW transport unbuilt locally — see §10).
+
+This document is the final report for the unified Controller/Node firmware work: one single
+firmware image that runs either role, chosen at runtime by the user in the web console.
+
+---
+
+## 1. Design in one page
+
+| | Controller mode | Node mode |
+|---|---|---|
+| Defined in | `device_role = 'controller'` (default for every existing device) | `device_role = 'node'` |
+| Cloud | Wi-Fi + EMQX MQTT (unchanged) | **no MQTT session** while the ESP-NOW link is healthy; HTTPS heartbeat only |
+| Peer link | hosts Nodes over ESP-NOW | links to **one** assigned Controller over ESP-NOW |
+| Fallback | — | after losing its Controller it retries, then runs as **“Standalone Node — Controller Disconnected”** over Wi-Fi/MQTT |
+| Auto-promotion | — | **never**; a Node stays a Node |
+| OTA | EMQX `ota/cmd` on its own topic | EMQX instruction relayed by the Controller, then a temporary Wi-Fi/EMQX window for the download |
+| Identity | device row, pairing, credentials, firmware history | **same row** — a role change never recreates the device |
+
+The role is a **column on the existing `controllers` table**, not a new device type, so switches,
+devices, sensors, automations, rooms, audit history, OTA history and MQTT credentials all survive
+a promotion or a demotion untouched.
+
+## 2. Shared contract (`packages/shared/src/device-role.ts`)
+
+Exported from `@homecoreos/shared`, used by the Worker, the web console and (in behaviour) the
+firmware, so all three agree on the rules:
+
+- `DeviceRole` (`controller` | `node`), `NodeCommMode` (`espnow` | `wifi_mqtt` | `offline`),
+  `NodeLinkState` (`linked` | `controller_lost` | `reconnecting` | `standalone` | `unassigned`).
+- Timing contract: `ESPNOW_HEARTBEAT_INTERVAL_MS = 2 s`, `ESPNOW_LINK_TIMEOUT_MS = 10 s`,
+  `ESPNOW_RECONNECT_WINDOW_MS = 45 s`, `ESPNOW_CONTROLLER_PROBE_MS = 15 s`,
+  `ESPNOW_NODE_STALE_MS = 20 s`.
+- Capability gates: `boardSupportsEspNow`, `boardSupportsControllerRole` (Wi-Fi radio required;
+  ESP-NOW shares it).
+- Presentation: `deviceStatusLabel` (the only place “Standalone Node — Controller Disconnected”
+  is produced), `nodeCommModeLabel`, `deviceRoleLabel`, `isNodeStandalone`, `deriveCommMode`.
+- Guards: `roleChangeBlocker`, `canAssignNodeToController` — the Worker and the console run the
+  same functions, so a UI that allows something the API rejects is a bug both sides can catch.
+- 7 unit tests in `packages/shared/test/device-role.test.ts`.
+
+## 3. Database (`database/migrations/0002_device_roles.sql`)
+
+Additive only (no table rebuild, no data loss):
+
+| Column | Type / constraint |
+|---|---|
+| `device_role` | `text NOT NULL DEFAULT 'controller'`, check `controller \| node` |
+| `assigned_controller_id` | `uuid` FK → `controllers(id)` `ON DELETE SET NULL`, ≠ `id`, only when `device_role='node'` |
+| `comm_mode` | `espnow \| wifi_mqtt \| offline` |
+| `node_link_state` | `linked \| controller_lost \| reconnecting \| standalone \| unassigned` |
+| `espnow_channel` | `smallint` 1–13, `NULL` = follow the Wi-Fi STA channel |
+| `node_last_linked_at`, `role_changed_at` | timestamps |
+
+Indexes: `idx_controllers_device_role (account_id, device_role)` (partial on non-deleted rows) and
+`idx_controllers_assigned_controller`. `database/verify` snapshot rebaselined
+(32 tables, 5 functions, 345 seeded rows); `npm run db:verify` → *schema matches snapshot ✓*.
+
+Because the default is `controller`, every pre-existing row keeps behaving exactly as before.
+
+## 4. Worker (`apps/worker`)
+
+**Role management** — `src/lib/device-roles.ts`:
+
+- `listAttachedNodes` — Nodes hosted by one Controller.
+- `changeDeviceRole` — promote/demote with the shared guards (board capability, self-reference,
+  attached Nodes), audit (`controller.role_changed`), explicit release of hosted Nodes to
+  `comm_mode='wifi_mqtt'` / `node_link_state='unassigned'`, and forced config sync for the device
+  and the released Nodes.
+- `assignNodeToController` — `null` clears the assignment; validates with
+  `canAssignNodeToController` (a Node may only be hosted by an **online Controller in the same
+  home**), sets `comm_mode='espnow'` + `node_link_state='reconnecting'`, audits
+  (`controller.node_assigned` / `controller.node_unassigned`) and force-syncs both devices.
+
+**Routes** — `src/routes/controllers.ts`:
+
+| Route | Purpose |
+|---|---|
+| `GET /api/controllers` | now returns `device_role`, `node_comm_mode`, `node_link_state`, `assigned_controller_id`, `assigned_controller_name`, `connected_node_count`, `role_changed_at`, `node_last_linked_at` (single pass, no N+1) |
+| `GET /api/controllers/:id/nodes` | Nodes hosted by a Controller (used by the demote dialog) |
+| `PATCH /api/controllers/:id/role` | `{role, acknowledgeAttachedNodes}` → 409 `attached_nodes` with the affected Nodes when unacknowledged |
+| `POST /api/controllers/:id/assign-controller` | `{controllerId \| null}` |
+| `POST /api/controllers/:id/relink` | Node re-link request; delivered straight to a standalone Node, or relayed through its Controller when the Node has no MQTT session |
+| `PATCH /api/controllers/:id` | extended with `espnowChannel` (1–13 or `null`); changing it re-syncs every hosted Node |
+
+**Config snapshot** (`src/lib/controller-config.ts`) now carries a `role` block:
+
+```json
+"role": {
+  "mode": "node",
+  "assignedControllerId": "…",
+  "assignedControllerMac": "AA:BB:CC:DD:EE:FF",
+  "espnowChannel": 6,
+  "reconnectWindowMs": 45000,
+  "linkTimeoutMs": 10000,
+  "nodeIds": []
+}
+```
+
+`role` is part of the hashed structural payload, so any role/assignment/channel change bumps the
+revision and republishes the snapshot.
+
+**Heartbeat ingest** (`src/routes/device-api.ts`) accepts `role`/`cm`/`ls` and a Controller
+`nodes[]` roster. A linked Node runs no cloud session of its own, so the Controller's roster is
+what keeps its `status`, `comm_mode`, `node_link_state` and `last_heartbeat_at` honest; Nodes
+missing from the roster become `controller_lost` only after `ESPNOW_NODE_STALE_MS`, and a Node
+reporting its own `standalone` state is never overwritten.
+
+**OTA** (`src/routes/firmware.ts`): `applicableUpdates` carry `deviceRole`; a Node whose MQTT
+session is not connected gets the instruction relayed to its Controller
+(`{action:"ota_relay", node_id, ota:{…, wifi_window:true}}`); the release/history records are the
+same ones used for Controllers.
+
+## 5. Firmware (`firmware/main`)
+
+| File | Role |
+|---|---|
+| `role_logic.h/.c` | hardware-independent role state machine — link states, action bitmask, epoch-bumped command dedupe, `hc_role_can_change`. **13 host test functions** (`firmware/test/test_role_logic.c`, run in CI with `-Wall -Wextra -Werror`). |
+| `role_runtime.h/.c` | glue: persisted config ↔ state machine ↔ transports. Owns the MQTT start/stop decision, the keepalive cadence, the channel sweep, the OTA window, the Controller's Node roster and the `role` block of the config snapshot. |
+| `espnow_link.h/.c` | ESP-NOW transport (host + seek, peer management, 12-byte header + ≤200-byte JSON payload, RSSI). Compiled only where `HOMECORE_HAS_WIFI`. |
+| `nvs_store.c` | new keys `role`, `asg_ctrl`, `asg_mac`, `esp_ch`, `node_link`, `rl_epoch`, `rl_seq`; absent → Controller (legacy behaviour). `hc_nvs_factory_reset()` (`nvs_erase_all`) clears them, so a factory reset always returns the device as a Controller. |
+| `main.c` | `hc_role_init()` after NVS load, `hc_role_tick(&s_config, 500)` in the supervision loop, role-aware cloud sync, role in the boot banner, explicit 10 s-reset log line. |
+| `pairing_client.c` | applies the snapshot's `role` block, adds `role`/`cm`/`ls`/`nodes[]` to every heartbeat. |
+| `mqtt_manager.c` | same role application on the MQTT snapshot path; new system actions `relink_controller` (Node), `relink_node` and `ota_relay` (Controller → ESP-NOW relay). |
+| `Kconfig.projbuild` | `HOMECORE_ROLE_DEFAULT` (default `controller`) and `HOMECORE_ESPNOW_CHANNEL` (default 0 = follow the Wi-Fi channel). |
+| `CMakeLists.txt` | builds `role_logic.c`, `role_runtime.c`, `espnow_link.c`; `esp_now` component added for Wi-Fi targets. |
+
+**Boot behaviour (unchanged mechanism, role-aware):**
+
+- BOOT held ~3 s and released → Recovery Mode (BLE + Setup AP, 15-minute window, config preserved).
+- BOOT held 10 s → full factory reset: `nvs_erase_all` erases pairing, credentials **and the role**;
+  the device reboots as a Controller and must be set up again.
+- A plain power cycle never changes the role.
+
+**Node link lifecycle:**
+
+1. Boot as Node → read `assigned_controller_id`/`assigned_controller_mac` from NVS.
+2. Seek the Controller (pinned channel, or sweep 1–13 when `espnow_channel` is `NULL`), keepalive
+   every 2 s, adopt the Controller's channel.
+3. Link lost → `controller_lost`, retry for up to 45 s with **no** MQTT session (a flapping link
+   must not open a competing command channel).
+4. Still lost → `standalone`, open Wi-Fi/MQTT, report `cm=wifi_mqtt`, `ls=standalone`; the console
+   shows “Standalone Node — Controller Disconnected”. The Node keeps probing every 15 s.
+5. Controller returns → `linked`, the fallback session is closed automatically, the epoch bumps so
+   replayed commands from the fallback window cannot execute twice.
+6. Switches and sensors keep working locally in every state.
+
+## 6. Web console (`apps/web`)
+
+`ControllersPage.tsx` is now split into **Controllers** and **Nodes** tabs (Trash keeps its own
+utility tab so the existing 30-day recoverable-deletion workflow is unchanged):
+
+- Controllers tab: the existing cards, each with a new `Nodes` row (`N linked`) and a
+  **“Make this a Node”** action.
+- Nodes tab: a dedicated `NodeCard` — role badge, status line from `deviceStatusLabel`, comm-mode
+  badge (ESP-NOW / Wi-Fi / MQTT / Offline), hosting Controller, last-linked time, firmware, and
+  actions *Assign/Change Controller*, *Re-link to Controller*, *Make this a Controller*.
+- Dialogs: role change (explains the consequences), **attached-Nodes confirmation** (the Worker's
+  409 is turned into “N Nodes still rely on this Controller → Release Nodes and Continue”), and a
+  Controller picker that only offers online Controllers in the same home.
+- Nothing else in the console changed: same navigation, same setup/recover/flash modals, same
+  Firmware page and OTA flow.
+
+## 7. OTA — EMQX only, Nodes included
+
+- Controllers: unchanged `POST /api/firmware/ota/start` → EMQX `…/ota/cmd` → `esp_https_ota`.
+- Linked Nodes (no MQTT session): the instruction is published to the **Controller's** topic as
+  `ota_relay`; the Controller forwards a compact `{cmd:"ota", …}` frame over ESP-NOW; the Node opens
+  a temporary Wi-Fi/EMQX window (`HC_ROLE_ACT_OTA_WINDOW`, 3 minutes) and downloads over HTTPS.
+- Standalone Nodes: they already have an EMQX session, so they receive the normal `ota/cmd`.
+- USB flashing continues to exist for factory recovery, but no update path requires it.
+
+## 8. Board capability audit
+
+Rules (`boardSupportsEspNow` / `boardSupportsControllerRole`): ESP-NOW shares the Wi-Fi radio, so a
+usable **Wi-Fi radio is mandatory** for the Controller role and for ESP-NOW on a Node. A board
+without Wi-Fi can neither host Nodes nor join a Controller.
+
+| Board slug | Chip family | Module | Wi-Fi | Unified roles | Firmware status |
+|---|---|---|---|---|---|
+| **esp32-s3-devkitc-1-n16r8** | esp32s3 | **ESP32-S3-WROOM-1-N16R8** | yes | **Controller + Node** | **firmware_supported** |
+| esp32-s3-devkitc-1-v1-0 | esp32s3 | ESP32-S3-WROOM-1-N8R8 | yes | Controller + Node | catalog_only |
+| seeed-xiao-esp32s3 | esp32s3 | ESP32-S3R8 | yes | Controller + Node | catalog_only |
+| waveshare-esp32-s3-zero | esp32s3 | ESP32-S3FH4R2 | yes | Controller + Node | catalog_only |
+| esp32-c5-devkitc-1 | esp32c5 | ESP32-C5-WROOM-1-N8R8 | yes | Controller + Node | catalog_only |
+| esp32-c6-devkitc-1 | esp32c6 | ESP32-C6-WROOM-1-N8 | yes | Controller + Node | catalog_only |
+| esp32-c61-devkitc-1 | esp32c61 | ESP32-C6…/C61-WROOM-1-N8R2 | yes | Controller + Node | catalog_only |
+| esp32-c3-devkitm-1 | esp32c3 | ESP32-C3-MINI-1-N4 | yes | Controller + Node | catalog_only |
+| esp8684-devkitm-1 | esp32c2 | ESP8684-MINI-1-N4 | yes | Controller + Node | catalog_only |
+| esp32-s2-devkitc-1 | esp32s2 | ESP32-S2-SOLO-2-N4R2 | yes | Controller + Node | catalog_only |
+| esp32-devkitc-v4 | esp32 | ESP32-WROOM-32E | yes | Controller + Node | catalog_only |
+| esp32-h2-devkitm-1 | esp32h2 | ESP32-H2-MINI-1-N4 | **no** | not supported (no Wi-Fi radio) | catalog_only |
+| nodemcu-esp8266 | esp8266 | ESP8266EX (ESP-12E) | yes | not supported (outside the ESP-IDF v5 image) | catalog_only |
+
+**Recommendation: ESP32-S3-WROOM-1 N16R8** (`esp32-s3-devkitc-1-n16r8`) for every Controller and
+Node — it is the only board with `firmware_supported` status, has Wi-Fi + BLE for dual-transport
+provisioning, 16 MB flash / 8 MB octal PSRAM for the dual-OTA layout, and enough headroom for the
+ESP-NOW peer table. The other Wi-Fi boards are valid Nodes and Controllers in the catalog, but ship
+as `catalog_only` until each gets a firmware build in CI. ESP32-H2 must stay Controller-less (no
+Wi-Fi), and ESP8266 remains a separate legacy layer.
+
+## 9. The ten testing scenarios
+
+| # | Scenario | Where it is proven |
+|---|---|---|
+| 1 | Legacy device defaults to Controller, nothing breaks | `apps/worker/test/unified-device-roles.test.ts` — *“lists every device as a Controller by default”* |
+| 2 | Controller → Node keeps the same device record (identity, pairing, firmware) | same file — *“demotes a Controller to a Node without creating a second device record”* |
+| 3 | Node assignment + role published in the config snapshot | same file — *“assigns the Node to a Controller and publishes the role in its config snapshot”* |
+| 4 | Controller roster keeps an MQTT-less Node visible | same file — *“keeps a Node visible through its Controller's ESP-NOW roster”* |
+| 5 | Node fallback never promotes the device | same file — *“accepts a standalone Node reporting its Wi-Fi/MQTT fallback”* |
+| 6 | Demoting a Controller with attached Nodes is refused until acknowledged | same file — *“refuses to demote a Controller that still hosts Nodes…”* |
+| 7 | Node → Controller promotion keeps identity/history; invalid assignments rejected | same file — *“…promotes a Node back to Controller…”*, *“rejects assigning a Node to another Node or to an offline Controller”* |
+| 8 | Node OTA is relayed through the Controller and stays in the shared history | same file — *“relays a Node OTA instruction…”*, *“keeps the Node OTA record in the shared update history”*. Client side: `apps/web/src/components/firmware/firmware-ota-only.test.tsx` |
+| 9 | Two-tab console: Controllers vs Nodes, standalone wording, role dialogs, assign, re-link | `apps/web/src/features/user/controllers-page-roles.test.tsx` (5 tests) |
+| 10 | Firmware link state machine: link/loss/reconnect/standalone/return, command dedupe, role guards | `firmware/test/test_role_logic.c` (13 functions), run in `build-firmware.yml` |
+
+Additionally: `npm run db:verify` (schema snapshot), `firmware/scripts/verify_firmware_image.py
+--verify-board-overlays firmware/boards` (21 board overlays), and the full existing suites.
+
+## 10. Verification status & known limits
+
+Green at time of writing:
+
+| Gate | Result |
+|---|---|
+| `packages/shared` — `vitest run` | 15 files / **206 tests** |
+| `packages/shared` — `tsc --noEmit` | clean |
+| `apps/worker` — `vitest run` | 21 files / **81 tests** (70 before this work) |
+| `apps/worker` — `typecheck` | clean |
+| `apps/web` — `vitest run` | 28 files / **224 tests** (219 before this work) |
+| `apps/web` — `tsc --noEmit`, `eslint` | clean |
+| Firmware host tests (`gcc -Wall -Wextra -Werror`) | `role_logic`, `provisioning_logic`, `ota_boot_logic`, `io_state_logic`, `sensor_driver_logic` — all pass |
+| Board overlays | 21 verified |
+| `npm run db:verify` | *schema matches snapshot ✓* |
+
+Limits, stated plainly:
+
+- ESP-IDF is not installed in this workspace, so `firmware/main` is validated by (a) host `gcc`
+  tests for every hardware-independent module, (b) a `-fsyntax-only` pass of the new
+  `role_runtime.c` / `espnow_link.c` against ESP-IDF-shaped stub headers, and (c) the CI matrix
+  (21 boards, IDF v5.4/v5.5.2) which is the real compiler gate. **No hardware has run this yet.**
+- The ESP-NOW transport uses the standard IDF v5 API (`esp_now_init`, `esp_now_register_recv_cb`,
+  `esp_now_peer_info_t`, `esp_now_send`); its runtime behaviour (RSSI, channel hopping, maximum
+  payload) must be confirmed on real devices.
+- Roles are user-driven only: no automatic Controller election exists anywhere in the codebase.

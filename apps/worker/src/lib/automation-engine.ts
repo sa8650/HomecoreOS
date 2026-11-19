@@ -31,10 +31,6 @@ import type { CustomFetch, DbClient } from "./db";
 import { EmqxClient, isEmqxConfigured } from "./emqx";
 import { emitNotification } from "./notifications";
 
-export type AutomationTrigger = AutomationTriggerConfig;
-export type AutomationAction = AutomationActionItem;
-export type AutomationCondition = AutomationConditionItem;
-
 interface AutomationRuleRow {
   id: string;
   account_id: string;

@@ -1,8 +1,6 @@
 import { chipSupportsBle, chipSupportsIntegratedWifi } from "./board-firmware-compat";
 
 export const HOMECORE_BLE_DEVICE_NAME_PREFIX = "HomecoreOS-";
-export const HOMECORE_SETUP_AP_SSID_PREFIX = "HomecoreOS-Setup-";
-
 export const HOMECORE_BLE_SERVICE_UUID =
   "686f6d65-636f-7265-0001-000000000001";
 export const HOMECORE_BLE_CHAR_DEVICE_INFO_UUID =
@@ -13,14 +11,6 @@ export const HOMECORE_BLE_CHAR_COMMAND_UUID =
   "686f6d65-636f-7265-0004-000000000001";
 export const HOMECORE_BLE_CHAR_STATUS_UUID =
   "686f6d65-636f-7265-0005-000000000001";
-
-export const HOMECORE_BLE_PROTOCOL_VERSION = 1;
-export const HOMECORE_BLE_MAX_AUTH_ATTEMPTS = 5;
-export const HOMECORE_BLE_LOCKOUT_SECONDS = 60;
-export const HOMECORE_BLE_SESSION_TTL_SECONDS = 120;
-export const HOMECORE_RECOVERY_TIMEOUT_MINUTES = 15;
-export const HOMECORE_BOOT_RECOVERY_HOLD_MS = 3000;
-export const HOMECORE_BOOT_FACTORY_RESET_HOLD_MS = 10000;
 
 export const HOMECORE_BLE_S1_KDF_LABEL = "HomecoreOS-BLE-S1";
 export const HOMECORE_BLE_S1_DEV_PROOF_LABEL = "dev-proof";

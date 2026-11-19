@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   RiAddLine,
   RiCheckLine,
@@ -10,15 +11,12 @@ import {
   RiLayoutColumnLine,
   RiLayoutGridLine,
   RiLayoutRowLine,
+  RiRestartLine,
   RiShutDownLine,
   RiZoomInLine,
   RiZoomOutLine,
 } from "@remixicon/react";
-import {
-  inferRoomTypeFromName,
-  isDeviceStateActive,
-  type RoomType,
-} from "@homecoreos/shared";
+import { inferRoomTypeFromName, isDeviceStateActive, type RoomType } from "@homecoreos/shared";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { isEntityOnline } from "@/lib/board-pin-helpers";
@@ -42,29 +40,26 @@ import type {
   SensorItem,
   SwitchItem,
 } from "@/features/types";
+import { SmartHomeMap } from "./SmartHomeMap";
+import { buildHousePlan, type PlanRect } from "./house-layout";
+import { classifyDeviceType, classifySwitch, isLightingKind } from "./floor-visuals";
 import { RoomControlsCard } from "./RoomControlsCard";
 import { RoomEditorModal } from "./RoomEditorModal";
-import {
-  FloorDeviceFixtures,
-  FloorPatternDefs,
-  RoomFurnitureArt,
-  RoomOpeningsSvg,
-  getFloorPatternUrl,
-  isLightingFixture,
-  type FloorFixtureItem,
-} from "./RoomFurnitureSvg";
-
-interface PositionedRoom {
-  room: RoomItem;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  type: RoomType;
-}
 
 type FloorPlanViewMode = "standard" | "wide" | "fullscreen";
 
+const MIN_ZOOM = 0.55;
+const MAX_ZOOM = 3;
+
+function clampZoom(next: number) {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(next.toFixed(3))));
+}
+
+/**
+ * HomecoreOS home preview: one connected 2D smart-home floor map with live,
+ * interactive devices. Rooms, positions, sizes and openings come from the user's
+ * real room records; every badge reflects the live MQTT-backed device state.
+ */
 export const HomeFloorPlan = memo(function HomeFloorPlan({
   homes,
   rooms,
@@ -90,6 +85,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
 }) {
   const timezone = useEffectiveTimezone();
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(rooms[0]?.id ?? null);
+  const [selectedDeviceKey, setSelectedDeviceKey] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [viewMode, setViewMode] = useState<FloorPlanViewMode>("standard");
   const [fullscreenRoomOpen, setFullscreenRoomOpen] = useState(false);
@@ -99,48 +95,19 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
   const [optimisticSwitches, setOptimisticSwitches] = useState<Record<string, boolean>>({});
   const [optimisticDevices, setOptimisticDevices] = useState<Record<string, string>>({});
   const [batchPending, setBatchPending] = useState(false);
-  const [dragPositions, setDragPositions] = useState<Record<string, { x: number; y: number }>>({});
-  const [resizeDims, setResizeDims] = useState<Record<string, { w: number; h: number }>>({});
+  const [resettingBadges, setResettingBadges] = useState(false);
   const [assignTargetId, setAssignTargetId] = useState("");
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const svgRef = useRef<SVGSVGElement | null>(null);
+  // Mirrors of the controlled view, so a zoom button pressed mid-animation
+  // continues from what is on screen rather than from a stale render value.
+  const zoomRef = useRef(zoom);
+  const panRef = useRef(pan);
+  const viewAnimationRef = useRef<number | null>(null);
+  zoomRef.current = zoom;
+  panRef.current = pan;
   const opSeqRef = useRef<Map<string, number>>(new Map());
   const inFlightIdsRef = useRef<Set<string>>(new Set());
-  const roomClickCandidateRef = useRef<{
-    roomId: string;
-    startClientX: number;
-    startClientY: number;
-  } | null>(null);
-  const svgPanStartRef = useRef<{ startClientX: number; startClientY: number } | null>(
-    null
-  );
-  const suppressNextRoomClickRef = useRef(false);
-  const dragStateRef = useRef<{
-    roomId: string;
-    startClientX: number;
-    startClientY: number;
-    origX: number;
-    origY: number;
-  } | null>(null);
-  const resizeStateRef = useRef<{
-    roomId: string;
-    startClientX: number;
-    startClientY: number;
-    origW: number;
-    origH: number;
-  } | null>(null);
-  const panStateRef = useRef<{
-    startClientX: number;
-    startClientY: number;
-    origPanX: number;
-    origPanY: number;
-  } | null>(null);
-  const pinchStateRef = useRef<{
-    startDist: number;
-    startZoom: number;
-  } | null>(null);
-  const activeTouchesRef = useRef<Map<number, { x: number; y: number }>>(new Map());
 
   useEffect(() => {
     setOptimisticSwitches((prev) => {
@@ -174,10 +141,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     });
   }, [devices]);
 
-  const ctrlById = useMemo(
-    () => new Map(controllers.map((c) => [c.id, c])),
-    [controllers]
-  );
+  const ctrlById = useMemo(() => new Map(controllers.map((c) => [c.id, c])), [controllers]);
 
   const effectiveSwitches = useMemo(
     () =>
@@ -195,170 +159,20 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     [devices, optimisticDevices]
   );
 
+  const plan = useMemo(() => buildHousePlan(rooms), [rooms]);
+  const roomTypeById = useMemo(() => {
+    const map = new Map<string, RoomType>();
+    for (const room of plan.rooms) map.set(room.id, room.type);
+    return map;
+  }, [plan]);
+
   const primaryHomeId = homes[0]?.id ?? "";
 
-  const positionedRooms: PositionedRoom[] = useMemo(() => {
-    const allZero =
-      rooms.length > 1 &&
-      rooms.every((r) => (r.floor_x ?? 0) === 0 && (r.floor_y ?? 0) === 0);
-
-    let cursorX = 0;
-    let cursorY = 0;
-    let rowMaxH = 0;
-
-    return rooms.map((room, index) => {
-      const dimOverride = resizeDims[room.id];
-      const w = dimOverride ? dimOverride.w : (room.floor_w ?? (room.grid_col_span >= 2 ? 420 : 300));
-      const h = dimOverride ? dimOverride.h : (room.floor_h ?? 240);
-      let x = room.floor_x ?? 0;
-      let y = room.floor_y ?? 0;
-
-      if (allZero && index > 0) {
-        if (cursorX + w > 960) {
-          cursorX = 0;
-          cursorY += rowMaxH;
-          rowMaxH = 0;
-        }
-        x = cursorX;
-        y = cursorY;
-        cursorX += w;
-        rowMaxH = Math.max(rowMaxH, h);
-      } else if (allZero && index === 0) {
-        cursorX = w;
-        rowMaxH = h;
-      }
-
-      const posOverride = dragPositions[room.id];
-      return {
-        room,
-        x: posOverride ? posOverride.x : x,
-        y: posOverride ? posOverride.y : y,
-        w,
-        h,
-        type: room.room_type ?? inferRoomTypeFromName(room.name),
-      };
-    });
-  }, [rooms, dragPositions, resizeDims]);
-
-  const baseBox = useMemo(() => {
-    if (positionedRooms.length === 0) {
-      return { x: 0, y: 0, width: 640, height: 360 };
-    }
-    const minX = Math.min(...positionedRooms.map((r) => r.x)) - 36;
-    const minY = Math.min(...positionedRooms.map((r) => r.y)) - 36;
-    const maxX = Math.max(...positionedRooms.map((r) => r.x + r.w)) + 36;
-    const maxY = Math.max(...positionedRooms.map((r) => r.y + r.h)) + 36;
-    const width = Math.max(460, maxX - minX);
-    const height = Math.max(300, maxY - minY);
-    return { x: minX, y: minY, width, height };
-  }, [positionedRooms]);
-
-  const activeBox = useMemo(() => {
-    const vbW = baseBox.width / zoom;
-    const vbH = baseBox.height / zoom;
-    const cx = baseBox.x + baseBox.width / 2 + pan.x;
-    const cy = baseBox.y + baseBox.height / 2 + pan.y;
-    return {
-      x: cx - vbW / 2,
-      y: cy - vbH / 2,
-      width: vbW,
-      height: vbH,
-    };
-  }, [baseBox, zoom, pan]);
-
-  const viewBox = `${activeBox.x} ${activeBox.y} ${activeBox.width} ${activeBox.height}`;
-
-  function clampZoom(next: number) {
-    return Math.min(3, Math.max(0.6, Number(next.toFixed(2))));
-  }
-
-  function handleResetView() {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  }
-
-  const isFullscreen = viewMode === "fullscreen";
-  const isWideOrFullscreen = viewMode === "wide" || viewMode === "fullscreen";
-
-  // Sync fullscreen viewport lock, html marker (for Dynamic Island centering), and Escape exit
-  useEffect(() => {
-    if (!isFullscreen) {
-      setFullscreenRoomOpen(false);
-      document.documentElement.removeAttribute("data-hc-fullscreen-map");
-      return;
-    }
-
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    document.documentElement.setAttribute("data-hc-fullscreen-map", "true");
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (
-        document.querySelector(
-          '[data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="select-content"], [data-island-layer]'
-        )
-      ) {
-        return;
-      }
-      e.preventDefault();
-      if (fullscreenRoomOpen) {
-        setFullscreenRoomOpen(false);
-      } else {
-        setViewMode("standard");
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.body.style.overflow = prevOverflow;
-      document.documentElement.removeAttribute("data-hc-fullscreen-map");
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [isFullscreen, fullscreenRoomOpen]);
-
-  // Native non-passive wheel zoom listener so preventDefault works cleanly without browser warnings
-  const zoomStateRef = useRef({ zoom, baseBox });
-  zoomStateRef.current = { zoom, baseBox };
-
-  const roomCount = rooms.length;
-  useEffect(() => {
-    const svgEl = svgRef.current;
-    if (!svgEl) return;
-
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const { zoom: currentZoom, baseBox: box } = zoomStateRef.current;
-      const factor = e.deltaY < 0 ? 1.12 : 0.89;
-      const nextZoom = clampZoom(currentZoom * factor);
-      if (nextZoom === currentZoom) return;
-
-      const rect = svgEl.getBoundingClientRect();
-      // SVG uses xMidYMid meet: account for letterboxing at extreme viewport ratios.
-      const scale = Math.max(box.width / currentZoom / Math.max(1, rect.width), box.height / currentZoom / Math.max(1, rect.height));
-      const rx = (e.clientX - rect.left - rect.width / 2) * scale / (box.width / currentZoom);
-      const ry = (e.clientY - rect.top - rect.height / 2) * scale / (box.height / currentZoom);
-      const oldW = box.width / currentZoom;
-      const oldH = box.height / currentZoom;
-      const newW = box.width / nextZoom;
-      const newH = box.height / nextZoom;
-
-      setPan((prev) => ({
-        x: prev.x + rx * (oldW - newW),
-        y: prev.y + ry * (oldH - newH),
-      }));
-      setZoom(nextZoom);
-    };
-
-    svgEl.addEventListener("wheel", onWheel, { passive: false });
-    return () => svgEl.removeEventListener("wheel", onWheel);
-  }, [roomCount, viewMode]);
-
   const activeSelectedId =
-    selectedRoomId && rooms.some((r) => r.id === selectedRoomId)
+    selectedRoomId && rooms.some((room) => room.id === selectedRoomId)
       ? selectedRoomId
       : rooms[0]?.id ?? null;
-  const selectedRoom = positionedRooms.find((r) => r.room.id === activeSelectedId) ?? null;
+  const selectedRoom = rooms.find((room) => room.id === activeSelectedId) ?? null;
 
   const roomSwitches = useMemo(
     () => effectiveSwitches.filter((s) => s.room_id === activeSelectedId),
@@ -373,27 +187,57 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     [sensors, activeSelectedId]
   );
 
-  const activeLightsAcrossHome = useMemo(() => {
-    const swOn = effectiveSwitches.filter((s) => s.is_on);
-    const devLightsOn = effectiveDevices.filter(
-      (d) => isDeviceStateActive(d.state) && isLightingFixture("device", d.device_type)
+  const activeLights = useMemo(() => {
+    const switchLights = effectiveSwitches.filter(
+      (item) => item.is_on && isLightingKind(classifySwitch(item.name))
     );
-    return { switches: swOn, devices: devLightsOn, total: swOn.length + devLightsOn.length };
+    const activeSwitches = effectiveSwitches.filter((item) => item.is_on);
+    const deviceLights = effectiveDevices.filter(
+      (item) =>
+        isDeviceStateActive(item.state) &&
+        isLightingKind(classifyDeviceType(item.device_type, item.name))
+    );
+    return {
+      switches: activeSwitches,
+      devices: deviceLights,
+      total: activeSwitches.length + deviceLights.length,
+      lightingTotal: switchLights.length + deviceLights.length,
+    };
   }, [effectiveSwitches, effectiveDevices]);
 
   const unassignedItems = useMemo(() => {
     const items: Array<{ key: string; kind: "switch" | "device" | "sensor"; id: string; label: string }> = [];
-    for (const s of effectiveSwitches) {
-      if (!s.room_id) items.push({ key: `switch:${s.id}`, kind: "switch", id: s.id, label: `Switch · ${s.name}` });
+    for (const item of effectiveSwitches) {
+      if (!item.room_id) {
+        items.push({ key: `switch:${item.id}`, kind: "switch", id: item.id, label: `Switch · ${item.name}` });
+      }
     }
-    for (const d of effectiveDevices) {
-      if (!d.room_id) items.push({ key: `device:${d.id}`, kind: "device", id: d.id, label: `Device · ${d.name}` });
+    for (const item of effectiveDevices) {
+      if (!item.room_id) {
+        items.push({ key: `device:${item.id}`, kind: "device", id: item.id, label: `Device · ${item.name}` });
+      }
     }
-    for (const s of sensors) {
-      if (!s.room_id) items.push({ key: `sensor:${s.id}`, kind: "sensor", id: s.id, label: `Sensor · ${s.name}` });
+    for (const item of sensors) {
+      if (!item.room_id) {
+        items.push({ key: `sensor:${item.id}`, kind: "sensor", id: item.id, label: `Sensor · ${item.name}` });
+      }
     }
     return items;
   }, [effectiveSwitches, effectiveDevices, sensors]);
+
+  const offlineCount = useMemo(() => {
+    const offlineSwitches = effectiveSwitches.filter(
+      (item) => !isEntityOnline(item.is_online, ctrlById.get(item.controller_id))
+    ).length;
+    const offlineDevices = effectiveDevices.filter(
+      (item) => !isEntityOnline(item.is_online, ctrlById.get(item.controller_id))
+    ).length;
+    return offlineSwitches + offlineDevices;
+  }, [effectiveSwitches, effectiveDevices, ctrlById]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Device + switch commands                                                */
+  /* ---------------------------------------------------------------------- */
 
   const toggleSwitch = useCallback(
     async (sw: SwitchItem, explicitIsOn?: boolean) => {
@@ -434,9 +278,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
             return copy;
           });
         }
-        toast.error(
-          err instanceof ApiError ? err.message : `Failed to toggle "${sw.name}".`
-        );
+        toast.error(err instanceof ApiError ? err.message : `Failed to toggle "${sw.name}".`);
       } finally {
         inFlightIdsRef.current.delete(sw.id);
         setPendingIds((prev) => {
@@ -487,9 +329,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
             return copy;
           });
         }
-        toast.error(
-          err instanceof ApiError ? err.message : `Failed to control "${dev.name}".`
-        );
+        toast.error(err instanceof ApiError ? err.message : `Failed to control "${dev.name}".`);
       } finally {
         inFlightIdsRef.current.delete(dev.id);
         setPendingIds((prev) => {
@@ -521,11 +361,11 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     try {
       await Promise.all([
         ...targets.switches
-          .filter((s) => s.is_on !== turnOn)
-          .map((s) => toggleSwitch(s, turnOn)),
+          .filter((item) => item.is_on !== turnOn)
+          .map((item) => toggleSwitch(item, turnOn)),
         ...targets.devices
-          .filter((d) => isDeviceStateActive(d.state) !== turnOn)
-          .map((d) => toggleDevice(d, turnOn)),
+          .filter((item) => isDeviceStateActive(item.state) !== turnOn)
+          .map((item) => toggleDevice(item, turnOn)),
       ]);
     } finally {
       setBatchPending(false);
@@ -551,9 +391,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
       toast.success("Assigned hardware to room.");
       await onReload();
     } catch (err) {
-      toast.error(
-        err instanceof ApiError ? err.message : "Failed to assign hardware to room."
-      );
+      toast.error(err instanceof ApiError ? err.message : "Failed to assign hardware to room.");
     } finally {
       setPendingIds((prev) => {
         const copy = { ...prev };
@@ -563,227 +401,212 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     }
   }
 
-  function handlePointerDownRoom(e: React.PointerEvent, pr: PositionedRoom) {
-    if (!editMode || !canEdit) {
-      roomClickCandidateRef.current = {
-        roomId: pr.room.id,
-        startClientX: e.clientX,
-        startClientY: e.clientY,
-      };
-      return;
-    }
-    e.stopPropagation();
-    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
-    setSelectedRoomId(pr.room.id);
-    dragStateRef.current = {
-      roomId: pr.room.id,
-      startClientX: e.clientX,
-      startClientY: e.clientY,
-      origX: pr.x,
-      origY: pr.y,
-    };
-  }
-
-  function handlePointerDownResize(e: React.PointerEvent, pr: PositionedRoom) {
-    if (!editMode || !canEdit) return;
-    e.stopPropagation();
-    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
-    resizeStateRef.current = {
-      roomId: pr.room.id,
-      startClientX: e.clientX,
-      startClientY: e.clientY,
-      origW: pr.w,
-      origH: pr.h,
-    };
-  }
-
-  function handlePointerDownSvg(e: React.PointerEvent) {
-    activeTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (activeTouchesRef.current.size === 2) {
-      const pts = Array.from(activeTouchesRef.current.values());
-      const dist = Math.hypot(pts[1]!.x - pts[0]!.x, pts[1]!.y - pts[0]!.y);
-      pinchStateRef.current = { startDist: Math.max(10, dist), startZoom: zoom };
-      panStateRef.current = null;
-      return;
-    }
-    if (e.button !== 0 || dragStateRef.current || resizeStateRef.current) return;
-    svgPanStartRef.current = { startClientX: e.clientX, startClientY: e.clientY };
-    suppressNextRoomClickRef.current = false;
-    panStateRef.current = {
-      startClientX: e.clientX,
-      startClientY: e.clientY,
-      origPanX: pan.x,
-      origPanY: pan.y,
-    };
-  }
-
-  function handlePointerMoveSvg(e: React.PointerEvent) {
-    if (activeTouchesRef.current.has(e.pointerId)) {
-      activeTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    }
-    if (activeTouchesRef.current.size === 2 && pinchStateRef.current) {
-      const pts = Array.from(activeTouchesRef.current.values());
-      const dist = Math.hypot(pts[1]!.x - pts[0]!.x, pts[1]!.y - pts[0]!.y);
-      const scale = dist / pinchStateRef.current.startDist;
-      setZoom(clampZoom(pinchStateRef.current.startZoom * scale));
-      return;
-    }
-
-    const resizer = resizeStateRef.current;
-    if (resizer && svgRef.current) {
-      const rect = svgRef.current.getBoundingClientRect();
-      const scaleX = Math.max(activeBox.width / Math.max(1, rect.width), activeBox.height / Math.max(1, rect.height));
-      const scaleY = scaleX;
-      const dx = (e.clientX - resizer.startClientX) * scaleX;
-      const dy = (e.clientY - resizer.startClientY) * scaleY;
-      const snappedW = Math.max(140, Math.min(1200, Math.round((resizer.origW + dx) / 20) * 20));
-      const snappedH = Math.max(140, Math.min(1200, Math.round((resizer.origH + dy) / 20) * 20));
-      setResizeDims((prev) => ({
-        ...prev,
-        [resizer.roomId]: { w: snappedW, h: snappedH },
-      }));
-      return;
-    }
-
-    const drag = dragStateRef.current;
-    if (drag && svgRef.current) {
-      const rect = svgRef.current.getBoundingClientRect();
-      const scaleX = Math.max(activeBox.width / Math.max(1, rect.width), activeBox.height / Math.max(1, rect.height));
-      const scaleY = scaleX;
-      const dx = (e.clientX - drag.startClientX) * scaleX;
-      const dy = (e.clientY - drag.startClientY) * scaleY;
-      const snappedX = Math.round((drag.origX + dx) / 20) * 20;
-      const snappedY = Math.round((drag.origY + dy) / 20) * 20;
-      setDragPositions((prev) => ({
-        ...prev,
-        [drag.roomId]: { x: snappedX, y: snappedY },
-      }));
-      return;
-    }
-
-    const panDrag = panStateRef.current;
-    if (panDrag && svgRef.current) {
-      const rect = svgRef.current.getBoundingClientRect();
-      const scaleX = Math.max(activeBox.width / Math.max(1, rect.width), activeBox.height / Math.max(1, rect.height));
-      const scaleY = scaleX;
-      const dx = (e.clientX - panDrag.startClientX) * scaleX;
-      const dy = (e.clientY - panDrag.startClientY) * scaleY;
-      setPan({
-        x: panDrag.origPanX - dx,
-        y: panDrag.origPanY - dy,
-      });
-    }
-  }
-
-  async function handlePointerUpSvg(e: React.PointerEvent) {
-    activeTouchesRef.current.delete(e.pointerId);
-    if (activeTouchesRef.current.size < 2) {
-      pinchStateRef.current = null;
-    }
-    panStateRef.current = null;
-
-    const panStart = svgPanStartRef.current;
-    svgPanStartRef.current = null;
-    if (panStart) {
-      const panDist = Math.hypot(
-        e.clientX - panStart.startClientX,
-        e.clientY - panStart.startClientY
-      );
-      suppressNextRoomClickRef.current = panDist >= 6;
-    }
-
-    const candidate = roomClickCandidateRef.current;
-    roomClickCandidateRef.current = null;
-    if (candidate) {
-      const movedDist = Math.hypot(
-        e.clientX - candidate.startClientX,
-        e.clientY - candidate.startClientY
-      );
-      if (movedDist < 6) {
-        setSelectedRoomId(candidate.roomId);
-        if (isFullscreen) {
-          setFullscreenRoomOpen(true);
-        }
-      } else {
-        suppressNextRoomClickRef.current = true;
+  /** Persists a room move / resize made directly on the floor map. */
+  const handleRoomRectCommit = useCallback(
+    async (roomId: string, rect: PlanRect) => {
+      const room = rooms.find((item) => item.id === roomId);
+      if (!room) return;
+      const payload: Record<string, number> = {};
+      if ((room.floor_x ?? null) !== rect.x || (room.floor_y ?? null) !== rect.y) {
+        payload.floorX = rect.x;
+        payload.floorY = rect.y;
       }
-    }
-
-    const resizer = resizeStateRef.current;
-    if (resizer) {
-      resizeStateRef.current = null;
-      const resized = resizeDims[resizer.roomId];
-      if (resized && (resized.w !== resizer.origW || resized.h !== resizer.origH)) {
-        try {
-          await apiFetch(`/api/homes/rooms/${resizer.roomId}`, {
-            method: "PATCH",
-            body: JSON.stringify({ floorW: resized.w, floorH: resized.h }),
-          });
-          await onReload();
-        } catch (err) {
-          toast.error(
-            err instanceof ApiError ? err.message : "Failed to save room size."
-          );
-        } finally {
-          setResizeDims((prev) => {
-            const copy = { ...prev };
-            delete copy[resizer.roomId];
-            return copy;
-          });
-        }
-      } else if (resized) {
-        setResizeDims((prev) => {
-          const copy = { ...prev };
-          delete copy[resizer.roomId];
-          return copy;
+      if ((room.floor_w ?? null) !== rect.w || (room.floor_h ?? null) !== rect.h) {
+        payload.floorW = rect.w;
+        payload.floorH = rect.h;
+      }
+      if (Object.keys(payload).length === 0) return;
+      try {
+        await apiFetch(`/api/homes/rooms/${roomId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
         });
-      }
-      return;
-    }
-
-    const drag = dragStateRef.current;
-    if (!drag) return;
-    dragStateRef.current = null;
-    const moved = dragPositions[drag.roomId];
-    if (!moved) return;
-    if (moved.x === drag.origX && moved.y === drag.origY) {
-      setDragPositions((prev) => {
-        const copy = { ...prev };
-        delete copy[drag.roomId];
-        return copy;
-      });
-      return;
-    }
-    try {
-      await apiFetch(`/api/homes/rooms/${drag.roomId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ floorX: moved.x, floorY: moved.y }),
-      });
-      await onReload();
-    } catch (err) {
-      toast.error(
-        err instanceof ApiError ? err.message : "Failed to save room position."
-      );
-    } finally {
-      setDragPositions((prev) => {
-        const copy = { ...prev };
-        delete copy[drag.roomId];
-        return copy;
-      });
-    }
-  }
-
-  const handleToggleFixture = useCallback(
-    (item: FloorFixtureItem) => {
-      if (item.kind === "switch") {
-        const sw = effectiveSwitches.find((s) => s.id === item.id);
-        if (sw) void toggleSwitch(sw);
-      } else {
-        const dev = effectiveDevices.find((d) => d.id === item.id);
-        if (dev) void toggleDevice(dev);
+        await onReload();
+      } catch (err) {
+        toast.error(
+          err instanceof ApiError ? err.message : "Failed to save the room position on the plan."
+        );
       }
     },
-    [effectiveSwitches, effectiveDevices, toggleSwitch, toggleDevice]
+    [rooms, onReload]
+  );
+
+  /** Persists a device badge position dragged on the map into the room layout. */
+  const handleDevicePositionCommit = useCallback(
+    async (roomId: string, deviceKey: string, position: { x: number; y: number }) => {
+      const room = rooms.find((item) => item.id === roomId);
+      if (!room) return;
+      const layoutConfig = {
+        ...(room.layout_config ?? {}),
+        devicePositions: {
+          ...(room.layout_config?.devicePositions ?? {}),
+          [deviceKey]: position,
+        },
+      };
+      try {
+        await apiFetch(`/api/homes/rooms/${roomId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ layoutConfig }),
+        });
+        await onReload();
+      } catch (err) {
+        toast.error(
+          err instanceof ApiError ? err.message : "Failed to save the device position on the plan."
+        );
+      }
+    },
+    [rooms, onReload]
+  );
+
+  /** Drops every saved badge position so the map falls back to auto placement. */
+  const handleResetDevicePositions = useCallback(async () => {
+    const targets = rooms.filter((room) => {
+      const positions = room.layout_config?.devicePositions;
+      return positions ? Object.keys(positions).length > 0 : false;
+    });
+    if (targets.length === 0) {
+      toast.info("No custom device positions to reset.");
+      return;
+    }
+    setResettingBadges(true);
+    try {
+      await Promise.all(
+        targets.map((room) => {
+          const { devicePositions: _positions, ...rest } = room.layout_config ?? {};
+          return apiFetch(`/api/homes/rooms/${room.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ layoutConfig: rest }),
+          });
+        })
+      );
+      toast.success("Device positions reset to automatic placement.");
+      await onReload();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to reset device positions.");
+    } finally {
+      setResettingBadges(false);
+    }
+  }, [rooms, onReload]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Selection                                                               */
+  /* ---------------------------------------------------------------------- */
+
+  const handleSelectRoom = useCallback(
+    (roomId: string) => {
+      setSelectedRoomId(roomId);
+      setSelectedDeviceKey(null);
+      if (viewMode === "fullscreen" && !editMode) setFullscreenRoomOpen(true);
+    },
+    [editMode, viewMode]
+  );
+
+  const handleSelectDevice = useCallback(
+    (key: string | null) => {
+      setSelectedDeviceKey(key);
+      if (!key) return;
+      const [kind, id] = key.split(":");
+      const owner =
+        kind === "switch"
+          ? switches.find((item) => item.id === id)
+          : kind === "device"
+            ? devices.find((item) => item.id === id)
+            : sensors.find((item) => item.id === id);
+      if (owner?.room_id) setSelectedRoomId(owner.room_id);
+    },
+    [switches, devices, sensors]
+  );
+
+  /* ---------------------------------------------------------------------- */
+  /* Fullscreen lock + Escape                                                */
+  /* ---------------------------------------------------------------------- */
+
+  const isFullscreen = viewMode === "fullscreen";
+  const isWideOrFullscreen = viewMode === "wide" || viewMode === "fullscreen";
+
+  useEffect(() => {
+    if (!isFullscreen) {
+      setFullscreenRoomOpen(false);
+      document.documentElement.removeAttribute("data-hc-fullscreen-map");
+      return;
+    }
+
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.setAttribute("data-hc-fullscreen-map", "true");
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (
+        document.querySelector(
+          '[data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="select-content"], [data-island-layer]'
+        )
+      ) {
+        return;
+      }
+      if (selectedDeviceKey) {
+        setSelectedDeviceKey(null);
+        return;
+      }
+      event.preventDefault();
+      if (fullscreenRoomOpen) {
+        setFullscreenRoomOpen(false);
+      } else {
+        setViewMode("standard");
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.documentElement.removeAttribute("data-hc-fullscreen-map");
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isFullscreen, fullscreenRoomOpen, selectedDeviceKey]);
+
+  /**
+   * Eases the viewport to a new zoom/pan pair over ~190ms. Button zoom and Fit
+   * used to snap in a single frame, which read as a jump next to the smooth
+   * wheel/pinch gestures.
+   */
+  const animateView = useCallback((target: { zoom: number; pan: { x: number; y: number } }) => {
+    if (typeof window === "undefined") return;
+    if (viewAnimationRef.current !== null) cancelAnimationFrame(viewAnimationRef.current);
+    const startZoom = zoomRef.current;
+    const startPan = panRef.current;
+    const nextZoom = clampZoom(target.zoom);
+    const duration = 190;
+    const startedAt = performance.now();
+
+    const step = (now: number) => {
+      const t = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setZoom(clampZoom(startZoom + (nextZoom - startZoom) * eased));
+      setPan({
+        x: startPan.x + (target.pan.x - startPan.x) * eased,
+        y: startPan.y + (target.pan.y - startPan.y) * eased,
+      });
+      viewAnimationRef.current = t < 1 ? requestAnimationFrame(step) : null;
+    };
+    viewAnimationRef.current = requestAnimationFrame(step);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (viewAnimationRef.current !== null) cancelAnimationFrame(viewAnimationRef.current);
+    },
+    []
+  );
+
+  const handleResetView = useCallback(() => {
+    animateView({ zoom: 1, pan: { x: 0, y: 0 } });
+  }, [animateView]);
+
+  const stepZoom = useCallback(
+    (direction: 1 | -1) => {
+      animateView({ zoom: clampZoom(zoomRef.current + direction * 0.2), pan: panRef.current });
+    },
+    [animateView]
   );
 
   if (rooms.length === 0) {
@@ -791,7 +614,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
       <EmptyStatePanel
         icon={<RiLayoutGridLine />}
         title="No rooms mapped on your 2D floor plan yet"
-        description="Add your first room—such as a Living Room, Kitchen, or Bedroom—and HomecoreOS will render its architectural layout and automatically snap additional rooms alongside it."
+        description="Add your first room — such as a Living Room, Kitchen, or Bedroom — and HomecoreOS renders one connected house plan, then snaps the next rooms into place."
         action={
           canEdit && primaryHomeId ? (
             <Button
@@ -804,9 +627,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
               Add First Room
             </Button>
           ) : (
-            onNavigateRooms && (
-              <Button onClick={onNavigateRooms}>Go to Rooms</Button>
-            )
+            onNavigateRooms && <Button onClick={onNavigateRooms}>Go to Rooms</Button>
           )
         }
       />
@@ -817,8 +638,8 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     if (!selectedRoom) return null;
     return (
       <RoomControlsCard
-        room={selectedRoom.room}
-        roomType={selectedRoom.type}
+        room={selectedRoom}
+        roomType={roomTypeById.get(selectedRoom.id) ?? inferRoomTypeFromName(selectedRoom.name)}
         switches={roomSwitches}
         devices={roomDevices}
         sensors={roomSensors}
@@ -840,7 +661,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
         onSetDeviceState={(dev, state) => void setDeviceState(dev, state)}
         onBatchLights={(targets, turnOn) => void handleBatchLights(targets, turnOn)}
         onEditRoom={() => {
-          setEditingRoom(selectedRoom.room);
+          setEditingRoom(selectedRoom);
           setEditorOpen(true);
         }}
         onClosePopup={() => setFullscreenRoomOpen(false)}
@@ -850,576 +671,362 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
 
   const fullScreenLabel = isFullscreen ? "Exit Full Screen" : "Full Screen";
   const arrangeLabel = editMode ? "Done Positioning" : "Arrange Floor Plan";
+  const mapHeightClass = isFullscreen
+    ? "h-full"
+    : viewMode === "wide"
+      ? "h-[460px] sm:h-[600px]"
+      : "h-[340px] sm:h-[520px]";
 
-  return (
-    <TooltipProvider delayDuration={120} disableHoverableContent>
+  const planNode = (
+    <div
+      data-testid="floorplan-container"
+      data-view-mode={viewMode}
+      className={cn(
+        isFullscreen
+          ? "fixed inset-0 z-50 flex h-[100dvh] w-screen flex-col overflow-hidden overscroll-contain bg-background"
+          : "space-y-3"
+      )}
+    >
       <div
-        data-testid="floorplan-container"
-        data-view-mode={viewMode}
         className={cn(
           isFullscreen
-            ? "fixed inset-0 z-50 flex h-[100dvh] w-full flex-col overflow-hidden bg-background"
-            : "space-y-3"
+            ? "flex min-h-0 min-w-0 flex-1 flex-col"
+            : cn(
+                "grid gap-4",
+                viewMode === "wide" ? "grid-cols-1" : "grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]"
+              )
         )}
       >
-        <div
+        <Card
           className={cn(
-            isFullscreen
-              ? "flex min-h-0 min-w-0 flex-1 flex-col"
-              : cn(
-                  "grid gap-4",
-                  viewMode === "wide"
-                    ? "grid-cols-1"
-                    : "grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]"
-                )
+            "gap-0 overflow-hidden py-0",
+            isFullscreen && "flex min-h-0 flex-1 flex-col rounded-none border-0 ring-0"
           )}
         >
-          <Card
+          {/* Map header bar */}
+          <div
+            data-testid="floorplan-header-bar"
             className={cn(
-              "gap-0 overflow-hidden py-0",
-              isFullscreen && "flex min-h-0 flex-1 flex-col rounded-none border-0 ring-0"
+              "flex flex-wrap items-center justify-between gap-2 border-b bg-muted/50 px-4 text-xs",
+              isFullscreen ? "max-h-[45dvh] shrink-0 overflow-y-auto pb-2.5 pt-14 sm:px-6" : "py-2"
             )}
           >
-            {/* Map View Header Bar */}
-            <div
-              data-testid="floorplan-header-bar"
-              className={cn(
-                "flex flex-wrap items-center justify-between gap-2 border-b bg-muted/50 px-4 text-xs",
-                isFullscreen ? "max-h-[45dvh] shrink-0 overflow-y-auto pb-2.5 pt-14 sm:px-6" : "py-2"
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Home Preview details"
+                    className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm font-semibold text-foreground transition-colors hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <span>Home Preview</span>
+                    <RiInformationLine className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" align="start" className="max-w-xs flex-col items-start gap-1 p-2.5 text-xs">
+                  <p className="font-semibold">Home Preview</p>
+                  <p className="text-[11px] leading-relaxed opacity-90">
+                    Click a device badge to open its controls, drag to pan, scroll or pinch to zoom,
+                    and select a room to focus its hardware.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+
+              <div className="hidden flex-wrap items-center gap-3 text-muted-foreground sm:flex">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-full bg-amber-400 ring-2 ring-amber-400/30" />
+                  Light on
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-full bg-slate-300 ring-1 ring-slate-400/40" />
+                  Idle
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-full bg-red-500" />
+                  Offline {offlineCount > 0 ? `(${offlineCount})` : ""}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              {editMode && (
+                <Badge variant="warning-light" radius="full" className="mr-1">
+                  Drag a room, a device badge or the corner grip to arrange the plan
+                </Badge>
               )}
-            >
-              <div className="flex flex-wrap items-center gap-3 min-w-0">
+
+              {editMode && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={resettingBadges}
+                  onClick={() => void handleResetDevicePositions()}
+                >
+                  <RiRestartLine className="size-3.5" aria-hidden="true" />
+                  Reset Badges
+                </Button>
+              )}
+
+              {canOperate && activeLights.total > 0 && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={batchPending}
+                  onClick={() =>
+                    void handleBatchLights(
+                      { switches: activeLights.switches, devices: activeLights.devices },
+                      false
+                    )
+                  }
+                >
+                  <RiShutDownLine className="size-3.5 text-warning" aria-hidden="true" />
+                  All Lights Off ({activeLights.total})
+                </Button>
+              )}
+
+              <div
+                role="group"
+                aria-label="Floor plan view mode"
+                className="inline-flex items-center gap-0.5 rounded-lg border bg-background/80 p-0.5"
+              >
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button
+                    <Button
                       type="button"
-                      aria-label="Home Preview details"
-                      className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm font-semibold text-foreground transition-colors hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      size="icon-xs"
+                      variant={viewMode === "standard" ? "secondary" : "ghost"}
+                      aria-label="Standard View"
+                      aria-pressed={viewMode === "standard"}
+                      onClick={() => {
+                        setFullscreenRoomOpen(false);
+                        setViewMode("standard");
+                      }}
                     >
-                      <span>Home Preview</span>
-                      <RiInformationLine
-                        className="size-4 shrink-0 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                    </button>
+                      <RiLayoutColumnLine className="size-3.5" aria-hidden="true" />
+                    </Button>
                   </TooltipTrigger>
-                  <TooltipContent
-                    side="bottom"
-                    align="start"
-                    className="max-w-xs flex-col items-start gap-1 p-2.5 text-xs"
-                  >
-                    <p className="font-semibold">Home Preview</p>
-                    <p className="text-[11px] leading-relaxed opacity-90">
-                      Click fixtures directly on the map to toggle hardware, drag to pan, or jump between rooms.
-                    </p>
-                  </TooltipContent>
+                  <TooltipContent side="bottom">Standard View</TooltipContent>
                 </Tooltip>
 
-                <div className="hidden sm:flex flex-wrap items-center gap-3 text-muted-foreground">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="size-2.5 rounded-full bg-amber-400 ring-2 ring-amber-400/30" />
-                    Lit Room
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="size-2.5 rounded-full bg-slate-500/60" />
-                    Unlit / Quiet
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="size-2.5 rounded-full bg-emerald-500" />
-                    Live Sensor
-                  </span>
-                </div>
-              </div>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant={viewMode === "wide" ? "secondary" : "ghost"}
+                      aria-label="Wide View"
+                      aria-pressed={viewMode === "wide"}
+                      onClick={() => {
+                        setFullscreenRoomOpen(false);
+                        setViewMode("wide");
+                      }}
+                    >
+                      <RiLayoutRowLine className="size-3.5" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Wide View</TooltipContent>
+                </Tooltip>
 
-              <div className="flex flex-wrap items-center gap-1.5">
-                {editMode && (
-                  <Badge variant="warning-light" radius="full" className="mr-1">
-                    Drag room to move · Drag corner to resize (20px)
-                  </Badge>
-                )}
-
-                {canOperate && activeLightsAcrossHome.total > 0 && (
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={batchPending}
-                    onClick={() =>
-                      void handleBatchLights(
-                        {
-                          switches: activeLightsAcrossHome.switches,
-                          devices: activeLightsAcrossHome.devices,
-                        },
-                        false
-                      )
-                    }
-                  >
-                    <RiShutDownLine className="size-3.5 text-warning" aria-hidden="true" />
-                    All Lights Off ({activeLightsAcrossHome.total})
-                  </Button>
-                )}
-
-                {/* 3-State Map View Selector: Standard View | Wide View | Full Screen (icon-only with hover tooltip) */}
-                <div
-                  role="group"
-                  aria-label="Floor plan view mode"
-                  className="inline-flex items-center gap-0.5 rounded-lg border bg-background/80 p-0.5"
-                >
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        size="icon-xs"
-                        variant={viewMode === "standard" ? "secondary" : "ghost"}
-                        aria-label="Standard View"
-                        aria-pressed={viewMode === "standard"}
-                        onClick={() => {
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant={isFullscreen ? "secondary" : "ghost"}
+                      aria-label={fullScreenLabel}
+                      aria-pressed={isFullscreen}
+                      onClick={() => {
+                        if (isFullscreen) {
                           setFullscreenRoomOpen(false);
                           setViewMode("standard");
-                        }}
-                      >
-                        <RiLayoutColumnLine className="size-3.5" aria-hidden="true" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Standard View</TooltipContent>
-                  </Tooltip>
-
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        size="icon-xs"
-                        variant={viewMode === "wide" ? "secondary" : "ghost"}
-                        aria-label="Wide View"
-                        aria-pressed={viewMode === "wide"}
-                        onClick={() => {
+                        } else {
                           setFullscreenRoomOpen(false);
-                          setViewMode("wide");
-                        }}
-                      >
-                        <RiLayoutRowLine className="size-3.5" aria-hidden="true" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Wide View</TooltipContent>
-                  </Tooltip>
+                          handleResetView();
+                          setViewMode("fullscreen");
+                        }
+                      }}
+                    >
+                      {isFullscreen ? (
+                        <RiFullscreenExitLine className="size-3.5" aria-hidden="true" />
+                      ) : (
+                        <RiFullscreenLine className="size-3.5" aria-hidden="true" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">{fullScreenLabel}</TooltipContent>
+                </Tooltip>
+              </div>
 
+              {canEdit && (
+                <>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         type="button"
                         size="icon-xs"
-                        variant={isFullscreen ? "secondary" : "ghost"}
-                        aria-label={fullScreenLabel}
-                        aria-pressed={isFullscreen}
+                        variant={editMode ? "default" : "outline"}
+                        aria-label={arrangeLabel}
+                        aria-pressed={editMode}
                         onClick={() => {
-                          if (isFullscreen) {
-                            setFullscreenRoomOpen(false);
-                            setViewMode("standard");
-                          } else {
-                            setFullscreenRoomOpen(false);
-                            handleResetView();
-                            setViewMode("fullscreen");
-                          }
+                          setEditMode((value) => !value);
+                          setFullscreenRoomOpen(false);
+                          setSelectedDeviceKey(null);
                         }}
                       >
-                        {isFullscreen ? (
-                          <RiFullscreenExitLine className="size-3.5" aria-hidden="true" />
+                        {editMode ? (
+                          <RiCheckLine className="size-3.5" aria-hidden="true" />
                         ) : (
-                          <RiFullscreenLine className="size-3.5" aria-hidden="true" />
+                          <RiDragMove2Line className="size-3.5" aria-hidden="true" />
                         )}
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom">{fullScreenLabel}</TooltipContent>
+                    <TooltipContent side="bottom">{arrangeLabel}</TooltipContent>
                   </Tooltip>
-                </div>
 
-                {canEdit && (
-                  <>
+                  {primaryHomeId && (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           type="button"
                           size="icon-xs"
-                          variant={editMode ? "default" : "outline"}
-                          aria-label={arrangeLabel}
-                          aria-pressed={editMode}
+                          variant="outline"
+                          aria-label="Add Room"
                           onClick={() => {
-                            setEditMode((v) => !v);
-                            setFullscreenRoomOpen(false);
+                            setEditingRoom(null);
+                            setEditorOpen(true);
                           }}
                         >
-                          {editMode ? (
-                            <RiCheckLine className="size-3.5" aria-hidden="true" />
-                          ) : (
-                            <RiDragMove2Line className="size-3.5" aria-hidden="true" />
-                          )}
+                          <RiAddLine className="size-3.5" aria-hidden="true" />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent side="bottom">{arrangeLabel}</TooltipContent>
+                      <TooltipContent side="bottom">Add Room</TooltipContent>
                     </Tooltip>
+                  )}
+                </>
+              )}
 
-                    {primaryHomeId && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            type="button"
-                            size="icon-xs"
-                            variant="outline"
-                            aria-label="Add Room"
-                            onClick={() => {
-                              setEditingRoom(null);
-                              setEditorOpen(true);
-                            }}
-                          >
-                            <RiAddLine className="size-3.5" aria-hidden="true" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom">Add Room</TooltipContent>
-                      </Tooltip>
-                    )}
-                  </>
-                )}
-
-                <div className="flex items-center gap-1">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        size="icon-xs"
-                        variant="outline"
-                        aria-label="Zoom out floor plan"
-                        onClick={() => setZoom((z) => clampZoom(z - 0.2))}
-                      >
-                        <RiZoomOutLine className="size-3.5" aria-hidden="true" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Zoom Out</TooltipContent>
-                  </Tooltip>
-                  <Badge
-                    variant="secondary"
-                    size="xs"
-                    className="min-w-11 justify-center font-mono tabular-nums"
-                  >
-                    {Math.round(zoom * 100)}%
-                  </Badge>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        size="icon-xs"
-                        variant="outline"
-                        aria-label="Zoom in floor plan"
-                        onClick={() => setZoom((z) => clampZoom(z + 0.2))}
-                      >
-                        <RiZoomInLine className="size-3.5" aria-hidden="true" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Zoom In</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        size="icon-xs"
-                        variant="outline"
-                        aria-label="Fit"
-                        onClick={handleResetView}
-                      >
-                        <RiFocus3Line className="size-3.5" aria-hidden="true" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Fit</TooltipContent>
-                  </Tooltip>
-                </div>
+              <div className="flex items-center gap-1">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="outline"
+                      aria-label="Zoom out floor plan"
+                      onClick={() => stepZoom(-1)}
+                    >
+                      <RiZoomOutLine className="size-3.5" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Zoom Out</TooltipContent>
+                </Tooltip>
+                <Badge variant="secondary" size="xs" className="min-w-11 justify-center font-mono tabular-nums">
+                  {Math.round(zoom * 100)}%
+                </Badge>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="outline"
+                      aria-label="Zoom in floor plan"
+                      onClick={() => stepZoom(1)}
+                    >
+                      <RiZoomInLine className="size-3.5" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Zoom In</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="outline"
+                      aria-label="Fit"
+                      onClick={handleResetView}
+                    >
+                      <RiFocus3Line className="size-3.5" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Fit</TooltipContent>
+                </Tooltip>
               </div>
             </div>
+          </div>
 
-            <div
-              className={cn(
-                "hc-blueprint-bg relative min-w-0 overflow-hidden p-3 sm:p-4",
-                isFullscreen && "flex-1 min-h-0"
-              )}
-            >
-              <svg
-                ref={svgRef}
-                viewBox={viewBox}
-                className={cn(
-                  "w-full select-none touch-none rounded-lg cursor-grab active:cursor-grabbing",
-                  isFullscreen
-                    ? "h-full"
-                    : viewMode === "wide"
-                      ? "h-[460px] sm:h-[580px]"
-                      : "h-[380px] sm:h-[490px]"
-                )}
-                onPointerDown={handlePointerDownSvg}
-                onPointerMove={handlePointerMoveSvg}
-                onPointerUp={(e) => void handlePointerUpSvg(e)}
-                onPointerCancel={(e) => {
-                  roomClickCandidateRef.current = null;
-                  svgPanStartRef.current = null;
-                  suppressNextRoomClickRef.current = false;
-                  void handlePointerUpSvg(e);
-                }}
-                onClick={() => {
-                  if (suppressNextRoomClickRef.current) {
-                    suppressNextRoomClickRef.current = false;
-                    return;
-                  }
-                  if (isFullscreen && fullscreenRoomOpen) {
-                    setFullscreenRoomOpen(false);
-                  }
-                }}
-                role="img"
-                aria-label="Interactive 2D Architectural Home Floor Plan"
+          <SmartHomeMap
+            rooms={rooms}
+            devices={effectiveDevices}
+            switches={effectiveSwitches}
+            sensors={sensors}
+            controllers={controllers}
+            selectedRoomId={activeSelectedId}
+            selectedDeviceKey={selectedDeviceKey}
+            onSelectRoom={handleSelectRoom}
+            onSelectDevice={handleSelectDevice}
+            canOperate={canOperate}
+            canEdit={canEdit}
+            editMode={editMode}
+            pendingIds={pendingIds}
+            zoom={zoom}
+            pan={pan}
+            onZoomChange={(next) => setZoom(clampZoom(next))}
+            onPanChange={setPan}
+            onToggleSwitch={(item, next) => void toggleSwitch(item, next)}
+            onToggleDevice={(item, next) => void toggleDevice(item, next)}
+            onSetDeviceState={(item, state) => void setDeviceState(item, state)}
+            onRoomRectCommit={handleRoomRectCommit}
+            onDevicePositionCommit={handleDevicePositionCommit}
+            onBackgroundClick={() => setSelectedDeviceKey(null)}
+            heightClassName={mapHeightClass}
+            className={isFullscreen ? "flex min-h-0 flex-1 flex-col" : undefined}
+          >
+            {isFullscreen && fullscreenRoomOpen && selectedRoom && (
+              <div
+                data-testid="fullscreen-room-popup"
+                role="dialog"
+                aria-modal="false"
+                aria-label={`${selectedRoom.name} controls and sensors`}
+                onPointerDown={(event) => event.stopPropagation()}
+                onWheel={(event) => event.stopPropagation()}
+                className="absolute bottom-4 right-4 top-4 z-20 flex w-[min(368px,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl sm:left-auto"
               >
-                <FloorPatternDefs />
+                {renderRoomInspectorBody(true)}
+              </div>
+            )}
+          </SmartHomeMap>
+        </Card>
 
-                {positionedRooms.map((pr) => {
-                  const sws = effectiveSwitches.filter((s) => s.room_id === pr.room.id);
-                  const devs = effectiveDevices.filter((d) => d.room_id === pr.room.id);
-                  const sens = sensors.filter((s) => s.room_id === pr.room.id);
-                  const fixtures: FloorFixtureItem[] = [
-                    ...sws.map((s) => ({
-                      id: s.id,
-                      kind: "switch" as const,
-                      name: s.name,
-                      deviceType: "light",
-                      isOn: s.is_on,
-                      online: isEntityOnline(s.is_online, ctrlById.get(s.controller_id)),
-                      pending: Boolean(pendingIds[s.id]),
-                    })),
-                    ...devs.map((d) => ({
-                      id: d.id,
-                      kind: "device" as const,
-                      name: d.name,
-                      deviceType: d.device_type,
-                      isOn: isDeviceStateActive(d.state),
-                      online: isEntityOnline(d.is_online, ctrlById.get(d.controller_id)),
-                      pending: Boolean(pendingIds[d.id]),
-                    })),
-                  ];
-
-                  const activeLightsCount = fixtures.filter(
-                    (f) => f.isOn && isLightingFixture(f.kind, f.deviceType)
-                  ).length;
-                  const activeCount = fixtures.filter((f) => f.isOn).length;
-                  const isRoomLit = activeLightsCount > 0;
-                  const isSelected = pr.room.id === activeSelectedId;
-                  const liveSensors = sens
-                    .filter((s) => s.last_value !== null)
-                    .slice(0, 2);
-
-                  return (
-                    <g
-                      key={pr.room.id}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`${pr.room.name} room`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (suppressNextRoomClickRef.current) {
-                          suppressNextRoomClickRef.current = false;
-                          return;
-                        }
-                        if (!editMode) {
-                          setSelectedRoomId(pr.room.id);
-                          if (isFullscreen) {
-                            setFullscreenRoomOpen(true);
-                          }
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setSelectedRoomId(pr.room.id);
-                          if (isFullscreen && !editMode) {
-                            setFullscreenRoomOpen(true);
-                          }
-                        }
-                      }}
-                      onPointerDown={(e) => handlePointerDownRoom(e, pr)}
-                      className={
-                        editMode
-                          ? "cursor-grab active:cursor-grabbing focus:outline-none"
-                          : "cursor-pointer focus:outline-none"
-                      }
-                    >
-                      <rect
-                        x={pr.x}
-                        y={pr.y}
-                        width={pr.w}
-                        height={pr.h}
-                        fill={getFloorPatternUrl(pr.room.layout_config?.floorStyle)}
-                      />
-                      <RoomFurnitureArt
-                        roomType={pr.type}
-                        x={pr.x}
-                        y={pr.y}
-                        w={pr.w}
-                        h={pr.h}
-                      />
-                      {isRoomLit ? (
-                        <rect
-                          x={pr.x}
-                          y={pr.y}
-                          width={pr.w}
-                          height={pr.h}
-                          fill="url(#hc-room-warm-glow)"
-                          fillOpacity={Math.min(1, 0.58 + activeLightsCount * 0.16)}
-                        />
-                      ) : (
-                        <rect
-                          x={pr.x}
-                          y={pr.y}
-                          width={pr.w}
-                          height={pr.h}
-                          fill="#0F172A"
-                          fillOpacity={activeCount > 0 ? 0.08 : 0.16}
-                        />
-                      )}
-                      <rect
-                        x={pr.x}
-                        y={pr.y}
-                        width={pr.w}
-                        height={pr.h}
-                        fill="none"
-                        stroke={isSelected ? "#3B76F6" : "#1E293B"}
-                        strokeWidth={isSelected ? 5 : 4}
-                      />
-                      <RoomOpeningsSvg
-                        x={pr.x}
-                        y={pr.y}
-                        w={pr.w}
-                        h={pr.h}
-                        doors={pr.room.layout_config?.doors}
-                        windows={pr.room.layout_config?.windows}
-                      />
-                      <g transform={`translate(${pr.x + 12}, ${pr.y + pr.h - 32})`}>
-                        <rect
-                          x="0"
-                          y="0"
-                          width={Math.min(pr.w - 24, 184)}
-                          height="22"
-                          rx="6"
-                          fill={isSelected ? "#2563EB" : "#0F172A"}
-                          fillOpacity={isSelected ? 0.94 : 0.82}
-                        />
-                        <text
-                          x="9"
-                          y="14.5"
-                          fill="#F8FAFC"
-                          fontSize="11"
-                          fontWeight="600"
-                        >
-                          {pr.room.name.slice(0, 18)}
-                        </text>
-                        {activeCount > 0 && (
-                          <g transform={`translate(${Math.min(pr.w - 24, 184) - 42}, 3)`}>
-                            <rect width="36" height="16" rx="4" fill="#F59E0B" />
-                            <text
-                              x="18"
-                              y="11"
-                              textAnchor="middle"
-                              fill="#0F172A"
-                              fontSize="9.5"
-                              fontWeight="700"
-                            >
-                              {activeCount} ON
-                            </text>
-                          </g>
-                        )}
-                      </g>
-                      {liveSensors.map((sensor, sIdx) => (
-                        <g
-                          key={sensor.id}
-                          transform={`translate(${pr.x + 12}, ${pr.y + 12 + sIdx * 24})`}
-                        >
-                          <rect
-                            width="86"
-                            height="20"
-                            rx="5"
-                            fill="#0F172A"
-                            fillOpacity="0.82"
-                          />
-                          <circle
-                            cx="11"
-                            cy="10"
-                            r="3"
-                            fill={
-                              isEntityOnline(sensor.is_online, ctrlById.get(sensor.controller_id))
-                                ? "#10B981"
-                                : "#94A3B8"
-                            }
-                          />
-                          <text x="19" y="13.5" fill="#F8FAFC" fontSize="10" fontWeight="600">
-                            {sensor.last_value} {sensor.unit}
-                          </text>
-                        </g>
-                      ))}
-                      <FloorDeviceFixtures
-                        x={pr.x}
-                        y={pr.y}
-                        w={pr.w}
-                        h={pr.h}
-                        fixtures={fixtures}
-                        interactive={!editMode && canOperate}
-                        onToggleFixture={handleToggleFixture}
-                      />
-
-                      {/* Resize corner grip in arrange mode */}
-                      {editMode && canEdit && isSelected && (
-                        <g
-                          transform={`translate(${pr.x + pr.w - 10}, ${pr.y + pr.h - 10})`}
-                          onPointerDown={(e) => handlePointerDownResize(e, pr)}
-                          className="cursor-nwse-resize"
-                        >
-                          <title>Drag corner to resize room</title>
-                          <rect
-                            width="14"
-                            height="14"
-                            rx="3"
-                            fill="#3B76F6"
-                            stroke="#FFFFFF"
-                            strokeWidth="1.5"
-                          />
-                        </g>
-                      )}
-                    </g>
-                  );
-                })}
-              </svg>
-
-              {/* Full Screen Room Controls & Sensors Popup inside the Blueprint */}
-              {isFullscreen && fullscreenRoomOpen && selectedRoom && (
-                <div
-                  data-testid="fullscreen-room-popup"
-                  role="dialog"
-                  aria-modal="false"
-                  aria-label={`${selectedRoom.room.name} controls and sensors`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onWheel={(e) => e.stopPropagation()}
-                  className="absolute right-4 bottom-4 top-4 z-20 flex w-[min(368px,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl sm:left-auto"
-                >
-                  {renderRoomInspectorBody(true)}
-                </div>
-              )}
-            </div>
+        {!isFullscreen && (
+          <Card className="flex flex-col gap-0 overflow-hidden py-0">
+            {renderRoomInspectorBody(false)}
           </Card>
-
-          {!isFullscreen && (
-            <Card className="flex flex-col gap-0 overflow-hidden py-0">
-              {renderRoomInspectorBody(false)}
-            </Card>
-          )}
-        </div>
-
-        <RoomEditorModal
-          open={editorOpen}
-          room={editingRoom}
-          homeId={primaryHomeId}
-          onClose={() => setEditorOpen(false)}
-          onSaved={onReload}
-        />
+        )}
       </div>
+
+      <RoomEditorModal
+        open={editorOpen}
+        room={editingRoom}
+        homeId={primaryHomeId}
+        onClose={() => setEditorOpen(false)}
+        onSaved={onReload}
+      />
+    </div>
+  );
+
+  return (
+    <TooltipProvider delayDuration={120} disableHoverableContent>
+      {/*
+        Full-screen mode must escape the page tree: any ancestor with a transform
+        (the page uses entrance animations) becomes the containing block for
+        `position: fixed`, which used to leave the overlay offset inside the page
+        instead of covering the viewport. Rendering it into <body> keeps the fixed
+        layer anchored to the viewport no matter what wraps the Overview page.
+      */}
+      {isFullscreen && typeof document !== "undefined"
+        ? createPortal(planNode, document.body)
+        : planNode}
     </TooltipProvider>
   );
 });

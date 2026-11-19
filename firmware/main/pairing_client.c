@@ -1,4 +1,5 @@
 #include "homecore_config.h"
+#include "role_runtime.h"
 #include "sdkconfig.h"
 
 #include <stdio.h>
@@ -249,7 +250,13 @@ esp_err_t hc_http_fetch_config(homecore_config_t *cfg) {
     }
     bool changed = false;
     esp_err_t apply_err = hc_io_apply_config_json(resp_buf, &changed);
+    // The role block is applied separately: it can change the transport this
+    // device must keep alive (Controller vs Node), so it is never just IO config.
+    bool role_changed = hc_role_apply_snapshot(cfg, resp_buf);
     free(resp_buf);
+    if (role_changed) {
+        changed = true;
+    }
     if (apply_err == ESP_OK && changed) {
         cfg->config_revision = hc_io_get_config_revision();
         hc_copy_str(cfg->config_hash, sizeof(cfg->config_hash), hc_io_get_config_hash());
@@ -294,6 +301,9 @@ esp_err_t hc_http_post_heartbeat(homecore_config_t *cfg) {
         cJSON_AddBoolToObject(root, "op", true);
     }
     cJSON_AddNumberToObject(root, "rev", (double)cfg->config_revision);
+    // Unified role fields: role + communication mode + ESP-NOW link state, plus
+    // the Controller's Node roster (linked Nodes run no cloud session of their own).
+    hc_role_fill_heartbeat(cfg, root);
     if (reported_err) {
         cJSON_AddStringToObject(root, "err", reported_err);
     }

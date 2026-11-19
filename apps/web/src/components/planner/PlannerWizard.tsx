@@ -73,8 +73,6 @@ export const PLANNER_WIZARD_STEPS = [
   { id: "review", title: "Review", hint: "Check and analyze" },
 ] as const;
 
-export type PlannerWizardStepId = (typeof PLANNER_WIZARD_STEPS)[number]["id"];
-
 /** Wizard step number (1-based) for a step id reported by the planner. */
 export function plannerStepNumber(step: PlannerMissingInformation["step"]): number {
   return PLANNER_WIZARD_STEPS.findIndex((s) => s.id === step) + 1;

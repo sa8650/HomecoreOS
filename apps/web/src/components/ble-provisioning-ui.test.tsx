@@ -97,7 +97,7 @@ function makeController(overrides: Partial<ControllerItem> = {}): ControllerItem
   };
 }
 
-describe("Simplified 4-Option Controller Setup & BLE Provisioning UI", () => {
+describe("Unified controller action modal & BLE provisioning UI", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     Object.defineProperty(navigator, "bluetooth", {
@@ -111,7 +111,8 @@ describe("Simplified 4-Option Controller Setup & BLE Provisioning UI", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows exactly 4 clear setup/recovery entry options with zero Setup PINs, codes, or forms", () => {
+  it("offers three illustrated controller actions, each opening its own nested choice, with zero Setup PINs or codes", async () => {
+    const user = userEvent.setup();
     render(
       <ControllerSetupModal
         open={true}
@@ -123,12 +124,23 @@ describe("Simplified 4-Option Controller Setup & BLE Provisioning UI", () => {
       />
     );
 
-    expect(screen.getByText(/New Controller Setup/i)).toBeInTheDocument();
-    expect(screen.getByText(/Controller Recovery/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Setup with BLE/i })).toBeInTheDocument();
+    // One modal, one level 1: flash, setup, repair.
+    expect(screen.getByRole("dialog", { name: /Controller Actions/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Flash Controller/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Setup Controller/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Repair \/ Recover Controller/i })).toBeInTheDocument();
+
+    // Level 2: setup offers Bluetooth or Wi-Fi, and Back returns to the actions.
+    await user.click(screen.getByRole("button", { name: /Setup Controller/i }));
+    expect(screen.getByRole("button", { name: /Setup with Bluetooth/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Setup with Wi-Fi/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Recover with BLE/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+
+    // Level 2: repair offers the same two transports.
+    await user.click(screen.getByRole("button", { name: /Repair \/ Recover Controller/i }));
+    expect(screen.getByRole("button", { name: /Recover with Bluetooth/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Recover with Wi-Fi/i })).toBeInTheDocument();
+    expect(screen.getByText(/offline, disconnected, deleted and re-paired/i)).toBeInTheDocument();
 
     expect(screen.queryByLabelText(/Setup PIN/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/Pairing Code/i)).not.toBeInTheDocument();
@@ -250,8 +262,9 @@ describe("Simplified 4-Option Controller Setup & BLE Provisioning UI", () => {
       />
     );
 
-    // Entry -> Setup with BLE (Screen A)
-    await user.click(screen.getByRole("button", { name: /Setup with BLE/i }));
+    // Actions -> Setup Controller -> Setup with Bluetooth (Screen A)
+    await user.click(screen.getByRole("button", { name: /Setup Controller/i }));
+    await user.click(screen.getByRole("button", { name: /Setup with Bluetooth/i }));
     expect(screen.getByText(/Discover HomecoreOS Controller/i)).toBeInTheDocument();
     expect(
       screen.getByText(/Turn on your HomecoreOS controller and keep it nearby/i)
@@ -722,6 +735,43 @@ describe("Simplified 4-Option Controller Setup & BLE Provisioning UI", () => {
     expect(screen.getByRole("button", { name: /Edit Wi-Fi & Retry/i })).toBeInTheDocument();
   });
 
+  it("recovers an existing controller over Wi-Fi from the unified repair choice", async () => {
+    const user = userEvent.setup();
+    render(
+      <ControllerSetupModal
+        open={true}
+        onClose={() => {}}
+        controllers={[makeController()]}
+        trashedControllers={[makeController({ id: "ctrl-trash", name: "Garage Hub", deleted_at: "2026-11-01T00:00:00Z" })]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoards={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Repair \/ Recover Controller/i }));
+    // Deleted controllers stay recoverable, so the repair screen says so.
+    expect(screen.getByText(/offline, disconnected, deleted and re-paired/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Recover with Wi-Fi/i }));
+
+    expect(
+      screen.getByRole("dialog", { name: /Recover with Wi-Fi/i })
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/192\.168\.4\.1/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/HomecoreOS-Setup-XXXX/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Steps on your controller & browser/i)).toBeInTheDocument();
+
+    // Back returns to the repair choice, not all the way out of the flow.
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    expect(screen.getByRole("button", { name: /Recover with Bluetooth/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Recover with Wi-Fi/i })).toBeInTheDocument();
+
+    // And back again returns to the three top-level actions.
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    expect(screen.getByRole("button", { name: /Flash Controller/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Setup Controller/i })).toBeInTheDocument();
+  });
+
   it("opens ControllerSetupModal directly from ControllersPage Details modal without showing Setup PIN", async () => {
     const user = userEvent.setup();
     Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
@@ -784,7 +834,11 @@ describe("Simplified 4-Option Controller Setup & BLE Provisioning UI", () => {
     expect(screen.queryByText(/BLE \/ Setup AP PIN/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Z9X8C7V6")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Recover with BLE/i }));
+    // Details -> the same modal, opened straight on the repair chooser for this controller.
+    await user.click(screen.getByRole("button", { name: /Repair \/ Recover/i }));
+    await user.click(
+      await screen.findByRole("button", { name: /Recover with Bluetooth/i })
+    );
     await waitFor(() => {
       expect(screen.getByText(/Prepare Controller for Recovery/i)).toBeInTheDocument();
     });

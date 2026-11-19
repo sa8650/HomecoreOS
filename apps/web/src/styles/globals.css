@@ -381,13 +381,14 @@
   background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
 }
 
+/* 2D smart-home floor map stage: bright paper-like surface with a faint grid */
 .hc-blueprint-bg {
-  background-color: color-mix(in srgb, var(--background) 92%, #74b8c0);
+  background-color: color-mix(in srgb, var(--background) 72%, #c3d2e2);
   background-image:
-    radial-gradient(ellipse at 50% 25%, color-mix(in srgb, var(--card) 75%, transparent), transparent 70%),
+    radial-gradient(ellipse 70% 60% at 50% 8%, color-mix(in srgb, var(--card) 92%, transparent), transparent 72%),
     linear-gradient(to right, var(--hc-floor-grid) 1px, transparent 1px),
     linear-gradient(to bottom, var(--hc-floor-grid) 1px, transparent 1px);
-  background-size: 100% 100%, 28px 28px, 28px 28px;
+  background-size: 100% 100%, 32px 32px, 32px 32px;
 }
 
 /* Controller card board-map stage: soft blueprint panel with a dot grid */

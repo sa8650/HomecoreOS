@@ -3,6 +3,7 @@ import {
   RiAlertLine,
   RiArrowLeftLine,
   RiArrowRightLine,
+  RiArrowRightSLine,
   RiBluetoothConnectLine,
   RiCheckLine,
   RiCheckboxCircleFill,
@@ -12,9 +13,7 @@ import {
   RiEyeOffLine,
   RiFileCopyLine,
   RiLoader4Line,
-  RiRouterLine,
-  RiShieldCheckLine,
-  RiWifiLine,
+  RiUsbLine,
 } from "@remixicon/react";
 import {
   supportsBleProvisioningForBoard,
@@ -34,10 +33,25 @@ import type {
   ControllerItem,
   HomeItem,
 } from "@/features/types";
+import { ControllerActionArtwork } from "@/components/controllers/ControllerActionArtwork";
+import {
+  UsbFlashWizard,
+  type UsbFlashWizardHandle,
+} from "@/components/firmware/UsbFlashWizard";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";
 import { FormField, StatusAlert } from "@/components/shared/AppUi";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -57,10 +71,20 @@ import {
 
 export type ControllerSetupView =
   | "entry"
+  | "flash"
+  | "setup"
+  | "recover"
   | "setup_ble"
   | "setup_wifi"
   | "recover_ble"
   | "recover_wifi";
+
+/** The screen a "Back" button returns to from a leaf flow. */
+function parentViewOf(view: ControllerSetupView): ControllerSetupView {
+  if (view === "setup_ble" || view === "setup_wifi") return "setup";
+  if (view === "recover_ble" || view === "recover_wifi") return "recover";
+  return "entry";
+}
 
 type BleFlowScreen = "discover" | "wifi" | "progress";
 
@@ -147,6 +171,87 @@ function matchControllerByBleInfo(
   }
 
   return { kind: "missing" };
+}
+
+/** A single illustrated action row on the controller action picker. */
+function ActionCard({
+  kind,
+  title,
+  description,
+  meta,
+  onClick,
+}: {
+  kind: "usb" | "bluetooth" | "wifi" | "recovery";
+  title: string;
+  description: string;
+  meta?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex w-full cursor-pointer items-start gap-3 rounded-2xl border border-border bg-card p-3 text-left transition hover:border-primary/60 hover:bg-primary/5 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:items-center sm:gap-4 sm:p-3.5"
+    >
+      <ControllerActionArtwork kind={kind} className="size-14 shrink-0 sm:size-20" />
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold text-foreground">{title}</span>
+          {meta && (
+            <Badge variant="outline" size="xs">
+              {meta}
+            </Badge>
+          )}
+        </span>
+        <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+          {description}
+        </span>
+      </span>
+      <RiArrowRightSLine
+        aria-hidden="true"
+        className="size-5 shrink-0 self-center text-muted-foreground transition group-hover:translate-x-0.5 group-hover:text-primary"
+      />
+    </button>
+  );
+}
+
+/** A large illustrated choice card used for the BLE / Wi-Fi decision. */
+function ChoiceCard({
+  kind,
+  title,
+  description,
+  actionLabel,
+  onClick,
+}: {
+  kind: "usb" | "bluetooth" | "wifi" | "recovery";
+  title: string;
+  description: string;
+  actionLabel: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex w-full cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-card text-left transition hover:border-primary/60 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+    >
+      <ControllerActionArtwork
+        kind={kind}
+        className="h-24 w-full rounded-none shadow-none sm:h-28"
+      />
+      <span className="flex flex-1 flex-col gap-1.5 p-3.5 sm:p-4">
+        <span className="text-sm font-semibold text-foreground">{title}</span>
+        <span className="text-xs leading-relaxed text-muted-foreground">{description}</span>
+        <span className="mt-auto inline-flex items-center gap-1 pt-2 text-xs font-semibold text-primary">
+          {actionLabel}
+          <RiArrowRightSLine
+            aria-hidden="true"
+            className="size-4 transition group-hover:translate-x-0.5"
+          />
+        </span>
+      </span>
+    </button>
+  );
 }
 
 function BleDiscoveryArtwork({
@@ -455,6 +560,7 @@ export function ControllerSetupModal({
   homes = [],
   catalogBoards = [],
   customBoards = [],
+  canManage = true,
   onSuccess,
 }: {
   open: boolean;
@@ -466,9 +572,13 @@ export function ControllerSetupModal({
   homes?: HomeItem[];
   catalogBoards?: BoardProfileItem[];
   customBoards?: BoardProfileItem[];
+  /** Owners/admins may install factory firmware over USB. */
+  canManage?: boolean;
   onSuccess?: (message: string) => void;
 }) {
   const [view, setView] = useState<ControllerSetupView>(initialView);
+  const [confirmCloseFlash, setConfirmCloseFlash] = useState(false);
+  const flashRef = useRef<UsbFlashWizardHandle | null>(null);
   const [bleScreen, setBleScreen] = useState<BleFlowScreen>("discover");
 
   // BLE discovery & connection state
@@ -562,6 +672,7 @@ export function ControllerSetupModal({
 
     if (justOpened) {
       clearSensitiveState();
+      setConfirmCloseFlash(false);
       setView(initialView);
       setBleScreen("discover");
       if (targetController?.wifi_ssid) {
@@ -661,14 +772,22 @@ export function ControllerSetupModal({
   }
 
   function handleCloseModal() {
+    // While firmware is streaming over USB, closing only hides progress — ask first.
+    if (view === "flash" && flashRef.current?.isBusy()) {
+      setConfirmCloseFlash(true);
+      return;
+    }
+    flashRef.current?.settlePendingDecision();
     clearSensitiveState();
     onClose();
   }
 
+  /** Back from a leaf flow returns to its chooser, then to the action picker. */
   function handleBackToEntry() {
+    flashRef.current?.settlePendingDecision();
     clearSensitiveState();
     setBleScreen("discover");
-    setView("entry");
+    setView(parentViewOf(view));
   }
 
   function handleBackToWifiDiscover() {
@@ -1324,96 +1443,44 @@ export function ControllerSetupModal({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && handleCloseModal()}>
-      <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className={cn(
+          "max-h-[90vh] overflow-y-auto",
+          view === "flash" ? "sm:max-w-2xl" : "sm:max-w-xl"
+        )}
+      >
         {view === "entry" && (
           <>
             <DialogHeader>
-              <DialogTitle>Add or Recover Controller</DialogTitle>
+              <DialogTitle>Controller Actions</DialogTitle>
               <DialogDescription>
-                Choose how you want to set up a new controller or reconnect an existing one.
+                Install firmware on a new board, set up a controller, or repair one that stopped
+                connecting.
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-5">
-              {/* Section 1: New Controller Setup */}
-              <div className="space-y-2.5">
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  New Controller Setup
-                </p>
-                <div className="grid gap-2.5 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => openChildView("setup_ble")}
-                    className="group flex flex-col items-start gap-2.5 rounded-xl border border-border bg-card p-4 text-left transition hover:border-primary/60 hover:bg-primary/5 cursor-pointer"
-                  >
-                    <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                      <RiBluetoothConnectLine className="size-5" aria-hidden="true" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">Setup with BLE</p>
-                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        Fast wireless setup from this browser using Bluetooth.
-                      </p>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => openChildView("setup_wifi")}
-                    className="group flex flex-col items-start gap-2.5 rounded-xl border border-border bg-card p-4 text-left transition hover:border-primary/60 hover:bg-primary/5 cursor-pointer"
-                  >
-                    <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                      <RiWifiLine className="size-5" aria-hidden="true" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">Setup with Wi-Fi</p>
-                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        Setup by connecting to the controller&apos;s HomecoreOS-Setup-XXXX Wi-Fi network.
-                      </p>
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              {/* Section 2: Controller Recovery */}
-              <div className="space-y-2.5">
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Controller Recovery
-                </p>
-                <div className="grid gap-2.5 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => openChildView("recover_ble")}
-                    className="group flex flex-col items-start gap-2.5 rounded-xl border border-border bg-card p-4 text-left transition hover:border-primary/60 hover:bg-primary/5 cursor-pointer"
-                  >
-                    <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                      <RiShieldCheckLine className="size-5" aria-hidden="true" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">Recover with BLE</p>
-                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        Reconnect or re-pair an existing controller via Bluetooth.
-                      </p>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => openChildView("recover_wifi")}
-                    className="group flex flex-col items-start gap-2.5 rounded-xl border border-border bg-card p-4 text-left transition hover:border-primary/60 hover:bg-primary/5 cursor-pointer"
-                  >
-                    <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                      <RiRouterLine className="size-5" aria-hidden="true" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">Recover with Wi-Fi</p>
-                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        Reconnect or re-pair using the controller&apos;s local 192.168.4.1 webpage.
-                      </p>
-                    </div>
-                  </button>
-                </div>
-              </div>
+            <div className="space-y-2.5">
+              <ActionCard
+                kind="usb"
+                title="Flash Controller"
+                meta="New hardware"
+                description="Install the published HomecoreOS factory image on a bare board over USB, with chip verification."
+                onClick={() => openChildView("flash")}
+              />
+              <ActionCard
+                kind="bluetooth"
+                title="Setup Controller"
+                meta="Bluetooth or Wi-Fi"
+                description="Pair a controller that already has firmware and connect it to your home network."
+                onClick={() => openChildView("setup")}
+              />
+              <ActionCard
+                kind="recovery"
+                title="Repair / Recover Controller"
+                meta="Offline · deleted · re-pairing"
+                description="Restore Wi-Fi credentials, re-pair, or bring back a controller that is no longer connecting."
+                onClick={() => openChildView("recover")}
+              />
             </div>
 
             <DialogFooter>
@@ -1421,6 +1488,108 @@ export function ControllerSetupModal({
                 Cancel
               </Button>
             </DialogFooter>
+          </>
+        )}
+
+        {(view === "setup" || view === "recover") && (
+          <>
+            <DialogHeader>
+              <DialogTitle>
+                {view === "recover" ? "Repair / Recover Controller" : "Setup Controller"}
+                {targetController ? (
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {targetController.name}
+                  </span>
+                ) : null}
+              </DialogTitle>
+              <DialogDescription>
+                {view === "recover"
+                  ? "Choose how to reach the controller. Works for offline, disconnected, deleted and re-paired controllers."
+                  : "Choose how this browser should talk to the controller while you configure it."}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {view === "recover" ? (
+                <>
+                  <ChoiceCard
+                    kind="recovery"
+                    title="Recover with Bluetooth"
+                    description="Connect over Bluetooth from this browser and push the Wi-Fi and pairing details back."
+                    actionLabel="Start Bluetooth recovery"
+                    onClick={() => openChildView("recover_ble")}
+                  />
+                  <ChoiceCard
+                    kind="wifi"
+                    title="Recover with Wi-Fi"
+                    description="Join the controller's HomecoreOS-Setup-XXXX network and recover it from 192.168.4.1."
+                    actionLabel="Start Wi-Fi recovery"
+                    onClick={() => openChildView("recover_wifi")}
+                  />
+                </>
+              ) : (
+                <>
+                  <ChoiceCard
+                    kind="bluetooth"
+                    title="Setup with Bluetooth"
+                    description="Fastest option. Pair nearby, then send Wi-Fi and home details in one guided pass."
+                    actionLabel="Start Bluetooth setup"
+                    onClick={() => openChildView("setup_ble")}
+                  />
+                  <ChoiceCard
+                    kind="wifi"
+                    title="Setup with Wi-Fi"
+                    description="Join the controller's HomecoreOS-Setup-XXXX network and configure it from 192.168.4.1."
+                    actionLabel="Start Wi-Fi setup"
+                    onClick={() => openChildView("setup_wifi")}
+                  />
+                </>
+              )}
+            </div>
+
+            {view === "recover" && (
+              <p className="rounded-lg border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                Recovery needs the controller's recovery code. Deleted controllers stay listed in the
+                Controllers trash so they can be restored to a home.
+              </p>
+            )}
+
+            <DialogFooter className="flex items-center justify-between gap-2 sm:justify-between">
+              <Button type="button" variant="ghost" onClick={handleBackToEntry}>
+                <RiArrowLeftLine className="size-4" aria-hidden="true" />
+                Back
+              </Button>
+              <Button type="button" variant="outline" onClick={handleCloseModal}>
+                Cancel
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+
+        {view === "flash" && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2.5">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-500 to-teal-600 text-white shadow-sm">
+                  <RiUsbLine className="size-4" aria-hidden="true" />
+                </span>
+                <span className="min-w-0 break-words">Flash Controller over USB</span>
+              </DialogTitle>
+              <DialogDescription>
+                Connect the board with a USB cable. The browser verifies the chip before writing the
+                factory image.
+              </DialogDescription>
+            </DialogHeader>
+
+            <UsbFlashWizard
+              ref={flashRef}
+              canManage={canManage}
+              onBack={handleBackToEntry}
+              onContinueToSetup={() => {
+                clearSensitiveState();
+                setView("setup");
+              }}
+            />
           </>
         )}
 
@@ -1996,6 +2165,32 @@ export function ControllerSetupModal({
           </>
         )}
       </DialogContent>
+
+      {/* Closing mid-flash only hides progress tracking — confirm first. */}
+      <AlertDialog open={confirmCloseFlash} onOpenChange={setConfirmCloseFlash}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>USB Flash Currently in Progress</AlertDialogTitle>
+            <AlertDialogDescription>
+              Firmware is actively streaming to your ESP32 over Web Serial. Closing this window
+              hides progress tracking — are you sure you want to close?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep Open</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setConfirmCloseFlash(false);
+                flashRef.current?.settlePendingDecision();
+                clearSensitiveState();
+                onClose();
+              }}
+            >
+              Close Anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }

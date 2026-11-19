@@ -12,8 +12,9 @@
     "dev:worker": "npm --workspace=apps/worker run dev",
     "build": "npm --workspace=packages/shared run build && npm --workspace=apps/web run build && npm --workspace=apps/worker run build",
     "typecheck": "npm --workspace=packages/shared run typecheck && npm --workspace=apps/web run typecheck && npm --workspace=apps/worker run typecheck",
-    "lint": "eslint apps packages",
-    "test": "npm --workspace=packages/shared run test && npm --workspace=apps/worker run test && npm --workspace=apps/web run test"
+    "lint": "eslint apps packages database",
+    "test": "npm --workspace=packages/shared run test && npm --workspace=apps/worker run test && npm --workspace=apps/web run test",
+    "db:verify": "node database/verify/verify-schema.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",

@@ -1,4 +1,5 @@
 #include "homecore_config.h"
+#include "role_runtime.h"
 #include "sensor_drivers.h"
 
 #include <stdio.h>
@@ -65,7 +66,12 @@ static hc_prov_boot_btn_action_t check_boot_button_at_startup(void) {
 
 static void sync_cloud_and_report_state(char *telem_buf, size_t telem_cap, bool fetch_http_config) {
     if (!s_config.paired) return;
-    if (!hc_mqtt_is_started()) {
+    // A Node keeps no independent EMQX session while its ESP-NOW link is healthy;
+    // the role runtime owns that decision (see role_runtime.c).
+    if (hc_role_is_node() && hc_role_link_state() == HC_NODE_LINKED &&
+        !hc_mqtt_is_started()) {
+        // ESP-NOW only: heartbeats still travel over HTTPS.
+    } else if (!hc_mqtt_is_started()) {
         hc_mqtt_start(&s_config);
     } else if (!hc_mqtt_is_connected()) {
         hc_mqtt_trigger_reconnect();
@@ -118,7 +124,7 @@ static void controller_supervision_task(void *pvParam) {
             ESP_LOGW(TAG, "BOOT held 3s: release now for Recovery Mode, or keep holding to 10s for Factory Reset");
         }
         if (btn_act == HC_BOOT_BTN_FACTORY_RESET) {
-            ESP_LOGW(TAG, "BOOT button held 10s -> performing full factory reset");
+            ESP_LOGW(TAG, "BOOT button held 10s -> performing full factory reset (role, pairing and credentials are erased; the device returns as a Controller)");
             hc_nvs_factory_reset();
             vTaskDelay(pdMS_TO_TICKS(300));
             esp_restart();
@@ -187,6 +193,10 @@ static void controller_supervision_task(void *pvParam) {
                 s_ble_close_grace_ms -= 500U;
             }
         }
+
+        // 4b. Unified Controller / Node role supervision (ESP-NOW link, standalone
+        //     fallback, automatic return to ESP-NOW).
+        hc_role_tick(&s_config, 500U);
 
         // 5. Evaluate local offline automations every 2s regardless of network connectivity
         bool local_state_changed = false;
@@ -359,6 +369,13 @@ void app_main(void) {
         HOMECORE_HAS_WIFI ? "yes" : "no",
         HOMECORE_HAS_BLE ? "yes" : "no"
     );
+    ESP_LOGI(
+        TAG,
+        "Unified role=%s assigned_controller=%s espnow_channel=%s",
+        s_config.device_role == 1 ? "node" : "controller",
+        s_config.assigned_controller_id[0] ? s_config.assigned_controller_id : "-",
+        s_config.espnow_channel ? "pinned" : "auto"
+    );
 
     ESP_ERROR_CHECK(hc_nvs_init());
     ESP_ERROR_CHECK(hc_nvs_load_config(&s_config));
@@ -368,6 +385,8 @@ void app_main(void) {
         s_config.recovery_boot_req = false;
         hc_nvs_set_recovery_boot_req(false);
     }
+
+    ESP_ERROR_CHECK(hc_role_init(&s_config));
 
     char *io_json = calloc(1, 8192);
     if (io_json) {

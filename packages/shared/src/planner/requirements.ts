@@ -13,7 +13,6 @@ import {
 } from "../board-validation";
 import {
   ROOM_TYPES,
-  ROOM_TYPE_LABELS,
   inferRoomTypeFromName,
   type RoomType,
   type SupportedDeviceType,
@@ -25,7 +24,6 @@ import {
   PLANNER_ENVIRONMENT_OPTIONS,
   PLANNER_ETHERNET_OPTIONS,
   PLANNER_INPUT_LIMITS,
-  PLANNER_LOAD_CATEGORIES,
   PLANNER_REQUIREMENTS_SCHEMA_VERSION,
   PLANNER_SENSOR_CATEGORIES,
   PLANNER_SENSOR_WIRING_OPTIONS,
@@ -681,12 +679,4 @@ export function toPlannerRequirementsInput(
       futureInputs: normalized.installation.futureInputs,
     },
   };
-}
-
-export function describePlannerRoomType(type: RoomType): string {
-  return ROOM_TYPE_LABELS[type] ?? "Room";
-}
-
-export function isPlannerLoadCategory(category: PlannerDeviceCategory): boolean {
-  return (PLANNER_LOAD_CATEGORIES as readonly string[]).includes(category);
 }

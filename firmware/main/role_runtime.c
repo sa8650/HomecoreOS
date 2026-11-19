@@ -1,0 +1,563 @@
+#include "role_runtime.h"
+
+#include <string.h>
+
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "espnow_link.h"
+
+static const char *TAG = "hc_role";
+
+#define HC_ESPNOW_KEEPALIVE_MS 2000u
+#define HC_ESPNOW_STATE_PUSH_MS 30000u
+#define HC_OTA_WINDOW_MS 180000u
+
+typedef struct {
+    char id[44];
+    char mac[20];
+    int8_t rssi;
+    uint32_t last_seen_ms;
+} hc_role_node_t;
+
+static homecore_config_t *s_cfg = NULL;
+static hc_role_state_t s_state;
+static bool s_initialized = false;
+static bool s_espnow_started = false;
+static bool s_mqtt_started_by_role = false;
+
+static uint32_t s_now_ms = 0;
+static uint32_t s_ms_since_controller = 0;
+static bool s_controller_fresh = false;
+static uint32_t s_keepalive_ms = 0;
+static uint32_t s_hop_ms = 0;
+static uint32_t s_push_ms = 0;
+static uint32_t s_ota_window_ms = 0;
+
+static uint16_t s_remote_epoch = 0; /* last command window seen from the Controller */
+static uint32_t s_cmd_seq = 0;      /* last command sequence executed (dedupe) */
+static uint32_t s_tx_seq = 0;       /* outbound keepalive / relay sequence */
+
+static hc_role_node_t s_nodes[HC_ESPNOW_MAX_NODES];
+static uint8_t s_node_count = 0;
+
+static uint32_t now_ms(void) {
+    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+const char *hc_role_comm_mode_name(const homecore_config_t *cfg) {
+    if (!cfg) return "offline";
+    if (!hc_wifi_is_connected()) return "offline";
+    if (!cfg->paired) return "offline";
+    if (cfg->device_role == HC_ROLE_NODE) {
+        return (s_state.link == HC_NODE_LINKED) ? "espnow" : "wifi_mqtt";
+    }
+    return "wifi_mqtt";
+}
+
+hc_role_t hc_role_current(void) {
+    return s_cfg ? (hc_role_t)s_cfg->device_role : HC_ROLE_CONTROLLER;
+}
+
+bool hc_role_is_node(void) {
+    return hc_role_current() == HC_ROLE_NODE;
+}
+
+hc_node_link_t hc_role_link_state(void) {
+    if (!s_cfg || s_cfg->device_role != HC_ROLE_NODE) return HC_NODE_UNASSIGNED;
+    return s_state.link;
+}
+
+uint16_t hc_role_epoch(void) {
+    return s_state.epoch;
+}
+
+uint8_t hc_role_linked_node_count(void) {
+    if (!s_cfg || s_cfg->device_role != HC_ROLE_CONTROLLER) return 0;
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < s_node_count; ++i) {
+        if (!hc_role_node_is_stale(s_now_ms, s_nodes[i].last_seen_ms)) count++;
+    }
+    return count;
+}
+
+static void nodes_add(const hc_espnow_rx_t *frame) {
+    if (!frame) return;
+    char id[44] = {0};
+    cJSON *root = cJSON_Parse(frame->payload);
+    if (root) {
+        cJSON *id_j = cJSON_GetObjectItem(root, "id");
+        if (cJSON_IsString(id_j) && id_j->valuestring) {
+            snprintf(id, sizeof(id), "%s", id_j->valuestring);
+        }
+        cJSON_Delete(root);
+    }
+
+    char mac[20];
+    hc_espnow_mac_to_string(frame->mac, mac, sizeof(mac));
+
+    for (uint8_t i = 0; i < s_node_count; ++i) {
+        bool same_mac = strcmp(s_nodes[i].mac, mac) == 0;
+        bool same_id = id[0] && strcmp(s_nodes[i].id, id) == 0;
+        if (same_mac || same_id) {
+            if (id[0]) snprintf(s_nodes[i].id, sizeof(s_nodes[i].id), "%s", id);
+            snprintf(s_nodes[i].mac, sizeof(s_nodes[i].mac), "%s", mac);
+            s_nodes[i].rssi = frame->rssi;
+            s_nodes[i].last_seen_ms = s_now_ms;
+            return;
+        }
+    }
+    if (s_node_count >= HC_ESPNOW_MAX_NODES) return;
+    hc_role_node_t *slot = &s_nodes[s_node_count++];
+    memset(slot, 0, sizeof(*slot));
+    snprintf(slot->id, sizeof(slot->id), "%s", id);
+    snprintf(slot->mac, sizeof(slot->mac), "%s", mac);
+    slot->rssi = frame->rssi;
+    slot->last_seen_ms = s_now_ms;
+    ESP_LOGI(TAG, "Node linked: %s (%s) rssi=%d", id[0] ? id : "unknown", mac, frame->rssi);
+}
+
+static void on_node_frame(const hc_espnow_rx_t *frame) {
+    if (!frame) return;
+    if (frame->type == HC_ESPNOW_FRAME_NODE_KEEPALIVE || frame->type == HC_ESPNOW_FRAME_COMMAND) {
+        nodes_add(frame);
+    }
+}
+
+static void on_controller_frame(const hc_espnow_rx_t *frame) {
+    if (!frame) return;
+    s_ms_since_controller = 0;
+    s_controller_fresh = true;
+
+    if (frame->type == HC_ESPNOW_FRAME_COMMAND && frame->payload_len > 0) {
+        cJSON *root = cJSON_Parse(frame->payload);
+        if (!root) return;
+        cJSON *cmd_j = cJSON_GetObjectItem(root, "cmd");
+
+        // Same dedupe as MQTT commands: a replayed frame after a link
+        // transition must not execute twice.
+        cJSON *seq_j = cJSON_GetObjectItem(root, "seq");
+        cJSON *epoch_j = cJSON_GetObjectItem(root, "epoch");
+        uint16_t epoch = cJSON_IsNumber(epoch_j) ? (uint16_t)epoch_j->valuedouble : frame->epoch;
+        uint32_t seq = cJSON_IsNumber(seq_j) ? (uint32_t)seq_j->valuedouble : frame->seq;
+        // Dedupe on the *Controller's* command window, not on this Node's own
+        // link epoch (each side counts its own transitions).
+        bool accept = hc_role_accept_command(epoch, seq, &s_remote_epoch, &s_cmd_seq);
+
+        if (s_cfg && s_cmd_seq > s_cfg->last_cmd_seq) {
+            s_cfg->last_cmd_seq = s_cmd_seq;
+        }
+        if (accept && cJSON_IsString(cmd_j) && cmd_j->valuestring) {
+            if (strcmp(cmd_j->valuestring, "relink") == 0) {
+                ESP_LOGW(TAG, "Controller asked this Node to re-link now");
+                hc_role_state_clear_fallback(&s_state);
+                s_controller_fresh = true;
+                s_ms_since_controller = 0;
+            } else if (strcmp(cmd_j->valuestring, "ota") == 0) {
+                cJSON *ota_j = cJSON_GetObjectItem(root, "ota");
+                if (cJSON_IsObject(ota_j) && s_cfg) {
+                    cJSON *rel_j = cJSON_GetObjectItem(ota_j, "release_id");
+                    cJSON *hist_j = cJSON_GetObjectItem(ota_j, "history_id");
+                    cJSON *ver_j = cJSON_GetObjectItem(ota_j, "version");
+                    ESP_LOGW(TAG, "Received OTA instruction over ESP-NOW; opening Wi-Fi/EMQX window");
+                    hc_role_open_ota_window(HC_OTA_WINDOW_MS);
+                    if (cJSON_IsString(rel_j) && rel_j->valuestring) {
+                        hc_ota_start_async(
+                            s_cfg,
+                            rel_j->valuestring,
+                            cJSON_IsString(hist_j) ? hist_j->valuestring : "",
+                            cJSON_IsString(ver_j) ? ver_j->valuestring : ""
+                        );
+                    }
+                }
+            }
+        }
+        cJSON_Delete(root);
+    }
+}
+
+static void persist_role(homecore_config_t *cfg, bool force) {
+    if (!cfg) return;
+    bool changed = force;
+    uint8_t link = (uint8_t)s_state.link;
+    if (cfg->node_link_state != link) {
+        cfg->node_link_state = link;
+        changed = true;
+    }
+    if (cfg->link_epoch != s_state.epoch) {
+        cfg->link_epoch = s_state.epoch;
+        changed = true;
+    }
+    if (changed) {
+        hc_nvs_save_config(cfg);
+    }
+}
+
+static void start_controller_transport(homecore_config_t *cfg) {
+    if (s_espnow_started) return;
+#if HOMECORE_HAS_WIFI
+    esp_err_t err = hc_espnow_host_start(on_node_frame);
+    if (err == ESP_OK) {
+        s_espnow_started = true;
+        ESP_LOGI(TAG, "Controller role active: hosting Nodes over ESP-NOW");
+    } else {
+        ESP_LOGW(TAG, "ESP-NOW host start failed: %s", esp_err_to_name(err));
+    }
+#else
+    ESP_LOGW(TAG, "Board has no Wi-Fi radio: Controller role runs Wi-Fi/MQTT only");
+    s_espnow_started = true;
+#endif
+    (void)cfg;
+}
+
+static void start_node_transport(homecore_config_t *cfg) {
+    if (!cfg) return;
+    if (strlen(cfg->assigned_controller_id) == 0) {
+        s_state.link = HC_NODE_UNASSIGNED;
+        s_espnow_started = true; /* nothing to seek: stay a Wi-Fi/MQTT Node */
+        return;
+    }
+    if (strlen(cfg->assigned_controller_mac) == 0) {
+        // The Controller is assigned but its ESP-NOW MAC is not known yet (it
+        // pairs/reports it on its next heartbeat). Poll frequently.
+        s_state.link = HC_NODE_CONTROLLER_LOST;
+        return;
+    }
+#if HOMECORE_HAS_WIFI
+    esp_err_t err = hc_espnow_seek_start(
+        cfg->assigned_controller_mac,
+        cfg->espnow_channel,
+        on_controller_frame
+    );
+    if (err == ESP_OK) {
+        s_espnow_started = true;
+        ESP_LOGI(
+            TAG,
+            "Node role active: seeking Controller %s (channel %s)",
+            cfg->assigned_controller_mac,
+            cfg->espnow_channel ? "pinned" : "auto"
+        );
+    } else {
+        ESP_LOGW(TAG, "ESP-NOW seek start failed: %s", esp_err_to_name(err));
+    }
+#else
+    ESP_LOGW(TAG, "Board has no Wi-Fi radio: Node falls back to Wi-Fi/MQTT");
+    s_espnow_started = true;
+#endif
+}
+
+esp_err_t hc_role_init(homecore_config_t *cfg) {
+    if (!cfg) return ESP_ERR_INVALID_ARG;
+    s_cfg = cfg;
+    s_now_ms = now_ms();
+    s_ms_since_controller = 0;
+    s_controller_fresh = false;
+    s_espnow_started = false;
+    s_mqtt_started_by_role = false;
+    s_node_count = 0;
+    s_ota_window_ms = 0;
+    s_cmd_seq = cfg->last_cmd_seq;
+    s_remote_epoch = 0;
+
+    hc_role_t role = (hc_role_t)cfg->device_role;
+    hc_role_state_init(&s_state, role);
+    s_state.epoch = cfg->link_epoch;
+    s_state.link = (hc_node_link_t)cfg->node_link_state;
+    if (role == HC_ROLE_NODE && s_state.link == HC_NODE_LINKED) {
+        // A reboot always restarts the link verification.
+        s_state.link = HC_NODE_CONTROLLER_LOST;
+    }
+    if (role == HC_ROLE_NODE && strlen(cfg->assigned_controller_id) == 0) {
+        s_state.link = HC_NODE_UNASSIGNED;
+    }
+
+    ESP_LOGI(TAG, "Role=%s assigned=%s", hc_role_name(role), cfg->assigned_controller_id);
+
+    // Transports are started from the supervision tick: at this point Wi-Fi is
+    // not up yet on a cold boot, and ESP-NOW needs the radio initialised.
+    s_initialized = true;
+    return ESP_OK;
+}
+
+void hc_role_open_ota_window(uint32_t duration_ms) {
+    s_ota_window_ms = duration_ms;
+    s_state.ota_window_open = true;
+}
+
+void hc_role_request_relink(homecore_config_t *cfg) {
+    if (!cfg || cfg->device_role != HC_ROLE_NODE) return;
+    ESP_LOGW(TAG, "Re-link requested: clearing the Wi-Fi/MQTT fallback");
+    hc_role_state_clear_fallback(&s_state);
+    s_controller_fresh = false;
+    s_ms_since_controller = 0;
+    s_keepalive_ms = HC_ESPNOW_KEEPALIVE_MS;
+    (void)hc_espnow_seek_start(
+        cfg->assigned_controller_mac,
+        cfg->espnow_channel,
+        on_controller_frame
+    );
+}
+
+esp_err_t hc_role_relay_command_to_node(homecore_config_t *cfg, const char *node_id, const char *json) {
+    if (!cfg || cfg->device_role != HC_ROLE_CONTROLLER) return ESP_ERR_INVALID_STATE;
+    if (!node_id || !json) return ESP_ERR_INVALID_ARG;
+    for (uint8_t i = 0; i < s_node_count; ++i) {
+        if (strcmp(s_nodes[i].id, node_id) != 0) continue;
+        if (hc_role_node_is_stale(s_now_ms, s_nodes[i].last_seen_ms)) {
+            ESP_LOGW(TAG, "Node %s is stale; dropping relayed command", node_id);
+            return ESP_ERR_INVALID_STATE;
+        }
+        return hc_espnow_send_command(
+            s_nodes[i].mac,
+            s_state.epoch,
+            ++s_tx_seq,
+            json
+        );
+    }
+    ESP_LOGW(TAG, "Node %s is not linked to this Controller", node_id);
+    return ESP_ERR_NOT_FOUND;
+}
+
+static void node_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
+    hc_role_input_t in;
+    memset(&in, 0, sizeof(in));
+    in.role = HC_ROLE_NODE;
+    in.has_wifi = HOMECORE_HAS_WIFI != 0;
+    in.has_espnow = HOMECORE_HAS_WIFI != 0;
+    in.assigned = strlen(cfg->assigned_controller_id) > 0;
+    in.controller_online = s_controller_fresh &&
+        s_ms_since_controller < HC_ROLE_LINK_TIMEOUT_MS;
+    in.mqtt_connected = hc_mqtt_is_connected();
+    in.ota_window = s_ota_window_ms > 0;
+    in.ms_since_controller = s_ms_since_controller;
+
+    const bool was_linked = (s_state.link == HC_NODE_LINKED);
+    uint32_t actions = hc_role_node_step(&s_state, &in, elapsed_ms);
+
+    if ((actions & HC_ROLE_ACT_ESPNOW_SEEK) && !s_espnow_started) {
+        start_node_transport(cfg);
+    }
+
+    if (actions & HC_ROLE_ACT_ESPNOW_SEEK) {
+        s_keepalive_ms += elapsed_ms;
+        if (s_keepalive_ms >= HC_ESPNOW_KEEPALIVE_MS) {
+            s_keepalive_ms = 0;
+            esp_err_t err = hc_espnow_send_keepalive(
+                cfg->assigned_controller_mac,
+                s_state.epoch,
+                ++s_tx_seq
+            );
+            if (err == ESP_OK && cfg->espnow_channel == 0 && hc_espnow_is_seeking()) {
+                // Nothing came back yet: sweep to the next channel.
+                s_hop_ms += elapsed_ms;
+                if (s_hop_ms >= HC_ESPNOW_KEEPALIVE_MS) {
+                    s_hop_ms = 0;
+                    hc_espnow_seek_hop();
+                }
+            }
+        }
+    }
+
+    bool linked_now = (s_state.link == HC_NODE_LINKED);
+    if (linked_now != was_linked) {
+        ESP_LOGI(
+            TAG,
+            "Node link state: %s (standalone fallback %s)",
+            hc_node_link_name(s_state.link),
+            s_state.standalone ? "active" : "off"
+        );
+        persist_role(cfg, true);
+    }
+
+    bool want_mqtt = s_state.standalone || s_state.ota_window_open;
+    if (want_mqtt && !hc_mqtt_is_started()) {
+        hc_mqtt_start(cfg);
+        s_mqtt_started_by_role = true;
+    } else if (!want_mqtt && s_mqtt_started_by_role) {
+        hc_mqtt_stop();
+        s_mqtt_started_by_role = false;
+        ESP_LOGI(TAG, "Controller re-linked: closing the Wi-Fi/MQTT fallback session");
+    }
+}
+
+static void controller_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
+    (void)elapsed_ms;
+    hc_role_input_t in;
+    memset(&in, 0, sizeof(in));
+    in.role = HC_ROLE_CONTROLLER;
+    in.has_wifi = HOMECORE_HAS_WIFI != 0;
+    in.has_espnow = HOMECORE_HAS_WIFI != 0;
+    in.mqtt_connected = hc_mqtt_is_connected();
+
+    uint32_t actions = hc_role_controller_step(&s_state, &in);
+    if (actions & HC_ROLE_ACT_ESPNOW_HOST) {
+        start_controller_transport(cfg);
+    }
+
+    // Push the roster when it changes shape, and periodically so the console's
+    // link state never goes stale.
+    static uint8_t last_count = 0;
+    uint8_t count = hc_role_linked_node_count();
+    if (count != last_count) {
+        last_count = count;
+        s_push_ms = HC_ESPNOW_STATE_PUSH_MS;
+        persist_role(cfg, true);
+    }
+}
+
+void hc_role_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
+    if (!cfg || !s_initialized) return;
+    s_now_ms = now_ms();
+    s_ms_since_controller += elapsed_ms;
+    if (s_ms_since_controller < HC_ROLE_LINK_TIMEOUT_MS) {
+        /* still inside the timeout window */
+    } else {
+        s_controller_fresh = false;
+    }
+    if (s_ota_window_ms > 0) {
+        if (s_ota_window_ms <= elapsed_ms) {
+            s_ota_window_ms = 0;
+            s_state.ota_window_open = false;
+            ESP_LOGI(TAG, "OTA Wi-Fi window closed");
+        } else {
+            s_ota_window_ms -= elapsed_ms;
+        }
+    }
+
+    if (cfg->device_role == HC_ROLE_NODE) {
+        node_tick(cfg, elapsed_ms);
+    } else {
+        controller_tick(cfg, elapsed_ms);
+    }
+}
+
+bool hc_role_apply_snapshot(homecore_config_t *cfg, const char *snapshot_json) {
+    if (!cfg || !snapshot_json) return false;
+    cJSON *root = cJSON_Parse(snapshot_json);
+    if (!root) return false;
+
+    cJSON *role_j = cJSON_GetObjectItem(root, "role");
+    if (!cJSON_IsObject(role_j)) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    bool changed = false;
+    hc_role_t new_role = HC_ROLE_CONTROLLER;
+    cJSON *mode_j = cJSON_GetObjectItem(role_j, "mode");
+    if (cJSON_IsString(mode_j) && mode_j->valuestring) {
+        new_role = hc_role_from_string(mode_j->valuestring);
+    }
+
+    char new_uplink_id[sizeof(cfg->assigned_controller_id)] = {0};
+    char new_uplink_mac[sizeof(cfg->assigned_controller_mac)] = {0};
+    uint8_t new_channel = HOMECORE_ESPNOW_CHANNEL_ANY;
+
+    cJSON *uplink_j = cJSON_GetObjectItem(role_j, "assignedControllerId");
+    if (cJSON_IsString(uplink_j) && uplink_j->valuestring) {
+        snprintf(new_uplink_id, sizeof(new_uplink_id), "%s", uplink_j->valuestring);
+    }
+    cJSON *mac_j = cJSON_GetObjectItem(role_j, "assignedControllerMac");
+    if (cJSON_IsString(mac_j) && mac_j->valuestring) {
+        snprintf(new_uplink_mac, sizeof(new_uplink_mac), "%s", mac_j->valuestring);
+    }
+    cJSON *ch_j = cJSON_GetObjectItem(role_j, "espnowChannel");
+    if (cJSON_IsNumber(ch_j)) {
+        int ch = (int)ch_j->valuedouble;
+        if (ch >= 1 && ch <= 13) new_channel = (uint8_t)ch;
+    }
+
+    uint8_t old_role = cfg->device_role;
+    if (cfg->device_role != (uint8_t)new_role) {
+        cfg->device_role = (uint8_t)new_role;
+        changed = true;
+        ESP_LOGW(TAG, "Role changed by user: %s", hc_role_name(new_role));
+    }
+    if (strcmp(cfg->assigned_controller_id, new_uplink_id) != 0) {
+        snprintf(
+            cfg->assigned_controller_id,
+            sizeof(cfg->assigned_controller_id),
+            "%s",
+            new_uplink_id
+        );
+        changed = true;
+    }
+    if (strcmp(cfg->assigned_controller_mac, new_uplink_mac) != 0) {
+        snprintf(
+            cfg->assigned_controller_mac,
+            sizeof(cfg->assigned_controller_mac),
+            "%s",
+            new_uplink_mac
+        );
+        changed = true;
+    }
+    if (cfg->espnow_channel != new_channel) {
+        cfg->espnow_channel = new_channel;
+        changed = true;
+    }
+    cJSON_Delete(root);
+
+    if (!changed) return false;
+
+    // Re-arm the transports for the new role without touching identity, pairing
+    // or credentials.
+    s_node_count = 0;
+    s_espnow_started = false;
+    s_controller_fresh = false;
+    s_ms_since_controller = 0;
+    hc_role_state_init(&s_state, (hc_role_t)cfg->device_role);
+    s_state.epoch = cfg->link_epoch;
+
+    if (cfg->device_role == HC_ROLE_CONTROLLER) {
+        if (s_mqtt_started_by_role || !hc_mqtt_is_started()) {
+            hc_mqtt_start(cfg);
+        }
+        start_controller_transport(cfg);
+    } else {
+        if (strlen(cfg->assigned_controller_id) == 0) {
+            s_state.link = HC_NODE_UNASSIGNED;
+        } else {
+            s_state.link = HC_NODE_CONTROLLER_LOST;
+            start_node_transport(cfg);
+        }
+        if (old_role == HC_ROLE_CONTROLLER) {
+            s_mqtt_started_by_role = false;
+            hc_mqtt_stop();
+        }
+    }
+    persist_role(cfg, true);
+    return true;
+}
+
+void hc_role_fill_heartbeat(const homecore_config_t *cfg, cJSON *root) {
+    if (!cfg || !root) return;
+
+    cJSON_AddStringToObject(
+        root,
+        "role",
+        hc_role_name((hc_role_t)cfg->device_role)
+    );
+    if (!cfg->paired) return;
+
+    cJSON_AddStringToObject(root, "cm", hc_role_comm_mode_name(cfg));
+
+    if (cfg->device_role == HC_ROLE_NODE) {
+        cJSON_AddStringToObject(root, "ls", hc_node_link_name(s_state.link));
+        return;
+    }
+
+    uint8_t count = hc_role_linked_node_count();
+    if (count == 0) return;
+    cJSON *nodes = cJSON_AddArrayToObject(root, "nodes");
+    if (!nodes) return;
+    for (uint8_t i = 0; i < s_node_count; ++i) {
+        if (hc_role_node_is_stale(s_now_ms, s_nodes[i].last_seen_ms)) continue;
+        cJSON *item = cJSON_CreateObject();
+        if (!item) continue;
+        if (s_nodes[i].id[0]) {
+            cJSON_AddStringToObject(item, "id", s_nodes[i].id);
+        }
+        cJSON_AddStringToObject(item, "link", "linked");
+        cJSON_AddNumberToObject(item, "rssi", s_nodes[i].rssi);
+        cJSON_AddItemToArray(nodes, item);
+    }
+}

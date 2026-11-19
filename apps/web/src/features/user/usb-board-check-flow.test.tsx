@@ -34,7 +34,7 @@ import { invalidateApiCache, sha256HexClient } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
 import { md5Hex } from "@/lib/usb-flasher";
 import type { BoardProfileItem, FirmwareReleaseItem } from "../types";
-import { FirmwarePage } from "./FirmwarePage";
+import { ControllersPage } from "./ControllersPage";
 
 const originalFetch = globalThis.fetch;
 const image = new Uint8Array([0xe9, 0x04, 0x02, 0x20, 0x10, 0x00, 0x00, 0x00]);
@@ -117,6 +117,10 @@ async function serve(releases: FirmwareReleaseItem[], boards: BoardProfileItem[]
     if (url === "/api/boards/catalog") return json({ boards });
     if (url === "/api/boards/custom") return json({ boards: [] });
     if (url === "/api/firmware/updates") return json({ applicableUpdates: [], history: [] });
+    if (url === "/api/controllers") return json({ controllers: [] });
+    if (url === "/api/controllers/trash") return json({ controllers: [] });
+    if (url === "/api/homes") return json({ homes: [] });
+    if (url === "/api/homes/rooms") return json({ rooms: [] });
     if (url.endsWith("/download")) {
       return new Response(image, { status: 200, headers: { "X-Firmware-Sha256": sha } });
     }
@@ -145,20 +149,27 @@ function connect(hardware: {
   });
 }
 
+/**
+ * Flashing is only reachable from the Controllers page: Add Controller opens the
+ * single controller-action modal, whose first action is the USB flasher.
+ */
 async function openFlasher(user: ReturnType<typeof userEvent.setup>) {
   render(
     <TimezoneContext.Provider value="UTC">
-      <FirmwarePage canManage onNavigate={vi.fn()} />
+      <ControllersPage canManage canOperate onNavigate={vi.fn()} />
       <Toaster />
     </TimezoneContext.Provider>
   );
-  await user.click(await screen.findByRole("button", { name: /USB Browser Flasher/i }));
-  return screen.findByRole("dialog", { name: /Install on a Fresh Controller/ });
+  const [addController] = await screen.findAllByRole("button", { name: /Add Controller/i });
+  await user.click(addController!);
+  const actions = await screen.findByRole("dialog", { name: /Controller Actions/ });
+  await user.click(within(actions).getByRole("button", { name: /Flash Controller/ }));
+  return screen.findByRole("dialog", { name: /Flash Controller over USB/ });
 }
 
 const startButton = () => screen.getByRole("button", { name: /Connect USB & Flash Factory Image/ });
 
-describe("USB flashing from the Firmware page: board check before writing", () => {
+describe("USB flashing from the Controllers page: board check before writing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     invalidateApiCache();
@@ -258,8 +269,7 @@ describe("USB flashing from the Firmware page: board check before writing", () =
     ).toBeInTheDocument();
 
     // A controller that cannot start cannot be paired: the next step is the selection.
-    expect(within(dialog).queryByRole("button", { name: /Go to Pairing/ })).not.toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: /Continue to Controllers/ })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Continue to Setup/i })).not.toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Install again" }));
     expect(startButton()).toBeEnabled();
 
@@ -315,7 +325,7 @@ describe("USB flashing from the Firmware page: board check before writing", () =
     expect(await within(dialog).findByText("Factory Firmware Verified & Flashed")).toBeInTheDocument();
     expect(within(dialog).queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(loader.writeFlash).toHaveBeenCalledTimes(1);
-    expect(within(dialog).getByRole("button", { name: /Go to Pairing/ })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Continue to Setup/i })).toBeInTheDocument();
 
     await waitFor(() => expect(events).toHaveLength(2));
     expect(events[0]).toMatchObject({ status: "failed", releaseId: "rel-s3" });
@@ -328,7 +338,7 @@ describe("USB flashing from the Firmware page: board check before writing", () =
     });
   });
 
-  it("keeps Go to Pairing after a forced flash onto a board that can still start", async () => {
+  it("keeps Continue to Setup after a forced flash onto a board that can still start", async () => {
     const user = userEvent.setup();
     const events = await serve([await release("rel-s3", devkit, "file-s3")], [devkit, xiaoPlus]);
     connect({
@@ -352,7 +362,7 @@ describe("USB flashing from the Firmware page: board check before writing", () =
     const alert = result.closest('[role="alert"], [role="status"]') ?? result.parentElement!;
     expect(alert).toHaveTextContent("The controller should start, but it is set up as Espressif ESP32-S3-DevKitC-1 N16R8");
     expect(alert).not.toHaveTextContent("will not start");
-    expect(within(dialog).getByRole("button", { name: /Go to Pairing/ })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Continue to Setup/i })).toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Install again" })).not.toBeInTheDocument();
 
     await waitFor(() => expect(events).toHaveLength(1));

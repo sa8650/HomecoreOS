@@ -605,13 +605,17 @@ describe("HomecoreOS interactive UI workflows", () => {
     expect(screen.getByText(/MQTT Disconnected/i)).toBeInTheDocument();
     expect(screen.getByText(/Broker TLS connection timed out/i)).toBeInTheDocument();
 
-    // Open Add Controller modal and verify the 4 simplified options
+    // Add Controller opens the single action modal: flash, setup or repair.
     await user.click(screen.getByRole("button", { name: /Add Controller/i }));
-    expect(screen.getByText(/New Controller Setup/i)).toBeInTheDocument();
-    expect(screen.getByText(/Setup with BLE/i)).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /Controller Actions/i })).toBeInTheDocument();
+    expect(screen.getByText(/Flash Controller/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Setup Controller$/i)).toBeInTheDocument();
+    expect(screen.getByText(/Repair \/ Recover Controller/i)).toBeInTheDocument();
+
+    // Setup keeps both transports, one level down.
+    await user.click(screen.getByRole("button", { name: /Setup Controller/i }));
+    expect(screen.getByText(/Setup with Bluetooth/i)).toBeInTheDocument();
     expect(screen.getByText(/Setup with Wi-Fi/i)).toBeInTheDocument();
-    expect(screen.getByText(/Recover with BLE/i)).toBeInTheDocument();
-    expect(screen.getByText(/Recover with Wi-Fi/i)).toBeInTheDocument();
     await user.keyboard("{Escape}");
 
     // Switch to Trash tab, verify recoverable counts & restore -> renders IconStack empty state afterward
@@ -886,10 +890,11 @@ describe("HomecoreOS interactive UI workflows", () => {
 
     // Zoom controls & Fit button
     expect(screen.getByText("100%")).toBeInTheDocument();
+    // Zoom steps are eased over ~190ms so they read as smoothly as wheel/pinch.
     await user.click(screen.getByRole("button", { name: /Zoom in floor plan/i }));
-    expect(screen.getByText("120%")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("120%")).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: /^Fit$/i }));
-    expect(screen.getByText("100%")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("100%")).toBeInTheDocument());
 
     // No room jump pill row above map
     expect(screen.queryByRole("button", { name: /Jump to /i })).not.toBeInTheDocument();
@@ -925,7 +930,7 @@ describe("HomecoreOS interactive UI workflows", () => {
     await user.hover(infoBtn);
     expect(
       await screen.findByText(
-        /Click fixtures directly on the map to toggle hardware, drag to pan, or jump between rooms\./i
+        /Click a device badge to open its controls/i
       )
     ).toBeInTheDocument();
     await user.unhover(infoBtn);
@@ -938,9 +943,13 @@ describe("HomecoreOS interactive UI workflows", () => {
     expect(containerEl).toHaveAttribute("data-view-mode", "wide");
 
     await user.click(within(headerBar).getByRole("button", { name: /^Full Screen$/i }));
-    expect(containerEl).toHaveAttribute("data-view-mode", "fullscreen");
-    expect(containerEl.className).toContain("fixed");
-    expect(containerEl.className).toContain("inset-0");
+    // Full screen renders through a portal into <body> so `position: fixed` is not
+    // captured by an animated (transformed) ancestor, so re-query the container.
+    const fullscreenEl = screen.getByTestId("floorplan-container");
+    expect(fullscreenEl).toHaveAttribute("data-view-mode", "fullscreen");
+    expect(fullscreenEl.className).toContain("fixed");
+    expect(fullscreenEl.className).toContain("inset-0");
+    expect(fullscreenEl.parentElement).toBe(document.body);
     expect(document.documentElement.getAttribute("data-hc-fullscreen-map")).toBe("true");
 
     // Clicking a room in Full Screen opens its controls & sensors popup inside the blueprint
@@ -952,20 +961,32 @@ describe("HomecoreOS interactive UI workflows", () => {
     // First Escape closes room popup, second Escape exits Full Screen back to Standard View
     await user.keyboard("{Escape}");
     expect(screen.queryByTestId("fullscreen-room-popup")).not.toBeInTheDocument();
-    expect(containerEl).toHaveAttribute("data-view-mode", "fullscreen");
+    expect(screen.getByTestId("floorplan-container")).toHaveAttribute("data-view-mode", "fullscreen");
 
     await user.keyboard("{Escape}");
-    expect(containerEl).toHaveAttribute("data-view-mode", "standard");
+    expect(screen.getByTestId("floorplan-container")).toHaveAttribute("data-view-mode", "standard");
     expect(document.documentElement.hasAttribute("data-hc-fullscreen-map")).toBe(false);
 
     // Select Media Lounge in Standard View and inspect TV control
     await user.click(screen.getByRole("button", { name: /^Media Lounge room$/i }));
     expect(screen.getAllByText(/OLED TV/i).length).toBeGreaterThan(0);
 
-    // Clicking TV fixture directly toggles TV state via POST /api/devices/dev-tv-1/command
+    // Clicking a device badge opens its compact control panel (it does not fire a
+    // command on selection), and the panel's power control drives the real device.
     const tvFixture = container.querySelector('[data-fixture-id="dev-tv-1"]')!;
     expect(tvFixture).toBeTruthy();
     await user.click(tvFixture);
+
+    const devicePanel = await screen.findByTestId("device-control-popover");
+    expect(within(devicePanel).getByText(/OLED TV/i)).toBeInTheDocument();
+    expect(within(devicePanel).getByText(/Media Lounge/i)).toBeInTheDocument();
+    expect(within(devicePanel).getByText(/^On$/i)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/devices/dev-tv-1/command",
+      expect.anything()
+    );
+
+    await user.click(within(devicePanel).getByRole("button", { name: /Turn off/i }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/devices/dev-tv-1/command",
@@ -1171,7 +1192,7 @@ describe("HomecoreOS interactive UI workflows", () => {
     });
   });
 
-  it("opens dedicated USB Browser Flasher Dialog and guards active flash close with AlertDialog", async () => {
+  it("opens the USB flasher from the Controllers action modal and guards active flash close with AlertDialog", async () => {
     const user = userEvent.setup();
     Object.defineProperty(window, "isSecureContext", {
       value: true,
@@ -1220,6 +1241,12 @@ describe("HomecoreOS interactive UI workflows", () => {
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
+      if (url === "/api/controllers" || url === "/api/controllers/trash") {
+        return new Response(JSON.stringify({ controllers: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       if (url === "/api/firmware/files/f1/download") {
         // Keep download pending so flashing=true remains active during close test
         return new Promise<Response>(() => {});
@@ -1251,16 +1278,19 @@ describe("HomecoreOS interactive UI workflows", () => {
 
     render(
       <TimezoneContext.Provider value="UTC">
-        <FirmwarePage canManage onNavigate={vi.fn()} />
+        <ControllersPage canManage canOperate onNavigate={vi.fn()} />
       </TimezoneContext.Provider>
     );
 
-    const flashBtn = await screen.findByRole("button", { name: /USB Browser Flasher/i });
-    await user.click(flashBtn);
+    const [addController] = await screen.findAllByRole("button", { name: /Add Controller/i });
+    await user.click(addController!);
+    await user.click(screen.getByRole("button", { name: /Flash Controller/i }));
 
     expect(
-      await screen.findByText(/Install on a Fresh Controller \(Browser USB Flasher\)/i)
+      await screen.findByRole("dialog", { name: /Flash Controller over USB/i })
     ).toBeInTheDocument();
+    // The Firmware page no longer offers any USB flashing entry point.
+    expect(screen.queryByRole("button", { name: /USB Browser Flasher/i })).not.toBeInTheDocument();
 
     // Start flashing -> stays in active flashing state while downloading
     await user.click(screen.getByRole("button", { name: /Connect USB & Flash Factory Image/i }));
@@ -2139,9 +2169,12 @@ describe("HomecoreOS interactive UI workflows", () => {
     const recoverMenuItem = screen.getByRole("menuitem", { name: /Recover \/ Re-pair/i });
     expect(screen.queryByText(/Recovery Instructions \(online\)/i)).not.toBeInTheDocument();
 
-    // Clicking single "Recover / Re-pair" opens the "Add or Recover Controller" modal
+    // Clicking single "Recover / Re-pair" opens the one controller-action modal on its repair choice
     await user.click(recoverMenuItem);
-    expect(await screen.findByText(/Add or Recover Controller/i)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("dialog", { name: /Repair \/ Recover Controller/i })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Recover with Bluetooth/i })).toBeInTheDocument();
     await user.keyboard("{Escape}");
 
     // Click card -> opens Controller Details modal with full recovery guidance
@@ -2186,8 +2219,13 @@ describe("HomecoreOS interactive UI workflows", () => {
     expect(screen.getByText(/SHA-256: deadbeef123456/i)).toBeInTheDocument();
     await user.keyboard("{Escape}");
 
-    // 4. Open USB Flasher modal -> verify responsive 2/3-col grid instead of cramped 6-col row
-    await user.click(screen.getByRole("button", { name: /Install via USB/i }));
+    // 4. Firmware page has no USB flashing entry point left; it lives on the Controllers page
+    expect(screen.queryByRole("button", { name: /Install via USB/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /USB Browser Flasher/i })).not.toBeInTheDocument();
+
+    // Open the flasher from the controller actions -> responsive stage grid, not a cramped 6-col row
+    await user.click(screen.getByRole("button", { name: /Add Controller/i }));
+    await user.click(await screen.findByRole("button", { name: /Flash Controller/i }));
     const nextBtn = await screen.findByRole("button", { name: /^Next$/i });
     await user.click(nextBtn);
     const stageGrid = await screen.findByTestId("usb-stage-grid");

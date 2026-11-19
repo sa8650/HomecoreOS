@@ -70,7 +70,7 @@ export function OverviewPage({ canManage, canOperate, onNavigate }: OverviewPage
     }
   }, []);
 
-  const handleSilentReload = useCallback(async () => {
+  const handleSilentReload = useCallback(async (notifyOnError = true) => {
     try {
       const res = await cachedGet<OverviewData>("/api/homes/overview", {
         ttlMs: 12_000,
@@ -78,6 +78,7 @@ export function OverviewPage({ canManage, canOperate, onNavigate }: OverviewPage
       });
       setData(res);
     } catch (err) {
+      if (!notifyOnError) return;
       toast.error(
         err instanceof ApiError ? err.message : "Failed to refresh overview."
       );
@@ -104,6 +105,17 @@ export function OverviewPage({ canManage, canOperate, onNavigate }: OverviewPage
       document.removeEventListener("visibilitychange", syncIfStale);
     };
   }, [loadOverview]);
+
+  // Keep the floor map in step with MQTT-driven device state while the page is
+  // visible. Refreshes reuse the cached overview endpoint and stay silent on
+  // transient failures so a flaky broker never spams toasts.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void handleSilentReload(false);
+    }, 10_000);
+    return () => window.clearInterval(interval);
+  }, [handleSilentReload]);
 
   if (loading && !data) {
     return (
@@ -226,7 +238,7 @@ export function OverviewPage({ canManage, canOperate, onNavigate }: OverviewPage
             sensors={data.sensors}
             canEdit={canManage}
             canOperate={canOperate}
-            onReload={handleSilentReload}
+            onReload={() => handleSilentReload(false)}
             onNavigateRooms={() => onNavigate("/rooms")}
           />
         ) : (

@@ -27,6 +27,25 @@ config HOMECORE_BOOT_BUTTON_GPIO
     help
         Active-low BOOT / Recovery GPIO pin on this development board.
 
+config HOMECORE_ROLE_DEFAULT
+    string "Default role before the console assigns one"
+    default "controller"
+    help
+        Every device that never received a role from the web console runs as a
+        Controller, which is how the firmware behaved before the unified
+        Controller/Node release. A role delivered in the config snapshot and
+        persisted in NVS always wins, and a 10s BOOT factory reset erases it.
+
+config HOMECORE_ESPNOW_CHANNEL
+    int "Default ESP-NOW channel (0 = follow the Wi-Fi channel)"
+    range 0 13
+    default 0
+    help
+        0 keeps ESP-NOW on the channel of the AP the device is associated with,
+        which is the only correct choice for a Controller behind a router. A
+        Node with 0 searches all channels until its Controller answers. Pin a
+        channel only for installations with a fixed, non-overlapping setup.
+
 config HOMECORE_FLASH_SIZE_MB
     int "Target SPI Flash Size (MB)"
     range 2 64

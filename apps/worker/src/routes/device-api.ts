@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import {
+  ESPNOW_NODE_STALE_MS,
   isDeviceStateActive,
   isNewerFirmwareVersion,
 } from "@homecoreos/shared";
@@ -103,6 +104,29 @@ const heartbeatSchema = z
     rev: z.number().int().min(0).optional(),
     driverManifestHash: z.string().trim().max(128).optional(),
     dmh: z.string().trim().max(128).optional(),
+    // Unified Controller / Node role reporting
+    deviceRole: z.enum(["controller", "node"]).optional(),
+    role: z.enum(["controller", "node"]).optional(),
+    commMode: z.enum(["espnow", "wifi_mqtt", "offline"]).optional(),
+    cm: z.enum(["espnow", "wifi_mqtt", "offline"]).optional(),
+    linkState: z
+      .enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned"])
+      .optional(),
+    ls: z
+      .enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned"])
+      .optional(),
+    /** Controller only: the Nodes it currently hosts over ESP-NOW. */
+    nodes: z
+      .array(
+        z.object({
+          id: z.string().trim().max(64),
+          link: z.enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned"]).optional(),
+          rssi: z.number().int().min(-120).max(0).optional(),
+          channel: z.number().int().min(1).max(13).optional(),
+        })
+      )
+      .max(64)
+      .optional(),
   })
   .transform((d) => ({
     wifiRssi: d.wifiRssi ?? d.r,
@@ -120,6 +144,10 @@ const heartbeatSchema = z
     otaPendingVerify: d.otaPendingVerify ?? d.otaPending ?? d.op ?? false,
     configRevision: d.configRevision ?? d.rev,
     driverManifestHash: d.driverManifestHash ?? d.dmh,
+    deviceRole: d.deviceRole ?? d.role,
+    commMode: d.commMode ?? d.cm,
+    linkState: d.linkState ?? d.ls,
+    nodes: d.nodes,
   }));
 
 const configAckSchema = z.object({
@@ -438,11 +466,83 @@ export function createDeviceApiRoutes() {
       updates.detected_chip_name = parsed.data.detectedChipName;
     }
 
+    // Unified role reporting. The role itself stays user-owned: a device may only
+    // confirm what it is running, never promote itself to Controller.
+    if (parsed.data.deviceRole !== undefined) {
+      updates.device_role = parsed.data.deviceRole;
+    }
+    if (parsed.data.commMode !== undefined) {
+      updates.comm_mode = parsed.data.commMode;
+    }
+    if (parsed.data.linkState !== undefined) {
+      updates.node_link_state = parsed.data.linkState;
+      if (parsed.data.linkState === "linked") {
+        updates.node_last_linked_at = now;
+      }
+    }
+
     await db
       .from("controllers")
       .update(updates)
       .eq("id", dev.controllerId)
       .eq("account_id", dev.accountId);
+
+    // A Controller reports which Nodes it currently hosts over ESP-NOW. Those
+    // Nodes have no cloud session of their own, so this roster is what keeps
+    // their status, communication mode and last-activity honest.
+    if (parsed.data.nodes && parsed.data.nodes.length > 0) {
+      const roster = parsed.data.nodes;
+      const linkedIds = roster.filter((n) => (n.link ?? "linked") === "linked").map((n) => n.id);
+      if (linkedIds.length > 0) {
+        await db
+          .from("controllers")
+          .update({
+            status: "online",
+            comm_mode: "espnow",
+            node_link_state: "linked",
+            node_last_linked_at: now,
+            last_heartbeat_at: now,
+            last_communication_at: now,
+          })
+          .eq("account_id", dev.accountId)
+          .eq("assigned_controller_id", dev.controllerId)
+          .eq("device_role", "node")
+          .in("id", linkedIds);
+      }
+
+      const reportedIds = new Set(roster.map((n) => n.id));
+      const { data: assignedNodes } = await db
+        .from("controllers")
+        .select("id,node_link_state,node_last_linked_at")
+        .eq("account_id", dev.accountId)
+        .eq("assigned_controller_id", dev.controllerId)
+        .eq("device_role", "node")
+        .is("deleted_at", null);
+
+      const staleCutoff = Date.now() - ESPNOW_NODE_STALE_MS;
+      const missing = ((assignedNodes ?? []) as Array<{
+        id: string;
+        node_link_state: string | null;
+        node_last_linked_at: string | null;
+      }>).filter((n) => {
+        if (reportedIds.has(n.id)) return false;
+        const lastLinked = n.node_last_linked_at ? Date.parse(n.node_last_linked_at) : NaN;
+        // Never override a Node that is reporting its own Wi-Fi/MQTT fallback.
+        if (n.node_link_state === "standalone" || n.node_link_state === "unassigned") return false;
+        return !Number.isFinite(lastLinked) || lastLinked < staleCutoff;
+      });
+
+      if (missing.length > 0) {
+        await db
+          .from("controllers")
+          .update({ node_link_state: "controller_lost" })
+          .eq("account_id", dev.accountId)
+          .in(
+            "id",
+            missing.map((n) => n.id)
+          );
+      }
+    }
 
     // Reconcile ONLY non-terminal OTA history against the true firmware version reported in heartbeat.
     // Never rewrite an already-terminal OTA history row (single terminal result per historyId).
@@ -746,11 +846,17 @@ export function createDeviceApiRoutes() {
             value: numericValue,
             unit: historyUnit,
           });
-          await db
-            .from("sensor_readings")
-            .delete()
-            .eq("sensor_id", s.sensorId)
-            .lt("recorded_at", retentionCutoff);
+          // Retention pruning used to run on every telemetry message, which turned
+          // each reading into an extra DELETE. It now runs on roughly 1 in 64
+          // writes per sensor: still bounded (each message can add at most one old
+          // row) without deleting on the hot path.
+          if (Math.random() < 1 / 64) {
+            await db
+              .from("sensor_readings")
+              .delete()
+              .eq("sensor_id", s.sensorId)
+              .lt("recorded_at", retentionCutoff);
+          }
         } catch {
           // ignore history write failures
         }

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { SUPPORTED_CHIP_FAMILIES, type ChipFamily } from "@homecoreos/shared";
 import {
+  RiArrowLeftRightLine,
   RiDeleteBinLine,
   RiDoorOpenLine,
   RiEyeLine,
@@ -145,6 +146,11 @@ export interface ControllerCardProps {
   onAssignRoom: () => void;
   onAction: (action: ControllerCardAction) => void;
   onMoveToTrash: () => void;
+  /**
+   * Turns this Controller into a Node. Kept as an explicit, separate action: a
+   * Controller that hosts Nodes must warn about them first.
+   */
+  onMakeNode?: () => void;
 }
 
 /**
@@ -174,6 +180,7 @@ export function ControllerCard({
   onAssignRoom,
   onAction,
   onMoveToTrash,
+  onMakeNode,
 }: ControllerCardProps) {
   const status = controllerStatusBadge(ctrl.status);
   const pairing = controllerPairingBadge(ctrl);
@@ -310,6 +317,12 @@ export function ControllerCard({
                         Reconnect
                       </DropdownMenuItem>
                     )}
+                    {canManage && onMakeNode && (
+                      <DropdownMenuItem onClick={onMakeNode}>
+                        <RiArrowLeftRightLine className="size-4" aria-hidden="true" />
+                        Make this a Node
+                      </DropdownMenuItem>
+                    )}
                     {canManage && <DropdownMenuSeparator />}
                     {canManage && ctrl.status === "online" && (
                       <DropdownMenuItem
@@ -375,6 +388,20 @@ export function ControllerCard({
               <CardRow label="Pairing">
                 <Badge variant={pairing.variant} size="xs">
                   {pairing.label}
+                </Badge>
+              </CardRow>
+              <CardRow label="Nodes">
+                <Badge
+                  variant={(ctrl.connected_node_count ?? 0) > 0 ? "primary-light" : "secondary"}
+                  size="xs"
+                  radius="full"
+                  title={
+                    (ctrl.connected_node_count ?? 0) > 0
+                      ? `${ctrl.connected_node_count} Node(s) hosted over ESP-NOW`
+                      : "No Nodes hosted yet"
+                  }
+                >
+                  {ctrl.connected_node_count ?? 0} linked
                 </Badge>
               </CardRow>
               <CardRow label="Last Seen">

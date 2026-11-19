@@ -426,12 +426,6 @@ export function getSensorDriverForMeasurement(
   return getSensorDriverById(measurement.driverId);
 }
 
-export function getMeasurementsForDriver(
-  driverId: SensorDriverId
-): readonly SupportedSensorType[] {
-  return getSensorDriverById(driverId)?.measurements ?? [];
-}
-
 // ---------------------------------------------------------------------------
 // Structured Board Hardware Capability Profile (derived from gpio_definitions)
 // ---------------------------------------------------------------------------

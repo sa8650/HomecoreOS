@@ -7,6 +7,8 @@
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
+#include "role_runtime.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mqtt_client.h"
@@ -122,6 +124,50 @@ static void handle_system_cmd(const char *data, int len) {
             vTaskDelay(pdMS_TO_TICKS(300));
             esp_restart();
             return;
+        } else if (strcmp(action, "relink_controller") == 0 && s_cfg) {
+            // Delivered to a Node that already runs its own EMQX session
+            // (standalone fallback): drop the fallback and try ESP-NOW again.
+            hc_role_request_relink(s_cfg);
+            s_sync_requested = true;
+        } else if (strcmp(action, "relink_node") == 0 && s_cfg) {
+            // Delivered to a Controller: relay to the named Node over ESP-NOW.
+            cJSON *node_j = cJSON_GetObjectItem(root, "node_id");
+            if (cJSON_IsString(node_j) && node_j->valuestring) {
+                char cmd[160];
+                snprintf(
+                    cmd,
+                    sizeof(cmd),
+                    "{\"cmd\":\"relink\",\"epoch\":%u,\"seq\":%lu}",
+                    (unsigned)hc_role_epoch(),
+                    (unsigned long)(esp_timer_get_time() / 1000ULL)
+                );
+                esp_err_t relay = hc_role_relay_command_to_node(s_cfg, node_j->valuestring, cmd);
+                ESP_LOGI(TAG, "Relayed re-link to Node %s: %s", node_j->valuestring, esp_err_to_name(relay));
+            }
+        } else if (strcmp(action, "ota_relay") == 0 && s_cfg) {
+            // EMQX-only OTA for a Node that has no MQTT session of its own: the
+            // Controller passes the instruction on and the Node opens a
+            // temporary Wi-Fi/EMQX window to download the firmware.
+            cJSON *node_j = cJSON_GetObjectItem(root, "node_id");
+            cJSON *ota_j = cJSON_GetObjectItem(root, "ota");
+            if (cJSON_IsString(node_j) && node_j->valuestring && cJSON_IsObject(ota_j)) {
+                cJSON *rel_j = cJSON_GetObjectItem(ota_j, "release_id");
+                cJSON *hist_j = cJSON_GetObjectItem(ota_j, "history_id");
+                cJSON *ver_j = cJSON_GetObjectItem(ota_j, "version");
+                char cmd[256];
+                snprintf(
+                    cmd,
+                    sizeof(cmd),
+                    "{\"cmd\":\"ota\",\"epoch\":%u,\"seq\":%lu,\"ota\":{\"release_id\":\"%s\",\"history_id\":\"%s\",\"version\":\"%s\"}}",
+                    (unsigned)hc_role_epoch(),
+                    (unsigned long)(esp_timer_get_time() / 1000ULL),
+                    cJSON_IsString(rel_j) ? rel_j->valuestring : "",
+                    cJSON_IsString(hist_j) ? hist_j->valuestring : "",
+                    cJSON_IsString(ver_j) ? ver_j->valuestring : ""
+                );
+                esp_err_t relay = hc_role_relay_command_to_node(s_cfg, node_j->valuestring, cmd);
+                ESP_LOGI(TAG, "Relayed OTA to Node %s: %s", node_j->valuestring, esp_err_to_name(relay));
+            }
         } else if (strcmp(action, "wifi") == 0 && s_cfg) {
             cJSON *ssid_j = cJSON_GetObjectItem(root, "ssid");
             cJSON *pass_j = cJSON_GetObjectItem(root, "password");
@@ -145,6 +191,10 @@ static void handle_config_snapshot(const char *data, int len) {
 
     bool changed = false;
     esp_err_t err = hc_io_apply_config_json(copy, &changed);
+    // Roles are applied separately: a role change re-arms the transports.
+    if (s_cfg && hc_role_apply_snapshot(s_cfg, copy)) {
+        changed = true;
+    }
     free(copy);
 
     if (err == ESP_OK) {

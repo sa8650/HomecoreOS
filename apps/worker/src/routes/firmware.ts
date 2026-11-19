@@ -197,7 +197,7 @@ export function createFirmwareRoutes() {
       db
         .from("controllers")
         .select(
-          "id,name,status,board_catalog_id,custom_board_id,board_model,firmware_version,chip_variant"
+          "id,name,status,device_role,assigned_controller_id,board_catalog_id,custom_board_id,board_model,firmware_version,chip_variant"
         )
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
@@ -318,6 +318,7 @@ export function createFirmwareRoutes() {
     const applicableUpdates: Array<{
       controllerId: string;
       controllerName: string;
+      deviceRole: "controller" | "node";
       boardModel: string;
       controllerStatus: string;
       currentVersion: string | null;
@@ -364,6 +365,10 @@ export function createFirmwareRoutes() {
       applicableUpdates.push({
         controllerId: ctrl.id,
         controllerName: ctrl.name,
+        deviceRole:
+          (ctrl as { device_role?: string | null }).device_role === "node"
+            ? "node"
+            : "controller",
         boardModel: ctrl.board_model,
         controllerStatus: ctrl.status,
         currentVersion: ctrl.firmware_version,
@@ -567,6 +572,15 @@ export function createFirmwareRoutes() {
         return c.json({ error: "OTA binary artifact missing for release." }, 400);
       }
 
+      const isNode =
+        (ctrlRow as { device_role?: string | null }).device_role === "node";
+      const assignedControllerId = isNode
+        ? ((ctrlRow as { assigned_controller_id?: string | null }).assigned_controller_id ?? null)
+        : null;
+      const mqttConnected = Boolean(
+        (ctrlRow as { mqtt_connected?: boolean }).mqtt_connected
+      );
+
       const { data: cred } = await db
         .from("mqtt_credentials_metadata")
         .select("topic_prefix,status")
@@ -575,7 +589,39 @@ export function createFirmwareRoutes() {
         .eq("status", "active")
         .maybeSingle();
 
-      if (!cred) {
+      // A Node normally runs no MQTT session of its own: it is linked to its
+      // Controller over ESP-NOW. In that case the EMQX instruction travels to the
+      // Controller, which relays it to the Node; the Node then opens a short Wi-Fi
+      // window to download the firmware over HTTPS.
+      let relayPrefix: string | null = null;
+      if (isNode && (!cred || !mqttConnected)) {
+        if (!assignedControllerId) {
+          return c.json(
+            {
+              error:
+                "This Node has no assigned Controller and no active MQTT session, so the update cannot be delivered.",
+            },
+            409
+          );
+        }
+        const { data: parentCred } = await db
+          .from("mqtt_credentials_metadata")
+          .select("topic_prefix,status")
+          .eq("controller_id", assignedControllerId)
+          .eq("account_id", auth.accountId)
+          .eq("status", "active")
+          .maybeSingle();
+        if (!parentCred) {
+          return c.json(
+            {
+              error:
+                "The Node's Controller has no active MQTT session, so the update cannot be relayed.",
+            },
+            409
+          );
+        }
+        relayPrefix = (parentCred as { topic_prefix: string }).topic_prefix;
+      } else if (!cred) {
         return c.json({ error: "Controller has no active MQTT session." }, 409);
       }
 
@@ -615,18 +661,36 @@ export function createFirmwareRoutes() {
       const f = otaFile as { sha256: string; size_bytes: number };
 
       const emqx = new EmqxClient(c.env!, deps.emqxFetch);
-      await emqx.publish({
-        topic: `${(cred as { topic_prefix: string }).topic_prefix}/ota/cmd`,
-        payload: {
-          history_id: (historyRow as { id: string }).id,
-          release_id: release.id,
-          version: release.version,
-          ota_url: otaUrl,
-          sha256: f.sha256,
-          size_bytes: f.size_bytes,
-        },
-        qos: 1,
-      });
+      const otaPayload = {
+        history_id: (historyRow as { id: string }).id,
+        release_id: release.id,
+        version: release.version,
+        ota_url: otaUrl,
+        sha256: f.sha256,
+        size_bytes: f.size_bytes,
+        device_role: isNode ? ("node" as const) : ("controller" as const),
+        // Nodes coordinate a temporary Wi-Fi/EMQX window for the download.
+        wifi_window: isNode,
+      };
+
+      if (relayPrefix) {
+        await emqx.publish({
+          topic: `${relayPrefix}/cmd/system`,
+          payload: {
+            action: "ota_relay",
+            node_id: ctrlRow.id,
+            ota: otaPayload,
+            requested_at: new Date().toISOString(),
+          },
+          qos: 1,
+        });
+      } else {
+        await emqx.publish({
+          topic: `${(cred as { topic_prefix: string }).topic_prefix}/ota/cmd`,
+          payload: otaPayload,
+          qos: 1,
+        });
+      }
 
       await recordActivity(db, {
         accountId: auth.accountId,
@@ -634,7 +698,7 @@ export function createFirmwareRoutes() {
         controllerId: ctrlRow.id,
         category: "firmware",
         action: "firmware.ota_started",
-        summary: `Started OTA update to v${release.version} for "${ctrlRow.name}"`,
+        summary: `Started OTA update to v${release.version} for ${isNode ? "Node" : "Controller"} "${ctrlRow.name}"`,
       });
 
       return c.json({ update: historyRow }, 201);

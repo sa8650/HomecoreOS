@@ -3,10 +3,19 @@ import { z } from "zod";
 import {
   CONTROLLER_TRASH_RETENTION_DAYS,
   defaultBootButtonGpioForChip,
+  deriveCommMode,
+  normalizeDeviceRole,
+  normalizeNodeCommMode,
+  normalizeNodeLinkState,
   resolveBoardFirmwareCompatibility,
   supportsBleProvisioningForBoard,
 } from "@homecoreos/shared";
 import { recordActivity } from "../lib/audit";
+import {
+  assignNodeToController,
+  changeDeviceRole,
+  listAttachedNodes,
+} from "../lib/device-roles";
 import { syncControllerConfigSnapshot } from "../lib/controller-config";
 import {
   generateRandomToken,
@@ -50,12 +59,27 @@ const recoverControllerSchema = z.object({
 });
 
 const updateControllerSchema = z.object({
-  name: z.string().trim().min(1).max(120),
+  name: z.string().trim().min(1).max(120).optional(),
+  /** Pinned ESP-NOW channel (1-13); null lets the device follow its Wi-Fi channel. */
+  espnowChannel: z.number().int().min(1).max(13).nullable().optional(),
 });
 
 // roomId: null removes the assignment; a uuid assigns/changes it.
 const assignControllerRoomSchema = z.object({
   roomId: z.string().uuid().nullable(),
+});
+
+const changeRoleSchema = z.object({
+  role: z.enum(["controller", "node"]),
+  /**
+   * Required to demote a Controller that still hosts Nodes: the caller has seen
+   * which Nodes will be released to their Wi-Fi/MQTT fallback.
+   */
+  acknowledgeAttachedNodes: z.boolean().optional(),
+});
+
+const assignNodeSchema = z.object({
+  controllerId: z.string().uuid().nullable(),
 });
 
 const wifiConfigSchema = z.object({
@@ -249,6 +273,23 @@ export function createControllerRoutes() {
       }))
     );
 
+    // Unified role bookkeeping (single pass, no per-device queries).
+    const roleById = new Map<string, ReturnType<typeof normalizeDeviceRole>>();
+    const nameById = new Map<string, string>();
+    const attachedNodeCount = new Map<string, number>();
+    for (const row of ctrlRows) {
+      const id = String(row.id);
+      const role = normalizeDeviceRole(row.device_role);
+      roleById.set(id, role);
+      nameById.set(id, String(row.name ?? "Device"));
+    }
+    for (const row of ctrlRows) {
+      if (normalizeDeviceRole(row.device_role) !== "node") continue;
+      const parentId = row.assigned_controller_id ? String(row.assigned_controller_id) : "";
+      if (!parentId) continue;
+      attachedNodeCount.set(parentId, (attachedNodeCount.get(parentId) ?? 0) + 1);
+    }
+
     const controllers = ctrlRows.map((ctrl) => {
       const id = String(ctrl.id);
       const cred = credByController.get(id) ?? null;
@@ -264,6 +305,24 @@ export function createControllerRoutes() {
         : ctrl.custom_board_id
           ? (boardMap.get(`custom:${String(ctrl.custom_board_id)}`) ?? null)
           : null;
+      const role = roleById.get(id) ?? "controller";
+      const assignedControllerId =
+        role === "node" && ctrl.assigned_controller_id
+          ? String(ctrl.assigned_controller_id)
+          : null;
+      const online = ctrl.status === "online";
+      const nodeCommMode =
+        role === "node"
+          ? (normalizeNodeCommMode(ctrl.comm_mode) ??
+            deriveCommMode({
+              role,
+              online,
+              espNowLinked: normalizeNodeLinkState(ctrl.node_link_state) === "linked",
+              linkState: normalizeNodeLinkState(ctrl.node_link_state),
+              mqttConnected: emqxConnected,
+            }))
+          : null;
+
       return {
         ...ctrl,
         mqtt_connected: emqxConnected,
@@ -278,6 +337,18 @@ export function createControllerRoutes() {
           ctrl.status === "online"
             ? undefined
             : buildOfflineRecoveryInstructions(board),
+        // Unified Controller / Node fields
+        device_role: role,
+        node_comm_mode: nodeCommMode,
+        node_link_state:
+          role === "node" ? normalizeNodeLinkState(ctrl.node_link_state) : null,
+        assigned_controller_id: assignedControllerId,
+        assigned_controller_name: assignedControllerId
+          ? (nameById.get(assignedControllerId) ?? null)
+          : null,
+        connected_node_count: role === "controller" ? (attachedNodeCount.get(id) ?? 0) : 0,
+        role_changed_at: ctrl.role_changed_at ?? null,
+        node_last_linked_at: ctrl.node_last_linked_at ?? null,
       };
     });
 
@@ -1264,13 +1335,23 @@ export function createControllerRoutes() {
     async (c) => {
       const body = await c.req.json().catch(() => null);
       const parsed = updateControllerSchema.safeParse(body);
-      if (!parsed.success) return c.json({ error: "Invalid controller name." }, 400);
+      if (!parsed.success) {
+        return c.json({ error: "Provide a valid name and/or espnowChannel (1-13)." }, 400);
+      }
+      const patch: Record<string, unknown> = {};
+      if (parsed.data.name !== undefined) patch.name = parsed.data.name;
+      if (parsed.data.espnowChannel !== undefined) {
+        patch.espnow_channel = parsed.data.espnowChannel;
+      }
+      if (Object.keys(patch).length === 0) {
+        return c.json({ error: "Nothing to update." }, 400);
+      }
 
       const auth = c.get("userAuth")!;
       const db = c.get("db");
       const { data, error } = await db
         .from("controllers")
-        .update({ name: parsed.data.name })
+        .update(patch)
         .eq("id", c.req.param("id"))
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
@@ -1285,6 +1366,20 @@ export function createControllerRoutes() {
         controllerId: c.req.param("id"),
         reason: "config_change",
       }).catch(() => null);
+
+      // A pinned ESP-NOW channel is part of every hosted Node's configuration.
+      if (parsed.data.espnowChannel !== undefined) {
+        const hosted = await listAttachedNodes(db, auth.accountId, c.req.param("id"));
+        await Promise.all(
+          hosted.map((n) =>
+            syncControllerConfigSnapshot(db, c.env ?? {}, c.get("deps") ?? {}, {
+              accountId: auth.accountId,
+              controllerId: n.id,
+              reason: "config_change",
+            }).catch(() => null)
+          )
+        );
+      }
 
       return c.json({ controller: data });
     }
@@ -1692,6 +1787,219 @@ export function createControllerRoutes() {
 
     return c.json({ ok: true, command, controllerId });
   }
+
+  // ---------------------------------------------------------------------------
+  // Unified Controller / Node role management
+  // ---------------------------------------------------------------------------
+
+  /** Nodes hosted by one Controller (used by the demote confirmation dialog). */
+  app.get(
+    "/:id/nodes",
+    requireStaffRole("owner", "administrator", "operator"),
+    async (c) => {
+      const auth = c.get("userAuth")!;
+      const db = c.get("db");
+      const controllerId = c.req.param("id");
+
+      const { data: ctrl } = await db
+        .from("controllers")
+        .select("id,device_role")
+        .eq("id", controllerId)
+        .eq("account_id", auth.accountId)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (!ctrl) return c.json({ error: "Device not found." }, 404);
+
+      const nodes = await listAttachedNodes(db, auth.accountId, controllerId);
+      return c.json({
+        controllerId,
+        deviceRole: normalizeDeviceRole((ctrl as { device_role?: string }).device_role),
+        nodes,
+      });
+    }
+  );
+
+  /**
+   * Promote a Node to Controller or demote a Controller to Node. The device row,
+   * its identity, pairing, credentials and history are preserved.
+   */
+  app.patch(
+    "/:id/role",
+    requireStaffRole("owner", "administrator"),
+    async (c) => {
+      const auth = c.get("userAuth")!;
+      const db = c.get("db");
+      const deps = c.get("deps") ?? {};
+      const parsed = changeRoleSchema.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Role must be "controller" or "node".' }, 400);
+      }
+
+      const result = await changeDeviceRole(db, c.env!, deps, {
+        accountId: auth.accountId,
+        actorUserId: auth.userId,
+        deviceId: c.req.param("id"),
+        targetRole: parsed.data.role,
+        acknowledgeAttachedNodes: parsed.data.acknowledgeAttachedNodes,
+      });
+
+      if (!result.ok) {
+        return c.json(
+          {
+            error: result.error,
+            code: result.code,
+            attachedNodeCount: result.attachedNodeCount,
+            attachedNodes: result.attachedNodes,
+            details: {
+              attachedNodeCount: result.attachedNodeCount,
+              attachedNodes: result.attachedNodes,
+            },
+          },
+          result.status as 400 | 404 | 409
+        );
+      }
+      return c.json({ device: result.device });
+    }
+  );
+
+  /** Assign (or clear) the Controller that hosts a Node. */
+  app.post(
+    "/:id/assign-controller",
+    requireStaffRole("owner", "administrator"),
+    async (c) => {
+      const auth = c.get("userAuth")!;
+      const db = c.get("db");
+      const deps = c.get("deps") ?? {};
+      const parsed = assignNodeSchema.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: "controllerId must be a uuid or null." }, 400);
+      }
+
+      const result = await assignNodeToController(db, c.env!, deps, {
+        accountId: auth.accountId,
+        actorUserId: auth.userId,
+        nodeId: c.req.param("id"),
+        controllerId: parsed.data.controllerId,
+      });
+      if (!result.ok) return c.json({ error: result.error }, result.status as 404 | 409);
+      return c.json({ node: result.node, controller: result.controller ?? null });
+    }
+  );
+
+  /**
+   * Ask a Node to re-link to its assigned Controller. A Node that is linked over
+   * ESP-NOW has no MQTT session, so the request travels through its Controller,
+   * which relays it over ESP-NOW. Standalone Nodes receive it directly.
+   */
+  app.post(
+    "/:id/relink",
+    requireStaffRole("owner", "administrator", "operator"),
+    async (c) => {
+      const auth = c.get("userAuth")!;
+      const db = c.get("db");
+      const deps = c.get("deps") ?? {};
+      const nodeId = c.req.param("id");
+
+      const { data: nodeRow } = await db
+        .from("controllers")
+        .select("id,name,device_role,assigned_controller_id,status,mqtt_connected")
+        .eq("id", nodeId)
+        .eq("account_id", auth.accountId)
+        .is("deleted_at", null)
+        .is("permanently_deleted_at", null)
+        .maybeSingle();
+      if (!nodeRow) return c.json({ error: "Device not found." }, 404);
+
+      const node = nodeRow as {
+        id: string;
+        name: string;
+        device_role?: string | null;
+        assigned_controller_id?: string | null;
+        status: string;
+        mqtt_connected: boolean;
+      };
+      if (normalizeDeviceRole(node.device_role) !== "node") {
+        return c.json({ error: "Only a Node can re-link to a Controller." }, 409);
+      }
+      if (!node.assigned_controller_id) {
+        return c.json(
+          { error: "This Node has no assigned Controller yet. Assign one first." },
+          409
+        );
+      }
+      if (!isEmqxConfigured(c.env ?? {})) {
+        return c.json({ error: "EMQX Serverless is not configured on this Worker." }, 503);
+      }
+
+      const emqx = new EmqxClient(c.env!, deps.emqxFetch);
+      const now = new Date().toISOString();
+      let deliveredVia: "node" | "controller" | null = null;
+
+      if (node.status === "online" && node.mqtt_connected) {
+        // Standalone Node: it already has its own EMQX session.
+        const { data: nodeCred } = await db
+          .from("mqtt_credentials_metadata")
+          .select("topic_prefix")
+          .eq("controller_id", node.id)
+          .eq("account_id", auth.accountId)
+          .eq("status", "active")
+          .maybeSingle();
+        if (nodeCred) {
+          await emqx.publish({
+            topic: `${(nodeCred as { topic_prefix: string }).topic_prefix}/cmd/system`,
+            payload: { action: "relink_controller", requested_at: now },
+            qos: 1,
+          });
+          deliveredVia = "node";
+        }
+      }
+
+      if (!deliveredVia) {
+        const { data: parentCred } = await db
+          .from("mqtt_credentials_metadata")
+          .select("topic_prefix")
+          .eq("controller_id", node.assigned_controller_id)
+          .eq("account_id", auth.accountId)
+          .eq("status", "active")
+          .maybeSingle();
+        if (!parentCred) {
+          return c.json(
+            {
+              error:
+                "Neither the Node nor its Controller has an active MQTT session. Bring the Controller online and try again.",
+            },
+            409
+          );
+        }
+        await emqx.publish({
+          topic: `${(parentCred as { topic_prefix: string }).topic_prefix}/cmd/system`,
+          payload: { action: "relink_node", node_id: node.id, requested_at: now },
+          qos: 1,
+        });
+        deliveredVia = "controller";
+      }
+
+      await db
+        .from("controllers")
+        .update({
+          node_link_state: "reconnecting",
+          updated_at: now,
+        })
+        .eq("id", node.id)
+        .eq("account_id", auth.accountId);
+
+      await recordActivity(db, {
+        accountId: auth.accountId,
+        actorUserId: auth.userId,
+        controllerId: node.id,
+        category: "controller",
+        action: "controller.node_relink_requested",
+        summary: `Asked Node "${node.name}" to re-link to its Controller`,
+      });
+
+      return c.json({ ok: true, deliveredVia });
+    }
+  );
 
   app.post("/:id/disconnect", requireStaffRole("owner", "administrator", "operator"), (c) =>
     dispatchControllerCommand(c, "disconnect")

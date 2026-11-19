@@ -70,6 +70,11 @@ esp_err_t hc_nvs_load_config(homecore_config_t *out) {
     out->mqtt_port = 8883;
     out->mqtt_tls = true;
     out->heartbeat_interval_sec = HOMECORE_DEFAULT_HEARTBEAT_SEC;
+    // Every device that never received a role behaves as a Controller, which is
+    // exactly how the unified firmware behaved before roles existed.
+    out->device_role = HOMECORE_DEFAULT_DEVICE_ROLE;
+    out->espnow_channel = HOMECORE_DEFAULT_ESPNOW_CHANNEL;
+    out->node_link_state = 0; // HC_NODE_UNASSIGNED
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(HOMECORE_NVS_NAMESPACE, NVS_READONLY, &h);
@@ -134,6 +139,33 @@ esp_err_t hc_nvs_load_config(homecore_config_t *out) {
         out->heartbeat_interval_sec = hb_u16;
     }
 
+    // Unified role (absent on devices that never received one -> Controller).
+    uint8_t role_u8 = HOMECORE_DEFAULT_DEVICE_ROLE;
+    if (nvs_get_u8(h, "role", &role_u8) == ESP_OK && role_u8 <= 1) {
+        out->device_role = role_u8;
+    }
+    read_str_or_empty(h, "asg_ctrl", out->assigned_controller_id, sizeof(out->assigned_controller_id));
+    read_str_or_empty(h, "asg_mac", out->assigned_controller_mac, sizeof(out->assigned_controller_mac));
+    uint8_t ch_u8 = HOMECORE_DEFAULT_ESPNOW_CHANNEL;
+    if (nvs_get_u8(h, "esp_ch", &ch_u8) == ESP_OK && ch_u8 <= 13) {
+        out->espnow_channel = ch_u8;
+    }
+    uint8_t link_u8 = 0;
+    if (nvs_get_u8(h, "node_link", &link_u8) == ESP_OK && link_u8 <= 3) {
+        out->node_link_state = link_u8;
+    }
+    uint16_t epoch_u16 = 0;
+    if (nvs_get_u16(h, "rl_epoch", &epoch_u16) == ESP_OK) {
+        out->link_epoch = epoch_u16;
+    }
+    uint32_t seq_u32 = 0;
+    if (nvs_get_u32(h, "rl_seq", &seq_u32) == ESP_OK) {
+        out->last_cmd_seq = seq_u32;
+    }
+    if (out->device_role == 1 && out->assigned_controller_id[0] == '\0') {
+        out->node_link_state = 0; // HC_NODE_UNASSIGNED
+    }
+
     nvs_close(h);
     hc_nvs_ensure_identity_key(out);
     hc_nvs_ensure_setup_pin(out);
@@ -172,6 +204,13 @@ esp_err_t hc_nvs_save_config(const homecore_config_t *cfg) {
     nvs_set_u32(h, "cfg_rev", cfg->config_revision);
     nvs_set_str(h, "cfg_hash", cfg->config_hash);
     nvs_set_u16(h, "hb_sec", cfg->heartbeat_interval_sec >= 30 ? cfg->heartbeat_interval_sec : HOMECORE_DEFAULT_HEARTBEAT_SEC);
+    nvs_set_u8(h, "role", cfg->device_role);
+    nvs_set_str(h, "asg_ctrl", cfg->assigned_controller_id);
+    nvs_set_str(h, "asg_mac", cfg->assigned_controller_mac);
+    nvs_set_u8(h, "esp_ch", cfg->espnow_channel);
+    nvs_set_u8(h, "node_link", cfg->node_link_state);
+    nvs_set_u16(h, "rl_epoch", cfg->link_epoch);
+    nvs_set_u32(h, "rl_seq", cfg->last_cmd_seq);
 
     err = nvs_commit(h);
     nvs_close(h);
@@ -200,6 +239,9 @@ esp_err_t hc_nvs_clear_pairing(homecore_config_t *cfg) {
 }
 
 esp_err_t hc_nvs_factory_reset(void) {
+    // nvs_erase_all() below wipes every key in the namespace, including the
+    // unified role keys (role, asg_ctrl, asg_mac, esp_ch, node_link, rl_epoch,
+    // rl_seq). A factory-reset device therefore comes back as a Controller.
     nvs_handle_t h;
     esp_err_t err = nvs_open(HOMECORE_NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK) {

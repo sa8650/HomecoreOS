@@ -990,7 +990,3 @@ export function findWaveshareEspOfficialBoard(
 ): WaveshareOfficialBoard | undefined {
   return WAVESHARE_ESP_OFFICIAL_BOARDS.find((b) => b.seed.slug === slug);
 }
-
-export function findCommunityPartnerBoard(slug: string): CatalogBoardSeed | undefined {
-  return COMMUNITY_PARTNER_BOARDS.find((b) => b.slug === slug);
-}

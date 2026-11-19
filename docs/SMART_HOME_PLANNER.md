@@ -154,7 +154,7 @@ A stored result is roughly 140 KB for a 60-connection home and can reach about
 
 ## Deployment
 
-Apply `database/migrations/0013_smart_home_planner.sql`. It adds one table,
+The `planner_plans` table ships in the consolidated `database/migrations/0001_init.sql`. It is one table,
 `planner_plans`, and follows the privilege pattern of the existing migrations.
 No environment variables, bindings or seed data are needed.
 

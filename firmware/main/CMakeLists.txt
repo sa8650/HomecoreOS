@@ -16,6 +16,8 @@ set(HC_REQUIRES
 
 if(NOT IDF_TARGET STREQUAL "esp32h2")
     list(APPEND HC_REQUIRES esp_wifi)
+    # ESP-NOW ships with the Wi-Fi component (esp_now_*).
+    list(APPEND HC_REQUIRES esp_now)
 endif()
 
 if(NOT IDF_TARGET STREQUAL "esp32s2")
@@ -37,6 +39,9 @@ idf_component_register(
         "ota_boot_logic.c"
         "ota_manager.c"
         "mqtt_manager.c"
+        "role_logic.c"
+        "role_runtime.c"
+        "espnow_link.c"
     INCLUDE_DIRS "."
     REQUIRES ${HC_REQUIRES}
 )

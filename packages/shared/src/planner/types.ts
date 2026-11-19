@@ -67,9 +67,6 @@ export const PLANNER_DEVICE_CATEGORIES = [
   ...PLANNER_LOAD_CATEGORIES,
   ...PLANNER_SENSOR_CATEGORIES,
 ] as const;
-
-export type PlannerLoadCategory = (typeof PLANNER_LOAD_CATEGORIES)[number];
-export type PlannerSensorCategory = (typeof PLANNER_SENSOR_CATEGORIES)[number];
 export type PlannerDeviceCategory = (typeof PLANNER_DEVICE_CATEGORIES)[number];
 
 export interface PlannerCategoryMeta {

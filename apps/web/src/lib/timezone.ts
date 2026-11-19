@@ -62,17 +62,3 @@ export function formatShortTime(
     second: "2-digit",
   });
 }
-
-export function formatClockWithZone(timezone: string, now = new Date()): string {
-  const safeZone = isValidIanaTimezone(timezone) ? timezone : "UTC";
-  try {
-    return new Intl.DateTimeFormat("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      timeZone: safeZone,
-      timeZoneName: "short",
-    }).format(now);
-  } catch {
-    return safeZone;
-  }
-}

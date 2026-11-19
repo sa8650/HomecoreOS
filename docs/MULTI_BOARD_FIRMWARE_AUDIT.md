@@ -8,7 +8,7 @@ This document captures the Step 1 & Step 2 audit of HomecoreOS's existing firmwa
 
 ## 1. Existing Functionality Inventory
 
-### 1.1 Board Catalog & Hardware Profiles (`packages/shared`, `database/migrations/0008_*`)
+### 1.1 Board Catalog & Hardware Profiles (`packages/shared`, board-catalog tables in `database/migrations/0001_init.sql`)
 - `VERIFIED_BOARD_CATALOG` defines **11 hardware boards** across 9 chip families (`esp32s3`, `esp32c6`, `esp32c3`, `esp32`, `esp32s2`, `esp32c5`, `esp32c61`, `esp32c2`, `esp32h2`), with complete GPIO pin definitions, header layouts (`J1`/`J3`/`P1`/`P2`), USB VID/PID, flash/PSRAM sizes, and `BoardVectorSvg` hardware specs.
 - Only `esp32-s3-devkitc-1-n16r8` currently has `firmware_status = 'firmware_supported'`. All other 10 boards are seeded as `'catalog_only'`.
 - `SUPPORTED_CHIP_FAMILIES` in `packages/shared/src/index.ts` enumerates 13 chip families (`esp32`, `esp32s2`, `esp32s3`, `esp32s31`, `esp32c2`, `esp32c3`, `esp32c5`, `esp32c6`, `esp32c61`, `esp32h2`, `esp32h21`, `esp32h4`, `esp32p4`).
@@ -49,7 +49,7 @@ This document captures the Step 1 & Step 2 audit of HomecoreOS's existing firmwa
 4. **Board Identity Reporting**: Firmware `pairing_client.c` only sends `chipVariant: CONFIG_IDF_TARGET` and does not report `boardSlug`, `flashSizeMb`, `psramSizeMb`, or `partitionScheme` to `/api/device/pair` and `/api/device/heartbeat`.
 5. **Single-job CI Workflow**: `.github/workflows/build-firmware.yml` lacks a multi-board matrix covering the 11 cataloged boards, board-specific `sdkconfig` overlays, ESP-IDF v5.5 support for `esp32c5`/`esp32c61`, and per-board release ZIP manifests.
 
-### 2.2 Database & Schema Gaps (`database/migrations/0001`, `0008`)
+### 2.2 Database & Schema Gaps (`database/migrations/0001_init.sql`)
 1. **`firmware_releases_name_ver_chip_unique` constraint**: `UNIQUE (name, version, chip_family)` prevents creating independent per-board releases that share a `chip_family` (e.g., `esp32-s3-devkitc-1-n16r8` 16MB vs `seeed-xiao-esp32s3` 8MB vs `esp32-s3-devkitc-1-v1-0` 8MB).
 2. **Missing compatibility & release lifecycle fields**:
    - `board_catalog` lacks structured firmware compatibility columns: `partition_scheme`, `psram_mode`, `flash_mode`, `flash_freq`, `bootloader_offset`, `boot_button_gpio`, `usb_interface`, `supports_wifi`, `supports_ota_rollback`, and `firmware_compat_key`.
@@ -116,7 +116,7 @@ Only `seeed-xiao-esp32s3` and `esp32-s3-devkitc-1-v1-0` share an identical hardw
    - Compile-time Kconfig `CONFIG_HOMECORE_DRIVER_*` flags and board-specific `CONFIG_HOMECORE_I2C_DEFAULT_SDA_GPIO` / `SCL_GPIO`.
    - Real ESP-IDF v5.x implementations: shared `i2c_master` bus manager (BME280 compensation + 1.5s cache, BH1750 continuous high-res), DHT22 single-wire + 2s cache, DS18B20 1-Wire + CRC-8, PIR & Reed digital inputs, calibrated `esp_adc` oneshot voltage reads, and structured ok/error telemetry reporting.
    - Pure-C protocol decoders & math unit-tested on host via `firmware/test/test_sensor_driver_logic.c`.
-3. **CI Manifest & Worker Enforcement (`verify_firmware_image.py`, `database/migrations/0015_*`, `apps/worker`)**:
+3. **CI Manifest & Worker Enforcement (`verify_firmware_image.py`, the sensor-driver tables in `database/migrations/0001_init.sql`, `apps/worker`)**:
    - `verify_firmware_image.py --build-release-manifest` extracts compiled `CONFIG_HOMECORE_DRIVER_*` flags from `sdkconfig` and computes a canonical SHA-256 `manifest_hash` matching TypeScript bit-for-bit.
    - Worker resolves a controller's installed drivers strictly from its verified `firmware_releases` record (never trusting device-reported driver lists), exposes `GET /api/controllers/:id/sensor-compatibility` + batched `sensor_compatibility` on `GET /api/controllers`, enforces strict compatibility on `POST/PATCH /api/sensors`, emits `driver_id` in consolidated device config, and handles ok/error readings in `POST /api/device/telemetry`.
 4. **Frontend UI (`apps/web/src/components/hardware/EntityModals.tsx`)**:

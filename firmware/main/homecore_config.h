@@ -103,6 +103,20 @@ static inline void hc_copy_str(char *dst, size_t dst_cap, const char *src) {
 #define HOMECORE_RECOVERY_HOLD_MS 3000
 #define HOMECORE_FACTORY_RESET_HOLD_MS 10000
 
+/** Default when no role was ever received: every legacy device is a Controller. */
+#ifdef CONFIG_HOMECORE_ROLE_DEFAULT
+#define HOMECORE_DEFAULT_DEVICE_ROLE (strcmp(CONFIG_HOMECORE_ROLE_DEFAULT, "node") == 0 ? 1 : 0)
+#else
+#define HOMECORE_DEFAULT_DEVICE_ROLE 0
+#endif
+/** 0 = the Node searches all channels for its Controller. */
+#define HOMECORE_ESPNOW_CHANNEL_ANY 0
+#ifdef CONFIG_HOMECORE_ESPNOW_CHANNEL
+#define HOMECORE_DEFAULT_ESPNOW_CHANNEL ((uint8_t)CONFIG_HOMECORE_ESPNOW_CHANNEL)
+#else
+#define HOMECORE_DEFAULT_ESPNOW_CHANNEL HOMECORE_ESPNOW_CHANNEL_ANY
+#endif
+
 typedef struct homecore_config_s {
     char wifi_ssid[64];
     char wifi_pass[64];
@@ -135,6 +149,18 @@ typedef struct homecore_config_s {
     uint32_t config_revision;
     char config_hash[32];
     uint16_t heartbeat_interval_sec;
+
+    // Unified Controller / Node role. One firmware image runs either role; the
+    // role is chosen at runtime by the user in the web console and delivered in
+    // the config snapshot. It is persisted so a reboot keeps the device's role,
+    // and a 10s BOOT factory reset erases it (device returns to Controller).
+    uint8_t device_role;                 // hc_role_t (0 = controller, 1 = node)
+    char assigned_controller_id[48];     // Node: the Controller that hosts it
+    char assigned_controller_mac[20];    // Node: that Controller's ESP-NOW peer MAC
+    uint8_t espnow_channel;              // 0 = follow the Wi-Fi STA channel
+    uint8_t node_link_state;             // hc_node_link_t as last persisted
+    uint16_t link_epoch;                 // command-dedupe epoch across transitions
+    uint32_t last_cmd_seq;               // last executed command sequence number
 } homecore_config_t;
 
 #include "ble_provisioning.h"

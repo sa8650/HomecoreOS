@@ -52,9 +52,10 @@ HomecoreOS uses Supabase **strictly as PostgreSQL**. Do **not** enable Supabase 
    - Copy **Project URL** → this is `SUPABASE_URL`.
    - Reveal and copy the **`service_role`** key → this is `SUPABASE_SERVICE_ROLE_KEY`.
 3. Open **SQL Editor** in the Supabase dashboard.
-4. Run every migration file in `database/migrations/` in exact numeric order (`0001_initial_schema.sql`, `0002_seed_catalog_and_settings.sql`, `0003_ui_timezone_and_floorplan.sql`, `0004_remove_areas.sql`).
-   - Verify no errors appear.
-   - These scripts create the platform tables, foreign keys, indexes, atomic RPC functions, platform settings defaults (including `default_timezone`), user timezone overrides, 2D floor-plan room geometry columns, and the `ESP32-S3-DevKitC-1 N16R8` board catalog entry, while keeping RLS **disabled** and revoking direct `anon`/`authenticated` PostgREST access.
+4. Apply the single consolidated migration, `database/migrations/0001_init.sql`:
+   - Paste it into the SQL Editor (or `psql "$DATABASE_URL" -f database/migrations/0001_init.sql`) and verify no errors appear.
+   - It creates every platform table, foreign key, index, trigger and atomic RPC function, seeds the platform settings row (including `default_timezone`) and the full board catalog with GPIO definitions, and keeps RLS **disabled** while revoking direct `anon`/`authenticated` PostgREST access.
+   - The file is the merged result of the historical `0001`–`0021` chain; `npm run db:verify` replays it against a throwaway Postgres and fails if the schema drifts from `database/verify/schema-snapshot.json`.
 5. **Initial Platform Administrator**:
    - After deploying the Cloudflare Worker, open HomecoreOS in your browser and go to `/admin` (or click **Platform Admin Console** on the sign-in screen). When zero platform administrators exist, the initial root bootstrap form is presented automatically.
    - Once the first `super_admin` administrator is created, the bootstrap route automatically locks permanently.
