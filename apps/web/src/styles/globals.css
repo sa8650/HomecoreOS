@@ -729,3 +729,25 @@
   @keyframes hc-avatar-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
   .hc-avatar-float { animation: hc-avatar-float 4s ease-in-out infinite; }
 }
+
+/* Onboarding step transition: content fades and lifts in as each step mounts. */
+.hc-onboarding-enter {
+  animation: hc-onboarding-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes hc-onboarding-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hc-onboarding-enter {
+    animation: none;
+  }
+}

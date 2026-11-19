@@ -21,3 +21,6 @@ firmware/sdkconfig.old
 *.map
 *.zip
 *.tsbuildinfo
+
+# local visual-QA scratch output
+.tmp-visual/

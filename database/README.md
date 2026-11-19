@@ -25,6 +25,7 @@ Applied migrations:
 |---|---|
 | `0001_init.sql` | Complete baseline schema (frozen). |
 | `0002_board_roles.sql` | Board roles on `board_instances`: `board_role` (default `controller`), `assigned_controller_id` (Node → hosting Controller), `comm_mode`, `node_link_state`, `espnow_channel`, `node_last_linked_at`, `role_changed_at`, with role/assignment CHECK constraints and the `idx_board_instances_board_role` / `idx_board_instances_assigned_controller` indexes. |
+| `0003_user_onboarding.sql` | Mandatory four-step onboarding on `users`: `onboarding_step` (1..4, default 1), `onboarding_started_at`, `onboarding_completed_at`, the two CHECK constraints that keep steps in range and only allow completion at step 4, the partial index `idx_users_onboarding_pending`, and a one-time backfill that marks every pre-existing user as completed so nobody is interrupted. |
 
 ## Verifying the schema
 

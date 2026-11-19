@@ -11,6 +11,46 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+
+function userSessionPayload(overrides?: {
+  onboarding?: Record<string, unknown>;
+  accountStatus?: string;
+}) {
+  return {
+    user: {
+      id: "u1",
+      email: "new@example.com",
+      fullName: "New Owner",
+      appearancePreference: "system",
+      timezone: "UTC",
+    },
+    account: {
+      id: "a1",
+      name: "New Home",
+      slug: "new-home",
+      status: overrides?.accountStatus ?? "active",
+      staffRole: "owner",
+    },
+    accounts: [
+      {
+        id: "a1",
+        name: "New Home",
+        slug: "new-home",
+        status: overrides?.accountStatus ?? "active",
+        staffRole: "owner",
+      },
+    ],
+    onboarding: overrides?.onboarding ?? {
+      required: false,
+      step: 4,
+      completedAt: "2026-11-01T00:00:00.000Z",
+      startedAt: "2026-10-30T00:00:00.000Z",
+    },
+    platformDefaultTimezone: "UTC",
+    effectiveTimezone: "UTC",
+  };
+}
+
 describe("HomecoreOS SPA routing & console isolation", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -192,6 +232,76 @@ describe("HomecoreOS SPA routing & console isolation", () => {
     expect(screen.getByText(/Ceiling Light/i)).toBeInTheDocument();
     expect(screen.getAllByText(/America\/New_York/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/EMQX Management/i)).not.toBeInTheDocument();
+  });
+
+  it("forces a new account into onboarding on any dashboard route", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/auth/me")) {
+        return jsonResponse(
+          userSessionPayload({
+            onboarding: { required: true, step: 2, completedAt: null, startedAt: null },
+          })
+        );
+      }
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    window.history.pushState({}, "", "/devices");
+    render(<App />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { name: /Connect Your Hardware/i })
+      ).toBeInTheDocument();
+    });
+    // The console shell and its navigation never mount before completion.
+    expect(screen.queryByText(/USER · OWNER/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /skip|close|dismiss/i })).toBeNull();
+    // The address bar is corrected to the onboarding route.
+    await waitFor(() => expect(window.location.pathname).toBe("/onboarding"));
+    expect(screen.getAllByText(/Step 2 of 4/i).length).toBeGreaterThan(0);
+  });
+
+  it("lets an account that already finished onboarding straight into the console", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/auth/me")) {
+        return jsonResponse(userSessionPayload());
+      }
+      if (url.endsWith("/api/homes/overview")) {
+        return jsonResponse({
+          summary: {
+            totalRooms: 0,
+            totalDevices: 0,
+            activeDevices: 0,
+            totalSwitches: 0,
+            activeSwitches: 0,
+            totalSensors: 0,
+            totalControllers: 0,
+            onlineControllers: 0,
+            offlineControllers: 0,
+          },
+          homes: [],
+          rooms: [],
+          devices: [],
+          switches: [],
+          sensors: [],
+          controllers: [],
+          activity: [],
+        });
+      }
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    window.history.pushState({}, "", "/");
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Board Library/i).length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByRole("region", { name: /HomecoreOS onboarding/i })).toBeNull();
   });
 
   it("displays Account Paused banner and blocks operational views when customer account is paused", async () => {

@@ -22,6 +22,7 @@ import type {
   GpioPinDefinition,
   NotificationScope,
   NotificationSeverity,
+  OnboardingState,
   PartitionScheme,
   PlatformAdminRole,
   PsramMode,
@@ -54,6 +55,8 @@ export interface UserSessionData {
     status: AccountStatus;
     staffRole: StaffRole;
   }>;
+  /** Mandatory four-step onboarding state, authoritative on the server. */
+  onboarding?: OnboardingState;
   platformDefaultTimezone?: string;
   effectiveTimezone?: string;
 }
