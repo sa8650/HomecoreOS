@@ -289,7 +289,7 @@ describe("HomecoreOS SPA routing & console isolation", () => {
           switches: [],
           sensors: [],
           controllers: [],
-          activity: [],
+          recentActivity: [],
         });
       }
       return jsonResponse({});
@@ -301,6 +301,9 @@ describe("HomecoreOS SPA routing & console isolation", () => {
     await waitFor(() => {
       expect(screen.getAllByText(/Board Library/i).length).toBeGreaterThan(0);
     });
+    // Let the Overview data land inside the test so a late render cannot fail
+    // the suite after the test has finished.
+    expect(await screen.findByText(/Recent Activity/i)).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: /HomecoreOS onboarding/i })).toBeNull();
   });
 
