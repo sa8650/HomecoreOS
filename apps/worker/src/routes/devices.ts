@@ -23,6 +23,7 @@ import {
   verifyHomeRoomOwnership,
 } from "../lib/board-helpers";
 import { syncControllerConfigSnapshot } from "../lib/controller-config";
+import { resolveDeviceCommandDelivery } from "../lib/device-command-delivery";
 import { EmqxClient, isEmqxConfigured } from "../lib/emqx";
 import { validateControllerSensorMutation } from "../lib/sensor-compatibility";
 import { requireStaffRole, requireUserSession } from "../middleware/auth";
@@ -326,11 +327,15 @@ export function createDeviceRoutes() {
       }>).find((r) => r.controller_id === dev.controller_id);
 
       let mqttDispatched = false;
-      if (emqxReady && cred) {
+      if (emqxReady) {
         try {
-          const emqx = new EmqxClient(c.env!, deps.emqxFetch);
-          await emqx.publish({
-            topic: `${cred.topic_prefix}/cmd/device`,
+          // A linked Node has no EMQX session of its own: its Controller relays
+          // the command over ESP-NOW instead.
+          const delivery = await resolveDeviceCommandDelivery(db, {
+            accountId: auth.accountId,
+            deviceId: dev.controller_id,
+            kind: "device",
+            credential: cred ?? null,
             payload: {
               device_id: dev.id,
               device_type: dev.device_type,
@@ -339,9 +344,16 @@ export function createDeviceRoutes() {
               active: isDeviceStateActive(parsed.data.state),
               actor_user_id: auth.userId,
             },
-            qos: 1,
           });
-          mqttDispatched = true;
+          if (delivery) {
+            const emqx = new EmqxClient(c.env!, deps.emqxFetch);
+            await emqx.publish({
+              topic: delivery.topic,
+              payload: delivery.payload,
+              qos: 1,
+            });
+            mqttDispatched = true;
+          }
         } catch (err) {
           const msg =
             err instanceof Error ? err.message : "Failed to dispatch MQTT command.";
@@ -749,11 +761,13 @@ export function createDeviceRoutes() {
       }>).find((r) => r.controller_id === sw.controller_id);
 
       let mqttDispatched = false;
-      if (emqxReady && cred) {
+      if (emqxReady) {
         try {
-          const emqx = new EmqxClient(c.env!, deps.emqxFetch);
-          await emqx.publish({
-            topic: `${cred.topic_prefix}/cmd/switch`,
+          const delivery = await resolveDeviceCommandDelivery(db, {
+            accountId: auth.accountId,
+            deviceId: sw.controller_id,
+            kind: "switch",
+            credential: cred ?? null,
             payload: {
               switch_id: sw.id,
               gpio_pin: sw.gpio_pin,
@@ -761,9 +775,16 @@ export function createDeviceRoutes() {
               inverted: sw.inverted,
               actor_user_id: auth.userId,
             },
-            qos: 1,
           });
-          mqttDispatched = true;
+          if (delivery) {
+            const emqx = new EmqxClient(c.env!, deps.emqxFetch);
+            await emqx.publish({
+              topic: delivery.topic,
+              payload: delivery.payload,
+              qos: 1,
+            });
+            mqttDispatched = true;
+          }
         } catch (err) {
           const msg =
             err instanceof Error ? err.message : "Failed to dispatch MQTT switch command.";

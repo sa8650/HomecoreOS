@@ -47,6 +47,14 @@ hc_node_link_t hc_role_link_state(void);
 bool hc_role_is_node(void);
 uint16_t hc_role_epoch(void);
 
+/**
+ * True when the device should hold an EMQX session right now. A Controller
+ * always does; a Node only while it is running its standalone fallback, is
+ * unassigned, or has an OTA window open. main.c uses this so a Node never keeps
+ * an independent Wi-Fi/MQTT connection while its ESP-NOW link is healthy.
+ */
+bool hc_role_wants_mqtt(void);
+
 /** Keeps Wi-Fi/MQTT up for an OTA download (Nodes only; no-op for Controllers). */
 void hc_role_open_ota_window(uint32_t duration_ms);
 

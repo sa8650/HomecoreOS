@@ -121,7 +121,7 @@ same ones used for Controllers.
 | `role_logic.h/.c` | hardware-independent role state machine — link states, action bitmask, epoch-bumped command dedupe, `hc_role_can_change`. **13 host test functions** (`firmware/test/test_role_logic.c`, run in CI with `-Wall -Wextra -Werror`). |
 | `role_runtime.h/.c` | glue: persisted config ↔ state machine ↔ transports. Owns the MQTT start/stop decision, the keepalive cadence, the channel sweep, the OTA window, the Controller's Node roster and the `role` block of the config snapshot. |
 | `espnow_link.h/.c` | ESP-NOW transport (host + seek, peer management, 12-byte header + ≤200-byte JSON payload, RSSI). Compiled only where `HOMECORE_HAS_WIFI`. |
-| `nvs_store.c` | new keys `role`, `asg_ctrl`, `asg_mac`, `esp_ch`, `node_link`, `rl_epoch`, `rl_seq`; absent → Controller (legacy behaviour). `hc_nvs_factory_reset()` (`nvs_erase_all`) clears them, so a factory reset always returns the device as a Controller. |
+| `nvs_store.c` | new keys `role`, `asg_ctrl`, `asg_mac`, `esp_ch`, `node_link`, `rl_epoch`, `rl_seq`; absent → Controller (legacy behaviour). `hc_nvs_factory_reset()` erases every configuration/role key in the namespace (so a reset device returns as a Controller) and then re-writes the immutable `ident_key`, which is factory hardware identity, not setup configuration. |
 | `main.c` | `hc_role_init()` after NVS load, `hc_role_tick(&s_config, 500)` in the supervision loop, role-aware cloud sync, role in the boot banner, explicit 10 s-reset log line. |
 | `pairing_client.c` | applies the snapshot's `role` block, adds `role`/`cm`/`ls`/`nodes[]` to every heartbeat. |
 | `mqtt_manager.c` | same role application on the MQTT snapshot path; new system actions `relink_controller` (Node), `relink_node` and `ota_relay` (Controller → ESP-NOW relay). |
@@ -131,8 +131,10 @@ same ones used for Controllers.
 **Boot behaviour (unchanged mechanism, role-aware):**
 
 - BOOT held ~3 s and released → Recovery Mode (BLE + Setup AP, 15-minute window, config preserved).
-- BOOT held 10 s → full factory reset: `nvs_erase_all` erases pairing, credentials **and the role**;
-  the device reboots as a Controller and must be set up again.
+- BOOT held 10 s → full factory reset: every configuration key is erased — pairing, Wi-Fi/MQTT
+  credentials **and the role** — so the device reboots as an unpaired Controller and must be set up
+  again. The immutable factory identity (`ident_key`) and the hardware MAC are preserved; the 10 s
+  hold always wins over the 3 s recovery action.
 - A plain power cycle never changes the role.
 
 **Node link lifecycle:**
@@ -220,7 +222,28 @@ Wi-Fi), and ESP8266 remains a separate legacy layer.
 Additionally: `npm run db:verify` (schema snapshot), `firmware/scripts/verify_firmware_image.py
 --verify-board-overlays firmware/boards` (21 board overlays), and the full existing suites.
 
-## 10. Verification status & known limits
+## 10. Command delivery to a linked Node (ESP-NOW relay)
+
+A linked Node has no EMQX session, so an EMQX publish to its own `cmd/switch` / `cmd/device` topic
+would be accepted by the broker but never delivered. Switch, device, automation and Action Button
+commands for a Node therefore go through one shared resolver
+(`apps/worker/src/lib/device-command-delivery.ts`):
+
+| Device state | Delivery |
+|---|---|
+| Controller | straight to its own `…/cmd/switch` or `…/cmd/device` (unchanged) |
+| Node with a live MQTT session (standalone fallback) | straight to its own topic |
+| Node linked over ESP-NOW (no MQTT session) | `{action:"relay_to_node", node_id, kind, payload}` on the **Controller's** `…/cmd/system`, relayed as a compact `{cmd:"exec",…}` ESP-NOW frame |
+
+The Node executes the relayed payload through `hc_command_apply()`, the same function its own MQTT
+handlers use, so there is exactly one GPIO implementation. Commands carry the Controller's epoch and
+sequence number, so a replay after a link transition is rejected. The epoch is bumped on every
+Controller boot and on promotion to Controller, because the transmit sequence is RAM-only.
+
+`/api/devices`, `/api/switches`, the automation engine and the Action Button executor all use the
+resolver; a missing route is reported as `mqttDispatched: false` instead of a silent publish.
+
+## 11. Verification status & known limits
 
 Green at time of writing:
 
@@ -228,9 +251,9 @@ Green at time of writing:
 |---|---|
 | `packages/shared` — `vitest run` | 15 files / **206 tests** |
 | `packages/shared` — `tsc --noEmit` | clean |
-| `apps/worker` — `vitest run` | 21 files / **81 tests** (70 before this work) |
+| `apps/worker` — `vitest run` | 21 files / **85 tests** (70 before this work) |
 | `apps/worker` — `typecheck` | clean |
-| `apps/web` — `vitest run` | 28 files / **224 tests** (219 before this work) |
+| `apps/web` — `vitest run` | 28 files / **225 tests** (219 before this work) |
 | `apps/web` — `tsc --noEmit`, `eslint` | clean |
 | Firmware host tests (`gcc -Wall -Wextra -Werror`) | `role_logic`, `provisioning_logic`, `ota_boot_logic`, `io_state_logic`, `sensor_driver_logic` — all pass |
 | Board overlays | 21 verified |
@@ -239,10 +262,61 @@ Green at time of writing:
 Limits, stated plainly:
 
 - ESP-IDF is not installed in this workspace, so `firmware/main` is validated by (a) host `gcc`
-  tests for every hardware-independent module, (b) a `-fsyntax-only` pass of the new
-  `role_runtime.c` / `espnow_link.c` against ESP-IDF-shaped stub headers, and (c) the CI matrix
-  (21 boards, IDF v5.4/v5.5.2) which is the real compiler gate. **No hardware has run this yet.**
+  tests for every hardware-independent module, (b) a `-fsyntax-only` pass of `role_runtime.c`,
+  `espnow_link.c`, `mqtt_manager.c`, `main.c`, `nvs_store.c` and `pairing_client.c` against
+  ESP-IDF-shaped stub headers (the stubs were scratch files and are not part of the repository),
+  and (c) the CI matrix (21 boards, IDF v5.4/v5.5.2) which is the real compiler gate. **No
+  hardware has run this yet.**
 - The ESP-NOW transport uses the standard IDF v5 API (`esp_now_init`, `esp_now_register_recv_cb`,
   `esp_now_peer_info_t`, `esp_now_send`); its runtime behaviour (RSSI, channel hopping, maximum
   payload) must be confirmed on real devices.
 - Roles are user-driven only: no automatic Controller election exists anywhere in the codebase.
+
+---
+
+## 12. Repository-wide audit — 2026-11-19
+
+A full pass over features, database, firmware and UI/UX found the unified role work sound at the
+schema and API level, but five behaviour gaps and several presentation/capability conflicts. Every
+item below is fixed and covered by a test where a test can reach it.
+
+### Behaviour fixes
+
+| # | Problem found | Fix |
+|---|---|---|
+| 1 | A paired Node started its own EMQX session at boot and kept it while the ESP-NOW link was healthy, because `main.c` started MQTT for every paired device and `role_runtime` only stopped sessions it had started itself. | `hc_role_wants_mqtt()` is now the single owner of the decision (Controller: always; Node: only standalone / unassigned / OTA window). `main.c` gates boot, cloud sync, BLE Wi-Fi recovery and the OTA retry loop on it, and `role_runtime` closes any stray session when the link is healthy. |
+| 2 | ESP-NOW keepalives carried no identity, so the Controller's roster had no Node ids. The console could not name hosted Nodes and `relay_node` / `ota_relay` could never find a peer. | Keepalives now carry `{"id":"<device id>"}` (`hc_espnow_send_keepalive_json`); the Controller roster and the relay lookup use it. |
+| 3 | Switch/device commands (dashboard, automation, Action Button) were published to a linked Node's own MQTT topic — accepted by EMQX, delivered to nobody. | New `device-command-delivery.ts` resolver plus `relay_to_node` → compact `exec` frame over ESP-NOW, executed by `hc_command_apply()` (the same GPIO code path as MQTT). |
+| 4 | A Controller reporting an **empty** roster sent no `nodes` field at all, so its assigned Nodes stayed "linked" indefinitely after the link died. | The roster array is always present; the Worker reconciles when `nodes` is defined, marking stale Nodes `controller_lost`. |
+| 5 | Config/role changes for a linked Node were published to EMQX (accepted, unsubscribed) and reported as delivered, so a role change could sit unseen until the next manual sync. | The heartbeat reports `sync_published:false` when the device has no MQTT session, and the firmware fetches the snapshot over HTTPS whenever it is not MQTT-connected. |
+| 6 | A device could change its own `device_role` (and write Node uplink columns) through a heartbeat. | The persisted role is authoritative: mismatching reports are logged and ignored, and `comm_mode`/`node_link_state` are only applied to rows that are actually Nodes. |
+| 7 | Relay dedupe could reject every command after a Controller reboot (epoch unchanged, RAM-only sequence restarted). | The epoch is bumped on Controller boot and on promotion to Controller. |
+| 8 | A Node that lost its Controller never re-swept Wi-Fi channels, so a Controller that changed channel was never found again. | `hc_espnow_reseek()` restarts the 1–13 sweep on link loss when no channel is pinned. |
+| 9 | The 10 s factory reset erased the immutable `ident_key` along with the configuration. | The reset preserves `ident_key` (factory identity) while erasing role, pairing, Wi-Fi and MQTT configuration. |
+| 10 | The boot banner logged the role from a zeroed config (always "controller") before NVS was loaded. | The banner is emitted after `hc_nvs_load_config` / `hc_role_init`. |
+
+### Presentation / capability fixes
+
+- Controllers tab cards now carry an explicit **Controller** role badge (Nodes already had one).
+- Node cards show the **board model** and **last activity** (the spec's Node tab fields), not only last-linked.
+- `deviceStatusLabel()` never reports a lost/reconnecting Node as "Linked" — a stale `comm_mode` from
+  the last roster can no longer mask a dead link — and an unassigned Node reads "No Controller
+  assigned" instead of the standalone wording.
+- The role capability gate is shared: the Worker uses `boardSupportsControllerRole()`, the console
+  hides "Make this a Controller"/"Make this a Node" for boards without a 2.4 GHz radio (e.g. ESP32-H2).
+  A board that cannot be verified is not blocked.
+- The "Assign Controller" picker only offers online Controllers in the same home, matching what the
+  API accepts.
+- Stale-device notifications say "Node Offline" for a Node, never "Controller Offline".
+- Promoting a Node clears `comm_mode`/`node_link_state` instead of leaving Node-only values on a
+  Controller row.
+- Role-change refusals explain the role that was requested (Controller vs Node capability).
+
+### Firmware validation performed
+
+`role_runtime.c`, `espnow_link.c`, `mqtt_manager.c`, `main.c`, `nvs_store.c` and `pairing_client.c`
+were compiled with `gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only` against ESP-IDF-shaped stub
+headers, and the five host C suites (role, provisioning, OTA boot, IO state, sensor driver logic)
+pass. This is a syntax/behaviour gate, not a hardware run: ESP-NOW peer linking, channel re-sweep,
+relayed switch execution, the EMQX OTA window and the 3 s/10 s BOOT sequences still need the physical
+ESP32-S3-WROOM-1 N16R8 validation listed in §11.

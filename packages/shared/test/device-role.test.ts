@@ -54,6 +54,29 @@ describe("device roles", () => {
       })
     ).toBe("Linked to Living Room Hub");
 
+    // A lost or reconnecting link must never be shown as "Linked", even when the
+    // last roster report still says `espnow`.
+    expect(
+      deviceStatusLabel({
+        role: "node",
+        online: true,
+        commMode: "espnow",
+        linkState: "controller_lost",
+        assignedControllerName: "Living Room Hub",
+      })
+    ).toBe("Standalone Node — Controller Disconnected");
+    expect(
+      deviceStatusLabel({
+        role: "node",
+        online: true,
+        commMode: "espnow",
+        linkState: "reconnecting",
+      })
+    ).toBe("Standalone Node — Controller Disconnected");
+    expect(
+      deviceStatusLabel({ role: "node", online: true, linkState: "unassigned" })
+    ).toBe("No Controller assigned");
+
     expect(deviceStatusLabel({ role: "controller", online: true })).toBe("Online");
     expect(deviceStatusLabel({ role: "node", online: false })).toBe("Offline");
     expect(isNodeStandalone({ role: "node", commMode: "wifi_mqtt" })).toBe(true);
@@ -133,6 +156,22 @@ describe("device roles", () => {
         attachedNodeCount: 0,
       })?.code
     ).toBe("board_unsupported");
+
+    // The refusal explains the role that was actually requested.
+    const promoteBlocker = roleChangeBlocker({
+      targetRole: "controller",
+      currentRole: "node",
+      boardSupported: false,
+      attachedNodeCount: 0,
+    });
+    expect(promoteBlocker?.message).toMatch(/Controller role/i);
+    const demoteBlocker = roleChangeBlocker({
+      targetRole: "node",
+      currentRole: "controller",
+      boardSupported: false,
+      attachedNodeCount: 0,
+    });
+    expect(demoteBlocker?.message).toMatch(/Node role/i);
   });
 
   it("only assigns Nodes to an online Controller in the same home", () => {

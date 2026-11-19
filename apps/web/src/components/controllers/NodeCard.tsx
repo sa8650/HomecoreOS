@@ -2,6 +2,7 @@ import {
   RiArrowLeftRightLine,
   RiCpuLine,
   RiEyeLine,
+  RiHistoryLine,
   RiLinkM,
   RiLinksLine,
   RiMore2Fill,
@@ -22,7 +23,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { deviceStatusLabel, nodeCommModeLabel } from "@homecoreos/shared";
+import {
+  boardSupportsControllerRole,
+  deviceStatusLabel,
+  nodeCommModeLabel,
+} from "@homecoreos/shared";
 import { formatTimestamp } from "@/lib/timezone";
 import type { BoardProfileItem, ControllerItem } from "@/features/types";
 
@@ -89,6 +94,11 @@ export function NodeCard({
     assignedControllerName: node.assigned_controller_name ?? null,
   });
   const needsController = !node.assigned_controller_id;
+  // A board without a usable 2.4 GHz radio can never act as a Controller. An
+  // unknown (e.g. custom) board profile is not blocked here — the Worker applies
+  // the same gate authoritatively.
+  const canBecomeController = !board || boardSupportsControllerRole(board);
+  const lastActivityAt = node.last_communication_at ?? node.last_heartbeat_at;
 
   return (
     <MagicCard
@@ -111,7 +121,13 @@ export function NodeCard({
             className="h-full max-h-full w-full opacity-90 transition-transform duration-300 group-hover:scale-[1.03]"
           />
           <span className="pointer-events-none absolute inset-x-2 top-2 flex items-center justify-between gap-2">
-            <Badge variant="secondary" size="sm" radius="full" className="max-w-[55%]">
+            <Badge
+              variant="secondary"
+              size="sm"
+              radius="full"
+              className="max-w-[55%]"
+              data-testid="node-role-badge"
+            >
               <RiRadioLine className="size-3 shrink-0 opacity-75" aria-hidden="true" />
               <span className="truncate">Node</span>
             </Badge>
@@ -158,7 +174,7 @@ export function NodeCard({
                     Re-link to Controller
                   </DropdownMenuItem>
                 )}
-                {canManage && (
+                {canManage && canBecomeController && (
                   <>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={onPromote}>
@@ -198,12 +214,23 @@ export function NodeCard({
           </div>
 
           <div className="mt-auto space-y-1 text-[11px] text-muted-foreground">
+            <p
+              className="flex items-center gap-1.5 truncate"
+              title={`${boardProfile.manufacturer} ${boardProfile.model} · ${node.chip_variant}`}
+            >
+              <RiCpuLine className="size-3 shrink-0" aria-hidden="true" />
+              <span className="truncate">{node.board_model}</span>
+            </p>
             <p className="flex items-center gap-1.5">
               <RiRestartLine className="size-3" aria-hidden="true" />
               Last linked:{" "}
               {node.node_last_linked_at
                 ? formatTimestamp(node.node_last_linked_at, timezone)
                 : "Never"}
+            </p>
+            <p className="flex items-center gap-1.5" data-testid="node-last-activity">
+              <RiHistoryLine className="size-3" aria-hidden="true" />
+              Last activity: {formatTimestamp(lastActivityAt, timezone)}
             </p>
             <p className="truncate" title={node.hardware_uid ?? undefined}>
               {node.hardware_uid ?? "No hardware ID"}

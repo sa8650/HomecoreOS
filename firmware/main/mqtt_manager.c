@@ -54,10 +54,15 @@ void hc_mqtt_stop(void) {
     }
 }
 
-static void handle_switch_cmd(const char *data, int len) {
+/* Applies a switch/device command payload. Shared by the MQTT handlers and by
+   ESP-NOW commands relayed from a Controller, so both transports execute exactly
+   the same GPIO logic (no second command implementation to drift). */
+static bool apply_switch_command(const char *data, int len) {
+    if (!data || len <= 0) return false;
     cJSON *root = cJSON_ParseWithLength(data, (size_t)len);
-    if (!root) return;
+    if (!root) return false;
 
+    bool applied = false;
     cJSON *id_j = cJSON_GetObjectItem(root, "switch_id");
     cJSON *pin_j = cJSON_GetObjectItem(root, "gpio_pin");
     cJSON *state_j = cJSON_GetObjectItem(root, "state");
@@ -69,16 +74,25 @@ static void handle_switch_cmd(const char *data, int len) {
             ? cJSON_IsTrue(state_j)
             : hc_io_parse_bool_state(state_j->valuestring, false);
         bool inv = cJSON_IsBool(inv_j) && cJSON_IsTrue(inv_j);
-        hc_io_drive_pin(id_j->valuestring, HC_IO_KIND_SWITCH, (uint8_t)pin_j->valueint, inv, on);
+        applied = hc_io_drive_pin(
+            id_j->valuestring,
+            HC_IO_KIND_SWITCH,
+            (uint8_t)pin_j->valueint,
+            inv,
+            on
+        ) == ESP_OK;
         ESP_LOGI(TAG, "Switch %s (GPIO %d) -> %s", id_j->valuestring, pin_j->valueint, on ? "ON" : "OFF");
     }
     cJSON_Delete(root);
+    return applied;
 }
 
-static void handle_device_cmd(const char *data, int len) {
+static bool apply_device_command(const char *data, int len) {
+    if (!data || len <= 0) return false;
     cJSON *root = cJSON_ParseWithLength(data, (size_t)len);
-    if (!root) return;
+    if (!root) return false;
 
+    bool applied = false;
     cJSON *id_j = cJSON_GetObjectItem(root, "device_id");
     cJSON *pin_j = cJSON_GetObjectItem(root, "gpio_pin");
     cJSON *state_j = cJSON_GetObjectItem(root, "state");
@@ -89,7 +103,13 @@ static void handle_device_cmd(const char *data, int len) {
         bool active = cJSON_IsBool(active_j)
             ? cJSON_IsTrue(active_j)
             : hc_io_parse_bool_state(state_j->valuestring, false);
-        hc_io_drive_pin(id_j->valuestring, HC_IO_KIND_DEVICE, (uint8_t)pin_j->valueint, false, active);
+        applied = hc_io_drive_pin(
+            id_j->valuestring,
+            HC_IO_KIND_DEVICE,
+            (uint8_t)pin_j->valueint,
+            false,
+            active
+        ) == ESP_OK;
         ESP_LOGI(TAG, "Device %s (GPIO %d) -> %s (%s)",
             id_j->valuestring,
             pin_j->valueint,
@@ -97,6 +117,24 @@ static void handle_device_cmd(const char *data, int len) {
             active ? "HIGH" : "LOW");
     }
     cJSON_Delete(root);
+    return applied;
+}
+
+static void handle_switch_cmd(const char *data, int len) {
+    (void)apply_switch_command(data, len);
+}
+
+static void handle_device_cmd(const char *data, int len) {
+    (void)apply_device_command(data, len);
+}
+
+bool hc_command_apply(const char *kind, const char *json) {
+    if (!kind || !json) return false;
+    int len = (int)strlen(json);
+    if (strcmp(kind, "switch") == 0) return apply_switch_command(json, len);
+    if (strcmp(kind, "device") == 0) return apply_device_command(json, len);
+    ESP_LOGW(TAG, "Unsupported relayed command kind: %s", kind);
+    return false;
 }
 
 static void handle_system_cmd(const char *data, int len) {
@@ -167,6 +205,93 @@ static void handle_system_cmd(const char *data, int len) {
                 );
                 esp_err_t relay = hc_role_relay_command_to_node(s_cfg, node_j->valuestring, cmd);
                 ESP_LOGI(TAG, "Relayed OTA to Node %s: %s", node_j->valuestring, esp_err_to_name(relay));
+            }
+        } else if (strcmp(action, "relay_to_node") == 0 && s_cfg) {
+            // A Node linked over ESP-NOW keeps no EMQX session of its own, so the
+            // Worker sends its switch/device commands to this Controller. We
+            // forward a compact frame over ESP-NOW; the Node executes it with the
+            // same handler it uses for local MQTT commands.
+            cJSON *node_j = cJSON_GetObjectItem(root, "node_id");
+            cJSON *kind_j = cJSON_GetObjectItem(root, "kind");
+            cJSON *payload_j = cJSON_GetObjectItem(root, "payload");
+            if (cJSON_IsString(node_j) && node_j->valuestring &&
+                cJSON_IsString(kind_j) && kind_j->valuestring &&
+                cJSON_IsObject(payload_j)) {
+                const char *kind = kind_j->valuestring;
+                cJSON *compact = cJSON_CreateObject();
+                if (compact) {
+                    if (strcmp(kind, "switch") == 0) {
+                        cJSON *id_j = cJSON_GetObjectItem(payload_j, "switch_id");
+                        cJSON *pin_j = cJSON_GetObjectItem(payload_j, "gpio_pin");
+                        cJSON *state_j = cJSON_GetObjectItem(payload_j, "state");
+                        cJSON *inv_j = cJSON_GetObjectItem(payload_j, "inverted");
+                        if (cJSON_IsString(id_j) && id_j->valuestring) {
+                            cJSON_AddStringToObject(compact, "switch_id", id_j->valuestring);
+                        }
+                        if (cJSON_IsNumber(pin_j)) {
+                            cJSON_AddNumberToObject(compact, "gpio_pin", pin_j->valuedouble);
+                        }
+                        if (cJSON_IsString(state_j) && state_j->valuestring) {
+                            cJSON_AddStringToObject(compact, "state", state_j->valuestring);
+                        } else if (cJSON_IsBool(state_j)) {
+                            cJSON_AddBoolToObject(compact, "state", cJSON_IsTrue(state_j));
+                        }
+                        if (cJSON_IsBool(inv_j)) {
+                            cJSON_AddBoolToObject(compact, "inverted", cJSON_IsTrue(inv_j));
+                        }
+                    } else if (strcmp(kind, "device") == 0) {
+                        cJSON *id_j = cJSON_GetObjectItem(payload_j, "device_id");
+                        cJSON *pin_j = cJSON_GetObjectItem(payload_j, "gpio_pin");
+                        cJSON *state_j = cJSON_GetObjectItem(payload_j, "state");
+                        cJSON *active_j = cJSON_GetObjectItem(payload_j, "active");
+                        if (cJSON_IsString(id_j) && id_j->valuestring) {
+                            cJSON_AddStringToObject(compact, "device_id", id_j->valuestring);
+                        }
+                        if (cJSON_IsNumber(pin_j)) {
+                            cJSON_AddNumberToObject(compact, "gpio_pin", pin_j->valuedouble);
+                        }
+                        if (cJSON_IsString(state_j) && state_j->valuestring) {
+                            cJSON_AddStringToObject(compact, "state", state_j->valuestring);
+                        }
+                        if (cJSON_IsBool(active_j)) {
+                            cJSON_AddBoolToObject(compact, "active", cJSON_IsTrue(active_j));
+                        }
+                    }
+
+                    char *payload_str = cJSON_PrintUnformatted(compact);
+                    cJSON_Delete(compact);
+                    if (payload_str) {
+                        char frame[192];
+                        int n = snprintf(
+                            frame,
+                            sizeof(frame),
+                            "{\"cmd\":\"exec\",\"epoch\":%u,\"seq\":%lu,"
+                            "\"k\":\"%s\",\"p\":%s}",
+                            (unsigned)hc_role_epoch(),
+                            (unsigned long)(esp_timer_get_time() / 1000ULL),
+                            kind,
+                            payload_str
+                        );
+                        cJSON_free(payload_str);
+                        if (n > 0 && (size_t)n < sizeof(frame)) {
+                            esp_err_t relay =
+                                hc_role_relay_command_to_node(s_cfg, node_j->valuestring, frame);
+                            if (relay != ESP_OK) {
+                                ESP_LOGW(
+                                    TAG,
+                                    "Failed to relay %s command to Node %s: %s",
+                                    kind,
+                                    node_j->valuestring,
+                                    esp_err_to_name(relay)
+                                );
+                            } else {
+                                ESP_LOGI(TAG, "Relayed %s command to Node %s", kind, node_j->valuestring);
+                            }
+                        } else {
+                            ESP_LOGW(TAG, "Relayed %s command does not fit an ESP-NOW frame", kind);
+                        }
+                    }
+                }
             }
         } else if (strcmp(action, "wifi") == 0 && s_cfg) {
             cJSON *ssid_j = cJSON_GetObjectItem(root, "ssid");

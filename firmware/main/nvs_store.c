@@ -239,15 +239,31 @@ esp_err_t hc_nvs_clear_pairing(homecore_config_t *cfg) {
 }
 
 esp_err_t hc_nvs_factory_reset(void) {
-    // nvs_erase_all() below wipes every key in the namespace, including the
-    // unified role keys (role, asg_ctrl, asg_mac, esp_ch, node_link, rl_epoch,
-    // rl_seq). A factory-reset device therefore comes back as a Controller.
+    // The 10-second BOOT reset wipes every *configuration* key in the namespace,
+    // including the unified role keys (role, asg_ctrl, asg_mac, esp_ch,
+    // node_link, rl_epoch, rl_seq), so the device comes back as an unpaired
+    // Controller in initial setup mode.
+    //
+    // The immutable factory identity (`ident_key`) is preserved: it is hardware
+    // identity, not setup configuration. Losing it would make recovery pairing
+    // present the board as a different physical device and could let the same
+    // board be claimed twice. The Wi-Fi STA MAC stays the primary hardware UID.
     nvs_handle_t h;
     esp_err_t err = nvs_open(HOMECORE_NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK) {
         return err;
     }
+
+    char identity[65] = {0};
+    size_t identity_len = sizeof(identity);
+    bool keep_identity =
+        nvs_get_str(h, "ident_key", identity, &identity_len) == ESP_OK &&
+        identity[0] != '\0';
+
     err = nvs_erase_all(h);
+    if (err == ESP_OK && keep_identity) {
+        err = nvs_set_str(h, "ident_key", identity);
+    }
     if (err == ESP_OK) {
         err = nvs_commit(h);
     }

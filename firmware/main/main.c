@@ -67,14 +67,14 @@ static hc_prov_boot_btn_action_t check_boot_button_at_startup(void) {
 static void sync_cloud_and_report_state(char *telem_buf, size_t telem_cap, bool fetch_http_config) {
     if (!s_config.paired) return;
     // A Node keeps no independent EMQX session while its ESP-NOW link is healthy;
-    // the role runtime owns that decision (see role_runtime.c).
-    if (hc_role_is_node() && hc_role_link_state() == HC_NODE_LINKED &&
-        !hc_mqtt_is_started()) {
-        // ESP-NOW only: heartbeats still travel over HTTPS.
-    } else if (!hc_mqtt_is_started()) {
-        hc_mqtt_start(&s_config);
-    } else if (!hc_mqtt_is_connected()) {
-        hc_mqtt_trigger_reconnect();
+    // the role runtime owns that decision (see role_runtime.c). Heartbeats,
+    // telemetry and config sync still travel over HTTPS in every state.
+    if (hc_role_wants_mqtt()) {
+        if (!hc_mqtt_is_started()) {
+            hc_mqtt_start(&s_config);
+        } else if (!hc_mqtt_is_connected()) {
+            hc_mqtt_trigger_reconnect();
+        }
     }
     if (fetch_http_config || s_config.config_revision == 0 || !hc_mqtt_is_connected()) {
         hc_http_fetch_config(&s_config);
@@ -222,7 +222,31 @@ static void controller_supervision_task(void *pvParam) {
         hc_net_get_sta_ip(ip_str, sizeof(ip_str));
 
         // Handle BLE Wi-Fi-only update completion while preserving pairing (verify MQTT first)
-        if (s_waiting_wifi_only_confirm && s_config.paired) {
+        if (s_waiting_wifi_only_confirm && s_config.paired && !hc_role_wants_mqtt()) {
+            // A linked Node intentionally holds no EMQX session, so a Wi-Fi
+            // recovery on it is confirmed by an authenticated HTTPS heartbeat
+            // instead of waiting for an MQTT connection that must not exist.
+            s_waiting_wifi_only_confirm = false;
+            s_ble_mqtt_verify_ms = 0;
+            if (hc_http_post_heartbeat(&s_config) == ESP_OK) {
+                hc_prov_on_wifi_reconfigured(
+                    &s_prov_state,
+                    strlen(s_config.wifi_ssid) > 0,
+                    strlen(s_config.backend_url) > 0
+                );
+                hc_ble_prov_update_status("wifi_connected", true, true, false, ip_str, NULL);
+                s_ble_close_grace_ms = 2500U;
+            } else {
+                hc_ble_prov_update_status(
+                    "error",
+                    true,
+                    true,
+                    false,
+                    ip_str,
+                    "Device unreachable after the Wi-Fi update"
+                );
+            }
+        } else if (s_waiting_wifi_only_confirm && s_config.paired) {
             if (s_ble_mqtt_verify_ms == 0) {
                 if (!hc_mqtt_is_started()) {
                     hc_mqtt_start(&s_config);
@@ -318,10 +342,12 @@ static void controller_supervision_task(void *pvParam) {
         if (hc_ota_is_pending_verify()) {
             if (s_config.paired && hc_ota_needs_heartbeat() && ota_retry_elapsed_ms >= 5000U) {
                 ota_retry_elapsed_ms = 0;
-                if (!hc_mqtt_is_started()) {
-                    hc_mqtt_start(&s_config);
-                } else if (!hc_mqtt_is_connected()) {
-                    hc_mqtt_trigger_reconnect();
+                if (hc_role_wants_mqtt()) {
+                    if (!hc_mqtt_is_started()) {
+                        hc_mqtt_start(&s_config);
+                    } else if (!hc_mqtt_is_connected()) {
+                        hc_mqtt_trigger_reconnect();
+                    }
                 }
                 if (hc_http_post_heartbeat(&s_config) == ESP_OK) {
                     hc_ota_notify_heartbeat_ok();
@@ -369,14 +395,6 @@ void app_main(void) {
         HOMECORE_HAS_WIFI ? "yes" : "no",
         HOMECORE_HAS_BLE ? "yes" : "no"
     );
-    ESP_LOGI(
-        TAG,
-        "Unified role=%s assigned_controller=%s espnow_channel=%s",
-        s_config.device_role == 1 ? "node" : "controller",
-        s_config.assigned_controller_id[0] ? s_config.assigned_controller_id : "-",
-        s_config.espnow_channel ? "pinned" : "auto"
-    );
-
     ESP_ERROR_CHECK(hc_nvs_init());
     ESP_ERROR_CHECK(hc_nvs_load_config(&s_config));
 
@@ -387,6 +405,16 @@ void app_main(void) {
     }
 
     ESP_ERROR_CHECK(hc_role_init(&s_config));
+
+    // Logged after NVS load so the banner never claims a role the device did not
+    // actually restore (the static config starts zeroed = Controller).
+    ESP_LOGI(
+        TAG,
+        "Unified role=%s assigned_controller=%s espnow_channel=%s",
+        s_config.device_role == 1 ? "node" : "controller",
+        s_config.assigned_controller_id[0] ? s_config.assigned_controller_id : "-",
+        s_config.espnow_channel ? "pinned" : "auto"
+    );
 
     char *io_json = calloc(1, 8192);
     if (io_json) {
@@ -429,7 +457,12 @@ void app_main(void) {
             }
         }
         if (s_config.paired) {
-            hc_mqtt_start(&s_config);
+            // A Node that is linked (or still retrying its Controller) must not
+            // open its own EMQX session at boot; role_runtime opens the fallback
+            // session when — and only when — it is needed.
+            if (hc_role_wants_mqtt()) {
+                hc_mqtt_start(&s_config);
+            }
             if (s_config.config_revision == 0) {
                 hc_http_fetch_config(&s_config);
             }

@@ -119,6 +119,12 @@ export function deviceStatusLabel(input: {
   const { role, online, commMode, linkState, assignedControllerName } = input;
   if (role === "controller") return online ? "Online" : "Offline";
   if (!online) return "Offline";
+  // A lost/reconnecting link always wins over a stale `commMode`: the last
+  // reported roster may still say "espnow" while the heartbeat has already timed
+  // out, and the console must never claim a dead link is healthy.
+  if (linkState === "controller_lost" || linkState === "reconnecting") {
+    return "Standalone Node — Controller Disconnected";
+  }
   if (commMode === "espnow" || linkState === "linked") {
     return assignedControllerName
       ? `Linked to ${assignedControllerName}`
@@ -127,6 +133,7 @@ export function deviceStatusLabel(input: {
   if (commMode === "wifi_mqtt" || linkState === "standalone") {
     return "Standalone Node — Controller Disconnected";
   }
+  if (linkState === "unassigned") return "No Controller assigned";
   return "Online";
 }
 
@@ -179,7 +186,9 @@ export function roleChangeBlocker(input: {
     return {
       code: "board_unsupported",
       message:
-        "This board does not support the Controller role: ESP-NOW and a stable Wi-Fi link are required.",
+        input.targetRole === "controller"
+          ? "This board does not support the Controller role: ESP-NOW and a stable Wi-Fi link are required."
+          : "This board does not support the Node role: a 2.4 GHz Wi-Fi radio is required for ESP-NOW and for the Wi-Fi/MQTT fallback.",
     };
   }
   if (

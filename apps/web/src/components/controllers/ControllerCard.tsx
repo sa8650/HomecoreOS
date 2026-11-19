@@ -1,7 +1,12 @@
 import type { ReactNode } from "react";
-import { SUPPORTED_CHIP_FAMILIES, type ChipFamily } from "@homecoreos/shared";
+import {
+  SUPPORTED_CHIP_FAMILIES,
+  boardSupportsEspNow,
+  type ChipFamily,
+} from "@homecoreos/shared";
 import {
   RiArrowLeftRightLine,
+  RiCpuLine,
   RiDeleteBinLine,
   RiDoorOpenLine,
   RiEyeLine,
@@ -317,7 +322,7 @@ export function ControllerCard({
                         Reconnect
                       </DropdownMenuItem>
                     )}
-                    {canManage && onMakeNode && (
+                    {canManage && onMakeNode && (!board || boardSupportsEspNow(board)) && (
                       <DropdownMenuItem onClick={onMakeNode}>
                         <RiArrowLeftRightLine className="size-4" aria-hidden="true" />
                         Make this a Node
@@ -358,6 +363,18 @@ export function ControllerCard({
             </div>
 
             <dl className="grid grid-cols-[4.25rem_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 text-xs">
+              <CardRow label="Role">
+                <Badge
+                  variant="primary-light"
+                  size="xs"
+                  radius="full"
+                  data-testid="controller-role-badge"
+                  title="Operating role assigned in the console. This board can be switched to a Node at any time."
+                >
+                  <RiCpuLine className="size-3" aria-hidden="true" />
+                  Controller
+                </Badge>
+              </CardRow>
               <CardRow label="Status">
                 <Badge variant={status.variant} size="xs" radius="full">
                   {status.label}

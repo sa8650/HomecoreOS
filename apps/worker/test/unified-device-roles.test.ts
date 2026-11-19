@@ -354,6 +354,64 @@ describe("Unified Controller & Node roles", () => {
     expect(hub.connected_node_count).toBe(1);
   });
 
+  it("marks an assigned Node controller_lost when its Controller reports an empty roster", async () => {
+    // Pretend the Node was last seen longer ago than the ESP-NOW stale window.
+    await dbHarness.pg.query(
+      "update controllers set node_last_linked_at = now() - interval '2 minutes' where id = $1",
+      [nodeId]
+    );
+
+    const res = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${hubToken}` },
+      body: JSON.stringify({ w: true, m: true, role: "controller", nodes: [] }),
+    });
+    expect(res.status).toBe(200);
+
+    // "I host nobody" is authoritative: the assigned Node is reconnecting, not linked.
+    expect((await deviceRow(nodeId)).node_link_state).toBe("controller_lost");
+  });
+
+  it("relays a linked Node's switch command through its Controller instead of a silent MQTT publish", async () => {
+    const swRes = await postJson("/api/switches", {
+      controllerId: nodeId,
+      name: "Node Lamp",
+      gpioPin: 4,
+    });
+    expect(swRes.status).toBe(201);
+    const swId = ((await swRes.json()) as { switch: { id: string } }).switch.id;
+
+    // The Node is linked over ESP-NOW, so it has no EMQX session of its own.
+    await dbHarness.pg.query(
+      "update controllers set mqtt_connected = false, node_link_state = 'linked' where id = $1",
+      [nodeId]
+    );
+
+    emqx.state.published.length = 0;
+    const toggle = await postJson(`/api/switches/${swId}/toggle`, { isOn: true });
+    expect(toggle.status).toBe(200);
+    const toggleBody = (await toggle.json()) as { mqttDispatched: boolean };
+    expect(toggleBody.mqttDispatched).toBe(true);
+
+    // Nothing is published to the Node's own (unsubscribed) topic...
+    expect(emqx.state.published.some((p) => p.topic.endsWith("/cmd/switch"))).toBe(false);
+    // ...the instruction travels through the Controller's system topic instead.
+    const relay = emqx.state.published.find((p) => p.payload.includes("relay_to_node"));
+    expect(relay).toBeTruthy();
+    expect(relay!.topic).toContain(hubId);
+    const relayPayload = JSON.parse(relay!.payload) as {
+      action: string;
+      node_id: string;
+      kind: string;
+      payload: { switch_id: string; state: string };
+    };
+    expect(relayPayload.action).toBe("relay_to_node");
+    expect(relayPayload.node_id).toBe(nodeId);
+    expect(relayPayload.kind).toBe("switch");
+    expect(relayPayload.payload.switch_id).toBe(swId);
+    expect(relayPayload.payload.state).toBe("ON");
+  });
+
   it("accepts a standalone Node reporting its Wi-Fi/MQTT fallback", async () => {
     const res = await req("/api/device/heartbeat", {
       method: "POST",
@@ -504,6 +562,72 @@ describe("Unified Controller & Node roles", () => {
     expect(payload.ota.ota_url).toContain("/api/device/firmware/ota/");
     // The relay goes to the hosting Controller, not the Node.
     expect(relay!.topic).toContain(hubId);
+  });
+
+  it("never lets a device promote or demote itself through a heartbeat", async () => {
+    // A Node reports "controller": the persisted (user-owned) role must win.
+    const nodeBefore = await deviceRow(nodeId);
+    expect(nodeBefore.device_role).toBe("node");
+    const nodeRes = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${nodeToken}` },
+      body: JSON.stringify({ w: true, m: false, role: "controller", cm: "wifi_mqtt", ls: "linked" }),
+    });
+    expect(nodeRes.status).toBe(200);
+    const nodeAfter = await deviceRow(nodeId);
+    expect(nodeAfter.device_role).toBe("node");
+    // Its own link/communication reporting is still accepted.
+    expect(nodeAfter.comm_mode).toBe("wifi_mqtt");
+    expect(nodeAfter.node_link_state).toBe("linked");
+
+    // A Controller reporting "node" must not demote itself either.
+    expect((await deviceRow(hubId)).device_role).toBe("controller");
+    const hubRes = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${hubToken}` },
+      body: JSON.stringify({ w: true, m: true, role: "node", ls: "standalone", cm: "wifi_mqtt" }),
+    });
+    expect(hubRes.status).toBe(200);
+    const hubAfter = await deviceRow(hubId);
+    expect(hubAfter.device_role).toBe("controller");
+    // Uplink columns are Node-only and must not be written onto a Controller.
+    expect(hubAfter.comm_mode).toBeNull();
+    expect(hubAfter.node_link_state).toBeNull();
+  });
+
+  it("reports sync_published=false to a device with no MQTT session so it pulls the snapshot over HTTPS", async () => {
+    await dbHarness.pg.query(
+      `update controllers
+          set pending_config_sync = true,
+              config_revision = config_revision + 5
+        where id = $1`,
+      [nodeId]
+    );
+
+    const res = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${nodeToken}` },
+      body: JSON.stringify({ w: true, m: false, role: "node", ls: "linked", rev: 0 }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sync_published: boolean; config_revision: number };
+    // An EMQX publish would be "accepted" even with no subscriber, so a Node
+    // without a session must be told to fetch over HTTPS instead.
+    expect(body.sync_published).toBe(false);
+    expect(body.config_revision).toBeGreaterThan(0);
+
+    // The same device with a live MQTT session may rely on the MQTT push.
+    await dbHarness.pg.query(
+      "update controllers set pending_config_sync = true where id = $1",
+      [nodeId]
+    );
+    const mqttRes = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${nodeToken}` },
+      body: JSON.stringify({ w: true, m: true, role: "node", ls: "standalone", rev: 0 }),
+    });
+    expect(mqttRes.status).toBe(200);
+    expect(((await mqttRes.json()) as { sync_published: boolean }).sync_published).toBe(true);
   });
 
   it("keeps the Node OTA record in the shared update history", async () => {

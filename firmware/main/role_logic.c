@@ -55,13 +55,18 @@ void hc_role_state_clear_fallback(hc_role_state_t *state) {
     state->ota_window_open = false;
 }
 
+void hc_role_bump_epoch(hc_role_state_t *state) {
+    if (!state) return;
+    state->epoch = (uint16_t)(state->epoch + 1u);
+    if (state->epoch == 0) state->epoch = 1;
+}
+
 static void enter_link(hc_role_state_t *state, hc_node_link_t next) {
     if (state->link != next) {
         state->link = next;
         /* Every link transition opens a new command window: anything queued on
            the old transport must not be executed on the new one. */
-        state->epoch = (uint16_t)(state->epoch + 1u);
-        if (state->epoch == 0) state->epoch = 1;
+        hc_role_bump_epoch(state);
     }
 }
 

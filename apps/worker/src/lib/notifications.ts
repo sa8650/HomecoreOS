@@ -303,7 +303,7 @@ export async function refreshStaleControllerStates(
 ): Promise<number> {
   let onlineQuery = db
     .from("controllers")
-    .select("id,account_id,name,last_heartbeat_at,connection_history")
+    .select("id,account_id,name,device_role,last_heartbeat_at,connection_history")
     .eq("status", "online")
     .is("deleted_at", null)
     .is("permanently_deleted_at", null);
@@ -330,6 +330,7 @@ export async function refreshStaleControllerStates(
     id: string;
     account_id: string;
     name: string;
+    device_role?: string | null;
     last_heartbeat_at: string | null;
     connection_history: unknown[];
   }>).filter((ctrl) => {
@@ -347,6 +348,8 @@ export async function refreshStaleControllerStates(
       const history = Array.isArray(ctrl.connection_history)
         ? ctrl.connection_history.slice(-19)
         : [];
+      // A Node that stops reporting is never described as a Controller.
+      const roleLabel = ctrl.device_role === "node" ? "Node" : "Controller";
 
       await Promise.all([
         db
@@ -368,7 +371,7 @@ export async function refreshStaleControllerStates(
           eventKey: "controller.offline",
           preferenceKey: "controller_offline_online",
           severity: "warning",
-          title: `Controller Offline: ${ctrl.name}`,
+          title: `${roleLabel} Offline: ${ctrl.name}`,
           message: `${ctrl.name} missed its heartbeat window (${timeoutSec}s) and is now offline.`,
           dedupKey: `ctrl:${ctrl.id}:offline`,
           dedupWhileUnread: true,
@@ -381,8 +384,8 @@ export async function refreshStaleControllerStates(
           eventKey: "admin.controller_offline",
           preferenceKey: "controller_activity",
           severity: "warning",
-          title: `Controller Went Offline: ${ctrl.name}`,
-          message: `Controller ${ctrl.id.slice(0, 8)} (${ctrl.name}) timed out after ${timeoutSec}s.`,
+          title: `${roleLabel} Went Offline: ${ctrl.name}`,
+          message: `${roleLabel} ${ctrl.id.slice(0, 8)} (${ctrl.name}) timed out after ${timeoutSec}s.`,
           dedupKey: `admin:ctrl:${ctrl.id}:offline`,
           dedupWhileUnread: true,
           dedupWindowSeconds: 1800,

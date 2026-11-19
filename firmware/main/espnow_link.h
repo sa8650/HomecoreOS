@@ -83,6 +83,25 @@ bool hc_espnow_is_seeking(void);
 /** Sends a keepalive to `mac` (used by the Node every heartbeat interval). */
 esp_err_t hc_espnow_send_keepalive(const char *mac, uint16_t epoch, uint32_t seq);
 
+/**
+ * Keepalive carrying a small JSON body — the Node sends `{"id":"<device id>"}`
+ * so the Controller can name it in its ESP-NOW roster and relay instructions to
+ * it by id. A bare keepalive would only expose the peer MAC.
+ */
+esp_err_t hc_espnow_send_keepalive_json(
+    const char *mac,
+    uint16_t epoch,
+    uint32_t seq,
+    const char *json
+);
+
+/**
+ * Returns to the 1..13 channel sweep after a lost link, so a Controller that
+ * changed its Wi-Fi channel can be found again. No-op when a channel is pinned
+ * by the console profile or when the link has an explicit target channel.
+ */
+void hc_espnow_reseek(void);
+
 /** Sends a JSON command to `mac`; fails when the payload exceeds the frame. */
 esp_err_t hc_espnow_send_command(
     const char *mac,

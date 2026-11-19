@@ -222,6 +222,29 @@ describe("ControllersPage Controller / Node tabs", () => {
     });
   });
 
+  it("shows the role badge, board model and last activity on both tabs", async () => {
+    const nodeWithActivity: ControllerItem = {
+      ...standaloneNode,
+      last_communication_at: "2026-11-18T10:30:00Z",
+    } as ControllerItem;
+    renderPage({ devices: [hub, nodeWithActivity] });
+
+    const controllerGrid = await screen.findByTestId("controllers-card-grid");
+    expect(within(controllerGrid).getByTestId("controller-role-badge")).toHaveTextContent(
+      "Controller"
+    );
+    expect(within(controllerGrid).getByText("ESP32-S3-N16R8")).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: /Nodes \(1\)/ }));
+    const nodeGrid = await screen.findByTestId("nodes-card-grid");
+    expect(within(nodeGrid).getByTestId("node-role-badge")).toHaveTextContent("Node");
+    expect(within(nodeGrid).getByText("ESP32-S3-N16R8")).toBeInTheDocument();
+    const activity = within(nodeGrid).getByTestId("node-last-activity");
+    expect(activity).toHaveTextContent(/Last activity/);
+    expect(activity.textContent).not.toContain("Never");
+  });
+
   it("re-links a Node through its Controller", async () => {
     const calls = renderPage({ devices: [hub, { ...standaloneNode }] });
     const user = userEvent.setup();
