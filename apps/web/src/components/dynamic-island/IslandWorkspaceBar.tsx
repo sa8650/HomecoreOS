@@ -133,14 +133,16 @@ export function IslandWorkspaceBar({
           <div className="flex items-center justify-between gap-2 px-1">
             <span className="text-xs font-semibold">{launcherTitle}</span>
             <span className="flex items-center gap-1.5">
-              <span className="hidden rounded border px-1.5 py-0.5 font-mono text-[10px] opacity-70 sm:inline">
+              <span className="rounded border px-1.5 py-0.5 font-mono text-[10px] opacity-70">
                 ⌘K
               </span>
               <button
                 type="button"
                 data-testid="island-sidebar-toggle"
                 data-sidebar-hidden={sidebarHidden ? "true" : "false"}
-                className="island-launcher-toggle"
+                // Desktop-only: on mobile the sidebar is a drawer with its own
+                // trigger, so a collapse control there would do nothing.
+                className="island-launcher-toggle hidden lg:inline-flex"
                 aria-label={sidebarHidden ? "Show sidebar" : "Hide sidebar"}
                 aria-pressed={!sidebarHidden}
                 title={sidebarHidden ? "Show sidebar" : "Hide sidebar"}
