@@ -558,7 +558,8 @@ export function createDeviceApiRoutes() {
                 : null,
             lastHeartbeatAt: now,
           },
-          "confirmed"
+          "confirmed",
+          now
         ),
       ]);
     }
@@ -648,7 +649,8 @@ export function createDeviceApiRoutes() {
                 commMode: "espnow",
                 lastHeartbeatAt: now,
               },
-              "confirmed"
+              "confirmed",
+              now
             )
           ),
           ...missing.map((row) =>
@@ -986,7 +988,8 @@ export function createDeviceApiRoutes() {
               status: isErrorReading ? "error" : "ok",
               boardInstanceId: dev.boardInstanceId,
             },
-            "confirmed"
+            "confirmed",
+            now
           )
         );
       }
@@ -1112,7 +1115,8 @@ export function createDeviceApiRoutes() {
               lastChangedAt: now,
               boardInstanceId: dev.boardInstanceId,
             },
-            "confirmed"
+            "confirmed",
+            now
           )
         );
       }
@@ -1182,7 +1186,8 @@ export function createDeviceApiRoutes() {
               lastStateAt: now,
               boardInstanceId: dev.boardInstanceId,
             },
-            "confirmed"
+            "confirmed",
+            now
           )
         );
       }

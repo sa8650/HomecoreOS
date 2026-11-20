@@ -44,17 +44,25 @@ interface Harness {
   snapshotCalls: () => number;
   batches: RealtimeBatch[];
   setSnapshot: (snapshot: RealtimeSnapshot) => void;
+  setSnapshotFailure: (failing: boolean) => void;
+  configOptions: () => Array<{ reprovision?: boolean } | undefined>;
 }
 
 function createHarness(
-  options: { accountId?: string; channelHub?: ReturnType<typeof createChannelHub>; enabled?: boolean } = {}
+  options: {
+    accountId?: string;
+    channelHub?: ReturnType<typeof createChannelHub>;
+    enabled?: boolean;
+  } = {}
 ): Harness {
   const accountId = options.accountId ?? "acct-1";
   let params: RealtimeTransportParams | null = null;
   let transportCount = 0;
   let configCalls = 0;
   let snapshotCalls = 0;
+  const configOptions: Array<{ reprovision?: boolean } | undefined> = [];
   let snapshot = emptySnapshot(accountId);
+  let snapshotFailure = false;
   const batches: RealtimeBatch[] = [];
 
   const createTransport: RealtimeTransportFactory = (transportParams) => {
@@ -67,8 +75,9 @@ function createHarness(
   };
 
   const deps: Partial<RealtimeSyncDeps> = {
-    fetchConfig: async () => {
+    fetchConfig: async (_accountId, requestOptions) => {
       configCalls += 1;
+      configOptions.push(requestOptions);
       if (options.enabled === false) {
         return { enabled: false, reason: "emqx_not_configured", accountId };
       }
@@ -88,12 +97,14 @@ function createHarness(
     },
     fetchSnapshot: async () => {
       snapshotCalls += 1;
+      if (snapshotFailure) throw new Error("snapshot unavailable");
       return snapshot;
     },
     createTransport,
     createChannel: options.channelHub ?? (() => null),
     now: () => Date.now(),
     randomId: () => Math.random().toString(36).slice(2, 8),
+    snapshotRetryBaseMs: 20,
   };
 
   const client = new RealtimeSyncClient(deps);
@@ -110,6 +121,10 @@ function createHarness(
     setSnapshot: (next) => {
       snapshot = next;
     },
+    setSnapshotFailure: (failing) => {
+      snapshotFailure = failing;
+    },
+    configOptions: () => configOptions,
   };
 }
 
@@ -241,37 +256,81 @@ describe("RealtimeSyncClient", () => {
     expect(resync.events).toHaveLength(0);
   });
 
-  it("does not resync when the snapshot matches what the tab already applied", async () => {
+  it("reconciles events and snapshots through the same entity version", async () => {
     const harness = createHarness();
-    harness.client.start("acct-1");
-    await waitFor(() => expect(harness.client.getStatus().state).toBe("live"));
-    await waitFor(() => expect(harness.snapshotCalls()).toBe(1));
-
-    harness.emit(
-      envelope("acct-1", [
-        {
-          entity: "sensor",
-          action: "state",
-          id: "s1",
-          ts: new Date().toISOString(),
-          phase: "confirmed",
-        },
-      ])
-    );
+    const version = new Date(Date.now() - 30_000).toISOString();
     harness.setSnapshot({
       ...emptySnapshot(),
       entities: {
         boards: [],
         switches: [],
         devices: [],
-        sensors: [{ id: "s1", version: harness.client.getVersion("sensor", "s1")! }],
+        sensors: [{ id: "s1", version }],
         automations: [],
         homes: [],
       },
     });
 
+    harness.client.start("acct-1");
+    await waitFor(() => expect(harness.client.getStatus().state).toBe("live"));
+    await waitFor(() => expect(harness.client.getStatus().synced).toBe(true));
+
+    // An event that carries the same row version the snapshot reports is
+    // already reflected: no reload is needed on the next reconcile.
+    harness.emit(
+      envelope("acct-1", [
+        {
+          entity: "sensor",
+          action: "state",
+          id: "s1",
+          ts: new Date(Date.now() + 1_000).toISOString(),
+          version,
+          phase: "confirmed",
+        },
+      ])
+    );
     await harness.client.refreshSnapshot(true);
     expect(harness.batches.some((batch) => batch.resync)).toBe(false);
+
+    // A newer row version in the snapshot means the tab missed a change.
+    const newer = new Date().toISOString();
+    harness.setSnapshot({
+      ...emptySnapshot(),
+      entities: {
+        boards: [],
+        switches: [],
+        devices: [],
+        sensors: [{ id: "s1", version: newer }],
+        automations: [],
+        homes: [],
+      },
+    });
+    await harness.client.refreshSnapshot(true);
+    const resync = harness.batches.find((batch) => batch.resync);
+    expect(resync?.entities).toEqual(["sensor"]);
+  });
+
+  it("never reports itself synchronized when the snapshot read fails, then recovers", async () => {
+    const harness = createHarness();
+    harness.setSnapshotFailure(true);
+    harness.client.start("acct-1");
+
+    await waitFor(() => expect(harness.client.getStatus().state).toBe("degraded"));
+    expect(harness.client.getStatus().synced).toBe(false);
+    expect(harness.client.getStatus().reason).toBe("snapshot_unavailable");
+
+    // The tab keeps retrying with backoff instead of polling hard...
+    const firstCalls = harness.snapshotCalls();
+    await waitFor(() => expect(harness.snapshotCalls()).toBeGreaterThan(firstCalls), {
+      timeout: 5_000,
+    });
+    expect(harness.client.getStatus().synced).toBe(false);
+
+    // ...and only claims live + synced once a snapshot actually succeeds.
+    harness.setSnapshotFailure(false);
+    await waitFor(() => expect(harness.client.getStatus().synced).toBe(true), { timeout: 5_000 });
+    expect(harness.client.getStatus().state).toBe("live");
+    expect(harness.client.getStatus().reason).toBeNull();
   });
 
   it("keeps one MQTT session per account across tabs and broadcasts to followers", async () => {
@@ -305,6 +364,47 @@ describe("RealtimeSyncClient", () => {
     );
     await waitFor(() => expect(follower.batches.length).toBeGreaterThan(0));
     expect(follower.batches[0].entities).toEqual(["device"]);
+  });
+
+  it("elects exactly one connection when several tabs initialize at the same moment", async () => {
+    const hub = createChannelHub();
+    const tabs = [
+      createHarness({ channelHub: hub }),
+      createHarness({ channelHub: hub }),
+      createHarness({ channelHub: hub }),
+    ];
+
+    for (const tab of tabs) tab.client.start("acct-1");
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    const connections = tabs.reduce((total, tab) => total + tab.transportCount(), 0);
+    const leaders = tabs.filter((tab) => tab.client.getStatus().isLeader);
+    expect(connections).toBe(1);
+    expect(leaders).toHaveLength(1);
+    // Every tab still converges on a live, synchronized state.
+    await waitFor(() => expect(tabs.every((tab) => tab.client.getStatus().state === "live")).toBe(true), {
+      timeout: 5_000,
+    });
+  });
+
+  it("re-provisions once when the broker rejects the browser credential", async () => {
+    const harness = createHarness();
+    harness.client.start("acct-1");
+    await waitFor(() => expect(harness.client.getStatus().state).toBe("live"));
+    expect(harness.configOptions()).toEqual([{ reprovision: false }]);
+
+    // EMQX no longer knows this identity (rotated secret / removed user).
+    harness.transportParams()?.onError("Connection refused: Not authorized");
+    await waitFor(() =>
+      expect(harness.client.getStatus().lastError).toContain("Not authorized")
+    );
+
+    harness.transportParams()?.onDisconnected("closed");
+    await waitFor(() => expect(harness.transportCount()).toBe(2), { timeout: 5_000 });
+
+    // The retry asks the Worker for a fresh credential exactly once.
+    expect(harness.configOptions().at(-1)).toEqual({ reprovision: true });
+    expect(harness.client.getStatus().state).toBe("live");
   });
 
   it("reports a disabled channel instead of polling tightly when EMQX is not configured", async () => {

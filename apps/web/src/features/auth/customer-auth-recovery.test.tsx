@@ -37,6 +37,19 @@ function installFetchMock() {
   return calls;
 }
 
+it("credits Brevo with the transactional email at the bottom of the page", () => {
+  installFetchMock();
+  render(<CustomerAuthPage onAuthenticated={vi.fn()} />);
+
+  const attribution = screen.getByTestId("brevo-attribution");
+  expect(attribution).toHaveAttribute("href", "https://www.brevo.com/");
+  // The logo is a real asset served from the bundle, with an accessible name.
+  expect(within(attribution).getByAltText("Brevo")).toHaveAttribute(
+    "src",
+    "/brand/brevo-wordmark.png"
+  );
+});
+
 it("opens the card with a personal title and no horizontal tab scroller", () => {
   installFetchMock();
   render(<CustomerAuthPage onAuthenticated={vi.fn()} />);

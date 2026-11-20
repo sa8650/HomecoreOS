@@ -52,6 +52,12 @@ export interface RealtimeEvent {
   ts: string;
   phase?: RealtimeEventPhase;
   patch?: Record<string, unknown>;
+  /**
+   * Row-derived entity version (the same field `buildRealtimeSnapshot()` reads,
+   * e.g. `switches.last_changed_at`). When present it is the authoritative
+   * reconciliation key; `ts` only orders deliveries.
+   */
+  version?: string;
 }
 
 export interface RealtimeEnvelope {
@@ -149,7 +155,17 @@ export interface RealtimeCredential {
   password: string;
   topic: string;
   clientIdPrefix: string;
+  /**
+   * Deterministic broker client id for this login session. One session owns one
+   * connection, so revoking the session can kick the live socket immediately by
+   * id instead of waiting for the 12 h credential TTL.
+   */
+  clientId: string;
   expiresAt: string;
+}
+
+export function buildRealtimeClientId(accountId: string, sessionId: string): string {
+  return buildRealtimeWebUsername(accountId, sessionId);
 }
 
 const CREDENTIAL_TTL_MS = 12 * 60 * 60 * 1000;
@@ -237,6 +253,7 @@ export async function ensureRealtimeCredential(params: {
       password,
       topic: buildRealtimeSubscription(params.accountId),
       clientIdPrefix: params.clientIdPrefix ?? "hcweb",
+      clientId: buildRealtimeClientId(params.accountId, params.sessionId),
       expiresAt: new Date(now.getTime() + CREDENTIAL_TTL_MS).toISOString(),
     },
   };
@@ -253,14 +270,18 @@ export async function revokeRealtimeCredential(params: {
   try {
     const { data } = await db
       .from("realtime_web_sessions")
-      .select("mqtt_username,revoked_at")
+      .select("mqtt_username,account_id,revoked_at")
       .eq("session_id", params.sessionId)
       .maybeSingle();
-    const row = data as { mqtt_username: string; revoked_at: string | null } | null;
+    const row = data as
+      | { mqtt_username: string; account_id: string; revoked_at: string | null }
+      | null;
     if (row && !row.revoked_at) {
       if (isEmqxConfigured(env)) {
         const emqx = new EmqxClient(env, params.deps?.emqxFetch);
-        await emqx.revokeMqttIdentity(row.mqtt_username).catch(() => {});
+        // Kicking by the deterministic client id closes a live socket at once;
+        // deleting the user stops any reconnect.
+        await emqx.revokeMqttIdentity(row.mqtt_username, row.mqtt_username).catch(() => {});
       }
       await db
         .from("realtime_web_sessions")
@@ -277,47 +298,130 @@ export async function revokeRealtimeCredential(params: {
 }
 
 /**
- * Publishes one envelope of state events. Best-effort by design: real-time
- * delivery is an optimization, never the source of truth, so a broker outage
- * must not fail a user action that already committed to Postgres.
+ * Best-effort revocation for many sessions at once (password change, password
+ * recovery, "revoke all other sessions"). One query instead of one per session,
+ * and a failure on any single broker call never blocks the security action.
+ */
+export async function revokeRealtimeCredentialsForSessions(params: {
+  db: DbClient;
+  env: WorkerBindings;
+  deps?: { emqxFetch?: CustomFetch };
+  sessionIds: string[];
+}): Promise<{ revoked: number }> {
+  const ids = Array.from(new Set(params.sessionIds.filter(Boolean)));
+  if (ids.length === 0) return { revoked: 0 };
+
+  try {
+    const { data } = await params.db
+      .from("realtime_web_sessions")
+      .select("session_id,mqtt_username,revoked_at")
+      .in("session_id", ids)
+      .is("revoked_at", null);
+    const rows = (data ?? []) as Array<{ session_id: string; mqtt_username: string }>;
+    if (rows.length === 0) return { revoked: 0 };
+
+    if (isEmqxConfigured(params.env)) {
+      const emqx = new EmqxClient(params.env, params.deps?.emqxFetch);
+      await Promise.all(
+        rows.map((row) =>
+          emqx.revokeMqttIdentity(row.mqtt_username, row.mqtt_username).catch(() => {})
+        )
+      );
+    }
+
+    await params.db
+      .from("realtime_web_sessions")
+      .update({ revoked_at: new Date().toISOString() })
+      .in(
+        "session_id",
+        rows.map((row) => row.session_id)
+      );
+
+    return { revoked: rows.length };
+  } catch (err) {
+    console.warn(
+      `[realtime] batch revocation skipped: ${
+        err instanceof Error ? err.message : "unknown error"
+      }`
+    );
+    return { revoked: 0 };
+  }
+}
+
+/**
+ * Publishes state events as one or more envelopes.
+ *
+ * A single envelope carries at most `REALTIME_MAX_EVENTS_PER_MESSAGE` events so
+ * the MQTT payload stays small (free-tier friendly) and a broker never rejects
+ * an oversized message. Bulk actions that touch more entities than that are
+ * **split across several envelopes** instead of being truncated — dropping the
+ * tail used to leave parts of a large action silently out of sync until the
+ * next reconnect.
+ *
+ * Delivery is best-effort by design: real-time is an optimization, never the
+ * source of truth, so a broker outage must not fail a user action that already
+ * committed to Postgres. Each chunk gets one bounded retry for transient
+ * failures.
  */
 export async function publishRealtimeEvents(
   env: WorkerBindings,
   deps: { emqxFetch?: CustomFetch } | undefined,
   accountId: string,
   events: RealtimeEvent[]
-): Promise<{ published: boolean }> {
-  const usable = events
-    .filter((event) => Boolean(event?.entity && event?.id && event?.ts))
-    .slice(0, REALTIME_MAX_EVENTS_PER_MESSAGE);
-  if (usable.length === 0) return { published: false };
-  if (!isEmqxConfigured(env)) return { published: false };
+): Promise<{ published: boolean; chunks: number; failedChunks: number }> {
+  const usable = events.filter((event) => Boolean(event?.entity && event?.id && event?.ts));
+  if (usable.length === 0) return { published: false, chunks: 0, failedChunks: 0 };
+  if (!isEmqxConfigured(env)) return { published: false, chunks: 0, failedChunks: 0 };
 
-  const envelope: RealtimeEnvelope = {
-    v: 1,
-    accountId,
-    sentAt: new Date().toISOString(),
-    events: usable,
-  };
+  const emqx = new EmqxClient(env, deps?.emqxFetch);
+  const topic = buildRealtimeTopic(accountId);
+  let failedChunks = 0;
+  let publishedChunks = 0;
+  let sentAt = new Date().toISOString();
 
-  try {
-    const emqx = new EmqxClient(env, deps?.emqxFetch);
-    // QoS 0: the event stream is lossy by design and reconciliation after a
-    // reconnect (snapshot) repairs anything the broker dropped. QoS 0 keeps the
-    // free-tier message quota and per-message latency as low as possible.
-    await emqx.publish({
-      topic: buildRealtimeTopic(accountId),
-      payload: envelope as unknown as Record<string, unknown>,
-      qos: 0,
-      retain: false,
-    });
-    return { published: true };
-  } catch (err) {
-    console.warn(
-      `[realtime] publish skipped: ${err instanceof Error ? err.message : "unknown error"}`
-    );
-    return { published: false };
+  for (let offset = 0; offset < usable.length; offset += REALTIME_MAX_EVENTS_PER_MESSAGE) {
+    const chunk = usable.slice(offset, offset + REALTIME_MAX_EVENTS_PER_MESSAGE);
+    const envelope: RealtimeEnvelope = {
+      v: 1,
+      accountId,
+      sentAt,
+      events: chunk,
+    };
+
+    // QoS policy: low-volume, human-triggered changes (switch/device/board/
+    // automation/home/notification) are worth an acknowledgement, so a dropped
+    // command result cannot go unnoticed until the next reconnect. Any chunk
+    // that carries sensor telemetry stays QoS 0 — sensors are the high-frequency
+    // producer and acks there would only add broker traffic. Nothing is retained:
+    // the snapshot is the repair mechanism, not the broker.
+    const qos = chunk.some((event) => event.entity === "sensor") ? 0 : 1;
+
+    let ok = false;
+    for (let attempt = 0; attempt < 2 && !ok; attempt += 1) {
+      try {
+        await emqx.publish({
+          topic,
+          payload: envelope as unknown as Record<string, unknown>,
+          qos,
+          retain: false,
+        });
+        ok = true;
+      } catch (err) {
+        if (attempt === 1) {
+          console.warn(
+            `[realtime] publish skipped: ${err instanceof Error ? err.message : "unknown error"}`
+          );
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          sentAt = new Date().toISOString();
+        }
+      }
+    }
+    if (ok) publishedChunks += 1;
+    else failedChunks += 1;
   }
+
+  return { published: publishedChunks > 0, chunks: publishedChunks, failedChunks };
 }
 
 type SnapshotRow = Record<string, unknown>;
@@ -335,7 +439,23 @@ export function buildRealtimeAclRules(accountId: string) {
   return buildRealtimeWebAclRules(accountId);
 }
 
-/** Compact version map used to reconcile after a reconnect. */
+export class RealtimeSnapshotError extends Error {
+  readonly entity: string;
+  constructor(entity: string, detail: string) {
+    super(`Realtime snapshot query failed for ${entity}: ${detail}`);
+    this.name = "RealtimeSnapshotError";
+    this.entity = entity;
+  }
+}
+
+/**
+ * Compact version map used to reconcile after a reconnect.
+ *
+ * Every query is checked: a database error is thrown, never coerced into an
+ * empty list. An empty list is a *valid* answer meaning "this account has no
+ * such entities", and treating a failure as emptiness would tell the browser it
+ * is synchronized with a fleet that had all just disappeared.
+ */
 export async function buildRealtimeSnapshot(
   db: DbClient,
   accountId: string
@@ -375,6 +495,22 @@ export async function buildRealtimeSnapshot(
         .eq("account_id", accountId)
         .is("deleted_at", null),
     ]);
+
+  const failed: Array<[string, { message?: string } | null | undefined]> = [
+    ["boards", boardsRes.error],
+    ["switches", switchesRes.error],
+    ["devices", devicesRes.error],
+    ["sensors", sensorsRes.error],
+    ["automations", automationsRes.error],
+    ["homes", homesRes.error],
+  ];
+  const firstFailure = failed.find(([, error]) => Boolean(error));
+  if (firstFailure) {
+    throw new RealtimeSnapshotError(
+      firstFailure[0],
+      firstFailure[1]?.message ?? "database error"
+    );
+  }
 
   const boards = ((boardsRes.data ?? []) as SnapshotRow[]).map((row) => ({
     id: String(row.id),
@@ -435,13 +571,22 @@ export async function buildRealtimeSnapshot(
   };
 }
 
-/** Small factory so call sites stay one line and timestamps stay consistent. */
+/**
+ * Small factory so call sites stay one line and timestamps stay consistent.
+ *
+ * `version` should be the row value the snapshot also reports for this entity
+ * (`last_changed_at`, `last_state_at`, `last_reading_at`, `last_executed_at`,
+ * `last_communication_at`/`updated_at`). When it is supplied the browser can
+ * reconcile an entity without reloading it, because the event and the snapshot
+ * speak about the same revision.
+ */
 export function makeRealtimeEvent(
   entity: RealtimeEntity,
   action: RealtimeEventAction,
   id: string,
   patch?: Record<string, unknown>,
-  phase?: RealtimeEventPhase
+  phase?: RealtimeEventPhase,
+  version?: string | null
 ): RealtimeEvent {
   const event: RealtimeEvent = {
     entity,
@@ -451,5 +596,6 @@ export function makeRealtimeEvent(
   };
   if (patch) event.patch = patch;
   if (phase) event.phase = phase;
+  if (version) event.version = version;
   return event;
 }

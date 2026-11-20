@@ -35,9 +35,16 @@ export interface RealtimeEvent {
   entity: RealtimeEntity;
   action: RealtimeEventAction;
   id: string;
+  /** Server timestamp; used only to order deliveries. */
   ts: string;
   phase?: RealtimeEventPhase;
   patch?: Record<string, unknown>;
+  /**
+   * Row-derived entity version (`last_changed_at`, `last_reading_at`, …). The
+   * snapshot reports the same value for the same row, which is what lets a
+   * reconnect reconcile an entity without reloading it.
+   */
+  version?: string;
 }
 
 export interface RealtimeEnvelope {
@@ -73,6 +80,8 @@ export interface RealtimeCredentialPayload {
   password: string;
   topic: string;
   clientIdPrefix: string;
+  /** Deterministic per-session broker client id (one socket per session). */
+  clientId?: string;
   expiresAt: string;
 }
 

@@ -103,10 +103,24 @@ After deploying, open the console and confirm the live channel works:
    (`emqx_not_configured`, `provision_failed`, …).
 4. If your deployment exposes WebSocket on a different port/path, set `EMQX_WS_URL`
    (preferred) or `EMQX_WS_PORT` + `EMQX_WS_PATH` and redeploy.
+5. Revocation check: sign the same account in from a second browser, then revoke that session
+   from **User Settings → Security → Sessions**. The revoked tab must stop receiving updates
+   immediately (EMQX deletes the broker user and kicks the client), and its
+   `GET /api/realtime/config` must answer `401`. Changing the password or completing a
+   password recovery must do the same for every other session automatically.
+6. Account-scope check: with two accounts on one login, switch account and confirm
+   `GET /api/realtime/config` returns the new account's topic
+   (`homecore/<newAccountId>/realtime/#`) and that the previous username no longer exists in
+   **EMQX → Access Control → Users**.
+7. Console chrome check: hide the sidebar from its header button, then re-open it from the
+   Dynamic Island → Quick Navigation expand/collapse icon. The layout must reflow to full
+   width (no gap, no horizontal scrollbar) and the choice must survive a reload.
 
 Until the WebSocket listener is reachable, the console keeps working and shows
 `Manual refresh`: pages fall back to one visible-only refresh per minute instead of tight
-polling. Architecture and quota rules are documented in `docs/REALTIME_SYNC.md`.
+polling. `Live` is only shown once a snapshot has actually been applied, so a failing database
+read reads `Delayed` and retries with backoff rather than pretending the console is in sync.
+Architecture, event flow, revocation and quota rules are documented in `docs/REALTIME_SYNC.md`.
 
 ---
 

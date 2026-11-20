@@ -28,7 +28,11 @@ import {
 import type { WorkerBindings } from "../config/env";
 import { recordActivity } from "./audit";
 import type { CustomFetch, DbClient } from "./db";
-import { makeRealtimeEvent, publishRealtimeEvents } from "./realtime";
+import {
+  makeRealtimeEvent,
+  publishRealtimeEvents,
+  type RealtimeEvent,
+} from "./realtime";
 import { resolveDeviceCommandDelivery } from "./device-command-delivery";
 import { EmqxClient, isEmqxConfigured } from "./emqx";
 import { emitNotification } from "./notifications";
@@ -351,6 +355,8 @@ async function executeSwitchTarget(params: {
     | { kind: "device"; deviceId: string; state: string }
     | { kind: "switch"; switchId: string; isOn: boolean }
   >;
+  /** Switch state events published on the account's real-time channel. */
+  stateEvents?: import("./realtime").RealtimeEvent[];
 }): Promise<boolean> {
   const { db, emqx, accountId, ruleId, switchId, desired, errors, downstreamEvents } = params;
   const { data: swData } = await db
@@ -374,15 +380,17 @@ async function executeSwitchTarget(params: {
     is_on: boolean;
   };
 
+  const changedAt = new Date().toISOString();
   await db
     .from("switches")
     .update({
       is_on: desired,
-      last_changed_at: new Date().toISOString(),
+      last_changed_at: changedAt,
     })
     .eq("id", sw.id)
     .eq("account_id", accountId);
 
+  let mqttDispatched = false;
   if (emqx) {
     // Controllers get the command on their own topic; a Node linked over
     // ESP-NOW (no EMQX session) gets it relayed through its Controller.
@@ -405,8 +413,27 @@ async function executeSwitchTarget(params: {
         payload: delivery.payload,
         qos: 1,
       });
+      mqttDispatched = true;
     }
   }
+  // The automation already wrote the new state, so the console must hear about
+  // it now: `accepted` means "command sent", never "hardware confirmed".
+  params.stateEvents?.push(
+    makeRealtimeEvent(
+      "switch",
+      "state",
+      sw.id,
+      {
+        isOn: desired,
+        boardInstanceId: sw.board_instance_id,
+        mqttDispatched,
+        source: "automation",
+        ruleId,
+      },
+      "accepted",
+      changedAt
+    )
+  );
   if (sw.is_on !== desired) {
     downstreamEvents.push({ kind: "switch", switchId: sw.id, isOn: desired });
   }
@@ -425,6 +452,7 @@ async function executeDeviceTarget(params: {
     | { kind: "device"; deviceId: string; state: string }
     | { kind: "switch"; switchId: string; isOn: boolean }
   >;
+  stateEvents?: import("./realtime").RealtimeEvent[];
 }): Promise<boolean> {
   const { db, emqx, accountId, ruleId, deviceId, targetState, errors, downstreamEvents } = params;
   const { data: devData } = await db
@@ -448,12 +476,16 @@ async function executeDeviceTarget(params: {
     state: string;
   };
 
+  const changedAt = new Date().toISOString();
+  // `last_state_at` is the device's snapshot version: writing it here keeps the
+  // automation event and the reconnect snapshot on the same revision.
   await db
     .from("devices")
-    .update({ state: targetState })
+    .update({ state: targetState, last_state_at: changedAt })
     .eq("id", dev.id)
     .eq("account_id", accountId);
 
+  let mqttDispatched = false;
   if (emqx) {
     const delivery = await resolveDeviceCommandDelivery(db, {
       accountId,
@@ -474,8 +506,25 @@ async function executeDeviceTarget(params: {
         payload: delivery.payload,
         qos: 1,
       });
+      mqttDispatched = true;
     }
   }
+  params.stateEvents?.push(
+    makeRealtimeEvent(
+      "device",
+      "state",
+      dev.id,
+      {
+        state: targetState,
+        boardInstanceId: dev.board_instance_id,
+        mqttDispatched,
+        source: "automation",
+        ruleId,
+      },
+      "accepted",
+      changedAt
+    )
+  );
   if (dev.state !== targetState) {
     downstreamEvents.push({
       kind: "device",
@@ -520,6 +569,7 @@ export async function executeAutomationActions(params: {
     | { kind: "device"; deviceId: string; state: string }
     | { kind: "switch"; switchId: string; isOn: boolean }
   > = [];
+  const stateEvents: RealtimeEvent[] = [];
 
   for (const action of actions) {
     try {
@@ -533,6 +583,7 @@ export async function executeAutomationActions(params: {
           desired: action.type === "switch_on",
           errors,
           downstreamEvents,
+          stateEvents,
         });
         if (ok) executedCount += 1;
       } else if (action.type === "device_state" && action.deviceId && action.targetState) {
@@ -545,6 +596,7 @@ export async function executeAutomationActions(params: {
           targetState: action.targetState,
           errors,
           downstreamEvents,
+          stateEvents,
         });
         if (ok) executedCount += 1;
       } else if (action.type === "scene" && Array.isArray(action.targets)) {
@@ -613,13 +665,24 @@ export async function executeAutomationActions(params: {
   await Promise.all(tasks);
 
   if (!skipRuleStatusUpdate) {
+    const runAt = (executedAt ?? new Date()).toISOString();
+    // One envelope carries both the run result and every switch/device state the
+    // actions just changed, so the console updates affected cards immediately.
     await publishRealtimeEvents(env, { emqxFetch }, accountId, [
-      makeRealtimeEvent("automation", "run", ruleId, {
-        lastExecutedAt: (executedAt ?? new Date()).toISOString(),
-        lastExecutionStatus: errors.length > 0 ? "failed" : "success",
-        executedCount,
-        errors: errors.slice(0, 5),
-      }),
+      ...stateEvents,
+      makeRealtimeEvent(
+        "automation",
+        "run",
+        ruleId,
+        {
+          lastExecutedAt: runAt,
+          lastExecutionStatus: errors.length > 0 ? "failed" : "success",
+          executedCount,
+          errors: errors.slice(0, 5),
+        },
+        undefined,
+        runAt
+      ),
     ]);
   }
 
@@ -1066,6 +1129,7 @@ export async function executeOrTestFlowGraph(params: {
     | { kind: "device"; deviceId: string; state: string }
     | { kind: "switch"; switchId: string; isOn: boolean }
   > = [];
+  const stateEvents: RealtimeEvent[] = [];
 
   let anyTriggerFired = false;
   let anyConditionPassed = true;
@@ -1278,6 +1342,7 @@ export async function executeOrTestFlowGraph(params: {
             desired,
             errors,
             downstreamEvents,
+            stateEvents,
           });
           if (actionOk) executedCount += 1;
         }
@@ -1301,6 +1366,7 @@ export async function executeOrTestFlowGraph(params: {
             targetState: cfg.targetState,
             errors,
             downstreamEvents,
+            stateEvents,
           });
           if (actionOk) executedCount += 1;
         }
@@ -1324,6 +1390,7 @@ export async function executeOrTestFlowGraph(params: {
                 desired: t.isOn,
                 errors,
                 downstreamEvents,
+                stateEvents,
               });
               if (ok) executedCount += 1;
             } else {
@@ -1336,6 +1403,7 @@ export async function executeOrTestFlowGraph(params: {
                 targetState: t.targetState,
                 errors,
                 downstreamEvents,
+                stateEvents,
               });
               if (ok) executedCount += 1;
             }
@@ -1478,13 +1546,21 @@ export async function executeOrTestFlowGraph(params: {
     ]);
 
     await publishRealtimeEvents(env, { emqxFetch }, accountId, [
-      makeRealtimeEvent("automation", "run", params.ruleId, {
-        lastExecutedAt: now.toISOString(),
-        lastExecutionStatus: errors.length > 0 ? "failed" : "success",
-        executedCount,
-        errors: errors.slice(0, 5),
-        flow: true,
-      }),
+      ...stateEvents,
+      makeRealtimeEvent(
+        "automation",
+        "run",
+        params.ruleId,
+        {
+          lastExecutedAt: now.toISOString(),
+          lastExecutionStatus: errors.length > 0 ? "failed" : "success",
+          executedCount,
+          errors: errors.slice(0, 5),
+          flow: true,
+        },
+        undefined,
+        now.toISOString()
+      ),
     ]);
 
     const nextVisited = new Set(params.visitedRuleIds ?? []);

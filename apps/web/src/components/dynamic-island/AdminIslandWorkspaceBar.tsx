@@ -14,6 +14,8 @@ export function AdminIslandWorkspaceBar({
   onNavigate,
   onSignOut,
   onOpenMobileNav,
+  sidebarHidden,
+  onToggleSidebar,
 }: {
   adminSession: AdminSessionData;
   routes: IslandNavRoute[];
@@ -23,6 +25,8 @@ export function AdminIslandWorkspaceBar({
   onNavigate: (path: string) => void;
   onSignOut: () => void;
   onOpenMobileNav: () => void;
+  sidebarHidden: boolean;
+  onToggleSidebar: () => void;
 }) {
   return (
     <IslandWorkspaceBar
@@ -32,6 +36,8 @@ export function AdminIslandWorkspaceBar({
       onToggleTheme={onToggleTheme}
       onNavigate={onNavigate}
       onOpenMobileNav={onOpenMobileNav}
+      sidebarHidden={sidebarHidden}
+      onToggleSidebar={onToggleSidebar}
       notificationScope="admin"
       faceAriaLabel="Open admin quick bar"
       actionsAriaLabel="Platform admin quick bar"

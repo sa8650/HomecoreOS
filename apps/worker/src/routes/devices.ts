@@ -373,12 +373,13 @@ export function createDeviceRoutes() {
         Parameters<typeof evaluateAutomationsForEvent>[0]["preloadedRules"]
       >;
 
+      const commandedAt = new Date().toISOString();
       const [updateRes, controllerOnline] = await Promise.all([
         db
           .from("devices")
           .update({
             state: parsed.data.state,
-            last_state_at: new Date().toISOString(),
+            last_state_at: commandedAt,
           })
           .eq("id", dev.id)
           .eq("account_id", auth.accountId)
@@ -416,9 +417,10 @@ export function createDeviceRoutes() {
               state: parsed.data.state,
               mqttDispatched,
               controllerOnline,
-              lastStateAt: new Date().toISOString(),
+              lastStateAt: commandedAt,
             },
-            mqttDispatched ? "accepted" : "desired"
+            mqttDispatched ? "accepted" : "desired",
+            commandedAt
           ),
         ]);
       }
@@ -849,12 +851,13 @@ export function createDeviceRoutes() {
         Parameters<typeof evaluateAutomationsForEvent>[0]["preloadedRules"]
       >;
 
+      const changedAt = new Date().toISOString();
       const [updateRes, controllerOnline] = await Promise.all([
         db
           .from("switches")
           .update({
             is_on: parsed.data.isOn,
-            last_changed_at: new Date().toISOString(),
+            last_changed_at: changedAt,
           })
           .eq("id", sw.id)
           .eq("account_id", auth.accountId)
@@ -892,9 +895,10 @@ export function createDeviceRoutes() {
             boardInstanceId: sw.board_instance_id,
             mqttDispatched,
             controllerOnline,
-            lastChangedAt: new Date().toISOString(),
+            lastChangedAt: changedAt,
           },
-          mqttDispatched ? "accepted" : "desired"
+          mqttDispatched ? "accepted" : "desired",
+          changedAt
         ),
       ]);
 
@@ -1064,9 +1068,14 @@ export function createDeviceRoutes() {
       ]);
 
       await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
-        makeRealtimeEvent("switch", "updated", switchId, {
-          boardInstanceId: ctrlRow.id,
-        }),
+        makeRealtimeEvent(
+          "switch",
+          "updated",
+          switchId,
+          { boardInstanceId: ctrlRow.id },
+          undefined,
+          (data as { updated_at?: string } | null)?.updated_at ?? null
+        ),
       ]);
 
       return c.json({ switch: data, warnings });

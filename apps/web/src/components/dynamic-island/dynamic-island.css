@@ -374,6 +374,29 @@
   padding: 10px;
 }
 
+.island-launcher-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  border: 1px solid var(--ds-border-strong);
+  color: var(--ds-text-2);
+  background: transparent;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.island-launcher-toggle:hover {
+  background: var(--ds-card-hover-bg);
+  color: var(--ds-text-1);
+}
+
+.island-launcher-toggle:focus-visible {
+  box-shadow: 0 0 0 2px var(--ds-primary);
+}
+
 .island-launcher-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
