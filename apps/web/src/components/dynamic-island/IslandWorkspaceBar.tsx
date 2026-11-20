@@ -4,6 +4,7 @@ import {
   RiMenuLine,
   RiMoonLine,
   RiNotification3Line,
+  RiSideBarLine,
   RiSunLine,
 } from "@remixicon/react";
 import { HomecoreLogoMark } from "@/components/graphics/HomecoreGraphics";
@@ -34,6 +35,13 @@ export interface IslandWorkspaceBarProps {
   onToggleTheme: () => void;
   onNavigate: (path: string) => void;
   onOpenMobileNav: () => void;
+  /**
+   * Sidebar visibility shared with `ConsoleShell`. The Quick Navigation header
+   * owns the expand/collapse control, so both stay in sync with the sidebar's own
+   * hide button.
+   */
+  sidebarHidden: boolean;
+  onToggleSidebar: () => void;
   /** Which notification feed to subscribe to. */
   notificationScope: "user" | "admin";
   faceAriaLabel: string;
@@ -62,6 +70,8 @@ export function IslandWorkspaceBar({
   onToggleTheme,
   onNavigate,
   onOpenMobileNav,
+  sidebarHidden,
+  onToggleSidebar,
   notificationScope,
   faceAriaLabel,
   actionsAriaLabel,
@@ -120,10 +130,28 @@ export function IslandWorkspaceBar({
           data-testid="island-launcher-panel"
           className="island-launcher-panel"
         >
-          <div className="flex items-center justify-between px-1">
+          <div className="flex items-center justify-between gap-2 px-1">
             <span className="text-xs font-semibold">{launcherTitle}</span>
-            <span className="rounded border px-1.5 py-0.5 font-mono text-[10px] opacity-70">
-              ⌘K
+            <span className="flex items-center gap-1.5">
+              <span className="hidden rounded border px-1.5 py-0.5 font-mono text-[10px] opacity-70 sm:inline">
+                ⌘K
+              </span>
+              <button
+                type="button"
+                data-testid="island-sidebar-toggle"
+                data-sidebar-hidden={sidebarHidden ? "true" : "false"}
+                className="island-launcher-toggle"
+                aria-label={sidebarHidden ? "Show sidebar" : "Hide sidebar"}
+                aria-pressed={!sidebarHidden}
+                title={sidebarHidden ? "Show sidebar" : "Hide sidebar"}
+                onClick={onToggleSidebar}
+              >
+                {sidebarHidden ? (
+                  <RiSideBarLine className="size-3.5" aria-hidden="true" />
+                ) : (
+                  <RiSideBarLine className="size-3.5 rotate-180" aria-hidden="true" />
+                )}
+              </button>
             </span>
           </div>
           <div className="island-launcher-grid">

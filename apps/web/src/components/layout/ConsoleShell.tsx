@@ -3,6 +3,7 @@ import {
   RiCloseLine,
   RiLogoutBoxRLine,
   RiMenuLine,
+  RiSidebarFoldLine,
 } from "@remixicon/react";
 import { cn } from "@/lib/utils";
 import { HomecoreWordmark } from "@/components/graphics/HomecoreGraphics";
@@ -17,11 +18,38 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
+export const SIDEBAR_HIDDEN_STORAGE_KEY = "hc:console:sidebar-hidden";
+
+function readSidebarHidden(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_HIDDEN_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistSidebarHidden(hidden: boolean): void {
+  try {
+    localStorage.setItem(SIDEBAR_HIDDEN_STORAGE_KEY, hidden ? "1" : "0");
+  } catch {
+    // Storage is optional; the console still toggles in memory.
+  }
+}
+
 export interface NavItem {
   id: string;
   label: string;
   icon: ReactNode;
   badge?: string | number;
+}
+
+export interface SidebarControls {
+  openMobileNav: () => void;
+  /** True when the desktop sidebar is collapsed and the workspace is full width. */
+  sidebarHidden: boolean;
+  hideSidebar: () => void;
+  showSidebar: () => void;
+  toggleSidebar: () => void;
 }
 
 export const ConsoleShell = memo(function ConsoleShell({
@@ -48,7 +76,7 @@ export const ConsoleShell = memo(function ConsoleShell({
   onSelectNav: (id: string) => void;
   headerActions?: ReactNode;
   headerNotifications?: ReactNode;
-  floatingBar?: (controls: { openMobileNav: () => void }) => ReactNode;
+  floatingBar?: (controls: SidebarControls) => ReactNode;
   workspaceClassName?: string;
   userEmail: string;
   userName: string;
@@ -58,6 +86,28 @@ export const ConsoleShell = memo(function ConsoleShell({
   children: ReactNode;
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  // The desktop sidebar is collapsible. One state is shared by its own hide
+  // button and by the Dynamic Island's Quick Navigation toggle, so the two can
+  // never disagree.
+  const [sidebarHidden, setSidebarHidden] = useState(readSidebarHidden);
+
+  useEffect(() => {
+    persistSidebarHidden(sidebarHidden);
+  }, [sidebarHidden]);
+
+  useEffect(() => {
+    // Keep parallel tabs of the same console in the same layout.
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== SIDEBAR_HIDDEN_STORAGE_KEY) return;
+      setSidebarHidden(event.newValue === "1");
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  const hideSidebar = () => setSidebarHidden(true);
+  const showSidebar = () => setSidebarHidden(false);
+  const toggleSidebar = () => setSidebarHidden((previous) => !previous);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -81,7 +131,24 @@ export const ConsoleShell = memo(function ConsoleShell({
     <div className="flex h-full flex-col justify-between">
       <div className="space-y-5">
         <div className="px-2 pt-1">
-          <HomecoreWordmark subtitle={consoleTitle} compact />
+          <div className="flex items-start justify-between gap-2">
+            <HomecoreWordmark subtitle={consoleTitle} compact />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  data-testid="sidebar-hide-button"
+                  onClick={hideSidebar}
+                  aria-label="Hide sidebar"
+                  className="hidden shrink-0 lg:inline-flex"
+                >
+                  <RiSidebarFoldLine className="size-4" aria-hidden="true" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Hide sidebar</TooltipContent>
+            </Tooltip>
+          </div>
           {consoleBadge && (
             <div className="mt-2.5">
               <Badge variant="primary-light" radius="full">
@@ -159,9 +226,14 @@ export const ConsoleShell = memo(function ConsoleShell({
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-background text-foreground">
         {/* Desktop Fixed Sidebar */}
-        <aside className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-40 lg:flex lg:w-64 lg:flex-col lg:overflow-y-auto border-r border-sidebar-border bg-sidebar p-4">
-          {navContent}
-        </aside>
+        {!sidebarHidden && (
+          <aside
+            data-testid="console-sidebar"
+            className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-40 lg:flex lg:w-64 lg:flex-col lg:overflow-y-auto border-r border-sidebar-border bg-sidebar p-4"
+          >
+            {navContent}
+          </aside>
+        )}
 
         {/* Mobile Drawer */}
         {mobileOpen && (
@@ -189,12 +261,19 @@ export const ConsoleShell = memo(function ConsoleShell({
         <div
           data-testid="console-workspace-column"
           className={cn(
-            "relative flex min-h-screen min-w-0 flex-1 flex-col lg:pl-64",
+            "relative flex min-h-screen min-w-0 flex-1 flex-col transition-[padding] duration-200",
+            sidebarHidden ? "lg:pl-0" : "lg:pl-64",
             workspaceClassName
           )}
         >
           {floatingBar ? (
-            floatingBar({ openMobileNav: () => setMobileOpen(true) })
+            floatingBar({
+              openMobileNav: () => setMobileOpen(true),
+              sidebarHidden,
+              hideSidebar,
+              showSidebar,
+              toggleSidebar,
+            })
           ) : (
             <header className="sticky top-0 z-30 flex min-h-14 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-sidebar-border bg-sidebar/95 px-4 py-2 text-sidebar-foreground backdrop-blur-md sm:px-6">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -221,8 +300,13 @@ export const ConsoleShell = memo(function ConsoleShell({
           )}
 
           <main
+            data-sidebar-hidden={sidebarHidden ? "true" : "false"}
             className={cn(
-              "mx-auto w-full max-w-[1640px] flex-1",
+              "mx-auto w-full flex-1",
+              // With the rail gone the workspace owns the whole viewport: the
+              // usual reading-width cap is dropped so grids fill the space
+              // instead of leaving a centred gap where the sidebar used to be.
+              sidebarHidden ? "max-w-none" : "max-w-[1640px]",
               floatingBar ? "px-4 pb-6 pt-14 sm:px-6" : "p-4 sm:p-6"
             )}
           >

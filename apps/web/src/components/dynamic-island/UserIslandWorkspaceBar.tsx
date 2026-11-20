@@ -18,6 +18,8 @@ export function UserIslandWorkspaceBar({
   onSwitchAccount,
   onSignOut,
   onOpenMobileNav,
+  sidebarHidden,
+  onToggleSidebar,
 }: {
   userSession: UserSessionData;
   routes: IslandNavRoute[];
@@ -28,6 +30,8 @@ export function UserIslandWorkspaceBar({
   onSwitchAccount: (accountId: string) => void;
   onSignOut: () => void;
   onOpenMobileNav: () => void;
+  sidebarHidden: boolean;
+  onToggleSidebar: () => void;
 }) {
   return (
     <IslandWorkspaceBar
@@ -37,6 +41,8 @@ export function UserIslandWorkspaceBar({
       onToggleTheme={onToggleTheme}
       onNavigate={onNavigate}
       onOpenMobileNav={onOpenMobileNav}
+      sidebarHidden={sidebarHidden}
+      onToggleSidebar={onToggleSidebar}
       notificationScope="user"
       faceAriaLabel="Open workspace quick bar"
       actionsAriaLabel="Customer workspace quick bar"

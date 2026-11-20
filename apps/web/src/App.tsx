@@ -400,7 +400,7 @@ export function App() {
               if (target) navigate(target.path);
             }}
             workspaceClassName="hc-admin-lavender-bg"
-            floatingBar={({ openMobileNav }) => (
+            floatingBar={({ openMobileNav, sidebarHidden, toggleSidebar }) => (
               <AdminIslandWorkspaceBar
                 adminSession={adminSession}
                 routes={ADMIN_ROUTES}
@@ -410,6 +410,8 @@ export function App() {
                 onNavigate={navigate}
                 onSignOut={() => void handleAdminLogout()}
                 onOpenMobileNav={openMobileNav}
+                sidebarHidden={sidebarHidden}
+                onToggleSidebar={toggleSidebar}
               />
             )}
             userEmail={adminSession.admin.email}
@@ -566,7 +568,7 @@ export function App() {
             const target = USER_ROUTES.find((r) => r.id === id);
             if (target) navigate(target.path);
           }}
-          floatingBar={({ openMobileNav }) => (
+          floatingBar={({ openMobileNav, sidebarHidden, toggleSidebar }) => (
             <UserIslandWorkspaceBar
               userSession={userSession}
               routes={USER_ROUTES}
@@ -577,6 +579,8 @@ export function App() {
               onSwitchAccount={(accountId) => void handleSwitchAccount(accountId)}
               onSignOut={() => void handleUserLogout()}
               onOpenMobileNav={openMobileNav}
+              sidebarHidden={sidebarHidden}
+              onToggleSidebar={toggleSidebar}
             />
           )}
           userEmail={userSession.user.email}
