@@ -412,6 +412,47 @@ describe("Global real-time synchronization channel", () => {
           event.patch?.status === "offline"
       );
     expect(offlineEvent).toBeDefined();
+
+    // The offline notification itself is pushed too, so the bell updates live.
+    const notificationEvent = realtimeMessages()
+      .slice(beforeOffline)
+      .flatMap((message) => message.events)
+      .find((event) => event.entity === "notification");
+    expect(notificationEvent).toBeDefined();
+    expect(notificationEvent?.patch?.severity).toBe("warning");
+  });
+
+  it("publishes automation execution results as they happen", async () => {
+    const ruleRes = await req("/api/automations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({
+        name: "Lamp follows itself off",
+        executionMode: "cloud",
+        triggerConfig: { type: "device_state", switchId, expectedState: false },
+        actionsConfig: [{ type: "switch_on", switchId }],
+      }),
+    });
+    expect(ruleRes.status).toBe(201);
+    const ruleId = ((await ruleRes.json()) as { automation: { id: string } }).automation.id;
+
+    const before = realtimeMessages().length;
+    await req("/api/device/telemetry", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${deviceToken}`,
+      },
+      body: JSON.stringify({ switches: [{ switchId, isOn: false }] }),
+    });
+
+    const runEvent = realtimeMessages()
+      .slice(before)
+      .flatMap((message) => message.events)
+      .find((event) => event.entity === "automation" && event.id === ruleId);
+    expect(runEvent).toBeDefined();
+    expect(runEvent?.action).toBe("run");
+    expect(runEvent?.patch?.lastExecutionStatus).toBe("success");
   });
 
   it("serves a scoped version snapshot for reconnection reconciliation", async () => {
