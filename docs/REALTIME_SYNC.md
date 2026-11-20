@@ -150,6 +150,20 @@ invalidates every outstanding browser credential at once.
 | Supabase | No new tables are written on the hot path except `realtime_web_sessions` (one row per login, no password). No Supabase Realtime. |
 | EMQX API calls | One provision per sign-in (idempotent skip afterwards), one publish per change batch. |
 
+## Scope
+
+The channel covers the **user console**: Overview and the 2D floor plan, rooms, devices,
+switches, sensors, My Boards (Controllers and Nodes), Automations, Firmware/OTA, Activity
+and the notification bell, plus the pairing and controller-setup modals.
+
+The **admin console** is not subscribed to account channels by design: platform staff read
+aggregated data that is not tied to one home, and keeping admin out of the per-account
+stream means an admin tab never consumes a home's real-time quota. Admin pages keep their
+existing explicit refresh behaviour.
+
+The `mqtt` client is loaded lazily: a console that never goes live (tests, EMQX not
+configured) never downloads the transport chunk.
+
 ## Worker endpoints
 
 | Endpoint | Purpose |
