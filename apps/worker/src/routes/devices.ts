@@ -25,6 +25,7 @@ import {
 import { syncControllerConfigSnapshot } from "../lib/controller-config";
 import { resolveDeviceCommandDelivery } from "../lib/device-command-delivery";
 import { EmqxClient, isEmqxConfigured } from "../lib/emqx";
+import { makeRealtimeEvent, publishRealtimeEvents } from "../lib/realtime";
 import { validateControllerSensorMutation } from "../lib/sensor-compatibility";
 import { requireStaffRole, requireUserSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
@@ -270,6 +271,13 @@ export function createDeviceRoutes() {
         reason: "config_change",
       }).catch(() => null);
 
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("device", "created", (device as { id: string }).id, {
+          boardInstanceId: ctrlRow.id,
+          state: parsed.data.state,
+        }),
+      ]);
+
       return c.json({ device, warnings: pinCheck.warnings, configSync: configSync ? { revision: configSync.revision, published: configSync.published, queuedForReconnect: configSync.queuedForReconnect } : undefined }, 201);
     }
   );
@@ -396,6 +404,24 @@ export function createDeviceRoutes() {
             })
           : Promise.resolve(0),
       ]);
+
+      const commandedDevice = updateRes.data as { id?: string } | null;
+      if (commandedDevice?.id) {
+        await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+          makeRealtimeEvent(
+            "device",
+            "state",
+            commandedDevice.id,
+            {
+              state: parsed.data.state,
+              mqttDispatched,
+              controllerOnline,
+              lastStateAt: new Date().toISOString(),
+            },
+            mqttDispatched ? "accepted" : "desired"
+          ),
+        ]);
+      }
 
       return c.json({ device: updateRes.data, mqttDispatched, controllerOnline });
     }
@@ -572,6 +598,12 @@ export function createDeviceRoutes() {
           : Promise.resolve(null),
       ]);
 
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("device", "updated", deviceId, {
+          boardInstanceId: ctrlRow.id,
+        }),
+      ]);
+
       return c.json({ device: data, warnings });
     }
   );
@@ -597,6 +629,11 @@ export function createDeviceRoutes() {
         boardInstanceId: (data as { board_instance_id: string }).board_instance_id,
         reason: "config_change",
       }).catch(() => null);
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("device", "deleted", String((data as { id: string }).id), {
+          boardInstanceId: (data as { board_instance_id: string }).board_instance_id,
+        }),
+      ]);
       return c.json({ ok: true });
     }
   );
@@ -704,6 +741,13 @@ export function createDeviceRoutes() {
         reason: "config_change",
       }).catch(() => null);
 
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("switch", "created", (sw as { id: string }).id, {
+          boardInstanceId: ctrlRow.id,
+          isOn: false,
+        }),
+      ]);
+
       return c.json({ switch: sw, warnings: pinCheck.warnings, configSync: configSync ? { revision: configSync.revision, published: configSync.published, queuedForReconnect: configSync.queuedForReconnect } : undefined }, 201);
     }
   );
@@ -788,6 +832,15 @@ export function createDeviceRoutes() {
         } catch (err) {
           const msg =
             err instanceof Error ? err.message : "Failed to dispatch MQTT switch command.";
+          await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+            makeRealtimeEvent(
+              "switch",
+              "state",
+              sw.id,
+              { isOn: parsed.data.isOn, mqttDispatched: false, error: msg },
+              "failed"
+            ),
+          ]);
           return c.json({ error: `Controller command failed: ${msg}` }, 502);
         }
       }
@@ -827,6 +880,22 @@ export function createDeviceRoutes() {
               preloadedRules,
             })
           : Promise.resolve(0),
+      ]);
+
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent(
+          "switch",
+          "state",
+          sw.id,
+          {
+            isOn: parsed.data.isOn,
+            boardInstanceId: sw.board_instance_id,
+            mqttDispatched,
+            controllerOnline,
+            lastChangedAt: new Date().toISOString(),
+          },
+          mqttDispatched ? "accepted" : "desired"
+        ),
       ]);
 
       return c.json({ switch: updateRes.data, mqttDispatched, controllerOnline });
@@ -994,6 +1063,12 @@ export function createDeviceRoutes() {
           : Promise.resolve(null),
       ]);
 
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("switch", "updated", switchId, {
+          boardInstanceId: ctrlRow.id,
+        }),
+      ]);
+
       return c.json({ switch: data, warnings });
     }
   );
@@ -1019,6 +1094,11 @@ export function createDeviceRoutes() {
         boardInstanceId: (data as { board_instance_id: string }).board_instance_id,
         reason: "config_change",
       }).catch(() => null);
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("switch", "deleted", String((data as { id: string }).id), {
+          boardInstanceId: (data as { board_instance_id: string }).board_instance_id,
+        }),
+      ]);
       return c.json({ ok: true });
     }
   );
@@ -1242,6 +1322,13 @@ export function createDeviceRoutes() {
         boardInstanceId: ctrlRow.id,
         reason: "config_change",
       }).catch(() => null);
+
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("sensor", "created", (sensor as { id: string }).id, {
+          boardInstanceId: ctrlRow.id,
+          sensorType: parsed.data.sensorType,
+        }),
+      ]);
 
       return c.json(
         {
@@ -1508,6 +1595,12 @@ export function createDeviceRoutes() {
           : Promise.resolve(null),
       ]);
 
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("sensor", "updated", sensorId, {
+          boardInstanceId: ctrlRow.id,
+        }),
+      ]);
+
       return c.json({
         sensor: serializeSensorRow(data as Record<string, unknown>),
         warnings,
@@ -1536,6 +1629,11 @@ export function createDeviceRoutes() {
         boardInstanceId: (data as { board_instance_id: string }).board_instance_id,
         reason: "config_change",
       }).catch(() => null);
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("sensor", "deleted", String((data as { id: string }).id), {
+          boardInstanceId: (data as { board_instance_id: string }).board_instance_id,
+        }),
+      ]);
       return c.json({ ok: true });
     }
   );

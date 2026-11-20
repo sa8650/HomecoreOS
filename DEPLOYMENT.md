@@ -19,6 +19,9 @@ HomecoreOS uses **only** the following Cloudflare Worker environment variables, 
 | `EMQX_APP_SECRET` | Secret | EMQX Serverless Deployment Overview → Deployment API Key → App Secret |
 | `EMQX_BROKER_HOST` | Variable | EMQX Serverless Deployment Overview → Connect Address |
 | `EMQX_TLS_PORT` | Variable | `8883` (EMQX Serverless MQTT over TLS port) |
+| `EMQX_WS_URL` | Variable (optional) | Full `wss://…` MQTT-over-WebSocket URL for the browser console. Omit to derive it (next row). |
+| `EMQX_WS_PORT` | Variable (optional) | `8084` (MQTT over WebSocket TLS port) when `EMQX_WS_URL` is omitted. |
+| `EMQX_WS_PATH` | Variable (optional) | `/mqtt` (WebSocket path) when `EMQX_WS_URL` is omitted. |
 | `BREVO_API_KEY` | Secret | Brevo → SMTP & API → API Keys (sends password-recovery codes; optional) |
 | `FIRMWARE_BUCKET` | R2 Binding | Cloudflare R2 private bucket (`homecoreos-firmware`) |
 
@@ -55,7 +58,7 @@ HomecoreOS uses Supabase **strictly as PostgreSQL**. Do **not** enable Supabase 
 3. Open **SQL Editor** in the Supabase dashboard.
 4. Apply the migrations in `database/migrations/` in filename order:
    - `0001_init.sql` creates every platform table, foreign key, index, trigger and atomic RPC function, seeds the platform settings row (including `default_timezone`) and the full Board Library with GPIO definitions, and keeps RLS **disabled** while revoking direct `anon`/`authenticated` PostgREST access.
-   - `0002_board_roles.sql`, `0003_user_onboarding.sql` and `0004_password_reset_otp.sql` add Controller/Node roles, mandatory onboarding and password-recovery codes on top of that baseline.
+   - `0002_board_roles.sql`, `0003_user_onboarding.sql`, `0004_password_reset_otp.sql` and `0005_realtime_sync.sql` add Controller/Node roles, mandatory onboarding, password-recovery codes and the browser real-time session bookkeeping on top of that baseline.
    - Paste each file into the SQL Editor in order (or run `psql "$DATABASE_URL" -f <file>` for each) and verify no errors appear.
    - `npm run db:verify` replays every migration against a throwaway Postgres and fails if the schema drifts from `database/verify/schema-snapshot.json`.
 5. **Initial Platform Administrator**:
@@ -85,6 +88,25 @@ HomecoreOS uses Supabase **strictly as PostgreSQL**. Do **not** enable Supabase 
    - Copy **App ID** → `EMQX_APP_ID`
    - Copy **App Secret** (shown once) → `EMQX_APP_SECRET`
 5. Ensure **Built-in Database Authentication** and **Built-in Authorization** are enabled in Access Control so HomecoreOS can provision per-controller credentials and topic ACLs via the Deployment API.
+6. Confirm **MQTT over WebSocket** is enabled (EMQX Serverless enables it on port `8084`, path `/mqtt`). The browser console uses it for live state; per-controller MQTT over TLS keeps using `8883`.
+
+### Real-time channel check
+
+After deploying, open the console and confirm the live channel works:
+
+1. Open `/` in two browser tabs.
+2. Toggle a switch in one tab. The other tab, the 2D floor plan, the room card and the
+   Dynamic Island master controls must update without a refresh.
+3. `GET /api/realtime/config` on the deployed Worker (while signed in) must return
+   `"enabled": true` with `"brokerUrl": "wss://<EMQX_BROKER_HOST>:8084/mqtt"`.
+   If it returns `"enabled": false`, the `reason` names the missing piece
+   (`emqx_not_configured`, `provision_failed`, …).
+4. If your deployment exposes WebSocket on a different port/path, set `EMQX_WS_URL`
+   (preferred) or `EMQX_WS_PORT` + `EMQX_WS_PATH` and redeploy.
+
+Until the WebSocket listener is reachable, the console keeps working and shows
+`Manual refresh`: pages fall back to one visible-only refresh per minute instead of tight
+polling. Architecture and quota rules are documented in `docs/REALTIME_SYNC.md`.
 
 ---
 

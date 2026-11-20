@@ -6,7 +6,9 @@ import {
   type NotificationSeverity,
   type UserNotificationPreferences,
 } from "@homecoreos/shared";
-import type { DbClient } from "./db";
+import type { WorkerBindings } from "../config/env";
+import type { CustomFetch, DbClient } from "./db";
+import { makeRealtimeEvent, publishRealtimeEvents } from "./realtime";
 
 export type UserPreferenceKey = keyof UserNotificationPreferences;
 export type AdminPreferenceKey = keyof AdminNotificationPreferences;
@@ -133,7 +135,13 @@ async function isNotificationEnabledForTarget(
 
 export async function emitNotification(
   db: DbClient,
-  params: EmitNotificationParams
+  params: EmitNotificationParams,
+  /**
+   * Optional real-time context. When present, a newly created user
+   * notification is pushed to the account's console so the bell updates
+   * without waiting for its fallback refresh.
+   */
+  realtime?: { env?: WorkerBindings; emqxFetch?: CustomFetch }
 ): Promise<{ created: boolean; notification?: NotificationRow; skippedReason?: string }> {
   try {
     const dedupCheckPromise = params.dedupKey
@@ -203,6 +211,18 @@ export async function emitNotification(
 
     if (error || !data) {
       return { created: false, skippedReason: error?.message ?? "insert_failed" };
+    }
+
+    if (realtime?.env && params.scope === "user" && params.accountId) {
+      const row = data as NotificationRow;
+      await publishRealtimeEvents(realtime.env, { emqxFetch: realtime.emqxFetch }, params.accountId, [
+        makeRealtimeEvent("notification", "alert", row.id, {
+          category: row.category,
+          severity: row.severity,
+          title: row.title,
+          createdAt: row.created_at,
+        }),
+      ]);
     }
 
     return { created: true, notification: data as NotificationRow };
@@ -299,7 +319,8 @@ export async function saveNotificationPreferences(
  */
 export async function refreshStaleControllerStates(
   db: DbClient,
-  accountId?: string
+  accountId?: string,
+  realtime?: { env?: WorkerBindings; emqxFetch?: CustomFetch }
 ): Promise<number> {
   let onlineQuery = db
     .from("board_instances")
@@ -377,7 +398,7 @@ export async function refreshStaleControllerStates(
           dedupWhileUnread: true,
           dedupWindowSeconds: 1800,
           metadata: { boardInstanceId: ctrl.id, timeoutSec },
-        }),
+        }, realtime),
         emitNotification(db, {
           scope: "admin",
           category: "controller",
@@ -390,8 +411,25 @@ export async function refreshStaleControllerStates(
           dedupWhileUnread: true,
           dedupWindowSeconds: 1800,
           metadata: { boardInstanceId: ctrl.id, accountId: ctrl.account_id },
-        }),
+        }, realtime),
       ]);
+
+      if (realtime?.env) {
+        await publishRealtimeEvents(realtime.env, { emqxFetch: realtime.emqxFetch }, ctrl.account_id, [
+          makeRealtimeEvent(
+            "board",
+            "state",
+            ctrl.id,
+            {
+              status: "offline",
+              mqttConnected: false,
+              role: ctrl.board_role === "node" ? "node" : "controller",
+              timedOutAfterSeconds: timeoutSec,
+            },
+            "confirmed"
+          ),
+        ]);
+      }
 
       transitioned += 1;
     })

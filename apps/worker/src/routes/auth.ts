@@ -40,6 +40,7 @@ import {
   requireUserSession,
   resolveUserSessionFromRequest,
 } from "../middleware/auth";
+import { revokeRealtimeCredential } from "../lib/realtime";
 import type { AppEnv } from "../types/context";
 
 const registerSchema = z.object({
@@ -526,6 +527,13 @@ export function createAuthRoutes() {
         .from("sessions")
         .update({ revoked_at: new Date().toISOString() })
         .eq("id", auth.sessionId);
+      // The browser's subscribe-only real-time identity dies with the session.
+      await revokeRealtimeCredential({
+        db,
+        env: c.env ?? {},
+        deps: c.get("deps") ?? {},
+        sessionId: auth.sessionId,
+      });
     }
 
     c.header(

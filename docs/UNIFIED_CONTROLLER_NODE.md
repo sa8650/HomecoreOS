@@ -166,6 +166,14 @@ utility tab so the existing 30-day recoverable-deletion workflow is unchanged):
 - Nothing else in the console changed: same navigation, same setup/recover/flash modals, same
   Firmware page and OTA flow.
 
+The Controller/Node live badges (ONLINE/OFFLINE, MQTT, ESP-NOW link state, last linked) are pushed
+by the shared real-time channel rather than polled: a heartbeat that flips a board online, a
+Controller roster that links or loses a Node, and the heartbeat-timeout transition to offline each
+publish one account-scoped event (`docs/REALTIME_SYNC.md`). Steady heartbeats are written to
+Postgres without being broadcast, so a healthy fleet costs no extra messages. The pairing modal
+still refreshes the single controller it is watching, driven by that controller's events with a
+ten-second fallback for an unreachable broker.
+
 ## 7. OTA — EMQX only, Nodes included
 
 - Controllers: unchanged `POST /api/firmware/ota/start` → EMQX `…/ota/cmd` → `esp_https_ota`.

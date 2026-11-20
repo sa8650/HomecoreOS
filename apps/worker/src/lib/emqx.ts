@@ -95,6 +95,26 @@ export function buildControllerAclRules(
   ];
 }
 
+/**
+ * ACL for the browser real-time identity: subscribe-only, one account, one
+ * topic tree. It cannot publish, cannot read device command/config topics and
+ * cannot see another account's state even if a credential leaks.
+ */
+export function buildRealtimeWebAclRules(accountId: string): EmqxAclRule[] {
+  return [
+    {
+      permission: "allow",
+      action: "subscribe",
+      topic: `homecore/${accountId}/realtime/#`,
+    },
+    {
+      permission: "deny",
+      action: "all",
+      topic: "#",
+    },
+  ];
+}
+
 export class EmqxClient {
   private readonly apiBase: string;
   private readonly authHeader: string;
@@ -169,14 +189,16 @@ export class EmqxClient {
     }
   }
 
-  async provisionControllerCredentials(params: {
-    accountId: string;
-    boardInstanceId: string;
+  /**
+   * Create-or-update a built-in-database MQTT identity plus its per-user ACL.
+   * Shared by device credentials and the subscribe-only browser identity.
+   */
+  private async upsertIdentity(params: {
     username: string;
     password: string;
+    rules: EmqxAclRule[];
   }): Promise<void> {
     const encodedUser = encodeURIComponent(params.username);
-    // Create or update built-in DB MQTT user
     try {
       await this.request(
         "POST",
@@ -202,13 +224,7 @@ export class EmqxClient {
       }
     }
 
-    // Set strict account + controller scoped topic ACL
-    const rules = buildControllerAclRules(params.accountId, params.boardInstanceId);
-    const aclPayload = {
-      username: params.username,
-      rules,
-    };
-
+    const aclPayload = { username: params.username, rules: params.rules };
     try {
       await this.request(
         "GET",
@@ -232,10 +248,34 @@ export class EmqxClient {
     }
   }
 
-  async revokeControllerCredentials(
-    username: string,
-    clientId?: string
-  ): Promise<void> {
+  async provisionControllerCredentials(params: {
+    accountId: string;
+    boardInstanceId: string;
+    username: string;
+    password: string;
+  }): Promise<void> {
+    await this.upsertIdentity({
+      username: params.username,
+      password: params.password,
+      rules: buildControllerAclRules(params.accountId, params.boardInstanceId),
+    });
+  }
+
+  /** Subscribe-only identity used by the browser real-time channel. */
+  async provisionRealtimeWebCredentials(params: {
+    accountId: string;
+    username: string;
+    password: string;
+  }): Promise<void> {
+    await this.upsertIdentity({
+      username: params.username,
+      password: params.password,
+      rules: buildRealtimeWebAclRules(params.accountId),
+    });
+  }
+
+  /** Remove a broker identity and its ACL. Missing rows are not an error. */
+  async revokeMqttIdentity(username: string, clientId?: string): Promise<void> {
     const encodedUser = encodeURIComponent(username);
     if (clientId) {
       try {
@@ -264,6 +304,13 @@ export class EmqxClient {
     } catch (err) {
       if (!(err instanceof EmqxApiError && err.status === 404)) throw err;
     }
+  }
+
+  async revokeControllerCredentials(
+    username: string,
+    clientId?: string
+  ): Promise<void> {
+    await this.revokeMqttIdentity(username, clientId);
   }
 
   async kickClient(clientId: string): Promise<void> {

@@ -7,6 +7,13 @@ export interface WorkerBindings {
   EMQX_BROKER_HOST?: string;
   EMQX_TLS_PORT?: string;
   /**
+   * Browser real-time channel (MQTI over WebSocket). Optional: when absent the
+   * Worker derives `wss://<EMQX_BROKER_HOST>:<EMQX_WS_PORT><EMQX_WS_PATH>`.
+   */
+  EMQX_WS_URL?: string;
+  EMQX_WS_PORT?: string;
+  EMQX_WS_PATH?: string;
+  /**
    * Brevo transactional email API key, used for password-recovery codes.
    * Optional: when absent, password recovery reports itself as not configured
    * instead of failing silently.

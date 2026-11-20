@@ -25,6 +25,7 @@ Applied migrations:
 | `0002_board_roles.sql` | Board roles on `board_instances`: `board_role` (default `controller`), `assigned_controller_id` (Node → hosting Controller), `comm_mode`, `node_link_state`, `espnow_channel`, `node_last_linked_at`, `role_changed_at`, with role/assignment CHECK constraints and the `idx_board_instances_board_role` / `idx_board_instances_assigned_controller` indexes. |
 | `0003_user_onboarding.sql` | Mandatory four-step onboarding on `users`: `onboarding_step` (1..4, default 1), `onboarding_started_at`, `onboarding_completed_at`, the two CHECK constraints that keep steps in range and only allow completion at step 4, the partial index `idx_users_onboarding_pending`, and a one-time backfill that marks every pre-existing user as completed so nobody is interrupted. |
 | `0004_password_reset_otp.sql` | Password recovery by emailed six-digit code: the `password_reset_otps` table (hashed code, attempt counter, expiry, single-use reset token) with its indexes, plus the administrator-managed Brevo sender columns `brevo_from_name`, `brevo_from_email` and `brevo_reply_to` on `platform_settings`. |
+| `0005_realtime_sync.sql` | Browser real-time channel bookkeeping: the `realtime_web_sessions` table (one row per login session holding only the provisioned, subscribe-only MQTT username and its lifecycle timestamps; the broker password is derived from the EMQX app secret and is never stored) with its partial index and its foreign keys to `sessions`, `accounts` and `users`. |
 
 ## Verifying the schema
 

@@ -59,11 +59,34 @@ Configured in `apps/web/components.json` (`style: "radix-nova"`, `iconLibrary: "
 - **`apps/web/src/features/onboarding/UserOnboardingPage.tsx`**: The mandatory four-step customer tour (Cult UI `Onboarding` + `Onboarding.Step` / `Header` / `StepIndicator` / `Navigation`). Two-column on desktop, single column on mobile, with a step rail, save indicator, Back/Next and Get Started. There is deliberately no skip, close or dismiss control, and every step change is persisted to `users.onboarding_step`. Custom art lives in `OnboardingArt.tsx`. See `docs/USER_ONBOARDING.md`.
 - **`apps/web/src/features/auth/TechnologyEcosystem.tsx`**: The login-page Technology Ecosystem strip. One row of five brand marks (Espressif, EMQX, Cloudflare, Supabase, GitHub) drawn as inline SVG at a single 16 px height with transparent backgrounds - brand colour where the brand has one (`#E7352C`, `#F38020`, `#3FCF8E`) and `currentColor` for the officially monochrome GitHub and EMQX marks - followed by one row of `ESP32 · ESP-NOW · MQTT · BLE · Wi-Fi · HTTPS · OTA` labels (`text-[10px]`, uppercase, muted). It lives only in the auth footer, centred, so it never shifts the sign-in card, and wraps to two centred lines on narrow screens.
 - **`apps/web/src/lib/timezone.ts`**: `TimezoneContext`, `useEffectiveTimezone`, `formatTimestamp`, `formatShortTime`, `formatClockWithZone` backed by `REGIONAL_TIMEZONES` in `@homecoreos/shared`.
+- **`apps/web/src/lib/realtime/`**: `RealtimeProvider` (one connection per signed-in account, mounted once around the console shell), `RealtimeSyncClient` (leader election, reconnect backoff, snapshot reconciliation, version watermark), `useLiveSync()` and `useRealtimeStatus()`. Live-state surfaces call `useLiveSync(loader, { kinds })` instead of running their own interval; `docs/REALTIME_SYNC.md` defines the topics, ACLs and quota rules.
 
 
 ---
 
-## 8. 2D Smart-Home Floor Map (Overview)
+## 8. Live State Conventions
+
+Live device state has exactly one source: the shared real-time channel. UI rules that follow
+from it:
+
+- **No component-level polling.** A surface subscribes through `useLiveSync(reload, { kinds })`
+  and keeps its existing loader; the hook coalesces bursts and ignores entity kinds the
+  surface does not show. The only interval allowed is the built-in one-minute fallback used
+  while the channel is not live.
+- **Command phases are visible.** `desired` and `accepted` are "in flight" (pulse / pending
+  badge), `confirmed` is the persisted label, `failed` reverts the optimistic value and
+  surfaces the error. Never paint a local optimistic state as hardware truth.
+- **Status wording.** ONLINE/OFFLINE, MQTT and Wi-Fi badges are rendered from server data,
+  never from local guesses; an event can arrive after a page load, so badges must be pure
+  functions of the loaded entity plus the latest event patch.
+- **Silent repairs.** Reconciled loads and reconnects never toast on success and never blank
+  the page; a stale tab shows the last known value until the snapshot arrives.
+- **Multi-tab is normal.** Two tabs show the same numbers; only one of them holds the MQTT
+  session and it broadcasts to the other.
+
+---
+
+## 9. 2D Smart-Home Floor Map (Overview)
 
 The Overview home preview is a single connected floor plan, not a grid of room cards.
 
@@ -91,7 +114,7 @@ White circular badges with type glyphs (`floor-visuals.tsx` → `DeviceGlyph`), 
 
 **Viewport.** Drag / wheel / pinch to pan and zoom (0.55×–3×). Wheel and trackpad gestures are accumulated and applied once per animation frame with an exponential curve, so zoom follows the gesture instead of stepping; the zoom buttons and Fit ease to their target over ~190ms. Full screen renders through a portal into `<body>` — inside the page tree a transformed ancestor (the entrance animation) becomes the containing block for `position: fixed`, which previously left the overlay offset inside the page.
 
-**Arrange mode.** Rooms snap to a 4-unit grid with a faint 10-unit guide grid drawn over the plan, so sizes can be nudged precisely; edges within 12 units magnetise flush to neighbours. Drag a room to move it, drag the corner grip to resize, drag a badge to place it. Every change persists through the existing Rooms PATCH endpoint (`floorX/floorY/floorW/floorH` and `layoutConfig.devicePositions`). "Reset Badges" clears saved badge positions. While the page is visible the overview is re-fetched every 10s (silently, no toast on failure) and on focus/visibility change, so MQTT-driven device state reaches the map without a manual refresh.
+**Arrange mode.** Rooms snap to a 4-unit grid with a faint 10-unit guide grid drawn over the plan, so sizes can be nudged precisely; edges within 12 units magnetise flush to neighbours. Drag a room to move it, drag the corner grip to resize, drag a badge to place it. Every change persists through the existing Rooms PATCH endpoint (`floorX/floorY/floorW/floorH` and `layoutConfig.devicePositions`). "Reset Badges" clears saved badge positions. The map has no polling loop: it re-fetches the overview when a `board`, `switch`, `device`, `sensor`, `home` or `automation` event arrives on the shared real-time channel (see `docs/REALTIME_SYNC.md`), silently and coalesced, so MQTT-driven device state reaches the map without a manual refresh.
 
 Click a badge → compact control panel (name, room, type, ON/OFF, online, controller, power switch, fan speed 1–5, lock/valve position, sensor value). Click a room → focus + inspector.
 

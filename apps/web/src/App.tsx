@@ -20,6 +20,7 @@ import {
 } from "@remixicon/react";
 import { apiFetch } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
+import { RealtimeProvider } from "@/lib/realtime/RealtimeProvider";
 import { AdminIslandWorkspaceBar } from "@/components/dynamic-island/AdminIslandWorkspaceBar";
 import { UserIslandWorkspaceBar } from "@/components/dynamic-island/UserIslandWorkspaceBar";
 import { ConsoleShell, type NavItem } from "@/components/layout/ConsoleShell";
@@ -556,6 +557,7 @@ export function App() {
   return (
     <TooltipProvider delayDuration={200}>
       <TimezoneContext.Provider value={userEffectiveTz}>
+        <RealtimeProvider accountId={userSession.account.id}>
         <ConsoleShell
           consoleTitle={userSession.account.name}
           navItems={USER_ROUTES}
@@ -597,6 +599,7 @@ export function App() {
             {renderUserPage()}
           </Suspense>
         </ConsoleShell>
+        </RealtimeProvider>
       </TimezoneContext.Provider>
       <Toaster theme={themeMode} />
     </TooltipProvider>

@@ -14,6 +14,7 @@ import type { WorkerBindings } from "../config/env";
 import { sha256Hex } from "./crypto";
 import type { CustomFetch, DbClient } from "./db";
 import { EmqxClient, isEmqxConfigured } from "./emqx";
+import { makeRealtimeEvent, publishRealtimeEvents } from "./realtime";
 
 export interface ConsolidatedControllerConfigSnapshot {
   schema: 2;
@@ -683,6 +684,22 @@ export async function syncControllerConfigSnapshot(
     })
     .eq("id", ctrl.id)
     .eq("account_id", params.accountId);
+
+  // Tell the console that a new configuration revision is on the wire. The
+  // device's `config/ack` (or next heartbeat) confirms it.
+  await publishRealtimeEvents(env, deps, params.accountId, [
+    makeRealtimeEvent(
+      "board",
+      "updated",
+      ctrl.id,
+      {
+        configRevision: nextRevision,
+        pendingConfigSync: true,
+        lastConfigPublishedAt: nowIso,
+      },
+      "accepted"
+    ),
+  ]);
 
   return {
     revision: nextRevision,
