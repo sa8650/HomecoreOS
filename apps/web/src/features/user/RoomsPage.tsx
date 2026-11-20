@@ -8,6 +8,7 @@ import {
 import { ROOM_TYPE_LABELS } from "@homecoreos/shared";
 import { toast } from "sonner";
 import { apiFetch, ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
+import { useLiveSync } from "@/lib/realtime/RealtimeProvider";
 import { RoomEditorModal } from "@/components/floorplan/RoomEditorModal";
 import { Badge } from "@/components/reui/badge";
 import { IconTile } from "@/components/reui/icon-tile";
@@ -60,6 +61,12 @@ export function RoomsPage({ canManage }: { canManage: boolean }) {
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  // Rooms, boards and everything inside them stay current without a reload.
+  useLiveSync(() => loadAll(true), {
+    kinds: ["home", "board", "switch", "device", "sensor"],
+    fallbackMs: 60_000,
+  });
 
   async function handleConfirmDelete() {
     if (!deleteTarget || deletingRef.current) return;

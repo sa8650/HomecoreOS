@@ -18,6 +18,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      - name: Verify database migrations match the schema snapshot
+        run: npm run db:verify
       - name: Run test suites
         shell: bash
         # Keep the full output so a flaky failure can be inspected from the artifact.

@@ -40,6 +40,7 @@ import {
   getControllersSensorCompatibilityMap,
 } from "../lib/sensor-compatibility";
 import { verifyHomeRoomOwnership } from "../lib/board-helpers";
+import { makeRealtimeEvent, publishRealtimeEvents } from "../lib/realtime";
 import { requireStaffRole, requireUserSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
 
@@ -166,7 +167,7 @@ export function createBoardInstanceRoutes() {
 
     // Run stale heartbeat check + single batch EMQX client listing concurrently
     const [, emqxListRes] = await Promise.all([
-      refreshStaleControllerStates(db, auth.accountId).catch(() => 0),
+      refreshStaleControllerStates(db, auth.accountId, { env: c.env ?? {}, emqxFetch: c.get("deps")?.emqxFetch }).catch(() => 0),
       emqx
         ? emqx.listClients(1, 200).catch(() => null)
         : Promise.resolve(null),
@@ -1319,6 +1320,14 @@ export function createBoardInstanceRoutes() {
         });
       }
 
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("board", "updated", boardInstanceId, {
+          restored: true,
+          status: "offline",
+          pairingStatus: credentialsRotated ? "recovery_pending" : "paired",
+        }),
+      ]);
+
       return c.json({
         controller: {
           ...(restoredCtrl as Record<string, unknown>),
@@ -1388,6 +1397,13 @@ export function createBoardInstanceRoutes() {
         );
       }
 
+      await publishRealtimeEvents(c.env ?? {}, c.get("deps") ?? {}, auth.accountId, [
+        makeRealtimeEvent("board", "updated", String((data as { id: string }).id), {
+          name: parsed.data.name ?? null,
+          espnowChannel: parsed.data.espnowChannel ?? null,
+        }),
+      ]);
+
       return c.json({ controller: data });
     }
   );
@@ -1451,6 +1467,13 @@ export function createBoardInstanceRoutes() {
           : `Controller "${ctrl.name}" removed from its room assignment.`,
         metadata: { boardInstanceId, roomId: loc.roomId },
       }).catch(() => null);
+
+      await publishRealtimeEvents(c.env ?? {}, c.get("deps") ?? {}, auth.accountId, [
+        makeRealtimeEvent("board", "updated", boardInstanceId, {
+          roomId: loc.roomId,
+          homeId: loc.homeId ?? null,
+        }),
+      ]);
 
       return c.json({ controller: data });
     }
@@ -1562,6 +1585,10 @@ export function createBoardInstanceRoutes() {
         summary: `Moved controller "${(controller as { name: string }).name}" to Trash (30-day recovery window) and revoked MQTT credentials`,
       });
 
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("board", "deleted", boardInstanceId, { trashed: true }),
+      ]);
+
       return c.json({ ok: true, trashed: true, trashExpiresAt });
     }
   );
@@ -1651,6 +1678,9 @@ export function createBoardInstanceRoutes() {
         summary: `Permanently deleted controller "${(controller as { name: string }).name}" and revoked all credentials`,
       });
 
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("board", "deleted", boardInstanceId, { permanent: true }),
+      ]);
       return c.json({ ok: true, permanentlyDeleted: true });
     }
   );
@@ -1865,6 +1895,16 @@ export function createBoardInstanceRoutes() {
           result.status as 400 | 404 | 409
         );
       }
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent(
+          "board",
+          "updated",
+          c.req.param("id"),
+          { role: parsed.data.role },
+          "accepted"
+        ),
+      ]);
+
       return c.json({ device: result.device });
     }
   );
@@ -1889,6 +1929,19 @@ export function createBoardInstanceRoutes() {
         boardInstanceId: parsed.data.boardInstanceId,
       });
       if (!result.ok) return c.json({ error: result.error }, result.status as 404 | 409);
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent("board", "updated", c.req.param("id"), {
+          assignedControllerId: parsed.data.boardInstanceId ?? null,
+        }),
+        ...(parsed.data.boardInstanceId
+          ? [
+              makeRealtimeEvent("board", "updated", parsed.data.boardInstanceId, {
+                nodeRosterChanged: true,
+              }),
+            ]
+          : []),
+      ]);
+
       return c.json({ node: result.node, controller: result.controller ?? null });
     }
   );

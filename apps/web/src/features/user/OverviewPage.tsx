@@ -12,6 +12,7 @@ import {
 import { toast } from "sonner";
 import { ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
+import { useLiveSync } from "@/lib/realtime/RealtimeProvider";
 import { cn } from "@/lib/utils";
 import { ControllerWiringPreview } from "@/components/controllers/ControllerWiringPreview";
 import { HomeFloorPlan } from "@/components/floorplan/HomeFloorPlan";
@@ -94,28 +95,22 @@ export function OverviewPage({ canManage, canOperate, onNavigate }: OverviewPage
     const syncIfStale = () => {
       if (document.visibilityState === "hidden") return;
       const now = Date.now();
-      if (now - lastSyncAt < 8_000) return;
+      if (now - lastSyncAt < 30_000) return;
       lastSyncAt = now;
       void loadOverview(true);
     };
     window.addEventListener("focus", syncIfStale);
-    document.addEventListener("visibilitychange", syncIfStale);
-    return () => {
-      window.removeEventListener("focus", syncIfStale);
-      document.removeEventListener("visibilitychange", syncIfStale);
-    };
+    return () => window.removeEventListener("focus", syncIfStale);
   }, [loadOverview]);
 
-  // Keep the floor map in step with MQTT-driven device state while the page is
-  // visible. Refreshes reuse the cached overview endpoint and stay silent on
-  // transient failures so a flaky broker never spams toasts.
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "hidden") return;
-      void handleSilentReload(false);
-    }, 10_000);
-    return () => window.clearInterval(interval);
-  }, [handleSilentReload]);
+  // Live floor map: one shared real-time channel drives every card, switch,
+  // sensor reading and controller badge on this page. No interval polling while
+  // the channel is live; the fallback only runs when the broker is unreachable.
+  useLiveSync(() => handleSilentReload(false), {
+    kinds: ["board", "switch", "device", "sensor", "home", "automation"],
+    fallbackMs: 45_000,
+    minIntervalMs: 3_000,
+  });
 
   if (loading && !data) {
     return (

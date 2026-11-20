@@ -47,6 +47,10 @@ export default defineConfig({
           if (id.includes("node_modules/@remixicon/react")) {
             return "vendor-icons";
           }
+          if (id.includes("node_modules/mqtt") || id.includes("node_modules/ws")) {
+            // Live-state transport, lazy-loaded the first time the console connects.
+            return "vendor-mqtt";
+          }
           if (
             id.includes("node_modules/radix-ui") ||
             id.includes("node_modules/@radix-ui") ||

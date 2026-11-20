@@ -22,6 +22,7 @@ import {
   type BleStatusPayload,
 } from "@homecoreos/shared";
 import { apiFetch, ApiError } from "@/lib/api";
+import { getRealtimeClient } from "@/lib/realtime/sync-client";
 import {
   BleClientError,
   HomecoreBleClient,
@@ -744,9 +745,18 @@ export function ControllerSetupModal({
       }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 3000);
+    // The board announces itself over the real-time channel as soon as it is
+    // paired; the interval is a ten-second fallback for an unreachable broker.
+    const unsubscribe = getRealtimeClient().subscribe((batch) => {
+      const touched = batch.events.some(
+        (event) => event.entity === "board" && event.id === wifiPortalControllerId
+      );
+      if (touched || batch.resync) void poll();
+    });
+    const timer = window.setInterval(() => void poll(), 10_000);
     return () => {
       active = false;
+      unsubscribe();
       window.clearInterval(timer);
     };
   }, [open, wifiPortalControllerId, view]);

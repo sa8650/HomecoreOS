@@ -16,6 +16,8 @@ import {
 } from "@remixicon/react";
 import { toast } from "sonner";
 import { apiFetch, ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
+import { useLiveSync } from "@/lib/realtime/RealtimeProvider";
+import { getRealtimeClient } from "@/lib/realtime/sync-client";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
 import {
   ControllerSetupModal,
@@ -438,7 +440,15 @@ export function MyBoardsPage({
     );
   }, [trashedControllers, search]);
 
-  // Live poll while recovery/pairing modal is open
+  // The board list itself stays current through the shared real-time channel.
+  useLiveSync(() => load(true), {
+    kinds: ["board", "switch", "device", "sensor", "home"],
+    fallbackMs: 60_000,
+  });
+
+  // While the pairing modal is open, refresh that one controller as soon as its
+  // real-time event arrives instead of polling every 3 seconds. The interval is
+  // only a fallback for when the broker is unreachable.
   const pairingControllerId = pairingModal?.boardInstanceId ?? null;
   useEffect(() => {
     if (!pairingControllerId) {
@@ -468,9 +478,16 @@ export function MyBoardsPage({
       }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 3000);
+    const unsubscribe = getRealtimeClient().subscribe((batch) => {
+      const touched = batch.events.some(
+        (event) => event.entity === "board" && event.id === pairingControllerId
+      );
+      if (touched || batch.resync) void poll();
+    });
+    const timer = window.setInterval(() => void poll(), 10_000);
     return () => {
       active = false;
+      unsubscribe();
       window.clearInterval(timer);
     };
   }, [pairingControllerId, load]);

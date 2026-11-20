@@ -7,7 +7,8 @@ HomecoreOS is a multi-user smart-home automation platform and ESP32 device fleet
 - **Database**: Supabase PostgreSQL via Worker-only PostgREST (`database/migrations`, no RLS, no Supabase Auth)
 - **Authentication**: Custom Argon2id + cryptographic random session tokens (SHA-256 hashed in DB) + HTTP-only cookies
 - **Firmware Storage**: Private Cloudflare R2 (`FIRMWARE_BUCKET`)
-- **Device Messaging**: EMQX Serverless (MQTT over TLS 8883 + EMQX v5 REST API)
+- **Device Messaging**: EMQX Serverless (MQTT over TLS 8883 for devices, MQTT over WebSocket for the browser console, EMQX v5 REST API)
+- **Real-Time Sync**: one subscribe-only MQTT-over-WebSocket session per browser session drives every live component through a shared frontend store (see `docs/REALTIME_SYNC.md`)
 - **ESP32 & ESP8266 Firmware**: Native ESP-IDF v5.4/v5.5.2 C firmware with board-aware sensor drivers (`firmware/`, 21 ESP-IDF board overlays) plus an isolated PlatformIO ESP8266 path for `nodemcu-esp8266` (`firmware/esp8266/`)
 - **Browser USB Flashing**: Espressif `esptool-js` + Web Serial API with real multi-stage verification
 - **Firmware CI Pipeline**: GitHub Actions (`.github/workflows/build-firmware.yml`) with host C tests, board overlay & ESP8266 isolation checks, 21-board ESP-IDF build matrix, and SHA-256 driver manifest verification
@@ -41,12 +42,14 @@ packages/
 firmware/           ESP-IDF C firmware (21 board overlays, Kconfig sensor drivers, host C tests, verifier) & isolated firmware/esp8266/
 database/
   migrations/       PostgreSQL schema: 0001_init.sql baseline, then 0002_board_roles.sql,
-                    0003_user_onboarding.sql and 0004_password_reset_otp.sql
+                    0003_user_onboarding.sql, 0004_password_reset_otp.sql and
+                    0005_realtime_sync.sql
   verify/           Schema snapshot + `npm run db:verify` drift check
   seeds/            Development-only seed data
 .github/workflows/  CI checks & automated ESP-IDF firmware build pipeline
 DESIGN_SYSTEM.md    HomecoreOS Geist design tokens, ReUI/Radix primitives & architectural floor-plan spec
 DEPLOYMENT.md       Browser dashboard deployment guide
+docs/REALTIME_SYNC.md  Real-time channel: topics, ACLs, event flow, reconnect and quota rules
 ```
 
 ## Quick Commands
@@ -60,4 +63,4 @@ npm run test
 npm run db:verify   # replays migrations, fails on schema drift
 ```
 
-See `DEPLOYMENT.md` for full setup instructions across GitHub, Supabase, Cloudflare Workers, Cloudflare R2, and EMQX Serverless, and `DESIGN_SYSTEM.md` for UI rules.
+See `DEPLOYMENT.md` for full setup instructions across GitHub, Supabase, Cloudflare Workers, Cloudflare R2, and EMQX Serverless, `DESIGN_SYSTEM.md` for UI rules, and `docs/REALTIME_SYNC.md` for how live state reaches the console.

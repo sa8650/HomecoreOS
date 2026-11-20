@@ -25,6 +25,7 @@ import {
 } from "@remixicon/react";
 import { toast } from "sonner";
 import { apiFetch, ApiError, cachedGet } from "@/lib/api";
+import { useLiveSync } from "@/lib/realtime/RealtimeProvider";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { VisualAutomationBuilder } from "@/components/automations/VisualAutomationBuilder";
@@ -419,6 +420,13 @@ export function AutomationsPage({
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Execution results and the entities automations reference arrive over the
+  // shared channel; no interval polling.
+  useLiveSync(() => load(true), {
+    kinds: ["automation", "sensor", "switch", "device", "board"],
+    fallbackMs: 60_000,
+  });
 
   const hasDeviceOrSwitch = switches.length > 0 || devices.length > 0;
   const hasSensors = sensors.length > 0;

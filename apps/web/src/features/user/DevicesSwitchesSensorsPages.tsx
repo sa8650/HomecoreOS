@@ -22,6 +22,7 @@ import {
 import { isDeviceStateActive } from "@homecoreos/shared";
 import { toast } from "sonner";
 import { apiFetch, ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
+import { useLiveSync } from "@/lib/realtime/RealtimeProvider";
 import {
   fetchBasicHardwareContext,
   fetchHardwareContext,
@@ -269,6 +270,10 @@ export function SwitchesPage({
   useEffect(() => {
     void load();
   }, [load]);
+  useLiveSync(() => load(true), {
+    kinds: ["switch", "board", "home"],
+    fallbackMs: 60_000,
+  });
 
 
   const ensureModalContext = useCallback(async () => {
@@ -675,6 +680,10 @@ export function DevicesPage({
   useEffect(() => {
     void load();
   }, [load]);
+  useLiveSync(() => load(true), {
+    kinds: ["device", "board", "home"],
+    fallbackMs: 60_000,
+  });
 
   const ensureModalContext = useCallback(async () => {
     try {
@@ -1071,6 +1080,12 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
   useEffect(() => {
     void load();
   }, [load]);
+  useLiveSync(() => load(true), {
+    kinds: ["sensor", "board", "home"],
+    fallbackMs: 60_000,
+    // Many sensors can report at once; keep the page to one reload per burst.
+    minIntervalMs: 5_000,
+  });
 
   // One batched, account-scoped history fetch for the visible sensor cards.
   // Cached briefly so re-renders don't hammer the database.

@@ -25,6 +25,8 @@ import {
   getCachedSnapshot,
   invalidateApiCache,
 } from "@/lib/api";
+import { useRealtimeStatus } from "@/lib/realtime/RealtimeProvider";
+import { getRealtimeClient } from "@/lib/realtime/sync-client";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
 import { OtaProgressPipeline } from "@/components/firmware/FirmwareProgressPipeline";
 import { Badge } from "@/components/reui/badge";
@@ -169,23 +171,41 @@ export function FirmwarePage({
   const hasActiveOta = history.some(
     (h) => h.update_type === "ota" && ACTIVE_OTA_STATUSES.has(h.status)
   );
+  // OTA progress is pushed by the device: the firmware card moves as soon as
+  // the controller reports, instead of a 2.5 s poll per active update.
+  const realtimeState = useRealtimeStatus().state;
   useEffect(() => {
     if (!hasActiveOta) return;
-    const timer = window.setInterval(async () => {
+    let cancelled = false;
+    const refresh = async () => {
       try {
         const res = await apiFetch<{
           applicableUpdates: ApplicableFirmwareUpdateItem[];
           history: FirmwareUpdateHistoryItem[];
         }>("/api/firmware/updates");
+        if (cancelled) return;
+        invalidateApiCache("/api/firmware", "/api/board-instances");
         setApplicableUpdates(res.applicableUpdates);
         setHistory(res.history);
-        invalidateApiCache("/api/firmware", "/api/board-instances");
       } catch {
-        // ignore transient poll failures
+        // ignore transient refresh failures
       }
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [hasActiveOta]);
+    };
+    const unsubscribe = getRealtimeClient().subscribe((batch) => {
+      if (batch.resync || batch.events.some((event) => event.entity === "board")) {
+        void refresh();
+      }
+    });
+    const timer =
+      realtimeState === "live"
+        ? null
+        : window.setInterval(() => void refresh(), 10_000);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      if (timer !== null) window.clearInterval(timer);
+    };
+  }, [hasActiveOta, realtimeState]);
 
   async function handleStartOta(boardInstanceId: string, releaseId: string) {
     setOtaBusyControllerId(boardInstanceId);

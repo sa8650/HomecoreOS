@@ -108,6 +108,10 @@ export function createMockR2Bucket(): R2Bucket {
 export interface MockEmqxState {
   users: Map<string, { user_id: string; password: string; is_superuser: boolean }>;
   acls: Map<string, unknown[]>;
+  /** Usernames written to the built-in DB (POST or PUT), in order. */
+  userWrites: string[];
+  /** Usernames whose ACL was written (POST or PUT), in order. */
+  aclWrites: string[];
   published: Array<{ topic: string; payload: string; qos: number }>;
   kickedClients: string[];
   connectedClients: Set<string>;
@@ -120,6 +124,8 @@ export function createMockEmqxFetch(): {
   const state: MockEmqxState = {
     users: new Map(),
     acls: new Map(),
+    userWrites: [],
+    aclWrites: [],
     published: [],
     kickedClients: [],
     connectedClients: new Set(),
@@ -165,7 +171,16 @@ export function createMockEmqxFetch(): {
       const uid = jsonBody.user_id as string;
       if (state.users.has(uid)) return jsonRes({ message: "Conflict" }, 409);
       state.users.set(uid, jsonBody);
+      state.userWrites.push(uid);
       return jsonRes(jsonBody, 201);
+    }
+
+    if (path.startsWith("/authentication/password_based:built_in_database/users/") && method === "PUT") {
+      const uid = decodeURIComponent(path.split("/").pop()!);
+      if (!state.users.has(uid)) return jsonRes({ message: "Not found" }, 404);
+      state.users.set(uid, { ...state.users.get(uid)!, ...jsonBody, user_id: uid });
+      state.userWrites.push(uid);
+      return jsonRes({ user_id: uid }, 200);
     }
 
     if (path.startsWith("/authentication/password_based:built_in_database/users/") && method === "DELETE") {
@@ -179,6 +194,7 @@ export function createMockEmqxFetch(): {
       const arr = Array.isArray(jsonBody) ? jsonBody : [jsonBody];
       for (const item of arr) {
         state.acls.set(item.username, item.rules);
+        state.aclWrites.push(item.username);
       }
       return jsonRes({ ok: true }, 201);
     }
@@ -191,6 +207,7 @@ export function createMockEmqxFetch(): {
       }
       if (method === "PUT") {
         state.acls.set(uid, jsonBody.rules);
+        state.aclWrites.push(uid);
         return jsonRes({ username: uid, rules: jsonBody.rules });
       }
       if (method === "DELETE") {

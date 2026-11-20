@@ -27,7 +27,10 @@ export function createUserNotificationRoutes() {
     const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? 50)));
     const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
 
-    await refreshStaleControllerStates(db, auth.accountId).catch(() => 0);
+    await refreshStaleControllerStates(db, auth.accountId, {
+      env: c.env ?? {},
+      emqxFetch: c.get("deps")?.emqxFetch,
+    }).catch(() => 0);
 
     const result = await loadVisibleNotificationsForUser(db, {
       scope: "user",
@@ -179,7 +182,10 @@ export function createAdminNotificationRoutes() {
     const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? 50)));
     const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
 
-    await refreshStaleControllerStates(db).catch(() => 0);
+    await refreshStaleControllerStates(db, undefined, {
+      env: c.env ?? {},
+      emqxFetch: c.get("deps")?.emqxFetch,
+    }).catch(() => 0);
 
     const result = await loadVisibleNotificationsForUser(db, {
       scope: "admin",

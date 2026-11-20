@@ -10,6 +10,7 @@ import {
 } from "@remixicon/react";
 import { toast } from "sonner";
 import { apiFetch, ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
+import { useLiveSync } from "@/lib/realtime/RealtimeProvider";
 import {
   formatTimestamp,
   getBrowserTimezoneFallback,
@@ -129,6 +130,14 @@ export function ActivityPage() {
   useEffect(() => {
     void load(category);
   }, [category]);
+
+  // New activity rows arrive with the same real-time events that drive the
+  // pages that produced them.
+  useLiveSync(() => load(category), {
+    kinds: ["board", "switch", "device", "sensor", "automation", "home"],
+    fallbackMs: 90_000,
+    minIntervalMs: 4_000,
+  });
 
   return (
     <div className="space-y-6">

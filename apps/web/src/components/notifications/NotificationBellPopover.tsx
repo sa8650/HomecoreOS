@@ -10,6 +10,7 @@ import {
   RiNotification3Line,
 } from "@remixicon/react";
 import { apiFetch, cachedGet, emitNotificationSync, subscribeNotificationSync } from "@/lib/api";
+import { useRealtimeStatus } from "@/lib/realtime/RealtimeProvider";
 import { formatShortTime, useEffectiveTimezone } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/reui/badge";
@@ -83,6 +84,8 @@ export function useNotificationFeed(
   const unreadCountRef = useRef(0);
   unreadCountRef.current = unreadCount;
 
+  const realtimeState = useRealtimeStatus().state;
+
   const apiBase = scope === "admin" ? "/api/admin/notifications" : "/api/notifications";
   const allPath = scope === "admin" ? "/admin/notifications" : "/notifications";
 
@@ -118,16 +121,21 @@ export function useNotificationFeed(
       }
       void loadNotifications(true);
     });
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        void loadNotifications(true);
-      }
-    }, 30000);
+    // Live notifications arrive as real-time events; the interval is only a
+    // fallback for when the broker is unreachable.
+    const timer =
+      realtimeState === "live"
+        ? null
+        : window.setInterval(() => {
+            if (document.visibilityState === "visible") {
+              void loadNotifications(true);
+            }
+          }, 60_000);
     return () => {
       unsub();
-      window.clearInterval(timer);
+      if (timer !== null) window.clearInterval(timer);
     };
-  }, [loadNotifications, scope]);
+  }, [loadNotifications, realtimeState, scope]);
 
   const refreshIfStale = useCallback(async () => {
     if (Date.now() - lastFetchedAtRef.current > 5_000) {

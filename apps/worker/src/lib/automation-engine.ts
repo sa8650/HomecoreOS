@@ -28,6 +28,7 @@ import {
 import type { WorkerBindings } from "../config/env";
 import { recordActivity } from "./audit";
 import type { CustomFetch, DbClient } from "./db";
+import { makeRealtimeEvent, publishRealtimeEvents } from "./realtime";
 import { resolveDeviceCommandDelivery } from "./device-command-delivery";
 import { EmqxClient, isEmqxConfigured } from "./emqx";
 import { emitNotification } from "./notifications";
@@ -611,6 +612,17 @@ export async function executeAutomationActions(params: {
 
   await Promise.all(tasks);
 
+  if (!skipRuleStatusUpdate) {
+    await publishRealtimeEvents(env, { emqxFetch }, accountId, [
+      makeRealtimeEvent("automation", "run", ruleId, {
+        lastExecutedAt: (executedAt ?? new Date()).toISOString(),
+        lastExecutionStatus: errors.length > 0 ? "failed" : "success",
+        executedCount,
+        errors: errors.slice(0, 5),
+      }),
+    ]);
+  }
+
   if (errors.length > 0) {
     await emitNotification(db, {
       scope: "user",
@@ -624,7 +636,7 @@ export async function executeAutomationActions(params: {
       dedupKey: `auto_fail:${ruleId}`,
       dedupWindowSeconds: 300,
       metadata: { ruleId, errors },
-    });
+    }, { env, emqxFetch });
   }
 
   // Chain downstream switch/device triggers with cycle and depth protection
@@ -1463,6 +1475,16 @@ export async function executeOrTestFlowGraph(params: {
         })
         .eq("id", params.ruleId)
         .eq("account_id", accountId),
+    ]);
+
+    await publishRealtimeEvents(env, { emqxFetch }, accountId, [
+      makeRealtimeEvent("automation", "run", params.ruleId, {
+        lastExecutedAt: now.toISOString(),
+        lastExecutionStatus: errors.length > 0 ? "failed" : "success",
+        executedCount,
+        errors: errors.slice(0, 5),
+        flow: true,
+      }),
     ]);
 
     const nextVisited = new Set(params.visitedRuleIds ?? []);

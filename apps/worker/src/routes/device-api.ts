@@ -29,6 +29,11 @@ import { findMatchingFirmwareReleaseIdForDevice } from "../lib/sensor-compatibil
 import { emitNotification } from "../lib/notifications";
 import { getFirmwareObject } from "../lib/r2";
 import {
+  makeRealtimeEvent,
+  publishRealtimeEvents,
+  type RealtimeEvent,
+} from "../lib/realtime";
+import {
   checkAttemptAllowed,
   extractClientIp,
   recordFailedAttempt,
@@ -352,6 +357,15 @@ export function createDeviceApiRoutes() {
       dev.boardInstanceId,
       parsed.data.revision
     );
+    await publishRealtimeEvents(c.env ?? {}, c.get("deps") ?? {}, dev.accountId, [
+      makeRealtimeEvent(
+        "board",
+        "updated",
+        dev.boardInstanceId,
+        { configRevision: parsed.data.revision, pendingConfigSync: false },
+        "confirmed"
+      ),
+    ]);
     return c.json({ ok: true, revision: parsed.data.revision });
   });
 
@@ -369,7 +383,7 @@ export function createDeviceApiRoutes() {
       db
         .from("board_instances")
         .select(
-          "id,name,status,mqtt_connected,board_role,firmware_version,config_revision,last_synced_config_revision,pending_config_sync"
+          "id,name,status,mqtt_connected,wifi_connected,board_role,firmware_version,config_revision,last_synced_config_revision,pending_config_sync,node_link_state"
         )
         .eq("id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
@@ -389,6 +403,8 @@ export function createDeviceApiRoutes() {
       name: string;
       status: string;
       mqtt_connected: boolean;
+      wifi_connected?: boolean | null;
+      node_link_state?: string | null;
       board_role?: string | null;
       firmware_version?: string | null;
       config_revision?: number;
@@ -506,6 +522,47 @@ export function createDeviceApiRoutes() {
       .eq("id", dev.boardInstanceId)
       .eq("account_id", dev.accountId);
 
+    // Only genuine ONLINE/OFFLINE, uplink or firmware transitions are pushed.
+    // A steady heartbeat is written to Postgres but never broadcast, so a
+    // healthy fleet does not turn the console into a polling loop.
+    const boardTransition =
+      prev?.status !== "online" ||
+      (parsed.data.mqttConnected !== undefined &&
+        prev?.mqtt_connected !== parsed.data.mqttConnected) ||
+      (parsed.data.wifiConnected !== undefined &&
+        prev?.wifi_connected !== parsed.data.wifiConnected) ||
+      (parsed.data.firmwareVersion !== undefined &&
+        prev?.firmware_version !== parsed.data.firmwareVersion) ||
+      (storedRole === "node" &&
+        parsed.data.linkState !== undefined &&
+        prev?.node_link_state !== parsed.data.linkState);
+
+    if (boardTransition) {
+      await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
+        makeRealtimeEvent(
+          "board",
+          "state",
+          dev.boardInstanceId,
+          {
+            status: "online",
+            role: storedRole,
+            mqttConnected:
+              parsed.data.mqttConnected ?? prev?.mqtt_connected ?? null,
+            wifiConnected:
+              parsed.data.wifiConnected ?? prev?.wifi_connected ?? null,
+            firmwareVersion:
+              parsed.data.firmwareVersion ?? prev?.firmware_version ?? null,
+            nodeLinkState:
+              storedRole === "node"
+                ? parsed.data.linkState ?? prev?.node_link_state ?? null
+                : null,
+            lastHeartbeatAt: now,
+          },
+          "confirmed"
+        ),
+      ]);
+    }
+
     // A Controller reports which Nodes it currently hosts over ESP-NOW. Those
     // Nodes have no cloud session of their own, so this roster is what keeps
     // their status, communication mode and last-activity honest. An empty array
@@ -514,6 +571,26 @@ export function createDeviceApiRoutes() {
     if (parsed.data.nodes) {
       const roster = parsed.data.nodes;
       const linkedIds = roster.filter((n) => (n.link ?? "linked") === "linked").map((n) => n.id);
+
+      // Read the roster's current state first so only genuine link changes are
+      // broadcast. A Controller re-reporting the same Nodes every heartbeat must
+      // not spam the console with reloads.
+      const reportedIds = new Set(roster.map((n) => n.id));
+      const { data: assignedNodes } = await db
+        .from("board_instances")
+        .select("id,status,node_link_state,node_last_linked_at")
+        .eq("account_id", dev.accountId)
+        .eq("assigned_controller_id", dev.boardInstanceId)
+        .eq("board_role", "node")
+        .is("deleted_at", null);
+
+      const assigned = (assignedNodes ?? []) as Array<{
+        id: string;
+        status: string | null;
+        node_link_state: string | null;
+        node_last_linked_at: string | null;
+      }>;
+
       if (linkedIds.length > 0) {
         await db
           .from("board_instances")
@@ -531,21 +608,8 @@ export function createDeviceApiRoutes() {
           .in("id", linkedIds);
       }
 
-      const reportedIds = new Set(roster.map((n) => n.id));
-      const { data: assignedNodes } = await db
-        .from("board_instances")
-        .select("id,node_link_state,node_last_linked_at")
-        .eq("account_id", dev.accountId)
-        .eq("assigned_controller_id", dev.boardInstanceId)
-        .eq("board_role", "node")
-        .is("deleted_at", null);
-
       const staleCutoff = Date.now() - ESPNOW_NODE_STALE_MS;
-      const missing = ((assignedNodes ?? []) as Array<{
-        id: string;
-        node_link_state: string | null;
-        node_last_linked_at: string | null;
-      }>).filter((n) => {
+      const missing = assigned.filter((n) => {
         if (reportedIds.has(n.id)) return false;
         const lastLinked = n.node_last_linked_at ? Date.parse(n.node_last_linked_at) : NaN;
         // Never override a Node that is reporting its own Wi-Fi/MQTT fallback.
@@ -562,6 +626,41 @@ export function createDeviceApiRoutes() {
             "id",
             missing.map((n) => n.id)
           );
+      }
+
+      const byId = new Map(assigned.map((n) => [n.id, n]));
+      const linkedChanged = linkedIds.filter((id) => {
+        const row = byId.get(id);
+        return !row || row.status !== "online" || row.node_link_state !== "linked";
+      });
+
+      if (linkedChanged.length > 0 || missing.length > 0) {
+        await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
+          ...linkedChanged.map((id) =>
+            makeRealtimeEvent(
+              "board",
+              "state",
+              id,
+              {
+                status: "online",
+                role: "node",
+                nodeLinkState: "linked",
+                commMode: "espnow",
+                lastHeartbeatAt: now,
+              },
+              "confirmed"
+            )
+          ),
+          ...missing.map((row) =>
+            makeRealtimeEvent(
+              "board",
+              "state",
+              row.id,
+              { role: "node", nodeLinkState: "controller_lost" },
+              "confirmed"
+            )
+          ),
+        ]);
       }
     }
 
@@ -782,6 +881,9 @@ export function createDeviceApiRoutes() {
     const db = c.get("db");
     const deps = c.get("deps") ?? {};
     const now = new Date().toISOString();
+    // Every entity change in this one report is coalesced into a single MQTT
+    // message at the end of the handler.
+    const realtimeEvents: RealtimeEvent[] = [];
 
     await db
       .from("board_instances")
@@ -810,7 +912,7 @@ export function createDeviceApiRoutes() {
 
       const { data: sensorMeta } = await db
         .from("sensors")
-        .select("id,name,sensor_type,unit,last_raw_payload")
+        .select("id,name,sensor_type,unit,last_raw_payload,last_value,last_reading_at")
         .eq("id", s.sensorId)
         .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
@@ -855,6 +957,39 @@ export function createDeviceApiRoutes() {
         .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .is("deleted_at", null);
+
+      const prevLastValue =
+        (sensorMeta as { last_value?: number | null } | null)?.last_value ?? null;
+      const prevLastReadingAt =
+        (sensorMeta as { last_reading_at?: string | null } | null)?.last_reading_at ?? null;
+      const prevErrorStatus = existingRaw.status === "error";
+      const statusFlipped = Boolean(sensorMeta) && isErrorReading !== prevErrorStatus;
+      const valueChanged =
+        numericValue !== null &&
+        (prevLastValue === null || Number(prevLastValue) !== numericValue);
+      // Unchanged readings are not broadcast, except a once-per-five-minutes
+      // freshness touch so "last reading" never looks frozen on a stable sensor.
+      const freshnessTouch =
+        !prevLastReadingAt ||
+        Date.now() - Date.parse(prevLastReadingAt) > 5 * 60 * 1000;
+
+      if (sensorMeta && (statusFlipped || valueChanged || freshnessTouch)) {
+        realtimeEvents.push(
+          makeRealtimeEvent(
+            "sensor",
+            "state",
+            s.sensorId,
+            {
+              value: numericValue,
+              isOnline: !isErrorReading,
+              lastReadingAt: now,
+              status: isErrorReading ? "error" : "ok",
+              boardInstanceId: dev.boardInstanceId,
+            },
+            "confirmed"
+          )
+        );
+      }
 
       // Rolling per-sensor reading history (bounded) for card sparklines.
       // Best-effort only — history bookkeeping must never break telemetry ingest.
@@ -965,6 +1100,23 @@ export function createDeviceApiRoutes() {
         .eq("account_id", dev.accountId)
         .is("deleted_at", null);
 
+      if (existingSw && stateChanged) {
+        realtimeEvents.push(
+          makeRealtimeEvent(
+            "switch",
+            "state",
+            sw.switchId,
+            {
+              isOn: sw.isOn,
+              isOnline: true,
+              lastChangedAt: now,
+              boardInstanceId: dev.boardInstanceId,
+            },
+            "confirmed"
+          )
+        );
+      }
+
       await evaluateAutomationsForEvent({
         db,
         env: c.env ?? {},
@@ -981,7 +1133,7 @@ export function createDeviceApiRoutes() {
 
       const { data: existingDev } = await db
         .from("devices")
-        .select("id,name,state")
+        .select("id,name,state,is_online")
         .eq("id", d.deviceId)
         .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
@@ -1015,6 +1167,26 @@ export function createDeviceApiRoutes() {
         .select("id,name")
         .maybeSingle();
 
+      const prevDevState = (existingDev as { state?: string | null } | null)?.state ?? null;
+      const prevDevOnline =
+        (existingDev as { is_online?: boolean | null } | null)?.is_online ?? null;
+      if (updatedDev && (prevDevState !== effectiveState || prevDevOnline !== !isDisconnected)) {
+        realtimeEvents.push(
+          makeRealtimeEvent(
+            "device",
+            "state",
+            d.deviceId,
+            {
+              state: effectiveState,
+              isOnline: !isDisconnected,
+              lastStateAt: now,
+              boardInstanceId: dev.boardInstanceId,
+            },
+            "confirmed"
+          )
+        );
+      }
+
       if (isDisconnected && updatedDev) {
         await emitNotification(db, {
           scope: "user",
@@ -1038,6 +1210,10 @@ export function createDeviceApiRoutes() {
         accountId: dev.accountId,
         event: { kind: "device", deviceId: d.deviceId, state: effectiveState },
       });
+    }
+
+    if (realtimeEvents.length > 0) {
+      await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, realtimeEvents);
     }
 
     return c.json({ ok: true });
@@ -1273,6 +1449,29 @@ export function createDeviceApiRoutes() {
         },
       });
     }
+
+    await publishRealtimeEvents(c.env ?? {}, c.get("deps") ?? {}, dev.accountId, [
+      makeRealtimeEvent(
+        "board",
+        "updated",
+        dev.boardInstanceId,
+        {
+          ota: {
+            historyId: resolvedHistoryId,
+            status: effectiveStatus,
+            progressPercent: effectiveProgress,
+            errorMessage: effectiveError,
+            targetVersion: resolvedTargetVersion,
+            firmwareVersion: actualReportedVersion,
+            terminal,
+          },
+          ...(terminal && actualReportedVersion
+            ? { firmwareVersion: actualReportedVersion }
+            : {}),
+        },
+        terminal ? "confirmed" : "accepted"
+      ),
+    ]);
 
     return c.json({ ok: true, status: effectiveStatus });
   });
@@ -1832,6 +2031,24 @@ async function handlePairOrRecover(
       metadata: { boardInstanceId, method: input.physicalConfirmationMethod },
     });
   }
+
+  // The console learns about the new board immediately (pairing modal, My Boards,
+  // and the 2D floor plan) instead of waiting for its next poll.
+  await publishRealtimeEvents(c.env ?? {}, deps, accountId, [
+    makeRealtimeEvent(
+      "board",
+      "updated",
+      boardInstanceId,
+      {
+        status: "online",
+        pairingStatus: "paired",
+        role: ctrlRoleLabel === "Node" ? "node" : "controller",
+        mqttUsername,
+        recovered: isRecovery,
+      },
+      "confirmed"
+    ),
+  ]);
 
   return c.json({
     board_instance_id: boardInstanceId,
