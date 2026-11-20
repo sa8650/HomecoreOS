@@ -1807,6 +1807,14 @@ export function AdminSettingsPage({
     maintenance_mode: boolean;
     board_library_enabled: boolean;
     firmware_downloads_enabled?: boolean;
+    brevo_from_name: string;
+    brevo_from_email: string | null;
+    brevo_reply_to: string | null;
+  } | null>(null);
+
+  const [emailDelivery, setEmailDelivery] = useState<{
+    brevoApiKeyConfigured: boolean;
+    senderConfigured: boolean;
   } | null>(null);
 
   const [adminTimezone, setAdminTimezone] = useState<string>(
@@ -1822,8 +1830,14 @@ export function AdminSettingsPage({
   }, [adminSession.admin.timezone]);
 
   useEffect(() => {
-    apiFetch<{ settings: NonNullable<typeof settings> }>("/api/admin/settings")
-      .then((res) => setSettings(res.settings))
+    apiFetch<{
+      settings: NonNullable<typeof settings>;
+      emailDelivery?: { brevoApiKeyConfigured: boolean; senderConfigured: boolean };
+    }>("/api/admin/settings")
+      .then((res) => {
+        setSettings(res.settings);
+        if (res.emailDelivery) setEmailDelivery(res.emailDelivery);
+      })
       .catch((err) =>
         toast.error(err instanceof ApiError ? err.message : "Failed to load settings.")
       );
@@ -1862,14 +1876,15 @@ export function AdminSettingsPage({
     if (!settings) return;
     setSaving(true);
     try {
-      const res = await apiFetch<{ settings: NonNullable<typeof settings> }>(
-        "/api/admin/settings",
-        {
-          method: "PATCH",
-          body: JSON.stringify(settings),
-        }
-      );
+      const res = await apiFetch<{
+        settings: NonNullable<typeof settings>;
+        emailDelivery?: { brevoApiKeyConfigured: boolean; senderConfigured: boolean };
+      }>("/api/admin/settings", {
+        method: "PATCH",
+        body: JSON.stringify(settings),
+      });
       setSettings(res.settings);
+      if (res.emailDelivery) setEmailDelivery(res.emailDelivery);
       toast.success("Platform settings & default timezone saved.");
       await onRefreshAdminSession();
     } catch (err) {
@@ -2116,6 +2131,71 @@ export function AdminSettingsPage({
                       ...settings,
                       max_devices_per_account: Number(e.target.value),
                     })
+                  }
+                />
+              </FormField>
+            </CardContent>
+          </Card>
+
+          <Card className="p-5 md:col-span-2">
+            <CardContent className="grid grid-cols-1 gap-3 p-0 sm:grid-cols-3">
+              <div className="sm:col-span-3 flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold text-foreground">
+                  Transactional Email (Brevo)
+                </h2>
+                <Badge
+                  variant={emailDelivery?.brevoApiKeyConfigured ? "success-light" : "warning-light"}
+                  size="sm"
+                >
+                  {emailDelivery?.brevoApiKeyConfigured
+                    ? "BREVO_API_KEY configured"
+                    : "BREVO_API_KEY missing"}
+                </Badge>
+              </div>
+              <p className="sm:col-span-3 text-[11px] text-muted-foreground">
+                Sends the six-digit password-recovery code. The sender below must be a
+                verified Brevo sender; the API key itself is a Worker secret
+                (<code className="font-mono">BREVO_API_KEY</code>) and never appears here.
+              </p>
+              <FormField id="adm-brevo-name" label="From name">
+                <Input
+                  id="adm-brevo-name"
+                  disabled={!isSuperAdmin}
+                  maxLength={120}
+                  placeholder="HomecoreOS"
+                  value={settings.brevo_from_name ?? ""}
+                  onChange={(e) =>
+                    setSettings({ ...settings, brevo_from_name: e.target.value })
+                  }
+                />
+              </FormField>
+              <FormField id="adm-brevo-email" label="From email">
+                <Input
+                  id="adm-brevo-email"
+                  type="email"
+                  disabled={!isSuperAdmin}
+                  maxLength={200}
+                  placeholder="no-reply@yourdomain.com"
+                  value={settings.brevo_from_email ?? ""}
+                  onChange={(e) =>
+                    setSettings({ ...settings, brevo_from_email: e.target.value || null })
+                  }
+                />
+              </FormField>
+              <FormField
+                id="adm-brevo-reply"
+                label="Reply-to (optional)"
+                hint="Shown to customers who reply to a recovery email."
+              >
+                <Input
+                  id="adm-brevo-reply"
+                  type="email"
+                  disabled={!isSuperAdmin}
+                  maxLength={200}
+                  placeholder="support@yourdomain.com"
+                  value={settings.brevo_reply_to ?? ""}
+                  onChange={(e) =>
+                    setSettings({ ...settings, brevo_reply_to: e.target.value || null })
                   }
                 />
               </FormField>

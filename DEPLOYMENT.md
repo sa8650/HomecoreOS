@@ -19,6 +19,7 @@ HomecoreOS uses **only** the following Cloudflare Worker environment variables, 
 | `EMQX_APP_SECRET` | Secret | EMQX Serverless Deployment Overview → Deployment API Key → App Secret |
 | `EMQX_BROKER_HOST` | Variable | EMQX Serverless Deployment Overview → Connect Address |
 | `EMQX_TLS_PORT` | Variable | `8883` (EMQX Serverless MQTT over TLS port) |
+| `BREVO_API_KEY` | Secret | Brevo → SMTP & API → API Keys (sends password-recovery codes; optional) |
 | `FIRMWARE_BUCKET` | R2 Binding | Cloudflare R2 private bucket (`homecoreos-firmware`) |
 
 > **Do not create** `JWT_SECRET`, `APP_SECRET`, Supabase Auth keys, Firebase keys, or Cloudflare D1 bindings.
@@ -52,10 +53,11 @@ HomecoreOS uses Supabase **strictly as PostgreSQL**. Do **not** enable Supabase 
    - Copy **Project URL** → this is `SUPABASE_URL`.
    - Reveal and copy the **`service_role`** key → this is `SUPABASE_SERVICE_ROLE_KEY`.
 3. Open **SQL Editor** in the Supabase dashboard.
-4. Apply the single consolidated migration, `database/migrations/0001_init.sql`:
-   - Paste it into the SQL Editor (or `psql "$DATABASE_URL" -f database/migrations/0001_init.sql`) and verify no errors appear.
-   - It creates every platform table, foreign key, index, trigger and atomic RPC function, seeds the platform settings row (including `default_timezone`) and the full Board Library with GPIO definitions, and keeps RLS **disabled** while revoking direct `anon`/`authenticated` PostgREST access.
-   - The file is the merged result of the historical `0001`–`0021` chain; `npm run db:verify` replays it against a throwaway Postgres and fails if the schema drifts from `database/verify/schema-snapshot.json`.
+4. Apply the migrations in `database/migrations/` in filename order:
+   - `0001_init.sql` creates every platform table, foreign key, index, trigger and atomic RPC function, seeds the platform settings row (including `default_timezone`) and the full Board Library with GPIO definitions, and keeps RLS **disabled** while revoking direct `anon`/`authenticated` PostgREST access.
+   - `0002_board_roles.sql`, `0003_user_onboarding.sql` and `0004_password_reset_otp.sql` add Controller/Node roles, mandatory onboarding and password-recovery codes on top of that baseline.
+   - Paste each file into the SQL Editor in order (or run `psql "$DATABASE_URL" -f <file>` for each) and verify no errors appear.
+   - `npm run db:verify` replays every migration against a throwaway Postgres and fails if the schema drifts from `database/verify/schema-snapshot.json`.
 5. **Initial Platform Administrator**:
    - After deploying the Cloudflare Worker, open HomecoreOS in your browser and go to `/admin` (or click **Platform Admin Console** on the sign-in screen). When zero platform administrators exist, the initial root bootstrap form is presented automatically.
    - Once the first `super_admin` administrator is created, the bootstrap route automatically locks permanently.
@@ -104,6 +106,7 @@ HomecoreOS uses Supabase **strictly as PostgreSQL**. Do **not** enable Supabase 
    - Add **Secrets** (Encrypted):
      - `SUPABASE_SERVICE_ROLE_KEY`
      - `EMQX_APP_SECRET`
+     - `BREVO_API_KEY` (needed for the emailed password-recovery code; see section 8)
 5. Under **Settings → Bindings → Add binding → R2 bucket**:
    - Variable name: `FIRMWARE_BUCKET`
    - R2 bucket: `homecoreos-firmware`
@@ -120,3 +123,17 @@ HomecoreOS uses Supabase **strictly as PostgreSQL**. Do **not** enable Supabase 
 4. Open **Board Library Management** and confirm `ESP32-S3-DevKitC-1 N16R8` is present and active.
 5. Open **Firmware Management → Upload Release Package**, upload the ZIP downloaded from GitHub Actions, verify checksums, and **Publish** the release.
 6. Register a customer account (or open **User Console**), pair and USB-flash your **ESP32-S3 N16R8** over Chrome/Edge Web Serial, configure Wi-Fi + 6-digit pairing code on the controller's local setup AP (`HomecoreOS-Setup-XXXX`), and verify live MQTT connectivity and OTA updates.
+
+---
+
+## 8. Password Recovery Email (Brevo)
+
+Customers who forget a password recover it with a six-digit code emailed to them.
+The sender identity lives in the Admin Console, the API key lives on the Worker.
+
+1. Create a Brevo account and verify the sender domain or address you will send from.
+2. Brevo → **SMTP & API → API Keys** → create a key, then add it to the Worker as the secret `BREVO_API_KEY`.
+3. Admin Console → **Settings → Transactional Email (Brevo)**: set **From name**, **From email** (the verified sender) and an optional **Reply-to**, then save.
+4. Confirm the badge next to that card reads **BREVO_API_KEY configured**.
+
+Until both the key and a from address exist, the sign-in card's **Forgot password?** flow reports that recovery email is not configured instead of silently doing nothing. Recovery codes are stored hashed, expire after ten minutes, tolerate five wrong attempts, and unlock a single-use reset token that also revokes every active session when the new password is saved.

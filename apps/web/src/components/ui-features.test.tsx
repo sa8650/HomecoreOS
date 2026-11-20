@@ -1860,7 +1860,7 @@ describe("HomecoreOS interactive UI workflows", () => {
 
     // Hub-style Hero Header with page title, subtitle, illustrations & centered search (no top-right Saved Boards button)
     expect(
-      screen.getByRole("heading", { name: /Smart Things Board Library/i })
+      screen.getByRole("heading", { name: /Supported Board Library/i })
     ).toBeInTheDocument();
     expect(screen.getByText(/GPIO Constraints,/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Saved Boards/i })).not.toBeInTheDocument();

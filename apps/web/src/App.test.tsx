@@ -71,7 +71,7 @@ describe("HomecoreOS SPA routing & console isolation", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("heading", { name: /Customer User Console/i })
+        screen.getByRole("heading", { name: /Welcome Home/i })
       ).toBeInTheDocument();
     });
     expect(screen.getAllByText(/HomecoreOS/i).length).toBeGreaterThan(0);

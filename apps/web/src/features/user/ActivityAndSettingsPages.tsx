@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import {
   RiAddLine,
   RiDeleteBinLine,
+  RiEditLine,
   RiHistoryLine,
   RiShieldUserLine,
   RiTimeLine,
@@ -242,6 +243,10 @@ export function UserSettingsPage({
     session.account.staffRole === "administrator";
   const isAccountActive = session.account.status === "active";
 
+  // Profile fields stay read-only until Edit is pressed, so a stray click can
+  // never change a name or timezone.
+  const [editingProfile, setEditingProfile] = useState(false);
+
   const [avatarSeed, setAvatarSeed] = useState<string | null>(session.user.avatarSeed ?? null);
   const [fullName, setFullName] = useState(session.user.fullName);
   const [accountName, setAccountName] = useState(session.account.name);
@@ -265,7 +270,16 @@ export function UserSettingsPage({
     setFullName(session.user.fullName);
     setAccountName(session.account.name);
     setTimezonePref(session.user.timezone ?? "__default__");
+    setEditingProfile(false);
   }, [session.user.fullName, session.account.name, session.user.timezone, session.user.avatarSeed]);
+
+  function cancelProfileEdit() {
+    setAvatarSeed(session.user.avatarSeed ?? null);
+    setFullName(session.user.fullName);
+    setAccountName(session.account.name);
+    setTimezonePref(session.user.timezone ?? "__default__");
+    setEditingProfile(false);
+  }
 
   const loadDetails = useCallback(async () => {
     try {
@@ -308,6 +322,7 @@ export function UserSettingsPage({
         });
       }
       toast.success("Profile and regional timezone saved.");
+      setEditingProfile(false);
       await onSessionRefresh();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Update failed.");
@@ -432,6 +447,80 @@ export function UserSettingsPage({
         description="Manage profile, regional timezone preference, password, active sessions, customer staff, and account lifecycle."
       />
 
+      {/* Read-only record of the signed-in user. Editing happens beside it. */}
+      <Card className="py-5" data-testid="user-profile-card">
+        <CardContent>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+            <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-lg font-bold">
+              <UserAvatar
+                seed={session.user.avatarSeed ?? null}
+                name={session.user.fullName}
+                email={session.user.email}
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="truncate text-base font-semibold text-foreground">
+                  {session.user.fullName}
+                </h2>
+                <Badge variant="primary-light" size="sm">
+                  {session.account.staffRole}
+                </Badge>
+                <Badge
+                  variant={isAccountActive ? "success-light" : "warning-light"}
+                  size="sm"
+                >
+                  {session.account.status}
+                </Badge>
+              </div>
+              <p className="truncate text-xs text-muted-foreground">{session.user.email}</p>
+              <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
+                <div className="flex items-center justify-between gap-3 sm:justify-start">
+                  <dt className="text-muted-foreground">Account</dt>
+                  <dd className="truncate font-medium text-foreground">
+                    {session.account.name}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 sm:justify-start">
+                  <dt className="text-muted-foreground">Workspace</dt>
+                  <dd className="truncate font-mono text-[11px] font-medium text-foreground">
+                    {session.account.slug}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 sm:justify-start">
+                  <dt className="text-muted-foreground">Timezone</dt>
+                  <dd className="truncate font-medium text-foreground">
+                    {effectiveTimezone}
+                    {!session.user.timezone && (
+                      <span className="ml-1 text-muted-foreground">(platform default)</span>
+                    )}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 sm:justify-start">
+                  <dt className="text-muted-foreground">Appearance</dt>
+                  <dd className="truncate font-medium capitalize text-foreground">
+                    {session.user.appearancePreference}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 sm:justify-start">
+                  <dt className="text-muted-foreground">Account access</dt>
+                  <dd className="truncate font-medium text-foreground">
+                    {session.accounts.length}{" "}
+                    {session.accounts.length === 1 ? "account" : "accounts"}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 sm:justify-start">
+                  <dt className="text-muted-foreground">Active sessions</dt>
+                  <dd className="truncate font-medium text-foreground">
+                    {sessionsList.length}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card className="py-5">
           <CardContent>
@@ -440,15 +529,37 @@ export function UserSettingsPage({
                 <h2 className="text-sm font-semibold text-foreground">
                   Profile & Regional Timezone
                 </h2>
-                <Badge variant="primary-light">
-                  <RiTimeLine className="size-3" aria-hidden="true" />
-                  Effective: {effectiveTimezone}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant="primary-light">
+                    <RiTimeLine className="size-3" aria-hidden="true" />
+                    Effective: {effectiveTimezone}
+                  </Badge>
+                  {editingProfile ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={cancelProfileEdit}
+                    >
+                      Cancel
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditingProfile(true)}
+                    >
+                      <RiEditLine className="size-3.5" aria-hidden="true" />
+                      Edit
+                    </Button>
+                  )}
+                </div>
               </div>
               <fieldset className="space-y-2"><legend className="text-xs font-medium text-muted-foreground">Profile avatar</legend>
                 <p className="text-xs text-muted-foreground">Choose a Homecore avatar or use your initials. No image upload needed.</p>
                 <div className="flex flex-wrap gap-2">
-                  {[null, ...AVATAR_SEEDS].map((seed) => <button key={seed ?? "initials"} type="button" aria-label={seed ? `Choose avatar ${seed.split("-")[1]}` : "Use initials"} aria-pressed={avatarSeed === seed} onClick={() => setAvatarSeed(seed)} className="flex size-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-xs font-bold ring-offset-background transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:ring-2 aria-pressed:ring-primary aria-pressed:ring-offset-2"><UserAvatar seed={seed} name={fullName} email={session.user.email} /></button>)}
+                  {[null, ...AVATAR_SEEDS].map((seed) => <button key={seed ?? "initials"} type="button" aria-label={seed ? `Choose avatar ${seed.split("-")[1]}` : "Use initials"} aria-pressed={avatarSeed === seed} onClick={() => editingProfile && setAvatarSeed(seed)} disabled={!editingProfile} className="flex size-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-xs font-bold ring-offset-background transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:ring-2 aria-pressed:ring-primary aria-pressed:ring-offset-2"><UserAvatar seed={seed} name={fullName} email={session.user.email} /></button>)}
                 </div>
               </fieldset>
               <FormField id="set-fullname" label="Full Name">
@@ -456,6 +567,7 @@ export function UserSettingsPage({
                   id="set-fullname"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
+                  disabled={!editingProfile}
                   required
                 />
               </FormField>
@@ -465,6 +577,7 @@ export function UserSettingsPage({
                     id="set-accname"
                     value={accountName}
                     onChange={(e) => setAccountName(e.target.value)}
+                    disabled={!editingProfile}
                     required
                   />
                 </FormField>
@@ -476,8 +589,9 @@ export function UserSettingsPage({
                   </span>
                   <button
                     type="button"
-                    onClick={() => setTimezonePref(getBrowserTimezoneFallback())}
-                    className="text-[11px] font-medium text-primary hover:underline cursor-pointer"
+                    onClick={() => editingProfile && setTimezonePref(getBrowserTimezoneFallback())}
+                    disabled={!editingProfile}
+                    className="text-[11px] font-medium text-primary hover:underline cursor-pointer disabled:opacity-50"
                   >
                     Use browser timezone
                   </button>
@@ -485,6 +599,7 @@ export function UserSettingsPage({
                 <TimezoneSelect
                   id="set-tz"
                   ariaLabel="Regional Timezone"
+                  disabled={!editingProfile}
                   value={timezonePref}
                   onValueChange={setTimezonePref}
                   inheritLabel={`Inherit Platform Default (${platformDefault})`}
@@ -493,11 +608,16 @@ export function UserSettingsPage({
                   Follows platform default unless overridden per user.
                 </p>
               </div>
-              <div className="flex justify-end">
-                <Button type="submit" size="sm">
-                  Save Changes
-                </Button>
-              </div>
+              {editingProfile && (
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={cancelProfileEdit}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" size="sm">
+                    Save Changes
+                  </Button>
+                </div>
+              )}
             </form>
           </CardContent>
         </Card>

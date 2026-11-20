@@ -33,7 +33,7 @@ This document captures the Step 1 & Step 2 audit of HomecoreOS's existing firmwa
 
 ### 1.4 Web Serial USB Flasher & UI (`apps/web/`)
 - `apps/web/src/lib/usb-flasher.ts` uses Web Serial + `esptool-js@0.7.1` to connect, detect chip, parse merged/split binaries, write flash with progress callbacks, and hard-reset via RTS/DTR.
-- `FirmwarePage.tsx`, `ControllersPage.tsx`, and `ControllerSetupWizard.tsx` expose USB flashing, setup guidance, and OTA updates.
+- `FirmwarePage.tsx`, `MyBoardsPage.tsx`, and `ControllerSetupModal.tsx` expose USB flashing, setup guidance, and OTA updates.
 - `AdminFirmwareEmqxUsageSettingsPages.tsx` provides single `.bin` upload, `.zip` package upload, board compatibility multi-select, publish, archive, and delete actions.
 
 ---
@@ -100,7 +100,7 @@ Only `seeed-xiao-esp32s3` and `esp32-s3-devkitc-1-v1-0` share an identical hardw
 
 ### 4.1 Expanded Multi-Board Matrix (21 ESP-IDF Boards + Isolated ESP8266)
 - **ESP-IDF v5.4 / v5.5.2 Matrix (21 boards in `firmware/boards/*.sdkconfig` & `.github/workflows/build-firmware.yml`)**:
-  - Original 11 Espressif DevKits + `seeed-xiao-esp32s3`
+  - The seeded Espressif DevKits plus the partner boards (`seeed-xiao-esp32s3`, `waveshare-esp32-s3-zero`, `nodemcu-esp8266`)
   - 5 additional Seeed Studio XIAO boards: `seeed-xiao-esp32c3`, `seeed-xiao-esp32c5` (`v5.5.2`, boot `0x2000`, `GPIO28`), `seeed-xiao-esp32c6`, `seeed-xiao-esp32s3-sense`, `seeed-xiao-esp32s3-plus`
   - 5 Waveshare ESP32 boards: `waveshare-esp32-c3-zero`, `waveshare-esp32-c6-zero`, `waveshare-esp32-s3-zero`, `waveshare-esp32-s3-pico`, `waveshare-esp32-s3-relay-6ch` (6 onboard output-only relays on GPIO 1, 2, 41, 42, 45, 46; expansion sensor GPIOs 4–9; default I2C on 8/9)
 - **Isolated Non-ESP-IDF ESP8266 Path (`firmware/esp8266/`)**:

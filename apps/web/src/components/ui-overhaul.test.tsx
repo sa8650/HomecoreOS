@@ -459,7 +459,7 @@ describe("4-Part UI Overhaul: Heroes, Board Library Layout, Sonner Toasts & Magi
     installDefaultFetchMock();
 
     render(<BoardLibraryPage canManage />);
-    await screen.findByRole("heading", { name: /Smart Things Board Library/i });
+    await screen.findByRole("heading", { name: /Supported Board Library/i });
 
     expect(screen.queryByRole("button", { name: /Saved Boards/i })).not.toBeInTheDocument();
 
@@ -580,6 +580,11 @@ describe("4-Part UI Overhaul: Heroes, Board Library Layout, Sonner Toasts & Magi
         <Toaster />
       </TimezoneContext.Provider>
     );
+    // Profile fields are read-only until Edit is pressed.
+    const nameField = await screen.findByLabelText(/Full Name/i);
+    expect(nameField).toBeDisabled();
+    await user.click(await screen.findByRole("button", { name: /^Edit$/i }));
+    expect(nameField).toBeEnabled();
     await user.click(await screen.findByRole("button", { name: /Save Changes/i }));
     await waitFor(() => {
       expect(screen.getByText(/Profile and regional timezone saved/i)).toBeInTheDocument();

@@ -106,6 +106,12 @@ function mockFetch(state: {
       return jsonResponse({ device: { id: roleMatch[1], board_role: body.role } });
     }
 
+    const renameMatch = url.match(/^\/api\/board-instances\/([^/]+)$/);
+    if (renameMatch && method === "PATCH") {
+      const body = JSON.parse(String(init!.body)) as { name: string };
+      return jsonResponse({ controller: { id: renameMatch[1], name: body.name } });
+    }
+
     const assignMatch = url.match(/^\/api\/board-instances\/([^/]+)\/assign-controller$/);
     if (assignMatch && method === "POST") {
       return jsonResponse({ node: { id: assignMatch[1] }, controller: null });
@@ -261,5 +267,56 @@ describe("MyBoardsPage Controller / Node tabs", () => {
         )
       ).toBe(true);
     });
+  });
+
+  it("renames a Controller and a Node through the shared Edit name action", async () => {
+    const calls = renderPage({ devices: [hub, standaloneNode] });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Actions for Living Hub" }));
+    await user.click(screen.getByRole("menuitem", { name: /Edit name/i }));
+    let dialog = await screen.findByRole("dialog", { name: /Edit Controller name/i });
+    const field = within(dialog).getByLabelText(/Name/i);
+    await user.clear(field);
+    await user.type(field, "Lounge Hub");
+    await user.click(within(dialog).getByRole("button", { name: /Save Name/i }));
+
+    await waitFor(() => {
+      const patch = calls.find((c) => c.url === "/api/board-instances/c-hub" && c.method === "PATCH");
+      expect(patch?.body).toEqual({ name: "Lounge Hub" });
+    });
+
+    await user.click(await screen.findByRole("tab", { name: /Nodes \(1\)/ }));
+    await user.click(await screen.findByRole("button", { name: "Actions for Hallway Node" }));
+    await user.click(screen.getByRole("menuitem", { name: /Edit name/i }));
+    dialog = await screen.findByRole("dialog", { name: /Edit Node name/i });
+    const nodeField = within(dialog).getByLabelText(/Name/i);
+    await user.clear(nodeField);
+    await user.type(nodeField, "Hallway Node 2");
+    await user.click(within(dialog).getByRole("button", { name: /Save Name/i }));
+
+    await waitFor(() => {
+      const patch = calls.find(
+        (c) => c.url === "/api/board-instances/c-node" && c.method === "PATCH"
+      );
+      expect(patch?.body).toEqual({ name: "Hallway Node 2" });
+    });
+  });
+
+  it("gives the Node card the same anatomy as the Controller card, with Node details", async () => {
+    renderPage({ devices: [hub, standaloneNode] });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: /Nodes \(1\)/ }));
+
+    const grid = await screen.findByTestId("nodes-card-grid");
+    expect(within(grid).getByTestId("node-card-stage")).toBeInTheDocument();
+    expect(within(grid).getByRole("button", { name: /^Details$/i })).toBeInTheDocument();
+
+    // Role / Status rows plus the Node-specific rows: host Controller, link and firmware.
+    for (const label of ["Role", "Status", "Controller", "Link", "Firmware", "Last activity"]) {
+      expect(within(grid).getByText(label)).toBeInTheDocument();
+    }
+    // The firmware badge on the stage and the Firmware row both carry the version.
+    expect(within(grid).getAllByText("v1.5.0").length).toBeGreaterThan(1);
   });
 });
