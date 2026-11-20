@@ -1,7 +1,18 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { isValidIanaTimezone, resolveEffectiveTimezone } from "@homecoreos/shared";
+import {
+  isValidIanaTimezone,
+  resolveEffectiveTimezone,
+  ONBOARDING_TOTAL_STEPS,
+  resolveOnboardingState,
+} from "@homecoreos/shared";
 import { recordActivity } from "../lib/audit";
+import {
+  ONBOARDING_COLUMNS,
+  completeOnboarding,
+  readOnboardingState,
+  saveOnboardingProgress,
+} from "../lib/onboarding";
 import { emitNotification } from "../lib/notifications";
 import {
   SESSION_TTL_SECONDS,
@@ -36,6 +47,13 @@ const registerSchema = z.object({
   accountName: z.string().trim().min(2).max(120).optional(),
   homeName: z.string().trim().min(1).max(120).optional(),
   timezone: z.string().trim().min(1).max(64).optional().nullable(),
+});
+
+const onboardingStepSchema = z.object({
+  step: z.preprocess(
+    (value) => (typeof value === "string" ? Number(value) : value),
+    z.number().int().min(1).max(ONBOARDING_TOTAL_STEPS)
+  ),
 });
 
 const loginSchema = z.object({
@@ -264,6 +282,11 @@ export function createAuthRoutes() {
           status: accountRow.status,
           staffRole: "owner",
         },
+        onboarding: resolveOnboardingState({
+          onboarding_step: 1,
+          onboarding_started_at: null,
+          onboarding_completed_at: null,
+        }),
         platformDefaultTimezone,
         effectiveTimezone: resolveEffectiveTimezone(userRow.timezone, platformDefaultTimezone),
       },
@@ -296,7 +319,9 @@ export function createAuthRoutes() {
 
     const { data: userData } = await db
       .from("users")
-      .select("id,email,password_hash,full_name,status,appearance_preference,timezone,deleted_at")
+      .select(
+        `id,email,password_hash,full_name,status,appearance_preference,timezone,deleted_at,${ONBOARDING_COLUMNS}`
+      )
       .eq("email", email)
       .eq("user_kind", "customer")
       .is("deleted_at", null)
@@ -310,6 +335,9 @@ export function createAuthRoutes() {
       status: "active" | "disabled";
       appearance_preference: "light" | "dark" | "system";
       timezone: string | null;
+      onboarding_step: number | string | null;
+      onboarding_started_at: string | null;
+      onboarding_completed_at: string | null;
     } | null;
 
     if (!user || !(await verifyPassword(user.password_hash, parsed.data.password))) {
@@ -457,6 +485,7 @@ export function createAuthRoutes() {
         status: account.status,
         staffRole: primaryMembership.role,
       },
+      onboarding: resolveOnboardingState(user),
       platformDefaultTimezone,
       effectiveTimezone: resolveEffectiveTimezone(user.timezone, platformDefaultTimezone),
     });
@@ -483,7 +512,7 @@ export function createAuthRoutes() {
     const auth = c.get("userAuth")!;
     const db = c.get("db");
 
-    const [{ data: staffRows }, { data: pCfg }, { data: avatarRow }] = await Promise.all([
+    const [{ data: staffRows }, { data: pCfg }, { data: avatarRow }, onboarding] = await Promise.all([
       db
         .from("staff")
         .select("account_id,role,status")
@@ -495,6 +524,7 @@ export function createAuthRoutes() {
         .eq("id", 1)
         .maybeSingle(),
       db.from("users").select("avatar_seed").eq("id", auth.userId).maybeSingle(),
+      readOnboardingState(db, auth.userId),
     ]);
 
     const memberships = (staffRows ?? []) as Array<{
@@ -560,9 +590,59 @@ export function createAuthRoutes() {
         staffRole: auth.staffRole,
       },
       accounts: accountsList,
+      onboarding,
       platformDefaultTimezone,
       effectiveTimezone: resolveEffectiveTimezone(auth.timezone, platformDefaultTimezone),
     });
+  });
+
+  // ---- Mandatory four-step onboarding -------------------------------------
+  // Progress lives on the user row so it survives refreshes and sign-outs, and
+  // only `POST /onboarding/complete` unlocks the dashboard. A paused account may
+  // still finish the tour (its console stays read-only), so onboarding can never
+  // dead-end.
+  app.get("/onboarding", requireUserSession({ allowPausedAccount: true }), async (c) => {
+    const auth = c.get("userAuth")!;
+    const db = c.get("db");
+    const onboarding = await readOnboardingState(db, auth.userId);
+    return c.json({ onboarding });
+  });
+
+  app.put("/onboarding", requireUserSession({ allowPausedAccount: true }), async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = onboardingStepSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: "Pick a step between 1 and 4.", code: "INVALID_ONBOARDING_STEP" },
+        400
+      );
+    }
+
+    const auth = c.get("userAuth")!;
+    const db = c.get("db");
+    const result = await saveOnboardingProgress(db, auth.userId, parsed.data.step);
+    if (!result.ok) {
+      return c.json(
+        { error: result.error, code: result.code ?? "ONBOARDING_SAVE_FAILED" },
+        result.status as 400 | 500
+      );
+    }
+    return c.json({ onboarding: result.state });
+  });
+
+  app.post("/onboarding/complete", requireUserSession({ allowPausedAccount: true }), async (c) => {
+    const auth = c.get("userAuth")!;
+    const db = c.get("db");
+    const result = await completeOnboarding(db, auth.userId, auth.accountId, {
+      actorEmail: auth.email,
+    });
+    if (!result.ok) {
+      return c.json(
+        { error: result.error, code: result.code ?? "ONBOARDING_COMPLETE_FAILED" },
+        500
+      );
+    }
+    return c.json({ onboarding: result.state });
   });
 
   app.post(

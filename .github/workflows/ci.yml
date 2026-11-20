@@ -18,4 +18,17 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
-      - run: npm run test
+      - name: Run test suites
+        shell: bash
+        # Keep the full output so a flaky failure can be inspected from the artifact.
+        run: |
+          set -o pipefail
+          npm run test 2>&1 | tee test-output.log
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.log
+          if-no-files-found: ignore

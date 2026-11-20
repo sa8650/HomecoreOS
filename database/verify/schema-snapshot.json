@@ -1502,7 +1502,10 @@
         "updated_at timestamp with time zone NOT NULL DEFAULT now()",
         "deleted_at timestamp with time zone",
         "timezone text",
-        "avatar_seed text"
+        "avatar_seed text",
+        "onboarding_step smallint NOT NULL DEFAULT (1)::smallint",
+        "onboarding_started_at timestamp with time zone",
+        "onboarding_completed_at timestamp with time zone"
       ],
       "constraints": [
         "users_appearance_preference_check c CHECK ((appearance_preference = ANY (ARRAY['light'::text, 'dark'::text, 'system'::text])))",
@@ -1512,6 +1515,9 @@
         "users_email_not_null n NOT NULL email",
         "users_full_name_not_null n NOT NULL full_name",
         "users_id_not_null n NOT NULL id",
+        "users_onboarding_completion_step_check c CHECK (((onboarding_completed_at IS NULL) OR (onboarding_step = 4)))",
+        "users_onboarding_step_check c CHECK (((onboarding_step >= 1) AND (onboarding_step <= 4)))",
+        "users_onboarding_step_not_null n NOT NULL onboarding_step",
         "users_password_hash_not_null n NOT NULL password_hash",
         "users_pkey p PRIMARY KEY (id)",
         "users_status_check c CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text])))",
@@ -1522,6 +1528,7 @@
       ],
       "indexes": [
         "idx_users_email_kind CREATE INDEX idx_users_email_kind ON public.users USING btree (lower(email), user_kind) WHERE (deleted_at IS NULL)",
+        "idx_users_onboarding_pending CREATE INDEX idx_users_onboarding_pending ON public.users USING btree (user_kind, onboarding_step) WHERE ((onboarding_completed_at IS NULL) AND (deleted_at IS NULL))",
         "users_email_kind_unique CREATE UNIQUE INDEX users_email_kind_unique ON public.users USING btree (email, user_kind)",
         "users_pkey CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)"
       ],

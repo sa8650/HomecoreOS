@@ -593,6 +593,7 @@ export * from "./board-firmware-compat";
 export * from "./sensor-drivers";
 export * from "./ble-provisioning";
 export * from "./board-role";
+export * from "./user-onboarding";
 export * from "./automations";
 export * from "./flow-graph";
 export * from "./action-button";

@@ -129,6 +129,11 @@ const SmartHomePlannerPage = lazy(() =>
     default: m.SmartHomePlannerPage,
   }))
 );
+const UserOnboardingPage = lazy(() =>
+  import("@/features/onboarding/UserOnboardingPage").then((m) => ({
+    default: m.UserOnboardingPage,
+  }))
+);
 const OverviewPage = lazy(() =>
   import("@/features/user/OverviewPage").then((m) => ({
     default: m.OverviewPage,
@@ -260,6 +265,18 @@ export function App() {
   useEffect(() => {
     void loadCurrentSession();
   }, [loadCurrentSession]);
+
+  // Every dashboard route is locked until the four-step onboarding is complete.
+  // The server owns the flag, so a direct URL, a refresh or a second tab can
+  // never reach the console early.
+  const onboardingRequired = Boolean(userSession?.onboarding?.required);
+
+  useEffect(() => {
+    if (onboardingRequired && path !== "/onboarding") {
+      navigate("/onboarding");
+    }
+  }, [navigate, onboardingRequired, path]);
+
 
   const handleUserLogout = useCallback(async () => {
     await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
@@ -430,6 +447,28 @@ export function App() {
             navigate("/");
           }}
         />
+        <Toaster theme={themeMode} />
+      </TooltipProvider>
+    );
+  }
+
+  if (onboardingRequired) {
+    return (
+      <TooltipProvider delayDuration={200}>
+        <Suspense
+          fallback={
+            <div className="flex min-h-screen items-center justify-center bg-background text-xs text-muted-foreground">
+              Loading onboarding...
+            </div>
+          }
+        >
+          <UserOnboardingPage
+            session={userSession}
+            onSessionRefresh={loadCurrentSession}
+            onSignOut={handleUserLogout}
+            onFinished={() => navigate("/")}
+          />
+        </Suspense>
         <Toaster theme={themeMode} />
       </TooltipProvider>
     );
