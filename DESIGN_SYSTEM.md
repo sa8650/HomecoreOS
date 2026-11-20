@@ -58,6 +58,8 @@ Configured in `apps/web/components.json` (`style: "radix-nova"`, `iconLibrary: "
 - **`apps/web/src/components/firmware/UsbBoardMismatchPanel.tsx`**: Warning shown while a USB flash is paused because the connected board is not the selected one (`role="alertdialog"`): both boards side by side, a table of the checks, the recommended board with "Use this board", "Cancel flashing" as the focused default, and "Force to Flash" behind an acknowledgement checkbox.
 - **`apps/web/src/features/onboarding/UserOnboardingPage.tsx`**: The mandatory four-step customer tour (Cult UI `Onboarding` + `Onboarding.Step` / `Header` / `StepIndicator` / `Navigation`). Two-column on desktop, single column on mobile, with a step rail, save indicator, Back/Next and Get Started. There is deliberately no skip, close or dismiss control, and every step change is persisted to `users.onboarding_step`. Custom art lives in `OnboardingArt.tsx`. See `docs/USER_ONBOARDING.md`.
 - **`apps/web/src/features/auth/TechnologyEcosystem.tsx`**: The login-page Technology Ecosystem strip. One row of five brand marks (Espressif, EMQX, Cloudflare, Supabase, GitHub) drawn as inline SVG at a single 16 px height with transparent backgrounds - brand colour where the brand has one (`#E7352C`, `#F38020`, `#3FCF8E`) and `currentColor` for the officially monochrome GitHub and EMQX marks - followed by one row of `ESP32 · ESP-NOW · MQTT · BLE · Wi-Fi · HTTPS · OTA` labels (`text-[10px]`, uppercase, muted). It lives only in the auth footer, centred, so it never shifts the sign-in card, and wraps to two centred lines on narrow screens.
+- **`apps/web/src/components/shared/BrevoAttribution.tsx`**: "Email delivered by Brevo" credit pinned to the very bottom of the sign-in page, under the Technology Ecosystem strip. The official Brevo wordmark ships as `apps/web/public/brand/brevo-wordmark.png` (transparent RGBA, rendered 16 px tall) and sits on a light `rounded-full` chip so the brand green stays legible on the dark theme; the logo is never recoloured, and the whole chip is one link to `brevo.com` with the accessible name "Email delivery powered by Brevo".
+- **`apps/web/src/components/layout/ConsoleShell.tsx`**: console chrome. The desktop sidebar is collapsible: `sidebar-hidden` is one piece of state shared by the sidebar's own hide button and the Dynamic Island's Quick Navigation toggle (persisted in `localStorage` under `hc:console:sidebar-hidden` and mirrored across tabs through the `storage` event). Collapsing removes the fixed `w-64` rail, drops `lg:pl-64` from the workspace column so content takes the full width, and never touches the Dynamic Island or its controls; the mobile drawer keeps its own trigger.
 - **`apps/web/src/lib/timezone.ts`**: `TimezoneContext`, `useEffectiveTimezone`, `formatTimestamp`, `formatShortTime`, `formatClockWithZone` backed by `REGIONAL_TIMEZONES` in `@homecoreos/shared`.
 - **`apps/web/src/lib/realtime/`**: `RealtimeProvider` (one connection per signed-in account, mounted once around the console shell), `RealtimeSyncClient` (leader election, reconnect backoff, snapshot reconciliation, version watermark), `useLiveSync()` and `useRealtimeStatus()`. Live-state surfaces call `useLiveSync(loader, { kinds })` instead of running their own interval; `docs/REALTIME_SYNC.md` defines the topics, ACLs and quota rules.
 
@@ -82,7 +84,17 @@ from it:
 - **Silent repairs.** Reconciled loads and reconnects never toast on success and never blank
   the page; a stale tab shows the last known value until the snapshot arrives.
 - **Multi-tab is normal.** Two tabs show the same numbers; only one of them holds the MQTT
-  session and it broadcasts to the other.
+  session and it broadcasts to the other, including the leader's own `live`/`synced` status.
+- **"Live" means reconciled.** The status chip may only say `Live` after a snapshot has been
+  applied; a failed snapshot reads `Delayed` while the client retries with backoff.
+
+### Console chrome: sidebar and Dynamic Island
+
+| Control | Where | Behaviour |
+| --- | --- | --- |
+| Hide sidebar | Sidebar header (`RiSidebarFoldLine`, `aria-label="Hide sidebar"`) | Hides only the sidebar. The Dynamic Island keeps every control. |
+| Expand / collapse | Right side of the Quick Navigation panel title (`RiSideBarLine`, rotates 180°), `aria-pressed` reflects visibility | Toggles the same state: shows the sidebar when hidden, hides it when shown. |
+| Re-open | The same Quick Navigation toggle | The sidebar's own hide button is gone with the sidebar, so this is the one way back on desktop; `localStorage` remembers the choice between visits. |
 
 ---
 

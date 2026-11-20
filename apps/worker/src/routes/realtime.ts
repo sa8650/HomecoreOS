@@ -3,6 +3,7 @@ import {
   buildRealtimeSnapshot,
   buildRealtimeSubscription,
   ensureRealtimeCredential,
+  RealtimeSnapshotError,
   REALTIME_MAX_EVENTS_PER_MESSAGE,
 } from "../lib/realtime";
 import { requireUserSession } from "../middleware/auth";
@@ -59,9 +60,25 @@ export function createRealtimeRoutes() {
 
   app.get("/snapshot", requireUserSession(), async (c) => {
     const auth = c.get("userAuth")!;
-    const snapshot = await buildRealtimeSnapshot(c.get("db"), auth.accountId);
     c.header("Cache-Control", "no-store");
-    return c.json({ snapshot });
+    try {
+      const snapshot = await buildRealtimeSnapshot(c.get("db"), auth.accountId);
+      return c.json({ snapshot });
+    } catch (err) {
+      // Never answer a failed read with an empty entity list: the browser would
+      // conclude that every device vanished and report itself as synchronized.
+      const entity = err instanceof RealtimeSnapshotError ? err.entity : "unknown";
+      const detail = err instanceof Error ? err.message : "Snapshot unavailable";
+      console.warn(`[realtime] snapshot failed (${entity}): ${detail}`);
+      return c.json(
+        {
+          error: "Realtime snapshot unavailable. Retry shortly.",
+          reason: "snapshot_unavailable",
+          entity,
+        },
+        503
+      );
+    }
   });
 
   return app;

@@ -10,6 +10,7 @@ import {
   type RoomType,
 } from "@homecoreos/shared";
 import { recordActivity } from "../lib/audit";
+import { makeRealtimeEvent, publishRealtimeEvents } from "../lib/realtime";
 import { requireStaffRole, requireUserSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
 
@@ -144,6 +145,40 @@ function computeConnectedRoomSlot(
   return { x: maxRight, y: 0 };
 }
 
+
+/**
+ * Rooms live inside a home, and the home is the entity the console stores for
+ * them. Touching `homes.updated_at` keeps the row version the snapshot reports
+ * in step with the event, so a reconnect after a room edit reconciles instead of
+ * reloading (or, worse, missing it).
+ */
+async function publishHomeChange(
+  db: AppEnv["Variables"]["db"],
+  env: AppEnv["Bindings"],
+  deps: AppEnv["Variables"]["deps"],
+  accountId: string,
+  homeId: string | null,
+  reason: "created" | "rooms"
+): Promise<void> {
+  if (!homeId) return;
+  const now = new Date().toISOString();
+  await db
+    .from("homes")
+    .update({ updated_at: now })
+    .eq("id", homeId)
+    .eq("account_id", accountId);
+  await publishRealtimeEvents(env, deps, accountId, [
+    makeRealtimeEvent(
+      "home",
+      reason === "created" ? "created" : "updated",
+      homeId,
+      { reason },
+      undefined,
+      now
+    ),
+  ]);
+}
+
 export function createHomeRoutes() {
   const app = new Hono<AppEnv>();
   app.use("*", requireUserSession());
@@ -264,6 +299,16 @@ export function createHomeRoutes() {
       action: "home.created",
       summary: `Created home "${parsed.data.name}"`,
     });
+    await publishRealtimeEvents(c.env ?? {}, c.get("deps") ?? {}, auth.accountId, [
+      makeRealtimeEvent(
+        "home",
+        "created",
+        String((data as { id: string }).id),
+        { name: parsed.data.name },
+        undefined,
+        (data as { updated_at?: string } | null)?.updated_at ?? null
+      ),
+    ]);
     return c.json({ home: data }, 201);
   });
 
@@ -372,6 +417,14 @@ export function createHomeRoutes() {
       action: "room.created",
       summary: `Created room "${parsed.data.name}"`,
     });
+    await publishHomeChange(
+      db,
+      c.env ?? {},
+      c.get("deps") ?? {},
+      auth.accountId,
+      parsed.data.homeId,
+      "rooms"
+    );
     return c.json({ room: data }, 201);
   });
 
@@ -428,6 +481,14 @@ export function createHomeRoutes() {
 
     if (error) return c.json({ error: error.message }, 400);
     if (!data) return c.json({ error: "Room not found." }, 404);
+    await publishHomeChange(
+      db,
+      c.env ?? {},
+      c.get("deps") ?? {},
+      auth.accountId,
+      (data as { home_id?: string | null }).home_id ?? parsed.data.homeId ?? null,
+      "rooms"
+    );
     return c.json({ room: data });
   });
 
@@ -443,7 +504,7 @@ export function createHomeRoutes() {
       .eq("id", roomId)
       .eq("account_id", auth.accountId)
       .is("deleted_at", null)
-      .select("id,name")
+      .select("id,name,home_id")
       .maybeSingle();
 
     if (!data) return c.json({ error: "Room not found." }, 404);
@@ -471,6 +532,15 @@ export function createHomeRoutes() {
       action: "room.deleted",
       summary: `Deleted room "${(data as { name: string }).name}"`,
     });
+
+    await publishHomeChange(
+      db,
+      c.env ?? {},
+      c.get("deps") ?? {},
+      auth.accountId,
+      (data as { home_id?: string | null }).home_id ?? null,
+      "rooms"
+    );
 
     return c.json({ ok: true });
   });

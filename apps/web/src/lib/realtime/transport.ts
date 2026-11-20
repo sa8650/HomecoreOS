@@ -48,7 +48,9 @@ export const createMqttTransport: RealtimeTransportFactory = (params) => {
 
   client.on("connect", () => {
     if (closed) return;
-    client.subscribe(params.topic, { qos: 0 }, (err) => {
+    // QoS 1 permits acknowledged low-volume state events; a QoS 0 publish still
+    // arrives (downgraded), so this never changes message volume.
+    client.subscribe(params.topic, { qos: 1 }, (err) => {
       if (err) {
         params.onError(err.message || "Realtime subscription failed");
         return;

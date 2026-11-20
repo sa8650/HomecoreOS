@@ -27,6 +27,8 @@ export interface RealtimeSyncDeps {
   now: () => number;
   randomId: () => string;
   isVisible: () => boolean;
+  /** Base delay for a failed snapshot read (doubles up to 60 s). */
+  snapshotRetryBaseMs?: number;
 }
 
 export const REALTIME_CHANNEL_NAME = "homecoreos:realtime-sync";
@@ -63,6 +65,7 @@ const defaultDeps: RealtimeSyncDeps = {
       : Math.random().toString(36).slice(2, 12),
   isVisible: () =>
     typeof document === "undefined" ? true : document.visibilityState !== "hidden",
+  snapshotRetryBaseMs: 2_000,
 };
 
 function emptyStatus(): RealtimeStatus {
@@ -123,7 +126,12 @@ export class RealtimeSyncClient {
   private readonly batchListeners = new Set<(batch: RealtimeBatch) => void>();
   private readonly statusListeners = new Set<(status: RealtimeStatus) => void>();
 
+  /** Row-derived entity versions, the reconciliation baseline. */
   private readonly versions = new Map<string, string>();
+  /** Delivery watermarks (server `ts`) used only for duplicate/ordering guards. */
+  private readonly watermarks = new Map<string, string>();
+  /** Other tabs seen on the BroadcastChannel (leadership arbitration). */
+  private readonly peerIds = new Set<string>();
   private accountId: string | null = null;
   private started = false;
   private tabId: string;
@@ -138,6 +146,12 @@ export class RealtimeSyncClient {
   private probeTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private snapshotRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private snapshotAttempt = 0;
+  private lastSnapshotAtMs = 0;
+  /** Set when the broker rejected our identity, so the next attempt re-provisions. */
+  private forceReprovision = false;
+  private reprovisionedThisSession = false;
   private buffering = false;
   private buffer: RealtimeEvent[] = [];
 
@@ -175,23 +189,78 @@ export class RealtimeSyncClient {
     this.started = true;
     this.accountId = accountId;
     this.versions.clear();
+    this.watermarks.clear();
+    this.peerIds.clear();
+    this.snapshotAttempt = 0;
+    this.lastSnapshotAtMs = 0;
     this.setStatus({ ...emptyStatus(), state: "connecting" });
 
     this.channel = this.deps.createChannel(REALTIME_CHANNEL_NAME);
     if (this.channel) {
       this.channel.onmessage = (event) => this.handleChannelMessage(event.data);
-      // Probe for an existing leader; if nobody answers, this tab connects.
+      // Announce ourselves, then wait out the probe window. Every tab that is
+      // also starting answers, so two tabs opening at the same instant both see
+      // each other instead of both deciding they are alone.
       this.channel.postMessage({ type: "probe", tabId: this.tabId });
       this.probeTimer = setTimeout(() => {
         this.probeTimer = null;
         if (!this.leaderConfirmed && this.started && !this.isLeader) {
-          void this.takeLeadership();
+          void this.resolveLeadershipAfterProbe();
         }
       }, PROBE_TIMEOUT_MS);
       this.watchdogTimer = setInterval(() => this.followerWatchdog(), FOLLOWER_WATCHDOG_MS);
     } else {
       void this.takeLeadership();
     }
+  }
+
+  /**
+   * Deterministic tie-break: the tab with the lowest id leads. A peer that
+   * answered the probe but has a higher id simply follows, so simultaneous tab
+   * initialisation can never end with two live broker sessions.
+   */
+  private hasHigherPriorityPeer(): boolean {
+    for (const peerId of this.peerIds) {
+      if (peerId < this.tabId) return true;
+    }
+    return false;
+  }
+
+  private async resolveLeadershipAfterProbe(): Promise<void> {
+    if (!this.started || this.isLeader) return;
+    if (this.hasHigherPriorityPeer()) {
+      // Wait for the senior peer to announce itself. If it never does, the
+      // follower watchdog promotes this tab after LEADER_STALE_MS.
+      this.leaderSeenAt = this.deps.now();
+      this.setStatus({ state: this.status.lastEventAt ? "live" : "connecting", isLeader: false });
+      return;
+    }
+    await this.takeLeadership();
+  }
+
+  /** Give up leadership because a senior tab owns (or should own) the socket. */
+  private stepDownToPeer(): void {
+    if (!this.isLeader) return;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.isLeader = false;
+    this.leaderConfirmed = true;
+    this.leaderSeenAt = this.deps.now();
+    this.buffering = false;
+    this.buffer = [];
+    try {
+      this.transport?.close();
+    } catch {
+      // ignore
+    }
+    this.transport = null;
+    this.setStatus({
+      isLeader: false,
+      state: this.status.lastEventAt ? "live" : "connecting",
+      lastError: null,
+    });
   }
 
   stop(): void {
@@ -203,6 +272,9 @@ export class RealtimeSyncClient {
     this.transport = null;
     this.buffer = [];
     this.buffering = false;
+    this.snapshotAttempt = 0;
+    this.peerIds.clear();
+    this.watermarks.clear();
     if (this.channel) {
       try {
         this.channel.postMessage({ type: "release", tabId: this.tabId });
@@ -214,6 +286,7 @@ export class RealtimeSyncClient {
     }
     this.accountId = null;
     this.versions.clear();
+    this.watermarks.clear();
     if (this.status.state !== "disabled") {
       this.setStatus(emptyStatus());
     }
@@ -226,22 +299,59 @@ export class RealtimeSyncClient {
   async refreshSnapshot(force = false): Promise<void> {
     if (!this.accountId || !this.isLeader) return;
     if (!force && this.buffering) return;
+    // A tab that is focused/shown again reconciles at most once a minute: an
+    // occasional repair, never polling.
+    if (!force && this.lastSnapshotAtMs && this.deps.now() - this.lastSnapshotAtMs < 60_000) {
+      return;
+    }
     let snapshot: RealtimeSnapshot;
     try {
       snapshot = await this.deps.fetchSnapshot();
     } catch (err) {
-      this.setStatus({
-        lastError: err instanceof Error ? err.message : "Snapshot refresh failed",
-      });
+      this.markSnapshotFailure(err);
+      this.scheduleSnapshotRetry();
       return;
     }
     this.reconcile(snapshot);
+  }
+
+  /**
+   * A failed snapshot is *not* a synchronized state: the tab keeps applying
+   * events but must say so, and retry with backoff instead of pretending the
+   * account is empty or fully reconciled.
+   */
+  private markSnapshotFailure(err: unknown): void {
+    this.setStatus({
+      synced: false,
+      state: "degraded",
+      reason: "snapshot_unavailable",
+      lastError: err instanceof Error ? err.message : "Snapshot refresh failed",
+    });
+  }
+
+  private scheduleSnapshotRetry(): void {
+    if (!this.started || this.snapshotRetryTimer) return;
+    this.snapshotAttempt += 1;
+    const base = this.deps.snapshotRetryBaseMs ?? 2_000;
+    const delay = Math.min(60_000, base * 2 ** Math.min(this.snapshotAttempt - 1, 5));
+    this.snapshotRetryTimer = setTimeout(() => {
+      this.snapshotRetryTimer = null;
+      if (!this.started) return;
+      void this.refreshSnapshot(true);
+    }, delay);
+  }
+
+  private clearSnapshotRetry(): void {
+    if (this.snapshotRetryTimer) clearTimeout(this.snapshotRetryTimer);
+    this.snapshotRetryTimer = null;
+    this.snapshotAttempt = 0;
   }
 
   private async takeLeadership(): Promise<void> {
     if (!this.started || !this.accountId) return;
     this.isLeader = true;
     this.setStatus({ isLeader: true });
+    this.channel?.postMessage({ type: "claim", tabId: this.tabId });
     this.channel?.postMessage({ type: "leader", tabId: this.tabId });
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(() => {
@@ -250,7 +360,13 @@ export class RealtimeSyncClient {
 
     let config: RealtimeConfigResponse;
     try {
-      config = await this.deps.fetchConfig(this.accountId);
+      config = await this.deps.fetchConfig(this.accountId, {
+        reprovision: this.forceReprovision,
+      });
+      if (this.forceReprovision) {
+        this.forceReprovision = false;
+        this.reprovisionedThisSession = true;
+      }
     } catch (err) {
       const status = err instanceof ApiError ? err.status : 0;
       // A signed-out or paused session cannot be repaired by retrying.
@@ -303,7 +419,10 @@ export class RealtimeSyncClient {
         brokerUrl: credential.brokerUrl,
         username: credential.username,
         password: credential.password,
-        clientId: `${credential.clientIdPrefix || "hcweb"}-${this.clientIdSuffix}`,
+        // One socket per login session: a deterministic id lets a revocation
+        // kick this connection, and a second tab of the same session cannot
+        // create a parallel broker session.
+        clientId: credential.clientId || `${credential.clientIdPrefix || "hcweb"}-${this.clientIdSuffix}`,
         topic: credential.topic,
         onConnected: () => {
           this.reconnectAttempt = 0;
@@ -318,6 +437,17 @@ export class RealtimeSyncClient {
           this.scheduleReconnect();
         },
         onError: (message) => {
+          // A rejected identity (user removed from EMQX, rotated app secret,
+          // reaped session) is repaired once by re-provisioning instead of
+          // retrying the same dead credential forever.
+          const rejected =
+            /not authori|unauthori|bad user|bad username|bad password|invalid credential/i.test(
+              message
+            );
+          if (rejected && !this.reprovisionedThisSession) {
+            this.forceReprovision = true;
+            this.reconnectAttempt = 0;
+          }
           this.setStatus({ lastError: message });
         },
         onMessage: (payload) => this.handleRawMessage(payload),
@@ -338,9 +468,8 @@ export class RealtimeSyncClient {
       const snapshot = await this.deps.fetchSnapshot();
       this.reconcile(snapshot);
     } catch (err) {
-      this.setStatus({
-        lastError: err instanceof Error ? err.message : "Snapshot refresh failed",
-      });
+      this.markSnapshotFailure(err);
+      this.scheduleSnapshotRetry();
     } finally {
       this.buffering = false;
       const pending = this.buffer;
@@ -348,7 +477,11 @@ export class RealtimeSyncClient {
       if (pending.length > 0) {
         this.applyEvents(pending, { broadcast: false });
       }
-      this.setStatus({ state: "live" });
+      // Buffered events are real state, but they are not a reconciliation: the
+      // channel only reports `live` once a snapshot has been applied.
+      if (this.status.synced && this.status.state !== "degraded") {
+        this.setStatus({ state: "live" });
+      }
     }
   }
 
@@ -362,6 +495,9 @@ export class RealtimeSyncClient {
     const hadKnowledge = this.versions.size > 0;
     const drifted = new Set<RealtimeEntity>();
 
+    // Only row-derived versions are compared here. Delivery timestamps live in
+    // `watermarks` and are never compared with snapshot versions, so an event
+    // can no longer make an entity look permanently "drifted" after a reconnect.
     for (const [key, kind] of Object.entries(SNAPSHOT_ENTITY_KINDS) as Array<
       [keyof RealtimeSnapshot["entities"], RealtimeEntity]
     >) {
@@ -374,9 +510,19 @@ export class RealtimeSyncClient {
         const previous = this.versions.get(mapKey);
         const version = typeof row.version === "string" ? row.version : null;
         if (!version) continue;
-        if (previous && previous !== version) drifted.add(kind);
-        if (!previous && hadKnowledge) drifted.add(kind);
-        if (!previous || version > previous) this.versions.set(mapKey, version);
+        if (!previous) {
+          if (hadKnowledge) drifted.add(kind);
+          this.versions.set(mapKey, version);
+          continue;
+        }
+        if (version === previous) continue;
+        if (version > previous) {
+          // The server moved on: this tab missed something.
+          drifted.add(kind);
+          this.versions.set(mapKey, version);
+        }
+        // A snapshot older than what an event already taught us is not drift;
+        // the newer version stays and the next event corrects anything else.
       }
       if (hadKnowledge) {
         for (const mapKey of Array.from(this.versions.keys())) {
@@ -389,8 +535,15 @@ export class RealtimeSyncClient {
       }
     }
 
-    this.status.lastSnapshotAt = snapshot.serverTime;
-    this.status.synced = true;
+    this.clearSnapshotRetry();
+    this.lastSnapshotAtMs = this.deps.now();
+    this.setStatus({
+      lastSnapshotAt: snapshot.serverTime,
+      synced: true,
+      state: "live",
+      reason: null,
+      lastError: null,
+    });
 
     if (drifted.size > 0) {
       this.emitBatch({
@@ -437,12 +590,21 @@ export class RealtimeSyncClient {
     for (const event of events) {
       if (!isValidEvent(event)) continue;
       const key = `${event.entity}:${event.id}`;
-      const previous = this.versions.get(key);
       // Delayed, duplicate and out-of-order deliveries all collapse here: an
-      // event is only applied when it is strictly newer than the last one seen
-      // for that entity.
-      if (previous && event.ts <= previous) continue;
-      this.versions.set(key, event.ts);
+      // event is only applied when it is strictly newer (by server `ts`) than
+      // the last delivery seen for that entity.
+      const previousMark = this.watermarks.get(key);
+      if (previousMark && event.ts <= previousMark) continue;
+      this.watermarks.set(key, event.ts);
+
+      // Row-derived versions advance the reconciliation baseline; a delivery
+      // timestamp never does, because snapshots do not speak that language.
+      if (typeof event.version === "string" && event.version) {
+        const previousVersion = this.versions.get(key);
+        if (!previousVersion || event.version > previousVersion) {
+          this.versions.set(key, event.version);
+        }
+      }
       accepted.push(event);
     }
     if (accepted.length === 0) return [];
@@ -475,16 +637,40 @@ export class RealtimeSyncClient {
       type?: string;
       tabId?: string;
       events?: unknown;
+      state?: string;
+      synced?: boolean;
+      reason?: string | null;
     };
-    if (message.tabId === this.tabId) return;
+    if (!message.tabId || message.tabId === this.tabId) return;
+
+    const peerId = message.tabId;
+    if (message.type !== "release") {
+      const before = this.peerIds.size;
+      this.peerIds.add(peerId);
+      if (this.peerIds.size !== before) {
+        this.setStatus({ tabCount: this.peerIds.size + 1 });
+      }
+    }
 
     switch (message.type) {
       case "probe":
+        // Answer so two tabs starting together discover each other, then let
+        // the lowest id lead.
+        this.channel?.postMessage({ type: "probe-ack", tabId: this.tabId });
         if (this.isLeader) {
           this.channel?.postMessage({ type: "leader", tabId: this.tabId });
         }
         break;
+      case "probe-ack":
+        break;
+      case "claim":
       case "leader":
+        if (this.isLeader && peerId < this.tabId) {
+          // A senior tab owns the socket: yield instead of running a second
+          // broker session.
+          this.stepDownToPeer();
+          break;
+        }
         if (!this.isLeader) {
           this.leaderConfirmed = true;
           this.leaderSeenAt = this.deps.now();
@@ -501,13 +687,27 @@ export class RealtimeSyncClient {
           this.leaderSeenAt = this.deps.now();
         }
         break;
+      case "status":
+        if (!this.isLeader) {
+          this.setStatus({
+            state:
+              typeof message.state === "string"
+                ? (message.state as RealtimeConnectionState)
+                : this.status.state,
+            synced: Boolean(message.synced),
+            reason: typeof message.reason === "string" ? message.reason : null,
+          });
+        }
+        break;
       case "release":
+        this.peerIds.delete(peerId);
+        this.setStatus({ tabCount: this.peerIds.size + 1 });
         if (!this.isLeader) {
           this.leaderConfirmed = false;
-          // Another tab closed; this one takes over shortly.
+          // Another tab closed; the highest-priority remaining tab takes over.
           setTimeout(() => {
             if (this.started && !this.isLeader && !this.leaderConfirmed) {
-              void this.takeLeadership();
+              void this.resolveLeadershipAfterProbe();
             }
           }, PROBE_TIMEOUT_MS);
         }
@@ -528,7 +728,7 @@ export class RealtimeSyncClient {
     if (!this.leaderConfirmed) return;
     if (this.deps.now() - this.leaderSeenAt > LEADER_STALE_MS) {
       this.leaderConfirmed = false;
-      void this.takeLeadership();
+      void this.resolveLeadershipAfterProbe();
     }
   }
 
@@ -544,6 +744,7 @@ export class RealtimeSyncClient {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.started) return;
+      if (!this.isLeader && this.leaderConfirmed) return;
       void this.takeLeadership();
     }, backoff + jitter);
   }
@@ -553,6 +754,8 @@ export class RealtimeSyncClient {
     if (this.probeTimer) clearTimeout(this.probeTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    if (this.snapshotRetryTimer) clearTimeout(this.snapshotRetryTimer);
+    this.snapshotRetryTimer = null;
     this.reconnectTimer = null;
     this.probeTimer = null;
     this.heartbeatTimer = null;
@@ -570,7 +773,23 @@ export class RealtimeSyncClient {
   }
 
   private setStatus(patch: Partial<RealtimeStatus>): void {
+    const previous = this.status;
     this.status = { ...this.status, ...patch };
+    // Followers hold no socket, so the leader tells them what the channel
+    // actually is: otherwise a second tab reads "Connecting" forever.
+    if (
+      this.isLeader &&
+      this.channel &&
+      (previous.state !== this.status.state || previous.synced !== this.status.synced)
+    ) {
+      this.channel.postMessage({
+        type: "status",
+        tabId: this.tabId,
+        state: this.status.state,
+        synced: this.status.synced,
+        reason: this.status.reason,
+      });
+    }
     for (const listener of Array.from(this.statusListeners)) {
       try {
         listener(this.getStatus());

@@ -6,7 +6,10 @@
  *  - MQTT payloads match /api/switches/:id/toggle and /api/devices/:id/command,
  *  - automation targets run through the shared automation engine,
  *  - downstream switch/device events re-enter the automation engine so button
- *    commands behave exactly like manual dashboard commands.
+ *    commands behave exactly like manual dashboard commands,
+ *  - every accepted switch/device change is published on the account's
+ *    real-time channel, so the Dynamic Island master controls update the
+ *    Overview, 2D map, Rooms and device pages without a refresh.
  *
  * Availability is validated before dispatch: steps targeting controllers that
  * are not online fail fast with a per-step error instead of pretending the
@@ -29,6 +32,11 @@ import type { WorkerBindings } from "../config/env";
 import { resolveDeviceCommandDelivery } from "./device-command-delivery";
 import { EmqxClient, isEmqxConfigured } from "./emqx";
 import { recordActivity } from "./audit";
+import {
+  makeRealtimeEvent,
+  publishRealtimeEvents,
+  type RealtimeEvent,
+} from "./realtime";
 import type { AppEnv } from "../types/context";
 
 export interface ControllableSwitchRow {
@@ -256,6 +264,16 @@ export async function executeActionButtonSteps(params: {
     | { kind: "switch"; switchId: string; isOn: boolean }
   > = [];
   const visitedAutomationIds = new Set<string>();
+  // Events for switches/devices that this press actually accepted. They are
+  // flushed before every delay step and at the end, so a long "wait" step never
+  // holds already-applied changes back from the console.
+  const pendingEvents: RealtimeEvent[] = [];
+
+  const flushEvents = async () => {
+    if (pendingEvents.length === 0) return;
+    const events = pendingEvents.splice(0, pendingEvents.length);
+    await publishRealtimeEvents(env, { emqxFetch }, accountId, events);
+  };
 
   const controllerIds = Array.from(
     new Set([
@@ -296,6 +314,7 @@ export async function executeActionButtonSteps(params: {
   for (const step of steps) {
     try {
       if (step.kind === "delay") {
+        await flushEvents();
         await delay(step.ms);
         results.push({
           stepId: step.id,
@@ -417,6 +436,21 @@ export async function executeActionButtonSteps(params: {
           }
           // Reflect locally so later steps (e.g. toggles on the same switch) see fresh state.
           sw.is_on = desired;
+          pendingEvents.push(
+            makeRealtimeEvent(
+              "switch",
+              "state",
+              sw.id,
+              {
+                isOn: desired,
+                boardInstanceId: sw.board_instance_id,
+                mqttDispatched: dispatched.mqttDispatched,
+                source: "action_button",
+              },
+              "accepted",
+              dispatched.changedAt
+            )
+          );
           if (desired) onCount += 1;
           else offCount += 1;
           downstreamEvents.push({ kind: "switch", switchId: sw.id, isOn: desired });
@@ -467,6 +501,21 @@ export async function executeActionButtonSteps(params: {
             continue;
           }
           dev.state = desiredState;
+          pendingEvents.push(
+            makeRealtimeEvent(
+              "device",
+              "state",
+              dev.id,
+              {
+                state: desiredState,
+                boardInstanceId: dev.board_instance_id,
+                mqttDispatched: dispatched.mqttDispatched,
+                source: "action_button",
+              },
+              "accepted",
+              dispatched.changedAt
+            )
+          );
           if (desiredActive) onCount += 1;
           else offCount += 1;
           downstreamEvents.push({ kind: "device", deviceId: dev.id, state: desiredState });
@@ -491,6 +540,8 @@ export async function executeActionButtonSteps(params: {
       });
     }
   }
+
+  await flushEvents();
 
   // Chain downstream switch/device automation triggers like the primary APIs do.
   if (downstreamEvents.length > 0) {
@@ -566,7 +617,9 @@ async function dispatchSwitchCommand(params: {
   actorUserId: string;
   sw: ControllableSwitchRow;
   desired: boolean;
-}): Promise<{ ok: true; mqttDispatched: boolean } | { ok: false; error: string }> {
+}): Promise<
+  { ok: true; mqttDispatched: boolean; changedAt: string } | { ok: false; error: string }
+> {
   const { db, emqx, emqxReady, cred, accountId, actorUserId, sw, desired } = params;
 
   let mqttDispatched = false;
@@ -603,13 +656,14 @@ async function dispatchSwitchCommand(params: {
     }
   }
 
+  const changedAt = new Date().toISOString();
   await db
     .from("switches")
-    .update({ is_on: desired, last_changed_at: new Date().toISOString() })
+    .update({ is_on: desired, last_changed_at: changedAt })
     .eq("id", sw.id)
     .eq("account_id", accountId);
 
-  return { ok: true, mqttDispatched };
+  return { ok: true, mqttDispatched, changedAt };
 }
 
 async function dispatchDeviceCommand(params: {
@@ -622,7 +676,9 @@ async function dispatchDeviceCommand(params: {
   actorUserId: string;
   dev: ControllableDeviceRow;
   desiredState: string;
-}): Promise<{ ok: true; mqttDispatched: boolean } | { ok: false; error: string }> {
+}): Promise<
+  { ok: true; mqttDispatched: boolean; changedAt: string } | { ok: false; error: string }
+> {
   const { db, emqx, emqxReady, cred, accountId, actorUserId, dev, desiredState } = params;
 
   let mqttDispatched = false;
@@ -658,12 +714,13 @@ async function dispatchDeviceCommand(params: {
     }
   }
 
+  const changedAt = new Date().toISOString();
   await db
     .from("devices")
-    .update({ state: desiredState, last_state_at: new Date().toISOString() })
+    .update({ state: desiredState, last_state_at: changedAt })
     .eq("id", dev.id)
     .eq("account_id", accountId);
 
-  return { ok: true, mqttDispatched };
+  return { ok: true, mqttDispatched, changedAt };
 }
 

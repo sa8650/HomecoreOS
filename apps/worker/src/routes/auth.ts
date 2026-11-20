@@ -40,7 +40,10 @@ import {
   requireUserSession,
   resolveUserSessionFromRequest,
 } from "../middleware/auth";
-import { revokeRealtimeCredential } from "../lib/realtime";
+import {
+  revokeRealtimeCredential,
+  revokeRealtimeCredentialsForSessions,
+} from "../lib/realtime";
 import type { AppEnv } from "../types/context";
 
 const registerSchema = z.object({
@@ -708,12 +711,29 @@ export function createAuthRoutes() {
         );
       }
 
+      const previousAccountId = auth.accountId;
       await db
         .from("sessions")
         .update({ active_account_id: parsed.data.accountId })
         .eq("id", auth.sessionId);
 
-      return c.json({ ok: true, activeAccountId: parsed.data.accountId });
+      // The browser identity is account-scoped (username, topic and ACL all
+      // embed the account id). Revoke it before the console boots the new
+      // account so the previous account's channel can never be reused.
+      if (previousAccountId !== parsed.data.accountId) {
+        await revokeRealtimeCredential({
+          db,
+          env: c.env ?? {},
+          deps: c.get("deps") ?? {},
+          sessionId: auth.sessionId,
+        });
+      }
+
+      return c.json({
+        ok: true,
+        activeAccountId: parsed.data.accountId,
+        realtimeReconciled: previousAccountId !== parsed.data.accountId,
+      });
     }
   );
 
@@ -807,13 +827,31 @@ export function createAuthRoutes() {
         .update({ password_hash: newHash })
         .eq("id", auth.userId);
 
-      // Revoke all OTHER sessions for this user
+      // Revoke all OTHER sessions for this user, including their broker
+      // identities: a revoked session must stop receiving private events at once.
+      const { data: otherSessions } = await db
+        .from("sessions")
+        .select("id")
+        .eq("user_id", auth.userId)
+        .neq("id", auth.sessionId)
+        .is("revoked_at", null);
+      const otherSessionIds = ((otherSessions ?? []) as Array<{ id: string }>).map(
+        (row) => row.id
+      );
+
       await db
         .from("sessions")
         .update({ revoked_at: new Date().toISOString() })
         .eq("user_id", auth.userId)
         .neq("id", auth.sessionId)
         .is("revoked_at", null);
+
+      await revokeRealtimeCredentialsForSessions({
+        db,
+        env: c.env ?? {},
+        deps: c.get("deps") ?? {},
+        sessionIds: otherSessionIds,
+      });
 
       await recordActivity(db, {
         accountId: auth.accountId,
@@ -1148,11 +1186,26 @@ export function createAuthRoutes() {
 
     // A recovery is a security event: every existing session is revoked, so the
     // console always signs in again with the new password.
+    const { data: liveSessions } = await db
+      .from("sessions")
+      .select("id")
+      .eq("user_id", user.id)
+      .is("revoked_at", null);
+
     await db
       .from("sessions")
       .update({ revoked_at: nowIso })
       .eq("user_id", user.id)
       .is("revoked_at", null);
+
+    // Revoked sessions must also lose their subscribe-only broker identity,
+    // otherwise a still-open tab keeps receiving private account events.
+    await revokeRealtimeCredentialsForSessions({
+      db,
+      env: c.env ?? {},
+      deps: c.get("deps") ?? {},
+      sessionIds: ((liveSessions ?? []) as Array<{ id: string }>).map((row) => row.id),
+    });
 
     await db
       .from("password_reset_otps")
@@ -1243,6 +1296,14 @@ export function createAuthRoutes() {
         .update({ revoked_at: new Date().toISOString() })
         .eq("id", targetId)
         .eq("user_id", auth.userId);
+
+      // Close the revoked session's live broker subscription immediately.
+      await revokeRealtimeCredential({
+        db,
+        env: c.env ?? {},
+        deps: c.get("deps") ?? {},
+        sessionId: targetId,
+      });
 
       if (targetId !== auth.sessionId) {
         await emitNotification(db, {
