@@ -574,7 +574,10 @@ describe("Global real-time synchronization channel", () => {
     expect(Number.isFinite(Date.parse(homeEvent!.version!))).toBe(true);
 
     // The snapshot reports the same version the event carried, so a reconnect
-    // reconciles instead of reloading the floor plan.
+    // reconciles instead of reloading the floor plan. The publisher reads
+    // `homes.updated_at` back from the row (the `set_updated_at` trigger stamps
+    // the database clock, which is not the Worker's clock), so the two strings
+    // must match byte for byte — never within a tolerance.
     const snapshotRes = await req("/api/realtime/snapshot", { headers: { Cookie: userCookie } });
     const { snapshot } = (await snapshotRes.json()) as {
       snapshot: { entities: { homes: Array<{ id: string; version: string }> } };

@@ -529,3 +529,15 @@ export function deviceKindLabel(kind: FloorDeviceKind): string {
     .replace(/-/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
+
+/* -------------------------------------------------------------------------- */
+/* Viewport zoom — the map and its inner canvas share one range and clamp      */
+/* -------------------------------------------------------------------------- */
+
+export const FLOOR_MIN_ZOOM = 0.55;
+export const FLOOR_MAX_ZOOM = 3;
+
+/** Clamps a zoom factor into the floor-plan viewport range (3 decimals). */
+export function clampFloorZoom(value: number): number {
+  return Math.min(FLOOR_MAX_ZOOM, Math.max(FLOOR_MIN_ZOOM, Number(value.toFixed(3))));
+}

@@ -94,9 +94,18 @@ Two timestamps, two jobs:
 
 * **`version`** is the *row* version the snapshot also reports for that entity
   (`switches.last_changed_at`, `devices.last_state_at`, `sensors.last_reading_at`,
-  `automation_rules.last_executed_at`, `board_instances.last_communication_at`/`updated_at`).
-  Because both sides speak about the same revision, an entity that was already updated by
-  an event does not trigger a redundant reload on the next reconcile.
+  `automation_rules.last_executed_at`, `board_instances.last_communication_at`/`updated_at`,
+  `homes.updated_at`). Because both sides speak about the same revision, an entity that was
+  already updated by an event does not trigger a redundant reload on the next reconcile.
+
+* The two version strings must be **identical**, never merely close. Timestamp columns that
+  carry a `set_updated_at` trigger are stamped with the database clock (`now()`, the
+  transaction start), which can be a millisecond away from the Worker's `new Date()`. The
+  home publisher therefore writes `homes.updated_at` and reads the stored value back
+  (`update(...).select("updated_at")`) before publishing, so the event version is the
+  snapshot version byte for byte. Adding a new publisher over a trigger-managed column must
+  do the same — publishing a locally generated timestamp is a drift bug, not a rounding
+  detail.
 
 An envelope carries at most **40 events** (`REALTIME_MAX_EVENTS_PER_MESSAGE`) so the payload
 stays small. A bulk action that touches more entities than that is split across several
@@ -202,7 +211,7 @@ invalidates every outstanding browser credential at once.
 | Node roster / ESP-NOW link changes | `confirmed` `board` events for linked and lost Nodes. |
 | Heartbeat timeout sweep | One `board` offline transition plus the notification event. |
 | CRUD (switch/device/sensor/board/automation/home), pairing, recovery, room moves, config revisions | `created`/`updated`/`deleted` events. |
-| Room create/rename/resize/delete, floor-plan drags | A `home` event (`patch.reason: "rooms"`) plus a `homes.updated_at` touch, so the 2D map, Rooms grid and room selector follow live and a reconnect reconciles instead of reloading. |
+| Room create/rename/resize/delete, floor-plan drags | A `home` event (`patch.reason: "rooms"`) plus a `homes.updated_at` touch whose stored value is read back and published as the event version, so the 2D map, Rooms grid and room selector follow live and a reconnect reconciles instead of reloading. |
 
 ## Quota discipline
 

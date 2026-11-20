@@ -104,7 +104,7 @@ After deploying, open the console and confirm the live channel works:
 4. If your deployment exposes WebSocket on a different port/path, set `EMQX_WS_URL`
    (preferred) or `EMQX_WS_PORT` + `EMQX_WS_PATH` and redeploy.
 5. Revocation check: sign the same account in from a second browser, then revoke that session
-   from **User Settings → Security → Sessions**. The revoked tab must stop receiving updates
+   from **User Settings → Active Sessions**. The revoked tab must stop receiving updates
    immediately (EMQX deletes the broker user and kicks the client), and its
    `GET /api/realtime/config` must answer `401`. Changing the password or completing a
    password recovery must do the same for every other session automatically.

@@ -151,6 +151,11 @@ function computeConnectedRoomSlot(
  * them. Touching `homes.updated_at` keeps the row version the snapshot reports
  * in step with the event, so a reconnect after a room edit reconciles instead of
  * reloading (or, worse, missing it).
+ *
+ * The write is read back because `homes` carries a `set_updated_at` trigger that
+ * stamps the column with the database clock (transaction start), which can be a
+ * millisecond off the Worker's `new Date()`. Publishing the stored value keeps
+ * the event version byte-identical to the snapshot version instead of drifting.
  */
 async function publishHomeChange(
   db: AppEnv["Variables"]["db"],
@@ -162,11 +167,15 @@ async function publishHomeChange(
 ): Promise<void> {
   if (!homeId) return;
   const now = new Date().toISOString();
-  await db
+  const touched = await db
     .from("homes")
     .update({ updated_at: now })
     .eq("id", homeId)
-    .eq("account_id", accountId);
+    .eq("account_id", accountId)
+    .select("updated_at")
+    .maybeSingle();
+  const stored = (touched.data as { updated_at?: string | null } | null)?.updated_at;
+  const version = typeof stored === "string" && stored ? stored : now;
   await publishRealtimeEvents(env, deps, accountId, [
     makeRealtimeEvent(
       "home",
@@ -174,7 +183,7 @@ async function publishHomeChange(
       homeId,
       { reason },
       undefined,
-      now
+      version
     ),
   ]);
 }

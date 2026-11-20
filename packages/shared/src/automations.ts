@@ -2,6 +2,24 @@ import { isValidIanaTimezone } from "./index";
 
 export type AutomationOperator = "gt" | "gte" | "lt" | "lte" | "eq" | "neq";
 
+/**
+ * Canonical automation weekday order and labels (Monday-first).
+ *
+ * Both the automation list and the visual flow builder render the same
+ * picker, so the table lives here instead of being copied per screen.
+ */
+export const AUTOMATION_WEEKDAYS = [
+  { id: "mon", label: "Mon" },
+  { id: "tue", label: "Tue" },
+  { id: "wed", label: "Wed" },
+  { id: "thu", label: "Thu" },
+  { id: "fri", label: "Fri" },
+  { id: "sat", label: "Sat" },
+  { id: "sun", label: "Sun" },
+] as const;
+
+export type AutomationWeekday = (typeof AUTOMATION_WEEKDAYS)[number]["id"];
+
 export interface AutomationTriggerItem {
   id?: string;
   type: "sensor_value" | "device_state" | "time" | "sun_event" | "manual";

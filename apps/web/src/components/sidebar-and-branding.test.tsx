@@ -7,7 +7,6 @@ import {
   type SidebarControls,
 } from "@/components/layout/ConsoleShell";
 import { UserIslandWorkspaceBar } from "@/components/dynamic-island/UserIslandWorkspaceBar";
-import { BrevoAttribution } from "@/components/shared/BrevoAttribution";
 import type { UserSessionData } from "@/features/types";
 
 afterEach(() => {
@@ -144,15 +143,5 @@ describe("Console sidebar collapse", () => {
       "aria-label",
       "Show sidebar"
     );
-  });
-});
-
-describe("Brevo attribution", () => {
-  it("renders the Brevo email logo at the bottom of the sign-in page", () => {
-    render(<BrevoAttribution />);
-    const link = screen.getByTestId("brevo-attribution");
-    expect(link).toHaveAttribute("href", "https://www.brevo.com/");
-    const logo = screen.getByAltText("Brevo");
-    expect(logo).toHaveAttribute("src", "/brand/brevo-wordmark.png");
   });
 });

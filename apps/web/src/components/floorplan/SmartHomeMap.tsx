@@ -23,6 +23,7 @@ import {
   DeviceGlyph,
   FloorMapDefs,
   RoomFloorArt,
+  clampFloorZoom,
   classifyDeviceType,
   classifySensorType,
   classifySwitch,
@@ -41,8 +42,6 @@ import {
 } from "./house-layout";
 import { DeviceControlPopover, type MapBadge } from "./DeviceControlPopover";
 
-const MIN_ZOOM = 0.55;
-const MAX_ZOOM = 3;
 const VIEW_PADDING = 20;
 const MAX_BADGES_PER_ROOM = 14;
 /** Edge magnetism: how close (plan units) a dragged room snaps flush to another. */
@@ -56,10 +55,6 @@ const MIN_ROOM_DIM = 110;
 interface RoomBadges {
   visible: MapBadge[];
   overflow: MapBadge[];
-}
-
-function clampZoom(value: number): number {
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(value.toFixed(3))));
 }
 
 function formatSensorValue(sensor: SensorItem): string | undefined {
@@ -443,7 +438,7 @@ export const SmartHomeMap = memo(function SmartHomeMap({
       if (activeTouchesRef.current.size === 2 && pinchStateRef.current) {
         const points = Array.from(activeTouchesRef.current.values());
         const distance = Math.hypot(points[1]!.x - points[0]!.x, points[1]!.y - points[0]!.y);
-        onZoomChange(clampZoom(pinchStateRef.current.startZoom * (distance / pinchStateRef.current.startDist)));
+        onZoomChange(clampFloorZoom(pinchStateRef.current.startZoom * (distance / pinchStateRef.current.startDist)));
         return;
       }
 
@@ -584,7 +579,7 @@ export const SmartHomeMap = memo(function SmartHomeMap({
       if (delta === 0) return;
 
       const current = zoomRef.current;
-      const next = clampZoom(current * Math.exp(-delta * 0.0016));
+      const next = clampFloorZoom(current * Math.exp(-delta * 0.0016));
       if (next === current) return;
 
       const rect = svg.getBoundingClientRect();

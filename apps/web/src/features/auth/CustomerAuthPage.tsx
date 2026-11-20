@@ -14,7 +14,6 @@ import { PerspectiveGrid } from "@/components/ui/perspective-grid";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { TechnologyEcosystem } from "@/features/auth/TechnologyEcosystem";
-import { BrevoAttribution } from "@/components/shared/BrevoAttribution";
 
 interface CustomerAuthPageProps {
   initialTab?: "login" | "register" | "invite";
@@ -545,7 +544,6 @@ export function CustomerAuthPage({
               <span>Smart Things · Powered by HomecoreOS</span>
               <span>ESP32 Native</span>
             </div>
-            <BrevoAttribution />
           </footer>
         </div>
       </div>

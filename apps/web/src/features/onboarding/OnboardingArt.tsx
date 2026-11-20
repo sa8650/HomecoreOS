@@ -313,10 +313,3 @@ export function MonitorExpandArt() {
     </ArtFrame>
   );
 }
-
-export const ONBOARDING_ART = [
-  WelcomeHomeArt,
-  HardwareChainArt,
-  ControlAutomateArt,
-  MonitorExpandArt,
-] as const;

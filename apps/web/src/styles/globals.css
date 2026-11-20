@@ -751,3 +751,14 @@
     animation: none;
   }
 }
+
+/* Scrollable tab rows (and similar horizontal strips) keep keyboard and touch
+ * scrolling but never paint a scrollbar over the pills. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
