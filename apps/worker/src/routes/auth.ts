@@ -7,6 +7,7 @@ import {
   resolveOnboardingState,
 } from "@homecoreos/shared";
 import { recordActivity } from "../lib/audit";
+import { loadBrevoSender, sendPasswordRecoveryEmail } from "../lib/brevo";
 import {
   ONBOARDING_COLUMNS,
   completeOnboarding,
@@ -23,6 +24,7 @@ import {
 } from "../lib/cookies";
 import {
   generateRandomToken,
+  generateSixDigitPairingCode,
   generateSlugSuffix,
   hashPassword,
   sha256Hex,
@@ -72,6 +74,31 @@ const profileSchema = z.object({
   avatarSeed: z.enum(["homecore-1", "homecore-2", "homecore-3", "homecore-4", "homecore-5", "homecore-6", "homecore-7", "homecore-8"]).nullable().optional(),
   timezone: z.string().trim().min(1).max(64).nullable().optional(),
 });
+
+const passwordResetRequestSchema = z.object({
+  email: z.string().trim().email().max(200),
+});
+
+const passwordResetVerifySchema = z.object({
+  email: z.string().trim().email().max(200),
+  otp: z.string().trim().regex(/^\d{6}$/, "Enter the six-digit code."),
+});
+
+const passwordResetConfirmSchema = z.object({
+  resetToken: z.string().trim().min(16).max(200),
+  newPassword: z.string().min(8).max(256),
+});
+
+/** A recovery code lives for ten minutes and tolerates five wrong guesses. */
+const PASSWORD_RESET_TTL_MINUTES = 10;
+const PASSWORD_RESET_MAX_ATTEMPTS = 5;
+const PASSWORD_RESET_RESEND_SECONDS = 60;
+const PASSWORD_RESET_MAX_PER_HOUR = 5;
+
+/** Salts the stored code hash with the user id, so a hash is worthless alone. */
+function hashRecoveryCode(userId: string, code: string): Promise<string> {
+  return sha256Hex(`${userId}:${code}`);
+}
 
 const switchAccountSchema = z.object({
   accountId: z.string().uuid(),
@@ -803,6 +830,366 @@ export function createAuthRoutes() {
       return c.json({ ok: true });
     }
   );
+
+  // ---------------- PASSWORD RECOVERY (6-digit OTP over Brevo) ----------------
+  // Three steps, in order: ask for a code, verify the code, set a new password.
+  // Nothing in the first step reveals whether an address has an account.
+  app.post("/password-reset/request", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = passwordResetRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "Enter the email address of your account." }, 400);
+    }
+
+    const db = c.get("db");
+    const sender = await loadBrevoSender(db);
+    if (!sender.fromEmail || !(c.env?.BREVO_API_KEY ?? "").trim()) {
+      return c.json(
+        {
+          error:
+            "Password recovery email is not configured yet. Ask your administrator to set the Brevo sender and BREVO_API_KEY.",
+          code: "EMAIL_NOT_CONFIGURED",
+        },
+        503
+      );
+    }
+
+    const email = parsed.data.email.toLowerCase();
+    const ip = extractClientIp(c.req.raw);
+
+    const { data: userData } = await db
+      .from("users")
+      .select("id,email,full_name,status")
+      .eq("email", email)
+      .eq("user_kind", "customer")
+      .is("deleted_at", null)
+      .maybeSingle();
+
+    const user = userData as {
+      id: string;
+      email: string;
+      full_name: string;
+      status: "active" | "disabled";
+    } | null;
+
+    // The response is identical either way: an unknown address must not become
+    // an account-existence oracle.
+    const generic = {
+      ok: true,
+      expiresInMinutes: PASSWORD_RESET_TTL_MINUTES,
+    } as const;
+    if (!user) return c.json(generic);
+
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { data: recentData } = await db
+      .from("password_reset_otps")
+      .select("id,created_at")
+      .eq("user_id", user.id)
+      .gte("created_at", hourAgo)
+      .order("created_at", { ascending: false });
+
+    const recent = (recentData ?? []) as Array<{ id: string; created_at: string }>;
+    const last = recent[0];
+    if (last) {
+      const elapsedSeconds = Math.floor(
+        (Date.now() - new Date(last.created_at).getTime()) / 1000
+      );
+      if (elapsedSeconds < PASSWORD_RESET_RESEND_SECONDS) {
+        return c.json(
+          {
+            error: `A code was just sent. Try again in ${PASSWORD_RESET_RESEND_SECONDS - elapsedSeconds}s.`,
+            code: "RESET_RATE_LIMITED",
+            retryAfterSeconds: PASSWORD_RESET_RESEND_SECONDS - elapsedSeconds,
+          },
+          429
+        );
+      }
+    }
+    if (recent.length >= PASSWORD_RESET_MAX_PER_HOUR) {
+      return c.json(
+        {
+          error: "Too many recovery codes requested. Try again in an hour.",
+          code: "RESET_RATE_LIMITED",
+        },
+        429
+      );
+    }
+
+    // Only the newest code is ever accepted.
+    await db
+      .from("password_reset_otps")
+      .update({ consumed_at: new Date().toISOString() })
+      .eq("user_id", user.id)
+      .is("consumed_at", null);
+
+    const code = generateSixDigitPairingCode();
+    const expiresAt = new Date(
+      Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000
+    ).toISOString();
+
+    const { data: inserted, error: insertError } = await db
+      .from("password_reset_otps")
+      .insert({
+        user_id: user.id,
+        email,
+        otp_hash: await hashRecoveryCode(user.id, code),
+        expires_at: expiresAt,
+        request_ip: ip,
+      })
+      .select("id")
+      .single();
+
+    if (insertError || !inserted) {
+      return c.json({ error: "The recovery code could not be created." }, 500);
+    }
+
+    const sent = await sendPasswordRecoveryEmail({
+      apiKey: c.env?.BREVO_API_KEY,
+      sender,
+      input: {
+        to: email,
+        code,
+        expiresInMinutes: PASSWORD_RESET_TTL_MINUTES,
+        recipientName: user.full_name,
+      },
+      mailFetch: (c.get("deps") ?? {}).mailFetch,
+    });
+
+    if (!sent.ok) {
+      // A code that never reached the customer must not linger.
+      await db.from("password_reset_otps").delete().eq("id", (inserted as { id: string }).id);
+      return c.json(
+        {
+          error:
+            sent.reason === "not_configured"
+              ? "Password recovery email is not configured yet. Ask your administrator to set the Brevo sender and BREVO_API_KEY."
+              : "The recovery email could not be sent. Please try again.",
+          code: sent.reason === "not_configured" ? "EMAIL_NOT_CONFIGURED" : "EMAIL_SEND_FAILED",
+        },
+        sent.reason === "not_configured" ? 503 : 502
+      );
+    }
+
+    return c.json(generic);
+  });
+
+  app.post("/password-reset/verify", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = passwordResetVerifySchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "Enter the six-digit code from the email." }, 400);
+    }
+
+    const db = c.get("db");
+    const email = parsed.data.email.toLowerCase();
+
+    const { data: rowData } = await db
+      .from("password_reset_otps")
+      .select("id,user_id,otp_hash,attempts,expires_at")
+      .eq("email", email)
+      .is("consumed_at", null)
+      .is("reset_token_hash", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const row = rowData as {
+      id: string;
+      user_id: string;
+      otp_hash: string;
+      attempts: number;
+      expires_at: string;
+    } | null;
+
+    if (!row) {
+      return c.json(
+        {
+          error: "That code is no longer valid. Request a new one.",
+          code: "OTP_INVALID",
+        },
+        400
+      );
+    }
+    if (new Date(row.expires_at).getTime() <= Date.now()) {
+      return c.json(
+        { error: "That code has expired. Request a new one.", code: "OTP_EXPIRED" },
+        410
+      );
+    }
+    if (row.attempts >= PASSWORD_RESET_MAX_ATTEMPTS) {
+      return c.json(
+        {
+          error: "Too many incorrect codes. Request a new one.",
+          code: "OTP_ATTEMPTS_EXCEEDED",
+        },
+        429
+      );
+    }
+
+    const expected = await hashRecoveryCode(row.user_id, parsed.data.otp);
+    if (expected !== row.otp_hash) {
+      await db
+        .from("password_reset_otps")
+        .update({ attempts: row.attempts + 1 })
+        .eq("id", row.id);
+      const remaining = Math.max(0, PASSWORD_RESET_MAX_ATTEMPTS - (row.attempts + 1));
+      return c.json(
+        {
+          error:
+            remaining > 0
+              ? `That code is not correct. ${remaining} attempt${remaining === 1 ? "" : "s"} left.`
+              : "That code is not correct. Request a new one.",
+          code: "OTP_MISMATCH",
+          attemptsRemaining: remaining,
+        },
+        400
+      );
+    }
+
+    const resetToken = generateRandomToken(32);
+    const tokenExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await db
+      .from("password_reset_otps")
+      .update({
+        consumed_at: new Date().toISOString(),
+        reset_token_hash: await sha256Hex(resetToken),
+        reset_token_expires_at: tokenExpiresAt,
+      })
+      .eq("id", row.id);
+
+    return c.json({ resetToken, expiresAt: tokenExpiresAt });
+  });
+
+  app.post("/password-reset/confirm", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = passwordResetConfirmSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: "A verified code and a new password (8+ chars) are required." },
+        400
+      );
+    }
+
+    const db = c.get("db");
+    const tokenHash = await sha256Hex(parsed.data.resetToken);
+
+    const { data: rowData } = await db
+      .from("password_reset_otps")
+      .select("id,user_id,email,reset_token_expires_at,reset_token_used_at")
+      .eq("reset_token_hash", tokenHash)
+      .maybeSingle();
+
+    const row = rowData as {
+      id: string;
+      user_id: string;
+      email: string;
+      reset_token_expires_at: string | null;
+      reset_token_used_at: string | null;
+    } | null;
+
+    if (!row || row.reset_token_used_at) {
+      return c.json(
+        {
+          error: "This password reset has expired. Start recovery again.",
+          code: "RESET_TOKEN_INVALID",
+        },
+        400
+      );
+    }
+    if (
+      !row.reset_token_expires_at ||
+      new Date(row.reset_token_expires_at).getTime() <= Date.now()
+    ) {
+      return c.json(
+        {
+          error: "This password reset has expired. Start recovery again.",
+          code: "RESET_TOKEN_EXPIRED",
+        },
+        410
+      );
+    }
+
+    const { data: userData } = await db
+      .from("users")
+      .select("id,email,status")
+      .eq("id", row.user_id)
+      .is("deleted_at", null)
+      .maybeSingle();
+
+    const user = userData as {
+      id: string;
+      email: string;
+      status: "active" | "disabled";
+    } | null;
+
+    if (!user) {
+      return c.json(
+        { error: "This password reset is no longer valid.", code: "RESET_TOKEN_INVALID" },
+        400
+      );
+    }
+    if (user.status !== "active") {
+      return c.json({ error: "This user profile is disabled.", code: "USER_DISABLED" }, 403);
+    }
+
+    const nowIso = new Date().toISOString();
+    await db
+      .from("users")
+      .update({ password_hash: await hashPassword(parsed.data.newPassword) })
+      .eq("id", user.id);
+
+    // A recovery is a security event: every existing session is revoked, so the
+    // console always signs in again with the new password.
+    await db
+      .from("sessions")
+      .update({ revoked_at: nowIso })
+      .eq("user_id", user.id)
+      .is("revoked_at", null);
+
+    await db
+      .from("password_reset_otps")
+      .update({ reset_token_used_at: nowIso })
+      .eq("user_id", user.id)
+      .is("reset_token_used_at", null);
+
+    const { data: staffMembership } = await db
+      .from("staff")
+      .select("account_id")
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    const accountId =
+      (staffMembership as { account_id: string } | null)?.account_id ?? null;
+
+    await recordActivity(db, {
+      accountId,
+      actorUserId: user.id,
+      category: "security",
+      action: "auth.password_recovered",
+      summary: `${user.email} recovered the account password with an emailed code and revoked all sessions`,
+    }).catch(() => null);
+
+    if (accountId) {
+      await emitNotification(db, {
+        scope: "user",
+        accountId,
+        userId: user.id,
+        category: "security",
+        eventKey: "security.password_recovered",
+        preferenceKey: "security_events",
+        severity: "warning",
+        title: "Password Recovered",
+        message:
+          "A recovery code was used to set a new password, and every active console session was signed out.",
+        dedupKey: `sec:reset:${user.id}`,
+        dedupWindowSeconds: 300,
+      }).catch(() => null);
+    }
+
+    return c.json({ ok: true });
+  });
 
   app.get(
     "/sessions",

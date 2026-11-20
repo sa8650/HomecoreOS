@@ -6,6 +6,12 @@ export interface WorkerBindings {
   EMQX_APP_SECRET?: string;
   EMQX_BROKER_HOST?: string;
   EMQX_TLS_PORT?: string;
+  /**
+   * Brevo transactional email API key, used for password-recovery codes.
+   * Optional: when absent, password recovery reports itself as not configured
+   * instead of failing silently.
+   */
+  BREVO_API_KEY?: string;
   FIRMWARE_BUCKET?: R2Bucket;
   ASSETS?: Fetcher;
 }

@@ -286,7 +286,7 @@ function PlanPicker({
     <div
       role="group"
       aria-label="Hardware options"
-      className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4"
+      className="grid grid-cols-1 gap-2 sm:grid-cols-2"
     >
       {plans.map((plan, index) => {
         const active = index === selected;
@@ -1099,7 +1099,7 @@ export function PlannerResultView({ result, boards, onEditStep, onNavigate }: Pl
           title={`Every board that was checked (${result.evaluatedBoards.length})`}
           description="Every board HomecoreOS has on record was evaluated, including the ones that did not qualify."
         >
-          <div className="rounded-xl border bg-card">
+          <div className="overflow-x-auto rounded-xl border bg-card">
             <Table aria-label="Boards evaluated by the planner">
               <TableHeader>
                 <TableRow>

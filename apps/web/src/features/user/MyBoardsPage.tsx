@@ -87,6 +87,10 @@ export function MyBoardsPage({
   const [rooms, setRooms] = useState<RoomItem[]>([]);
   const [loading, setLoading] = useState(!cachedCtrls);
 
+  const [renameTarget, setRenameTarget] = useState<ControllerItem | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renaming, setRenaming] = useState(false);
+
   const [roomTarget, setRoomTarget] = useState<ControllerItem | null>(null);
   const [roomSelection, setRoomSelection] = useState<string>("");
   const [assigningRoom, setAssigningRoom] = useState(false);
@@ -247,6 +251,36 @@ export function MyBoardsPage({
     () => (roomTarget ? rooms.filter((r) => r.home_id === roomTarget.home_id) : []),
     [rooms, roomTarget]
   );
+
+  function openRename(device: ControllerItem) {
+    setRenameValue(device.name);
+    setRenameTarget(device);
+  }
+
+  /** Renames a Controller or a Node. The device record itself is untouched. */
+  async function handleRename(e: FormEvent) {
+    e.preventDefault();
+    if (!renameTarget || renaming) return;
+    const name = renameValue.trim();
+    if (!name || name === renameTarget.name) return;
+    setRenaming(true);
+    try {
+      const res = await apiFetch<{ controller: ControllerItem }>(
+        `/api/board-instances/${renameTarget.id}`,
+        { method: "PATCH", body: JSON.stringify({ name }) }
+      );
+      setControllers((prev) =>
+        prev.map((c) => (c.id === res.controller.id ? { ...c, ...res.controller } : c))
+      );
+      toast.success(`Renamed to ${res.controller.name ?? name}.`);
+      setRenameTarget(null);
+      void load(true);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Rename failed.");
+    } finally {
+      setRenaming(false);
+    }
+  }
 
   function openRoomAssign(ctrl: ControllerItem) {
     setRoomSelection(ctrl.room_id ?? "");
@@ -691,6 +725,7 @@ export function MyBoardsPage({
                   canManage={canManage}
                   canOperate={canOperate}
                   onViewDetails={() => setDetailTarget(ctrl)}
+                  onRename={() => openRename(ctrl)}
                   onRecover={() => openSetupFlow("recover", ctrl)}
                   onConfigureWifi={() => {
                     setWifiTarget(ctrl);
@@ -748,6 +783,7 @@ export function MyBoardsPage({
                   canOperate={canOperate}
                   timezone={timezone}
                   onViewDetails={() => setDetailTarget(node)}
+                  onRename={() => openRename(node)}
                   onAssignController={() => {
                     setAssignNodeSelection(node.assigned_controller_id ?? "");
                     setAssignNodeTarget(node);
@@ -1149,6 +1185,56 @@ export function MyBoardsPage({
                   Send Over MQTT
                 </Button>
               </div>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename Controller / Node Dialog */}
+      <Dialog
+        open={Boolean(renameTarget)}
+        onOpenChange={(open) => !open && setRenameTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <form onSubmit={handleRename} className="space-y-4">
+            <DialogHeader>
+              <DialogTitle>
+                Edit {renameTarget?.board_role === "node" ? "Node" : "Controller"} name
+              </DialogTitle>
+              <DialogDescription>
+                The name identifies this {renameTarget?.board_role === "node" ? "Node" : "Controller"}{" "}
+                everywhere in the console: cards, rooms, notifications and activity history.
+              </DialogDescription>
+            </DialogHeader>
+            <FormField id="rename-device" label="Name">
+              <Input
+                id="rename-device"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                maxLength={120}
+                autoFocus
+                required
+              />
+            </FormField>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setRenameTarget(null)}
+                disabled={renaming}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  renaming ||
+                  !renameValue.trim() ||
+                  renameValue.trim() === (renameTarget?.name ?? "")
+                }
+              >
+                {renaming ? "Saving…" : "Save Name"}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>

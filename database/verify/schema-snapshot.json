@@ -1062,6 +1062,44 @@
       "rowCount": 0,
       "dataHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
+    "password_reset_otps": {
+      "columns": [
+        "id uuid NOT NULL DEFAULT gen_random_uuid()",
+        "user_id uuid NOT NULL",
+        "email text NOT NULL",
+        "otp_hash text NOT NULL",
+        "attempts smallint NOT NULL DEFAULT 0",
+        "expires_at timestamp with time zone NOT NULL",
+        "consumed_at timestamp with time zone",
+        "reset_token_hash text",
+        "reset_token_expires_at timestamp with time zone",
+        "reset_token_used_at timestamp with time zone",
+        "request_ip text",
+        "created_at timestamp with time zone NOT NULL DEFAULT now()"
+      ],
+      "constraints": [
+        "password_reset_otps_attempts_check c CHECK (((attempts >= 0) AND (attempts <= 10)))",
+        "password_reset_otps_attempts_not_null n NOT NULL attempts",
+        "password_reset_otps_created_at_not_null n NOT NULL created_at",
+        "password_reset_otps_email_check c CHECK (((char_length(email) >= 3) AND (char_length(email) <= 200)))",
+        "password_reset_otps_email_not_null n NOT NULL email",
+        "password_reset_otps_expires_at_not_null n NOT NULL expires_at",
+        "password_reset_otps_id_not_null n NOT NULL id",
+        "password_reset_otps_otp_hash_not_null n NOT NULL otp_hash",
+        "password_reset_otps_pkey p PRIMARY KEY (id)",
+        "password_reset_otps_user_id_fkey f FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+        "password_reset_otps_user_id_not_null n NOT NULL user_id"
+      ],
+      "indexes": [
+        "idx_password_reset_otps_email CREATE INDEX idx_password_reset_otps_email ON public.password_reset_otps USING btree (email, created_at DESC)",
+        "idx_password_reset_otps_reset_token CREATE INDEX idx_password_reset_otps_reset_token ON public.password_reset_otps USING btree (reset_token_hash) WHERE (reset_token_hash IS NOT NULL)",
+        "idx_password_reset_otps_user CREATE INDEX idx_password_reset_otps_user ON public.password_reset_otps USING btree (user_id, created_at DESC)",
+        "password_reset_otps_pkey CREATE UNIQUE INDEX password_reset_otps_pkey ON public.password_reset_otps USING btree (id)"
+      ],
+      "triggers": [],
+      "rowCount": 0,
+      "dataHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
     "planner_plans": {
       "columns": [
         "id uuid NOT NULL DEFAULT gen_random_uuid()",
@@ -1120,10 +1158,17 @@
         "updated_by uuid",
         "updated_at timestamp with time zone NOT NULL DEFAULT now()",
         "default_timezone text NOT NULL DEFAULT 'UTC'::text",
-        "firmware_downloads_enabled boolean NOT NULL DEFAULT true"
+        "firmware_downloads_enabled boolean NOT NULL DEFAULT true",
+        "brevo_from_name text NOT NULL DEFAULT 'HomecoreOS'::text",
+        "brevo_from_email text",
+        "brevo_reply_to text"
       ],
       "constraints": [
         "platform_settings_board_library_enabled_not_null n NOT NULL board_library_enabled",
+        "platform_settings_brevo_from_email_check c CHECK (((brevo_from_email IS NULL) OR ((char_length(brevo_from_email) >= 3) AND (char_length(brevo_from_email) <= 200))))",
+        "platform_settings_brevo_from_name_check c CHECK (((char_length(brevo_from_name) >= 1) AND (char_length(brevo_from_name) <= 120)))",
+        "platform_settings_brevo_from_name_not_null n NOT NULL brevo_from_name",
+        "platform_settings_brevo_reply_to_check c CHECK (((brevo_reply_to IS NULL) OR ((char_length(brevo_reply_to) >= 3) AND (char_length(brevo_reply_to) <= 200))))",
         "platform_settings_controller_heartbeat_interval_second_not_null n NOT NULL controller_heartbeat_interval_seconds",
         "platform_settings_controller_heartbeat_interval_seconds_check c CHECK (((controller_heartbeat_interval_seconds >= 10) AND (controller_heartbeat_interval_seconds <= 300)))",
         "platform_settings_controller_offline_timeout_seconds_check c CHECK (((controller_offline_timeout_seconds >= 30) AND (controller_offline_timeout_seconds <= 900)))",
@@ -1154,7 +1199,7 @@
         "trg_platform_settings_updated_at CREATE TRIGGER trg_platform_settings_updated_at BEFORE UPDATE ON public.platform_settings FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
       ],
       "rowCount": 1,
-      "dataHash": "15b5a4c7178b877ea56a661b239bf1c167ea30f69c213885b286c76707213f6a"
+      "dataHash": "b3e7c2642c122f29ed6f123ffcd3c8884e38c4e6bbf2774bc9008b0486f6d9ab"
     },
     "platform_staff": {
       "columns": [

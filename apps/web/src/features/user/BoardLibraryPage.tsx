@@ -279,7 +279,7 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
       <PageHeroHeader
         tone="orange"
         ariaLabel="Board Library Header"
-        title="Smart Things Board Library"
+        title="Supported Board Library"
         subtitle={
           <>
             Explore verified{" "}

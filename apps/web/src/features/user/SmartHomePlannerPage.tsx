@@ -519,7 +519,7 @@ export function SmartHomePlannerPage({
   // --- render ---------------------------------------------------------------
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto w-full max-w-6xl space-y-6">
       <PageHeroHeader
         tone="indigo"
         ariaLabel="Smart Home Planner Header"

@@ -121,6 +121,10 @@ const platformSettingsPatchSchema = z.object({
   board_library_enabled: z.boolean().optional(),
   firmware_downloads_enabled: z.boolean().optional(),
   default_timezone: z.string().trim().min(1).max(64).optional(),
+  /** Brevo sender used for password-recovery email. The API key is a secret. */
+  brevo_from_name: z.string().trim().min(1).max(120).optional(),
+  brevo_from_email: z.string().trim().email().max(200).nullable().optional(),
+  brevo_reply_to: z.string().trim().email().max(200).nullable().optional(),
 });
 
 const boardImportPreviewSchema = z.object({
@@ -3076,7 +3080,17 @@ export function createAdminRoutes() {
       .select("*")
       .eq("id", 1)
       .single();
-    return c.json({ settings: data });
+    return c.json({
+      settings: data,
+      // The Brevo key never leaves the Worker; the console only needs to know
+      // whether password recovery email can be sent at all.
+      emailDelivery: {
+        brevoApiKeyConfigured: Boolean((c.env?.BREVO_API_KEY ?? "").trim()),
+        senderConfigured: Boolean(
+          (data as { brevo_from_email?: string | null } | null)?.brevo_from_email
+        ),
+      },
+    });
   });
 
   app.patch(

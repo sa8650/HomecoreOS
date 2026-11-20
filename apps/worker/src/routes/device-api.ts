@@ -396,6 +396,9 @@ export function createDeviceApiRoutes() {
       pending_config_sync?: boolean;
     } | null;
 
+    // A Node is never described as a Controller in a notification.
+    const prevRoleLabel = prev?.board_role === "node" ? "Node" : "Controller";
+
     const latestHist = latestHistRow as {
       id: string;
       release_id: string | null;
@@ -705,7 +708,7 @@ export function createDeviceApiRoutes() {
         eventKey: "controller.online",
         preferenceKey: "controller_offline_online",
         severity: "success",
-        title: `Controller Online: ${prev.name}`,
+        title: `${prevRoleLabel} Online: ${prev.name}`,
         message: `${prev.name} reconnected and is online.`,
         dedupKey: `ctrl:${dev.boardInstanceId}:online`,
         dedupWindowSeconds: 120,
@@ -721,7 +724,7 @@ export function createDeviceApiRoutes() {
         eventKey: "controller.mqtt_disconnected",
         preferenceKey: "controller_offline_online",
         severity: "warning",
-        title: `MQTT Disconnected: ${prev.name}`,
+        title: `${prevRoleLabel} MQTT Disconnected: ${prev.name}`,
         message: `${prev.name} is reachable on Wi-Fi but its MQTT session is disconnected.`,
         dedupKey: `ctrl:${dev.boardInstanceId}:mqtt_off`,
         dedupWhileUnread: true,
@@ -1547,7 +1550,9 @@ async function handlePairOrRecover(
 
   const { data: ctrlData } = await db
     .from("board_instances")
-    .select("id,name,connection_history,pairing_status,board_instance_identity_secret_hash")
+    .select(
+      "id,name,connection_history,pairing_status,board_instance_identity_secret_hash,board_role"
+    )
     .eq("id", boardInstanceId)
     .eq("account_id", accountId)
     .is("deleted_at", null)
@@ -1754,14 +1759,17 @@ async function handlePairOrRecover(
     .eq("id", boardInstanceId)
     .eq("account_id", accountId);
 
+  const pairedRoleLabel =
+    (ctrlData as { board_role?: string | null }).board_role === "node" ? "Node" : "Controller";
+
   await recordActivity(db, {
     accountId,
     boardInstanceId,
     category: "pairing",
     action: isRecovery ? "controller.recovered_and_repaired" : "controller.paired",
     summary: isRecovery
-      ? `Controller "${(ctrlData as { name: string }).name}" verified physical confirmation (${input.physicalConfirmationMethod}), rotated MQTT credentials, and synced configuration`
-      : `Controller "${(ctrlData as { name: string }).name}" paired and provisioned on EMQX`,
+      ? `${pairedRoleLabel} "${(ctrlData as { name: string }).name}" verified physical confirmation (${input.physicalConfirmationMethod}), rotated MQTT credentials, and synced configuration`
+      : `${pairedRoleLabel} "${(ctrlData as { name: string }).name}" paired and provisioned on EMQX`,
   });
 
   const cfgStatus = inspectConfiguration(c.env ?? {});
@@ -1793,6 +1801,8 @@ async function handlePairOrRecover(
     .eq("account_id", accountId);
 
   const ctrlName = (ctrlData as { name: string }).name;
+  const ctrlRoleLabel =
+    (ctrlData as { board_role?: string | null }).board_role === "node" ? "Node" : "Controller";
 
   await emitNotification(db, {
     scope: "admin",
@@ -1800,10 +1810,12 @@ async function handlePairOrRecover(
     eventKey: isRecovery ? "admin.controller_recovered" : "admin.controller_paired",
     preferenceKey: "controller_activity",
     severity: "info",
-    title: isRecovery ? `Controller Recovered: ${ctrlName}` : `Controller Paired: ${ctrlName}`,
+    title: isRecovery
+      ? `${ctrlRoleLabel} Recovered: ${ctrlName}`
+      : `${ctrlRoleLabel} Paired: ${ctrlName}`,
     message: isRecovery
-      ? `Controller "${ctrlName}" verified physical recovery and rotated MQTT credentials.`
-      : `Controller "${ctrlName}" completed initial pairing and provisioned EMQX ACLs.`,
+      ? `${ctrlRoleLabel} "${ctrlName}" verified physical recovery and rotated MQTT credentials.`
+      : `${ctrlRoleLabel} "${ctrlName}" completed initial pairing and provisioned EMQX ACLs.`,
     metadata: { accountId, boardInstanceId, isRecovery },
   });
 
@@ -1815,7 +1827,7 @@ async function handlePairOrRecover(
       eventKey: "security.controller_recovered",
       preferenceKey: "security_events",
       severity: "info",
-      title: `Controller Recovered: ${ctrlName}`,
+      title: `${ctrlRoleLabel} Recovered: ${ctrlName}`,
       message: `${ctrlName} confirmed physical recovery (${input.physicalConfirmationMethod}) and rotated credentials.`,
       metadata: { boardInstanceId, method: input.physicalConfirmationMethod },
     });

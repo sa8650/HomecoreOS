@@ -57,7 +57,7 @@ Additive only (no table rebuild, no data loss):
 
 Indexes: `idx_board_instances_board_role (account_id, board_role)` (partial on non-deleted rows) and
 `idx_board_instances_assigned_controller`. `database/verify` snapshot rebaselined
-(32 tables, 5 functions, 345 seeded rows); `npm run db:verify` → *schema matches snapshot ✓*.
+(33 tables, 5 functions, 345 seeded rows); `npm run db:verify` → *schema matches snapshot ✓*.
 
 Because the default is `controller`, every pre-existing row keeps behaving exactly as before.
 
@@ -152,7 +152,7 @@ same ones used for Controllers.
 
 ## 6. Web console (`apps/web`)
 
-`ControllersPage.tsx` is now split into **Controllers** and **Nodes** tabs (Trash keeps its own
+`MyBoardsPage.tsx` is now split into **Controllers** and **Nodes** tabs (Trash keeps its own
 utility tab so the existing 30-day recoverable-deletion workflow is unchanged):
 
 - Controllers tab: the existing cards, each with a new `Nodes` row (`N linked`) and a

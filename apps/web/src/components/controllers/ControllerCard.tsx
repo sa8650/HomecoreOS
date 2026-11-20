@@ -13,6 +13,7 @@ import {
   RiFlashlightFill,
   RiLinkUnlinkM,
   RiMore2Fill,
+  RiPenNibLine,
   RiRefreshLine,
   RiRestartLine,
   RiShieldCheckLine,
@@ -124,7 +125,7 @@ export function fallbackBoardProfile(ctrl: ControllerItem): BoardProfileItem {
 }
 
 /** One label/value row of the card's fixed column grid (Board Library scale). */
-function CardRow({ label, children }: { label: string; children: ReactNode }) {
+export function CardRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="contents">
       <dt className="text-muted-foreground">{label}</dt>
@@ -146,6 +147,8 @@ export interface ControllerCardProps {
   canManage: boolean;
   canOperate: boolean;
   onViewDetails: () => void;
+  /** Opens the rename dialog for this Controller. */
+  onRename: () => void;
   onRecover: () => void;
   onConfigureWifi: () => void;
   onAssignRoom: () => void;
@@ -180,6 +183,7 @@ export function ControllerCard({
   canManage,
   canOperate,
   onViewDetails,
+  onRename,
   onRecover,
   onConfigureWifi,
   onAssignRoom,
@@ -286,6 +290,12 @@ export function ControllerCard({
                       <RiEyeLine className="size-4" aria-hidden="true" />
                       View Details
                     </DropdownMenuItem>
+                    {canManage && (
+                      <DropdownMenuItem onClick={onRename}>
+                        <RiPenNibLine className="size-4" aria-hidden="true" />
+                        Edit name
+                      </DropdownMenuItem>
+                    )}
                     {canManage && (
                       <DropdownMenuItem onClick={onRecover}>
                         <RiShieldCheckLine className="size-4" aria-hidden="true" />

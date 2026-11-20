@@ -42,6 +42,8 @@ export interface WorkerRuntimeDeps {
   emqxFetch?: CustomFetch;
   syncFetch?: CustomFetch;
   webhookFetch?: CustomFetch;
+  /** Test seam for Brevo transactional email. */
+  mailFetch?: CustomFetch;
 }
 
 export interface AppVariables {
