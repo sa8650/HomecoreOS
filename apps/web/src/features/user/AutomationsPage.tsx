@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  AUTOMATION_WEEKDAYS,
   buildTriggerConfigFromList,
   computeSunTimeHHMM,
   normalizeTriggerList,
   type AutomationActionItem,
+  type AutomationWeekday,
   type AutomationOperator,
   type AutomationTriggerItem,
 } from "@homecoreos/shared";
@@ -73,16 +75,10 @@ type ConditionKind = "schedule" | "device_state" | "sun_event" | "event" | "scen
 type ActionFormType = "switch_on" | "switch_off" | "device_state" | "scene";
 type SceneTarget = NonNullable<AutomationActionItem["targets"]>[number];
 
-const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
-const WEEKDAY_LABELS: Record<(typeof WEEKDAYS)[number], string> = {
-  mon: "Mon",
-  tue: "Tue",
-  wed: "Wed",
-  thu: "Thu",
-  fri: "Fri",
-  sat: "Sat",
-  sun: "Sun",
-};
+const WEEKDAYS = AUTOMATION_WEEKDAYS.map((day) => day.id);
+const WEEKDAY_LABELS = Object.fromEntries(
+  AUTOMATION_WEEKDAYS.map((day) => [day.id, day.label])
+) as Record<AutomationWeekday, string>;
 
 const OPERATORS: Array<{ value: AutomationOperator; symbol: string; label: string }> = [
   { value: "gt", symbol: ">", label: "Greater than (>)" },

@@ -37,17 +37,16 @@ function installFetchMock() {
   return calls;
 }
 
-it("credits Brevo with the transactional email at the bottom of the page", () => {
+it("shows the Brevo mark in the technology row without any text credit", () => {
   installFetchMock();
   render(<CustomerAuthPage onAuthenticated={vi.fn()} />);
 
-  const attribution = screen.getByTestId("brevo-attribution");
-  expect(attribution).toHaveAttribute("href", "https://www.brevo.com/");
-  // The logo is a real asset served from the bundle, with an accessible name.
-  expect(within(attribution).getByAltText("Brevo")).toHaveAttribute(
-    "src",
-    "/brand/brevo-wordmark.png"
-  );
+  const brands = screen.getByTestId("technology-brands");
+  const brevo = within(brands).getByText("Brevo").closest("li");
+  expect(brevo?.querySelector("img")).toHaveAttribute("src", "/brand/brevo-icon.png");
+  // Icon only: no "Email delivered by" wording anywhere on the page.
+  expect(screen.queryByText(/email delivered by/i)).not.toBeInTheDocument();
+  expect(screen.queryByTestId("brevo-attribution")).not.toBeInTheDocument();
 });
 
 it("opens the card with a personal title and no horizontal tab scroller", () => {

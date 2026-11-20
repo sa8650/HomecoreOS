@@ -309,8 +309,8 @@ export function BoardLibraryPage({ canManage }: { canManage: boolean }) {
 
       <Tabs value={tab} onValueChange={setTab}>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* On narrow phones the tab strip scrolls inside itself instead of widening the page. */}
-          <TabsList className="max-w-full justify-start overflow-x-auto">
+          {/* Narrow phones scroll the strip itself (base TabsList hides the bar). */}
+          <TabsList className="max-w-full justify-start">
             <TabsTrigger value="catalog">
               Board Catalog ({catalog.length})
             </TabsTrigger>

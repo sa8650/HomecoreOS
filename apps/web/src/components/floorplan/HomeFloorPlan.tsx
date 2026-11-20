@@ -42,18 +42,16 @@ import type {
 } from "@/features/types";
 import { SmartHomeMap } from "./SmartHomeMap";
 import { buildHousePlan, type PlanRect } from "./house-layout";
-import { classifyDeviceType, classifySwitch, isLightingKind } from "./floor-visuals";
+import {
+  clampFloorZoom,
+  classifyDeviceType,
+  classifySwitch,
+  isLightingKind,
+} from "./floor-visuals";
 import { RoomControlsCard } from "./RoomControlsCard";
 import { RoomEditorModal } from "./RoomEditorModal";
 
 type FloorPlanViewMode = "standard" | "wide" | "fullscreen";
-
-const MIN_ZOOM = 0.55;
-const MAX_ZOOM = 3;
-
-function clampZoom(next: number) {
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(next.toFixed(3))));
-}
 
 /**
  * HomecoreOS home preview: one connected 2D smart-home floor map with live,
@@ -574,14 +572,14 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     if (viewAnimationRef.current !== null) cancelAnimationFrame(viewAnimationRef.current);
     const startZoom = zoomRef.current;
     const startPan = panRef.current;
-    const nextZoom = clampZoom(target.zoom);
+    const nextZoom = clampFloorZoom(target.zoom);
     const duration = 190;
     const startedAt = performance.now();
 
     const step = (now: number) => {
       const t = Math.min(1, (now - startedAt) / duration);
       const eased = 1 - Math.pow(1 - t, 3);
-      setZoom(clampZoom(startZoom + (nextZoom - startZoom) * eased));
+      setZoom(clampFloorZoom(startZoom + (nextZoom - startZoom) * eased));
       setPan({
         x: startPan.x + (target.pan.x - startPan.x) * eased,
         y: startPan.y + (target.pan.y - startPan.y) * eased,
@@ -604,7 +602,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
 
   const stepZoom = useCallback(
     (direction: 1 | -1) => {
-      animateView({ zoom: clampZoom(zoomRef.current + direction * 0.2), pan: panRef.current });
+      animateView({ zoom: clampFloorZoom(zoomRef.current + direction * 0.2), pan: panRef.current });
     },
     [animateView]
   );
@@ -971,7 +969,7 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
             pendingIds={pendingIds}
             zoom={zoom}
             pan={pan}
-            onZoomChange={(next) => setZoom(clampZoom(next))}
+            onZoomChange={(next) => setZoom(clampFloorZoom(next))}
             onPanChange={setPan}
             onToggleSwitch={(item, next) => void toggleSwitch(item, next)}
             onToggleDevice={(item, next) => void toggleDevice(item, next)}

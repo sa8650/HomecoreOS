@@ -456,21 +456,22 @@ export function UserSettingsPage({
         description="Manage profile, regional timezone preference, password, active sessions, customer staff, and account lifecycle."
       />
 
-      {/* Read-only record of the signed-in user. Editing happens beside it. */}
+      {/* Signed-in record. The Edit button lives here; the editable forms stay
+          unmounted until it is pressed, so nothing can be changed by accident. */}
       <Card className="py-5" data-testid="user-profile-card">
         <CardContent>
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-lg font-bold">
               <UserAvatar
-                seed={session.user.avatarSeed ?? null}
-                name={session.user.fullName}
+                seed={editingProfile ? avatarSeed : (session.user.avatarSeed ?? null)}
+                name={editingProfile ? fullName : session.user.fullName}
                 email={session.user.email}
               />
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="truncate text-base font-semibold text-foreground">
-                  {session.user.fullName}
+                  {editingProfile ? fullName : session.user.fullName}
                 </h2>
                 <Badge variant="primary-light" size="sm">
                   {session.account.staffRole}
@@ -526,98 +527,117 @@ export function UserSettingsPage({
                 </div>
               </dl>
             </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {editingProfile ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={cancelProfileEdit}
+                  data-testid="user-profile-cancel"
+                >
+                  Cancel
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditingProfile(true)}
+                  data-testid="user-profile-edit"
+                >
+                  <RiEditLine className="size-3.5" aria-hidden="true" />
+                  Edit
+                </Button>
+              )}
+            </div>
           </div>
+          {!editingProfile && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Select Edit to change your display name, avatar, regional timezone, or password.
+            </p>
+          )}
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card className="py-5">
-          <CardContent>
-            <form onSubmit={handleSaveProfile} className="space-y-4">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold text-foreground">
-                  Profile & Regional Timezone
-                </h2>
-                <div className="flex items-center gap-2">
+      {editingProfile && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2" data-testid="user-profile-editor">
+          <Card className="py-5">
+            <CardContent>
+              <form onSubmit={handleSaveProfile} className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-foreground">
+                    Profile & Regional Timezone
+                  </h2>
                   <Badge variant="primary-light">
                     <RiTimeLine className="size-3" aria-hidden="true" />
                     Effective: {effectiveTimezone}
                   </Badge>
-                  {editingProfile ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={cancelProfileEdit}
-                    >
-                      Cancel
-                    </Button>
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setEditingProfile(true)}
-                    >
-                      <RiEditLine className="size-3.5" aria-hidden="true" />
-                      Edit
-                    </Button>
-                  )}
                 </div>
-              </div>
-              <fieldset className="space-y-2"><legend className="text-xs font-medium text-muted-foreground">Profile avatar</legend>
-                <p className="text-xs text-muted-foreground">Choose a Homecore avatar or use your initials. No image upload needed.</p>
-                <div className="flex flex-wrap gap-2">
-                  {[null, ...AVATAR_SEEDS].map((seed) => <button key={seed ?? "initials"} type="button" aria-label={seed ? `Choose avatar ${seed.split("-")[1]}` : "Use initials"} aria-pressed={avatarSeed === seed} onClick={() => editingProfile && setAvatarSeed(seed)} disabled={!editingProfile} className="flex size-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-xs font-bold ring-offset-background transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:ring-2 aria-pressed:ring-primary aria-pressed:ring-offset-2"><UserAvatar seed={seed} name={fullName} email={session.user.email} /></button>)}
-                </div>
-              </fieldset>
-              <FormField id="set-fullname" label="Full Name">
-                <Input
-                  id="set-fullname"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  disabled={!editingProfile}
-                  required
-                />
-              </FormField>
-              {canManageStaff && isAccountActive && (
-                <FormField id="set-accname" label="Account Name">
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-medium text-muted-foreground">
+                    Profile avatar
+                  </legend>
+                  <p className="text-xs text-muted-foreground">
+                    Choose a Homecore avatar or use your initials. No image upload needed.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {[null, ...AVATAR_SEEDS].map((seed) => (
+                      <button
+                        key={seed ?? "initials"}
+                        type="button"
+                        aria-label={seed ? `Choose avatar ${seed.split("-")[1]}` : "Use initials"}
+                        aria-pressed={avatarSeed === seed}
+                        onClick={() => setAvatarSeed(seed)}
+                        className="flex size-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-xs font-bold ring-offset-background transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:ring-2 aria-pressed:ring-primary aria-pressed:ring-offset-2"
+                      >
+                        <UserAvatar seed={seed} name={fullName} email={session.user.email} />
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+                <FormField id="set-fullname" label="Full Name">
                   <Input
-                    id="set-accname"
-                    value={accountName}
-                    onChange={(e) => setAccountName(e.target.value)}
-                    disabled={!editingProfile}
+                    id="set-fullname"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
                     required
                   />
                 </FormField>
-              )}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Regional Timezone
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => editingProfile && setTimezonePref(getBrowserTimezoneFallback())}
-                    disabled={!editingProfile}
-                    className="text-[11px] font-medium text-primary hover:underline cursor-pointer disabled:opacity-50"
-                  >
-                    Use browser timezone
-                  </button>
+                {canManageStaff && isAccountActive && (
+                  <FormField id="set-accname" label="Account Name">
+                    <Input
+                      id="set-accname"
+                      value={accountName}
+                      onChange={(e) => setAccountName(e.target.value)}
+                      required
+                    />
+                  </FormField>
+                )}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Regional Timezone
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setTimezonePref(getBrowserTimezoneFallback())}
+                      className="text-[11px] font-medium text-primary hover:underline cursor-pointer"
+                    >
+                      Use browser timezone
+                    </button>
+                  </div>
+                  <TimezoneSelect
+                    id="set-tz"
+                    ariaLabel="Regional Timezone"
+                    value={timezonePref}
+                    onValueChange={setTimezonePref}
+                    inheritLabel={`Inherit Platform Default (${platformDefault})`}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Follows platform default unless overridden per user.
+                  </p>
                 </div>
-                <TimezoneSelect
-                  id="set-tz"
-                  ariaLabel="Regional Timezone"
-                  disabled={!editingProfile}
-                  value={timezonePref}
-                  onValueChange={setTimezonePref}
-                  inheritLabel={`Inherit Platform Default (${platformDefault})`}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Follows platform default unless overridden per user.
-                </p>
-              </div>
-              {editingProfile && (
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="outline" size="sm" onClick={cancelProfileEdit}>
                     Cancel
@@ -626,44 +646,42 @@ export function UserSettingsPage({
                     Save Changes
                   </Button>
                 </div>
-              )}
-            </form>
-          </CardContent>
-        </Card>
+              </form>
+            </CardContent>
+          </Card>
 
-        <Card className="py-5">
-          <CardContent>
-            <form onSubmit={handleChangePassword} className="space-y-4">
-              <h2 className="text-sm font-semibold text-foreground">
-                Change Password
-              </h2>
-              <FormField id="set-curpw" label="Current Password">
-                <Input
-                  id="set-curpw"
-                  type="password"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  required
-                />
-              </FormField>
-              <FormField id="set-newpw" label="New Password (8+ chars)">
-                <Input
-                  id="set-newpw"
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  required
-                />
-              </FormField>
-              <div className="flex justify-end">
-                <Button type="submit" variant="outline" size="sm">
-                  Update Password & Revoke Other Sessions
-                </Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-      </div>
+          <Card className="py-5">
+            <CardContent>
+              <form onSubmit={handleChangePassword} className="space-y-4">
+                <h2 className="text-sm font-semibold text-foreground">Change Password</h2>
+                <FormField id="set-curpw" label="Current Password">
+                  <Input
+                    id="set-curpw"
+                    type="password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    required
+                  />
+                </FormField>
+                <FormField id="set-newpw" label="New Password (8+ chars)">
+                  <Input
+                    id="set-newpw"
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    required
+                  />
+                </FormField>
+                <div className="flex justify-end">
+                  <Button type="submit" variant="outline" size="sm">
+                    Update Password & Revoke Other Sessions
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       <ActionButtonSettingsCard />
 

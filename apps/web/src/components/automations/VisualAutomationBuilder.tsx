@@ -20,6 +20,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
+  AUTOMATION_WEEKDAYS,
   analyzeFlowGraphLocalCapability,
   autoLayoutFlowGraph,
   compileFlowGraphToRuleConfigs,
@@ -110,15 +111,7 @@ import type {
   SwitchItem,
 } from "@/features/types";
 
-const WEEKDAYS = [
-  { id: "mon", label: "Mon" },
-  { id: "tue", label: "Tue" },
-  { id: "wed", label: "Wed" },
-  { id: "thu", label: "Thu" },
-  { id: "fri", label: "Fri" },
-  { id: "sat", label: "Sat" },
-  { id: "sun", label: "Sun" },
-];
+const WEEKDAYS = AUTOMATION_WEEKDAYS;
 
 const OPERATOR_OPTIONS: Array<{ value: AutomationOperator; label: string }> = [
   { value: "gt", label: "Greater than (>)" },

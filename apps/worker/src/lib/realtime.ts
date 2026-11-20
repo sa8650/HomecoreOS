@@ -1,4 +1,4 @@
-import { isEmqxConfigured, EmqxClient, buildRealtimeWebAclRules } from "./emqx";
+import { isEmqxConfigured, EmqxClient } from "./emqx";
 import type { WorkerBindings } from "../config/env";
 import type { CustomFetch, DbClient } from "./db";
 
@@ -433,10 +433,6 @@ function versionOf(row: SnapshotRow, ...fields: string[]): string {
   }
   const createdAt = row.created_at;
   return typeof createdAt === "string" ? createdAt : new Date(0).toISOString();
-}
-
-export function buildRealtimeAclRules(accountId: string) {
-  return buildRealtimeWebAclRules(accountId);
 }
 
 export class RealtimeSnapshotError extends Error {

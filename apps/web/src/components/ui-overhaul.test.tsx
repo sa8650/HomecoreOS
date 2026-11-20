@@ -580,11 +580,17 @@ describe("4-Part UI Overhaul: Heroes, Board Library Layout, Sonner Toasts & Magi
         <Toaster />
       </TimezoneContext.Provider>
     );
-    // Profile fields are read-only until Edit is pressed.
+    // The editable profile form and password card stay unmounted until Edit.
+    expect(screen.queryByLabelText(/Full Name/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Change Password/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("user-profile-card")).toContainElement(
+      screen.getByTestId("user-profile-edit")
+    );
+
+    await user.click(screen.getByTestId("user-profile-edit"));
     const nameField = await screen.findByLabelText(/Full Name/i);
-    expect(nameField).toBeDisabled();
-    await user.click(await screen.findByRole("button", { name: /^Edit$/i }));
     expect(nameField).toBeEnabled();
+    expect(screen.getByText(/Change Password/i)).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: /Save Changes/i }));
     await waitFor(() => {
       expect(screen.getByText(/Profile and regional timezone saved/i)).toBeInTheDocument();

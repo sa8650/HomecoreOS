@@ -8,17 +8,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  ensureRealtimeTransportLoaded,
-  getRealtimeClient,
-  type RealtimeSyncClient,
-} from "./sync-client";
-import type {
-  RealtimeBatch,
-  RealtimeConnectionState,
-  RealtimeEntity,
-  RealtimeStatus,
-} from "./types";
+import { ensureRealtimeTransportLoaded, getRealtimeClient } from "./sync-client";
+import type { RealtimeConnectionState, RealtimeEntity, RealtimeStatus } from "./types";
 
 const idleStatus: RealtimeStatus = {
   state: "idle",
@@ -91,25 +82,6 @@ export function RealtimeProvider({
 
 export function useRealtimeStatus(): RealtimeStatus {
   return useContext(RealtimeContext);
-}
-
-export function useRealtimeClient(): RealtimeSyncClient {
-  return getRealtimeClient();
-}
-
-/** Subscribe to every applied batch. Pages normally want `useLiveSync`. */
-export function useRealtimeEvents(
-  handler: (batch: RealtimeBatch) => void,
-  enabled = true
-): void {
-  const client = getRealtimeClient();
-  const handlerRef = useRef(handler);
-  handlerRef.current = handler;
-
-  useEffect(() => {
-    if (!enabled) return;
-    return client.subscribe((batch) => handlerRef.current(batch));
-  }, [client, enabled]);
 }
 
 export interface LiveSyncOptions {
@@ -197,25 +169,4 @@ export function useLiveSync(
   }, [enabled]);
 
   return { isLive: status.state === "live", state: status.state };
-}
-
-/** Small status chip payload shared by the island and page headers. */
-export function describeRealtimeState(status: RealtimeStatus): {
-  label: string;
-  tone: "success" | "warning" | "neutral";
-} {
-  switch (status.state) {
-    case "live":
-      return { label: "Live", tone: "success" };
-    case "connecting":
-      return { label: "Connecting", tone: "neutral" };
-    case "reconnecting":
-      return { label: "Reconnecting", tone: "warning" };
-    case "degraded":
-      return { label: "Delayed", tone: "warning" };
-    case "disabled":
-      return { label: "Manual refresh", tone: "neutral" };
-    default:
-      return { label: "Idle", tone: "neutral" };
-  }
 }

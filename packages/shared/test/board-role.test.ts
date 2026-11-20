@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  ESPNOW_CONTROLLER_PROBE_MS,
+  ESPNOW_HEARTBEAT_INTERVAL_MS,
+  ESPNOW_LINK_TIMEOUT_MS,
+  ESPNOW_NODE_STALE_MS,
+  ESPNOW_RECONNECT_WINDOW_MS,
   boardSupportsControllerRole,
   boardSupportsEspNow,
   canAssignNodeToController,
@@ -14,6 +19,18 @@ import {
 } from "../src/board-role";
 
 describe("device roles", () => {
+  it("pins the ESP-NOW timing contract mirrored by firmware/main/role_logic.h", () => {
+    // These values are the shared half of the firmware contract: the Node
+    // heartbeats every 2 s, a 10 s silence drops the link, a Node keeps retrying
+    // its Controller for 45 s before the Wi-Fi/MQTT fallback, probes it every
+    // 15 s while standalone, and a Controller calls a Node stale after 20 s.
+    expect(ESPNOW_HEARTBEAT_INTERVAL_MS).toBe(2_000);
+    expect(ESPNOW_LINK_TIMEOUT_MS).toBe(10_000);
+    expect(ESPNOW_RECONNECT_WINDOW_MS).toBe(45_000);
+    expect(ESPNOW_CONTROLLER_PROBE_MS).toBe(15_000);
+    expect(ESPNOW_NODE_STALE_MS).toBe(20_000);
+  });
+
   it("treats legacy rows without a stored role as Controllers", () => {
     expect(normalizeBoardRole(null)).toBe("controller");
     expect(normalizeBoardRole(undefined)).toBe("controller");
