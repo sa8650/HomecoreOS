@@ -202,13 +202,18 @@ export const UsbFlashWizard = forwardRef<
 
   // Board first: every board in the library can be picked, then the firmware
   // list shrinks to the releases that actually support that board.
-  const usbBoards = useMemo(
-    () =>
-      [...boards].sort((a, b) =>
-        `${a.manufacturer} ${a.model}`.localeCompare(`${b.manufacturer} ${b.model}`)
-      ),
-    [boards]
-  );
+  const usbBoards = useMemo(() => {
+    // Catalog and custom endpoints can expose the same board. Radix Select
+    // requires unique values; duplicate slugs made choosing those rows
+    // unreliable. Prefer the first (catalog) profile and render one row.
+    const uniqueBoards = new Map<string, BoardProfileItem>();
+    for (const board of boards) {
+      if (board.slug && !uniqueBoards.has(board.slug)) uniqueBoards.set(board.slug, board);
+    }
+    return [...uniqueBoards.values()].sort((a, b) =>
+      `${a.manufacturer} ${a.model}`.localeCompare(`${b.manufacturer} ${b.model}`)
+    );
+  }, [boards]);
 
   const usbTargetBoard = useMemo(
     () => usbBoards.find((b) => b.slug === usbBoardSlug) ?? null,
@@ -412,7 +417,7 @@ export const UsbFlashWizard = forwardRef<
             : true
       }
       onComplete={onContinueToSetup}
-      className="min-w-0 space-y-4 overflow-hidden border-0 p-0 shadow-none"
+      className="min-w-0 space-y-4 overflow-hidden border-0 bg-transparent p-0 shadow-none"
     >
       {!serialSupport.supported && (
         <StatusAlert tone="warning" title="This browser cannot flash over USB">
@@ -458,34 +463,19 @@ export const UsbFlashWizard = forwardRef<
             disabled={usbBoards.length === 0 || flashing}
           >
             <SelectTrigger id="usb-board" className="flow-trigger">
-              {usbTargetBoard ? (
-                <span className="flex min-w-0 flex-col items-start leading-tight">
-                  <span className="w-full truncate text-[13.5px] font-medium text-foreground">
-                    {usbTargetBoard.manufacturer} {usbTargetBoard.model}
-                  </span>
-                  <span className="w-full truncate text-[12px] text-muted-foreground">
-                    {chipFamilyLabel(usbTargetBoard.chip_family)} ·{" "}
-                    {usbTargetBoard.flash_size_mb} MB flash
-                  </span>
-                </span>
-              ) : (
-                <SelectValue placeholder="Select a board from your Board Library" />
-              )}
+              <SelectValue placeholder="Select a board from your Board Library" />
             </SelectTrigger>
-            <SelectContent className="min-w-[var(--radix-select-trigger-width)]">
+            <SelectContent
+              position="popper"
+              align="start"
+              className="min-w-[var(--radix-select-trigger-width)]"
+            >
               {usbBoards.length === 0 && (
                 <SelectItem value="__none__">No boards in your Board Library</SelectItem>
               )}
-              {usbBoards.map((b) => (
-                <SelectItem key={b.slug} value={b.slug} className="py-2">
-                  <span className="flex min-w-0 flex-col items-start gap-0.5">
-                    <span className="w-full truncate text-[13px] font-medium">
-                      {b.manufacturer} {b.model}
-                    </span>
-                    <span className="w-full truncate text-[11.5px] text-muted-foreground">
-                      {chipFamilyLabel(b.chip_family)} · {b.flash_size_mb} MB flash
-                    </span>
-                  </span>
+              {usbBoards.map((board) => (
+                <SelectItem key={board.slug} value={board.slug} className="py-2">
+                  {board.manufacturer} {board.model}
                 </SelectItem>
               ))}
             </SelectContent>
