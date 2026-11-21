@@ -38,6 +38,10 @@ import type {
 } from "@/features/types";
 import { ControllerActionArtwork } from "@/components/controllers/ControllerActionArtwork";
 import {
+  BluetoothPairingAnimation,
+  WifiSignalAnimation,
+} from "@/components/graphics/ConnectionAnimations";
+import {
   UsbFlashWizard,
   type UsbFlashWizardHandle,
   type UsbFlashWizardState,
@@ -224,145 +228,30 @@ function BleDiscoveryArtwork({
   connected?: boolean;
 }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#2563eb] via-[#3b76f6] to-[#1d4ed8] px-6 py-7 text-white shadow-sm">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -right-12 -top-12 size-44 rounded-full bg-white/10 blur-2xl"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -bottom-14 -left-10 size-40 rounded-full bg-sky-300/15 blur-2xl"
-      />
-
-      <div className="relative flex flex-col items-center text-center">
-        <div className="relative flex size-28 items-center justify-center">
-          {/* Subtle concentric animated Bluetooth signal waves (respects prefers-reduced-motion) */}
-          <span
-            aria-hidden="true"
-            className="hc-ble-wave absolute inset-0 rounded-full border border-white/35"
-          />
-          <span
-            aria-hidden="true"
-            className="hc-ble-wave-2 absolute inset-1.5 rounded-full border border-white/25"
-          />
-          <span
-            aria-hidden="true"
-            className="hc-ble-wave-3 absolute inset-3 rounded-full border border-white/20"
-          />
-
-          {/* Local lightweight HomecoreOS controller + Bluetooth badge SVG illustration */}
-          <div className="relative z-10 flex size-20 items-center justify-center rounded-2xl border border-white/25 bg-white/12 shadow-inner backdrop-blur-xs">
-            <svg
-              viewBox="0 0 80 80"
-              className="size-16"
-              fill="none"
-              aria-hidden="true"
-            >
-              {/* PCB outline */}
-              <rect
-                x="18"
-                y="14"
-                width="44"
-                height="52"
-                rx="7"
-                fill="rgba(15, 23, 42, 0.42)"
-                stroke="rgba(255,255,255,0.75)"
-                strokeWidth="2"
-              />
-              {/* Antenna trace */}
-              <path
-                d="M28 14V9H52V14"
-                stroke="rgba(191, 219, 254, 0.9)"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              {/* Side GPIO pins */}
-              <g stroke="rgba(255,255,255,0.55)" strokeWidth="2" strokeLinecap="round">
-                <line x1="13" y1="24" x2="17" y2="24" />
-                <line x1="13" y1="32" x2="17" y2="32" />
-                <line x1="13" y1="40" x2="17" y2="40" />
-                <line x1="13" y1="48" x2="17" y2="48" />
-                <line x1="13" y1="56" x2="17" y2="56" />
-                <line x1="63" y1="24" x2="67" y2="24" />
-                <line x1="63" y1="32" x2="67" y2="32" />
-                <line x1="63" y1="40" x2="67" y2="40" />
-                <line x1="63" y1="48" x2="67" y2="48" />
-                <line x1="63" y1="56" x2="67" y2="56" />
-              </g>
-              {/* MCU / Bluetooth core */}
-              <rect
-                x="28"
-                y="24"
-                width="24"
-                height="22"
-                rx="4"
-                fill="rgba(255,255,255,0.16)"
-                stroke="rgba(255,255,255,0.65)"
-                strokeWidth="1.5"
-              />
-              {/* Bluetooth rune inside chip */}
-              <path
-                d="M40 28V42M40 28L45 32.5L36 38M40 42L45 37.5L36 32"
-                stroke="#ffffff"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              {/* USB-C port */}
-              <rect
-                x="33"
-                y="59"
-                width="14"
-                height="7"
-                rx="2"
-                fill="rgba(255,255,255,0.28)"
-              />
-              {/* BOOT / Recovery button */}
-              <circle
-                cx="53"
-                cy="54"
-                r="4"
-                fill={mode === "recover" ? "#fbbf24" : "rgba(255,255,255,0.65)"}
-                stroke="#ffffff"
-                strokeWidth="1.4"
-              />
-              {mode === "recover" && (
-                <circle
-                  cx="53"
-                  cy="54"
-                  r="7"
-                  stroke="#fde68a"
-                  strokeWidth="1.4"
-                  className="hc-boot-press"
-                />
-              )}
-            </svg>
-          </div>
-        </div>
-
-        <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-medium text-white backdrop-blur-xs">
-          <RiBluetoothConnectLine className="size-3.5" aria-hidden="true" />
-          <span>
-            {connected
-              ? "Connected over Bluetooth"
-              : mode === "recover"
-                ? "Bluetooth Controller Recovery"
-                : "Bluetooth Controller Setup"}
-          </span>
-        </div>
-
-        <h3 className="mt-3 text-lg font-semibold tracking-tight text-white">
-          {mode === "recover"
-            ? "Prepare Controller for Recovery"
-            : "Discover HomecoreOS Controller"}
-        </h3>
-        <p className="mt-1.5 max-w-sm text-sm text-blue-50/95">
-          {mode === "recover"
-            ? "Hold the BOOT / Recovery button on your controller for 3 seconds."
-            : "Turn on your HomecoreOS controller and keep it nearby."}
-        </p>
+    <div className="relative overflow-hidden rounded-[12px] border border-blue-600/20 bg-blue-50/60 px-5 py-6 text-center dark:border-blue-400/25 dark:bg-blue-950/30">
+      <div className="flex justify-center">
+        <BluetoothPairingAnimation className="size-24" />
       </div>
+
+      <span className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-blue-600/25 bg-white px-2.5 py-1 text-[11.5px] font-medium text-blue-700 dark:border-blue-400/30 dark:bg-blue-950/60 dark:text-blue-200">
+        <RiBluetoothConnectLine className="size-3.5" aria-hidden="true" />
+        {connected
+          ? "Connected over Bluetooth"
+          : mode === "recover"
+            ? "Bluetooth Controller Recovery"
+            : "Bluetooth Controller Setup"}
+      </span>
+
+      <h3 className="mt-2.5 text-[15px] font-semibold tracking-[-0.01em] text-foreground">
+        {mode === "recover"
+          ? "Prepare Controller for Recovery"
+          : "Discover HomecoreOS Controller"}
+      </h3>
+      <p className="mx-auto mt-1 max-w-[320px] text-[12.5px] leading-relaxed text-muted-foreground">
+        {mode === "recover"
+          ? "Hold the BOOT / Recovery button on your controller for 3 seconds."
+          : "Turn on your HomecoreOS controller and keep it nearby."}
+      </p>
     </div>
   );
 }
@@ -379,10 +268,13 @@ function WifiPortalArtwork() {
   const softStroke = "#dfe3e8";
   const deviceStroke = "#8b939e";
   return (
-    <div className="overflow-hidden rounded-2xl border border-border shadow-sm">
+    <div className="flex items-center gap-4 rounded-[12px] border border-border bg-muted/30 p-3">
+      {/* ~35% of the previous full-width artwork: the four beats still read at
+          this size, and the dialog stays short enough to scroll on a laptop. */}
+      <WifiSignalAnimation className="size-14 shrink-0" />
       <svg
         viewBox="0 0 1230 392"
-        className="h-auto w-full select-none"
+        className="h-auto w-full max-w-[260px] select-none"
         role="img"
         aria-label="Four steps: 1. Plug the controller into power. 2. Join its HomecoreOS-Setup-XXXX Wi-Fi network from your phone or computer. 3. Open http://192.168.4.1 in your browser. 4. Enter the Wi-Fi SSID, password and pairing code, then press Save and Apply."
       >
@@ -1504,14 +1396,16 @@ export function ControllerSetupModal({
       <DialogContent
         showCloseButton={false}
         className={cn(
-          "hc-flow grid max-h-[min(88dvh,760px)] gap-0 overflow-hidden rounded-[14px] p-0 sm:max-w-[min(560px,calc(100vw-2rem))]",
+          // flex-col (not the base grid): the body needs flex-1 + min-h-0 so it
+          // scrolls inside the dialog, and the footer stays pinned below it.
+          "hc-flow flex max-h-[min(88dvh,760px)] grid-cols-none flex-col gap-0 overflow-hidden rounded-[14px] p-0 sm:max-w-[min(560px,calc(100vw-2rem))]",
           view === "setup_wifi" || view === "recover_wifi"
             ? "sm:max-w-[min(720px,calc(100vw-2rem))]"
             : ""
         )}
       >
         <DialogTitle className="sr-only">{flowA11yTitle}</DialogTitle>
-        <div className="flex items-start gap-2 px-5 pt-4">
+        <div className="flex shrink-0 items-start gap-2 px-5 pt-4">
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-[16px] font-semibold tracking-[-0.01em] text-foreground">
               {flowTitle}
@@ -1534,7 +1428,7 @@ export function ControllerSetupModal({
 
         {showProgressRail && (
           <div
-            className="mt-3 flex gap-1 px-5"
+            className="mt-3 flex shrink-0 gap-1 px-5"
             role="progressbar"
             aria-label="Flash progress"
             aria-valuemin={1}
@@ -1552,7 +1446,7 @@ export function ControllerSetupModal({
           </div>
         )}
 
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 pt-3 pb-4">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 pt-3 pb-4">
         {view === "entry" && (
           <>
             <div className="grid gap-2">
@@ -2193,7 +2087,7 @@ export function ControllerSetupModal({
         {/* One footer for every step, like the prototype: a quiet Back on the
             left and the primary action on the right. Hidden on the chooser. */}
         {view !== "entry" && (
-          <div className="flex items-center gap-2 border-t bg-muted/50 px-5 py-3">
+          <div className="flex shrink-0 items-center gap-2 border-t bg-muted/50 px-5 py-3">
             <Button
               type="button"
               variant="ghost"

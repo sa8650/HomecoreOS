@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { UsbCableAnimation } from "@/components/graphics/ConnectionAnimations";
 import {
   RiAlertLine,
   RiArrowDownSLine,
@@ -46,37 +47,25 @@ export function UsbFlashIllustration({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-[10px] border",
+        "relative overflow-hidden rounded-[10px] border border-blue-600/20 bg-blue-50/70 dark:border-blue-400/25 dark:bg-blue-950/40",
         size === "banner"
-          ? "mb-4 h-[92px] w-full border-emerald-600/20 bg-emerald-50 dark:border-emerald-400/25 dark:bg-emerald-950/40"
-          : "h-[51px] w-[68px] shrink-0 border-emerald-600/20 bg-emerald-50 dark:border-emerald-400/25 dark:bg-emerald-950/40"
+          ? "mb-4 flex h-[104px] w-full items-center justify-center"
+          : "h-[51px] w-[68px] shrink-0"
       )}
       aria-label="USB connection illustration"
       data-testid="usb-flash-illustration"
       data-active={active ? "true" : "false"}
     >
-      <svg viewBox="0 0 96 72" className="size-full" role="img" aria-hidden="true" fill="none">
-        {/* Monitor with a green download arrow. */}
-        <rect x="6" y="12" width="34" height="24" rx="3" fill="#fff" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-        <path d="M2 41h42" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        <path d="M23 19v10m-4-4 4 4 4-4" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        {/* Cable from the monitor stand down into the board's USB plug. */}
-        <path d="M44 41c10 0 8 12 17 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        <path
-          d="M44 41c10 0 8 12 17 12"
-          stroke="#2563eb"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeDasharray="3 5"
-          className={cn("transition-opacity", active ? "opacity-100" : "opacity-0")}
-        />
-        <rect x="59" y="48" width="7" height="10" rx="2" fill="var(--color-border)" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-        {/* Board: light green body, green outline, green chip, amber LED, header pins. */}
-        <rect x="66" y="30" width="26" height="36" rx="4" fill="#f0fdf4" stroke="#16a34a" strokeWidth="2" strokeLinejoin="round" />
-        <rect x="72" y="41" width="14" height="14" rx="2" fill="#16a34a" />
-        <path d="M71 30v-4M79 30v-6M87 30v-4" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" />
-        <circle cx="71" cy="61" r="2" fill="#d97706" />
-      </svg>
+      {/* Portrait artboard: in the banner it sits centred, tall enough to read
+          the plug travel without stretching. */}
+      <UsbCableAnimation
+        active={active}
+        className={cn(
+          "block h-full w-auto",
+          size === "banner" ? "py-1.5" : "",
+          active ? "opacity-100" : "opacity-90"
+        )}
+      />
     </div>
   );
 }
