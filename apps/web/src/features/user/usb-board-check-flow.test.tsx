@@ -150,8 +150,8 @@ function connect(hardware: {
 }
 
 /**
- * Flashing is only reachable from the Controllers page: Add Controller opens the
- * single controller-action modal, whose first action is the USB flasher.
+ * Flashing is only reachable from the Controllers page: Add Board opens the
+ * single board-action modal, whose first action is the USB flasher.
  */
 async function openFlasher(user: ReturnType<typeof userEvent.setup>) {
   render(
@@ -160,14 +160,26 @@ async function openFlasher(user: ReturnType<typeof userEvent.setup>) {
       <Toaster />
     </TimezoneContext.Provider>
   );
-  const [addController] = await screen.findAllByRole("button", { name: /Add Controller/i });
-  await user.click(addController!);
-  const actions = await screen.findByRole("dialog", { name: /Controller Actions/ });
-  await user.click(within(actions).getByRole("button", { name: /Flash Controller/ }));
-  return screen.findByRole("dialog", { name: /Flash Controller over USB/ });
+  const [addBoard] = await screen.findAllByRole("button", { name: /Add Board/i });
+  await user.click(addBoard!);
+  const actions = await screen.findByRole("dialog", { name: /Board Actions/ });
+  await user.click(within(actions).getByRole("button", { name: /Flash Board/ }));
+  return screen.findByRole("dialog", { name: /Flash Board over USB/ });
 }
 
-const startButton = () => screen.getByRole("button", { name: /Connect USB & Flash Factory Image/ });
+/** The write itself only exists on the flashing step, never on the picker. */
+const startButton = () => screen.getByRole("button", { name: /Flash board over USB/i });
+
+async function goToFlashStep(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /^Next$/i }));
+  await screen.findByRole("button", { name: /Flash board over USB/i });
+}
+
+/** The board is chosen first; its factory image is then selected automatically. */
+async function selectBoard(user: ReturnType<typeof userEvent.setup>, label: RegExp) {
+  await user.click(screen.getByRole("combobox", { name: /Choose the board you are flashing/i }));
+  await user.click(await screen.findByRole("option", { name: label }));
+}
 
 describe("USB flashing from the Controllers page: board check before writing", () => {
   beforeEach(() => {
@@ -191,6 +203,9 @@ describe("USB flashing from the Controllers page: board check before writing", (
       usb: { usbVendorId: 0x303a, usbProductId: 0x1001 },
     });
     const dialog = await openFlasher(user);
+    // Board first: choosing it pins the factory image built for that board.
+    await selectBoard(user, /ESP32-S3-DevKitC-1 N16R8/);
+    await goToFlashStep(user);
     await user.click(startButton());
 
     // The flash stops at the board check and asks.
@@ -219,7 +234,7 @@ describe("USB flashing from the Controllers page: board check before writing", (
     expect(alert).toHaveTextContent("Recommended board: Seeed Studio XIAO ESP32-C3.");
     // The selection is still the board that did not match, so it says what to change.
     expect(alert).toHaveTextContent("Choose the matching board below, or connect the board you selected.");
-    expect(startButton()).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: /^Next$/i })).toBeEnabled();
     expect(within(dialog).queryByRole("alertdialog")).not.toBeInTheDocument();
 
     expect(loader.writeFlash).not.toHaveBeenCalled();
@@ -234,6 +249,55 @@ describe("USB flashing from the Controllers page: board check before writing", (
     expect(events[0]!.reportedBoardSlug).toBeUndefined();
   });
 
+  it("asks for the board first and only offers the firmware built for it", async () => {
+    const user = userEvent.setup();
+    // Two very different boards, each with its own factory image.
+    await serve(
+      [await release("rel-s3", devkit, "file-s3"), await release("rel-xiao", xiaoC3, "file-xiao")],
+      [devkit, xiaoC3]
+    );
+    connect({
+      chip: "ESP32-S3 (QFN56) (revision v0.2)",
+      flash: "16MB",
+      features: ["WiFi", "BLE", "Embedded PSRAM 8MB (AP_3v3)"],
+      usb: { usbVendorId: 0x303a, usbProductId: 0x1001 },
+    });
+    const dialog = await openFlasher(user);
+
+    // Nothing is preselected, and this page carries no flash button at all.
+    expect(within(dialog).getByRole("combobox", { name: /Choose the board you are flashing/i }))
+      .toBeInTheDocument();
+    expect(within(dialog).queryByRole("combobox", { name: /Factory firmware for this board/i }))
+      .not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Flash board over USB/i })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: /^Next$/i })).toBeDisabled();
+
+    // Choosing an ESP32-C3 board narrows the firmware to the C3 image.
+    await selectBoard(user, /XIAO ESP32-C3/);
+    const firmware = within(dialog).getByRole("combobox", {
+      name: /Factory firmware for this board/i,
+    });
+    expect(firmware).toHaveTextContent(/HomecoreOS v1\.4\.0/);
+    expect(within(dialog).getByText(/is built for this board/)).toBeInTheDocument();
+
+    await user.click(firmware);
+    const options = await screen.findAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual([expect.stringMatching(/HomecoreOS v1\.4\.0/)]);
+
+    // Switching to the ESP32-S3 board swaps the image to the S3 one.
+    await user.keyboard("{Escape}");
+    await selectBoard(user, /ESP32-S3-DevKitC-1 N16R8/);
+    expect(
+      within(dialog).getByRole("combobox", { name: /Factory firmware for this board/i })
+    ).toHaveTextContent(/HomecoreOS v1\.4\.0/);
+
+    // Only after the picker is done does Next open the step with the USB action.
+    const next = within(dialog).getByRole("button", { name: /^Next$/i });
+    expect(next).toBeEnabled();
+    await user.click(next);
+    expect(await screen.findByRole("button", { name: /Flash board over USB/i })).toBeEnabled();
+  });
+
   it("writes only after Force to Flash is confirmed, and then does not send the user to pairing", async () => {
     const user = userEvent.setup();
     const events = await serve([await release("rel-s3", devkit, "file-s3")], [devkit, xiaoC3]);
@@ -244,6 +308,9 @@ describe("USB flashing from the Controllers page: board check before writing", (
       usb: { usbVendorId: 0x303a, usbProductId: 0x1001 },
     });
     const dialog = await openFlasher(user);
+    // Board first: choosing it pins the factory image built for that board.
+    await selectBoard(user, /ESP32-S3-DevKitC-1 N16R8/);
+    await goToFlashStep(user);
     await user.click(startButton());
 
     const warning = await within(dialog).findByRole("alertdialog");
@@ -271,7 +338,7 @@ describe("USB flashing from the Controllers page: board check before writing", (
     // A controller that cannot start cannot be paired: the next step is the selection.
     expect(within(dialog).queryByRole("button", { name: /Continue to Setup/i })).not.toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Install again" }));
-    expect(startButton()).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: /^Next$/i })).toBeEnabled();
 
     await waitFor(() => expect(events).toHaveLength(1));
     expect(events[0]).toMatchObject({
@@ -296,6 +363,9 @@ describe("USB flashing from the Controllers page: board check before writing", (
       usb: { usbVendorId: 0x2886, usbProductId: 0x0056 },
     });
     const dialog = await openFlasher(user);
+    // Board first: choosing it pins the factory image built for that board.
+    await selectBoard(user, /ESP32-S3-DevKitC-1 N16R8/);
+    await goToFlashStep(user);
     await user.click(startButton());
 
     const warning = await within(dialog).findByRole("alertdialog");
@@ -321,6 +391,7 @@ describe("USB flashing from the Controllers page: board check before writing", (
     expect(notice).not.toHaveTextContent("does not match");
 
     // The same hardware, now with its own board selected, goes straight through.
+    await goToFlashStep(user);
     await user.click(startButton());
     expect(await within(dialog).findByText("Factory Firmware Verified & Flashed")).toBeInTheDocument();
     expect(within(dialog).queryByRole("alertdialog")).not.toBeInTheDocument();
@@ -348,6 +419,9 @@ describe("USB flashing from the Controllers page: board check before writing", (
       usb: { usbVendorId: 0x2886, usbProductId: 0x0056 },
     });
     const dialog = await openFlasher(user);
+    // Board first: choosing it pins the factory image built for that board.
+    await selectBoard(user, /ESP32-S3-DevKitC-1 N16R8/);
+    await goToFlashStep(user);
     await user.click(startButton());
 
     const warning = await within(dialog).findByRole("alertdialog");

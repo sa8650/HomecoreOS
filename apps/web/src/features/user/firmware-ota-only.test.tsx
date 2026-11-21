@@ -144,7 +144,7 @@ describe("Firmware & Updates page: OTA only, no USB flashing", () => {
     expect(screen.queryByRole("button", { name: /USB Browser Flasher/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Install via USB/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Browser USB Flasher/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Connect USB & Flash Factory Image/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Flash board over USB/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Full chip erase before flashing/i)).not.toBeInTheDocument();
 
     // Release details still open, and still offer no flashing action.

@@ -36,12 +36,82 @@ const USB_STAGES: Array<{ id: UsbFlashStage; label: string; detail: string }> = 
 ];
 
 export function UsbFlashIllustration({ active = false }: { active?: boolean }) {
+  // Flat, high-contrast artwork on a light green wash: the firmware leaves the
+  // browser (monitor + download arrow), travels down a USB cable, and lands on
+  // the controller board. Outlines stay ink-dark, the accents are the same
+  // greens the hardware illustrations use, and the arrow only moves while a
+  // flash is actually running.
+  const ink = "#1f2933";
+  const green = "#1f9d55";
+  const paper = "#eef8f0";
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-950 px-5 py-3 text-white" aria-label="USB connection illustration">
+    <div
+      className="relative overflow-hidden rounded-2xl border border-emerald-600/20 bg-emerald-50 px-5 py-4 dark:border-emerald-400/25 dark:bg-emerald-950/40"
+      aria-label="USB connection illustration"
+      data-testid="usb-flash-illustration"
+    >
       <div className="flex items-center justify-between gap-4">
-        <div><p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-300">Direct connection</p><p className="mt-1 text-sm font-semibold">Your controller, ready for setup</p><p className="mt-1 text-xs text-slate-300">A secure connection over USB</p></div>
-        <svg viewBox="0 0 180 90" className="h-20 w-40 shrink-0" aria-hidden="true">
-          <rect x="8" y="20" width="52" height="39" rx="5" fill="#1e293b" stroke="#67e8f9" strokeWidth="2"/><path d="M3 67h62l-6 5H9z" fill="#94a3b8"/><path d="M60 40h22c14 0 9 16 24 16h8" fill="none" stroke="#67e8f9" strokeWidth="3" strokeLinecap="round" strokeDasharray="5 5" className={active ? "animate-pulse" : undefined}/><rect x="113" y="18" width="48" height="57" rx="7" fill="#164e63" stroke="#67e8f9" strokeWidth="2"/><rect x="124" y="28" width="26" height="23" rx="3" fill="#0f172a" stroke="#a5f3fc"/><path d="M119 23v-7m10 7v-7m10 7v-7m10 7v-7m-30 64v-7m10 7v-7m10 7v-7m10 7v-7" stroke="#94a3b8" strokeWidth="2"/><circle cx="151" cy="63" r="3" fill="#34d399" className={active ? "animate-pulse" : undefined}/>
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-700 dark:text-emerald-300">
+            Direct connection
+          </p>
+          <p className="mt-1 text-sm font-semibold text-foreground">
+            Flash the board over USB
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            Firmware is written straight from this browser to the board&apos;s chip.
+          </p>
+        </div>
+        <svg
+          viewBox="0 0 220 120"
+          className="h-20 w-36 shrink-0 sm:h-24 sm:w-44"
+          aria-hidden="true"
+          fill="none"
+        >
+          {/* Light card behind the drawing, like the reference illustration. */}
+          <rect x="2" y="6" width="216" height="108" rx="16" fill={paper} />
+          {/* Monitor: dark rounded screen frame with a green download arrow. */}
+          <rect x="42" y="22" width="62" height="44" rx="7" fill="#ffffff" stroke={ink} strokeWidth="4" />
+          <path d="M73 32v14" stroke={green} strokeWidth="4" strokeLinecap="round" />
+          <path
+            d="M66 41l7 8 7-8"
+            stroke={green}
+            strokeWidth="4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          {/* Desk line under the monitor, then the cable into the board's plug. */}
+          <path d="M28 72h84" stroke={ink} strokeWidth="4" strokeLinecap="round" />
+          <path
+            d="M112 72h30c9 0 6 12 14 12"
+            stroke={ink}
+            strokeWidth="4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          {/* USB plug nub, drawn before the board so only its left half shows. */}
+          <rect x="150" y="70" width="18" height="16" rx="4" fill="#ffffff" stroke={ink} strokeWidth="4" />
+          {/* Controller board: white body, green outline, green chip, amber LED. */}
+          <rect x="168" y="26" width="40" height="56" rx="8" fill="#ffffff" stroke={green} strokeWidth="4" />
+          <rect x="181" y="38" width="15" height="14" rx="3" fill={green} />
+          <circle cx="176" cy="74" r="3" fill="#d97706" />
+          {/* Three header pins on top of the board. */}
+          <g stroke={green} strokeWidth="4" strokeLinecap="round">
+            <path d="M178 26V16" />
+            <path d="M188 26V16" />
+            <path d="M198 26V16" />
+          </g>
+          {active && (
+            <circle
+              className="hc-usb-write"
+              cx="188"
+              cy="49"
+              r="30"
+              fill="none"
+              stroke={green}
+              strokeWidth="2"
+            />
+          )}
         </svg>
       </div>
     </div>

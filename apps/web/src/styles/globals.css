@@ -719,6 +719,7 @@
   .hc-ble-wave,
   .hc-ble-wave-2,
   .hc-ble-wave-3,
+  .hc-usb-write,
   .tile {
     animation: none !important;
     transition: none !important;
@@ -728,6 +729,25 @@
 @media (prefers-reduced-motion: no-preference) {
   @keyframes hc-avatar-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
   .hc-avatar-float { animation: hc-avatar-float 4s ease-in-out infinite; }
+}
+
+/* USB flasher artwork: a soft green ring leaves the chip while bytes are
+ * actually being written. Purely decorative, so it stops for reduced motion. */
+@keyframes hc-usb-write {
+  from {
+    opacity: 0.55;
+    transform: scale(0.72);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.14);
+  }
+}
+
+.hc-usb-write {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: hc-usb-write 1.6s ease-out infinite;
 }
 
 /* Onboarding step transition: content fades and lifts in as each step mounts. */

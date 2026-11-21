@@ -125,19 +125,19 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     );
 
     // One modal, one level 1: flash, setup, repair.
-    expect(screen.getByRole("dialog", { name: /Controller Actions/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Flash Controller/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Setup Controller/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Repair \/ Recover Controller/i })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /Board Actions/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Flash Board/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Setup Board/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Repair \/ Recover Board/i })).toBeInTheDocument();
 
     // Level 2: setup offers Bluetooth or Wi-Fi, and Back returns to the actions.
-    await user.click(screen.getByRole("button", { name: /Setup Controller/i }));
+    await user.click(screen.getByRole("button", { name: /Setup Board/i }));
     expect(screen.getByRole("button", { name: /Setup with Bluetooth/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Setup with Wi-Fi/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^Back$/i }));
 
     // Level 2: repair offers the same two transports.
-    await user.click(screen.getByRole("button", { name: /Repair \/ Recover Controller/i }));
+    await user.click(screen.getByRole("button", { name: /Repair \/ Recover Board/i }));
     expect(screen.getByRole("button", { name: /Recover with Bluetooth/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Recover with Wi-Fi/i })).toBeInTheDocument();
     expect(screen.getByText(/offline, disconnected, deleted and re-paired/i)).toBeInTheDocument();
@@ -262,8 +262,8 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
       />
     );
 
-    // Actions -> Setup Controller -> Setup with Bluetooth (Screen A)
-    await user.click(screen.getByRole("button", { name: /Setup Controller/i }));
+    // Actions -> Setup Board -> Setup with Bluetooth (Screen A)
+    await user.click(screen.getByRole("button", { name: /Setup Board/i }));
     await user.click(screen.getByRole("button", { name: /Setup with Bluetooth/i }));
     expect(screen.getByText(/Discover HomecoreOS Controller/i)).toBeInTheDocument();
     expect(
@@ -749,7 +749,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
       />
     );
 
-    await user.click(screen.getByRole("button", { name: /Repair \/ Recover Controller/i }));
+    await user.click(screen.getByRole("button", { name: /Repair \/ Recover Board/i }));
     // Deleted controllers stay recoverable, so the repair screen says so.
     expect(screen.getByText(/offline, disconnected, deleted and re-paired/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Recover with Wi-Fi/i }));
@@ -768,8 +768,8 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     // And back again returns to the three top-level actions.
     await user.click(screen.getByRole("button", { name: /^Back$/i }));
-    expect(screen.getByRole("button", { name: /Flash Controller/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Setup Controller/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Flash Board/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Setup Board/i })).toBeInTheDocument();
   });
 
   it("opens ControllerSetupModal directly from MyBoardsPage Details modal without showing Setup PIN", async () => {

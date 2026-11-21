@@ -667,6 +667,7 @@ export function ControllerSetupModal({
   const controllersRef = useRef(controllers);
   controllersRef.current = controllers;
 
+
   useEffect(() => {
     const justOpened = open && !wasOpenRef.current;
     wasOpenRef.current = open;
@@ -708,6 +709,26 @@ export function ControllerSetupModal({
     ];
     return list;
   }, [catalogBoards, customBoardProfiles]);
+
+  const boardsForSlugLookup = useMemo(
+    () => [...catalogBoards, ...customBoardProfiles],
+    [catalogBoards, customBoardProfiles]
+  );
+
+  /**
+   * The Board Library slug of the controller this action was opened from, so
+   * "Flash Board" starts on the board the user already owns instead of an
+   * empty select.
+   */
+  const initialFlashBoardSlug = useMemo(() => {
+    if (!targetController) return undefined;
+    const installed = boardsForSlugLookup.find((b) =>
+      targetController.board_profile_id
+        ? b.id === targetController.board_profile_id
+        : b.id === targetController.custom_board_profile_id
+    );
+    return installed?.slug;
+  }, [targetController, boardsForSlugLookup]);
 
   useEffect(() => {
     if (!wifiPortalBoardChoice && boardOptions.length > 0) {
@@ -1453,18 +1474,15 @@ export function ControllerSetupModal({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && handleCloseModal()}>
-      <DialogContent
-        className={cn(
-          "max-h-[90vh] overflow-y-auto",
-          view === "flash" ? "sm:max-w-2xl" : "sm:max-w-xl"
-        )}
-      >
+      {/* One dialog, one width: every step swaps in place, so the frame never
+          jumps or re-opens while the user moves between flash, setup and repair. */}
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         {view === "entry" && (
           <>
             <DialogHeader>
-              <DialogTitle>Controller Actions</DialogTitle>
+              <DialogTitle>Board Actions</DialogTitle>
               <DialogDescription>
-                Install firmware on a new board, set up a controller, or repair one that stopped
+                Install firmware on a new board, set it up, or repair one that stopped
                 connecting.
               </DialogDescription>
             </DialogHeader>
@@ -1472,23 +1490,23 @@ export function ControllerSetupModal({
             <div className="space-y-2.5">
               <ActionCard
                 kind="usb"
-                title="Flash Controller"
-                meta="New hardware"
+                title="Flash Board"
+                meta="New board"
                 description="Install the published HomecoreOS factory image on a bare board over USB, with chip verification."
                 onClick={() => openChildView("flash")}
               />
               <ActionCard
                 kind="bluetooth"
-                title="Setup Controller"
+                title="Setup Board"
                 meta="Bluetooth or Wi-Fi"
-                description="Pair a controller that already has firmware and connect it to your home network."
+                description="Pair a board that already has firmware and connect it to your home network."
                 onClick={() => openChildView("setup")}
               />
               <ActionCard
                 kind="recovery"
-                title="Repair / Recover Controller"
+                title="Repair / Recover Board"
                 meta="Offline · deleted · re-pairing"
-                description="Restore Wi-Fi credentials, re-pair, or bring back a controller that is no longer connecting."
+                description="Restore Wi-Fi credentials, re-pair, or bring back a board that is no longer connecting."
                 onClick={() => openChildView("recover")}
               />
             </div>
@@ -1505,7 +1523,7 @@ export function ControllerSetupModal({
           <>
             <DialogHeader>
               <DialogTitle>
-                {view === "recover" ? "Repair / Recover Controller" : "Setup Controller"}
+                {view === "recover" ? "Repair / Recover Board" : "Setup Board"}
                 {targetController ? (
                   <span className="ml-2 text-sm font-normal text-muted-foreground">
                     {targetController.name}
@@ -1583,7 +1601,7 @@ export function ControllerSetupModal({
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-500 to-teal-600 text-white shadow-sm">
                   <RiUsbLine className="size-4" aria-hidden="true" />
                 </span>
-                <span className="min-w-0 break-words">Flash Controller over USB</span>
+                <span className="min-w-0 break-words">Flash Board over USB</span>
               </DialogTitle>
               <DialogDescription>
                 Connect the board with a USB cable. The browser verifies the chip before writing the
@@ -1592,11 +1610,20 @@ export function ControllerSetupModal({
             </DialogHeader>
 
             <UsbFlashWizard
+              key={initialFlashBoardSlug ?? "flash"}
               ref={flashRef}
               canManage={canManage}
+              initialBoardSlug={initialFlashBoardSlug}
               onBack={handleBackToEntry}
               onContinueToSetup={() => {
+                // Carry the board that was just flashed into setup, in the same
+                // modal: nothing closes, nothing reloads.
+                const board = boardsForSlugLookup.find((b) => b.slug === initialFlashBoardSlug);
+                if (board && wifiPortalBoardChoice === "") {
+                  setWifiPortalBoardChoice(`catalog:${board.id}`);
+                }
                 clearSensitiveState();
+                setBleScreen("discover");
                 setView("setup");
               }}
             />

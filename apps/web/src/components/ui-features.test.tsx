@@ -469,7 +469,7 @@ describe("HomecoreOS interactive UI workflows", () => {
     });
   });
 
-  it("renders MyBoardsPage Add Controller dropdown, Connection & Recovery details, Trash restore/permanent delete, and ReUI IconStack empty state", async () => {
+  it("renders MyBoardsPage Add Board dropdown, Connection & Recovery details, Trash restore/permanent delete, and ReUI IconStack empty state", async () => {
     const user = userEvent.setup();
     let restored = false;
 
@@ -605,15 +605,15 @@ describe("HomecoreOS interactive UI workflows", () => {
     expect(screen.getByText(/MQTT Disconnected/i)).toBeInTheDocument();
     expect(screen.getByText(/Broker TLS connection timed out/i)).toBeInTheDocument();
 
-    // Add Controller opens the single action modal: flash, setup or repair.
-    await user.click(screen.getByRole("button", { name: /Add Controller/i }));
-    expect(screen.getByRole("dialog", { name: /Controller Actions/i })).toBeInTheDocument();
-    expect(screen.getByText(/Flash Controller/i)).toBeInTheDocument();
-    expect(screen.getByText(/^Setup Controller$/i)).toBeInTheDocument();
-    expect(screen.getByText(/Repair \/ Recover Controller/i)).toBeInTheDocument();
+    // Add Board opens the single action modal: flash, setup or repair.
+    await user.click(screen.getByRole("button", { name: /Add Board/i }));
+    expect(screen.getByRole("dialog", { name: /Board Actions/i })).toBeInTheDocument();
+    expect(screen.getByText(/Flash Board/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Setup Board$/i)).toBeInTheDocument();
+    expect(screen.getByText(/Repair \/ Recover Board/i)).toBeInTheDocument();
 
     // Setup keeps both transports, one level down.
-    await user.click(screen.getByRole("button", { name: /Setup Controller/i }));
+    await user.click(screen.getByRole("button", { name: /Setup Board/i }));
     expect(screen.getByText(/Setup with Bluetooth/i)).toBeInTheDocument();
     expect(screen.getByText(/Setup with Wi-Fi/i)).toBeInTheDocument();
     await user.keyboard("{Escape}");
@@ -1252,10 +1252,24 @@ describe("HomecoreOS interactive UI workflows", () => {
         return new Promise<Response>(() => {});
       }
       if (url === "/api/board-library/catalog") {
-        return new Response(JSON.stringify({ boards: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({
+            boards: [
+              {
+                id: "b1",
+                slug: "esp32-s3-devkitc-1-n16r8",
+                manufacturer: "Espressif",
+                model: "ESP32-S3-DevKitC-1 N16R8",
+                chip_family: "esp32s3",
+                flash_size_mb: 16,
+                psram_size_mb: 8,
+                gpio_definitions: [],
+                is_available: true,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
       }
       if (url === "/api/board-library/custom") {
         return new Response(JSON.stringify({ boards: [] }), {
@@ -1282,18 +1296,27 @@ describe("HomecoreOS interactive UI workflows", () => {
       </TimezoneContext.Provider>
     );
 
-    const [addController] = await screen.findAllByRole("button", { name: /Add Controller/i });
-    await user.click(addController!);
-    await user.click(screen.getByRole("button", { name: /Flash Controller/i }));
+    const [addBoard] = await screen.findAllByRole("button", { name: /Add Board/i });
+    await user.click(addBoard!);
+    await user.click(screen.getByRole("button", { name: /Flash Board/i }));
 
     expect(
-      await screen.findByRole("dialog", { name: /Flash Controller over USB/i })
+      await screen.findByRole("dialog", { name: /Flash Board over USB/i })
     ).toBeInTheDocument();
     // The Firmware page no longer offers any USB flashing entry point.
     expect(screen.queryByRole("button", { name: /USB Browser Flasher/i })).not.toBeInTheDocument();
 
+    // Board first: the release list only appears after a board is chosen.
+    await user.click(
+      await screen.findByRole("combobox", { name: /Choose the board you are flashing/i })
+    );
+    await user.click(await screen.findByRole("option", { name: /ESP32-S3-DevKitC-1 N16R8/ }));
+    // The picker carries no flash action; Next opens the step that writes.
+    expect(screen.queryByRole("button", { name: /Flash board over USB/i })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /^Next$/i }));
+
     // Start flashing -> stays in active flashing state while downloading
-    await user.click(screen.getByRole("button", { name: /Connect USB & Flash Factory Image/i }));
+    await user.click(await screen.findByRole("button", { name: /Flash board over USB/i }));
     await waitFor(() => {
       expect(screen.getByText(/Flashing via USB\.\.\./i)).toBeInTheDocument();
     });
@@ -2057,7 +2080,27 @@ describe("HomecoreOS interactive UI workflows", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url === "/api/board-library/catalog" || url === "/api/board-library/custom") {
+      if (url === "/api/board-library/catalog") {
+        return new Response(
+          JSON.stringify({
+            boards: [
+              {
+                id: "b1",
+                slug: "esp32-s3-devkitc-1-n16r8",
+                manufacturer: "Espressif",
+                model: "ESP32-S3-DevKitC-1 N16R8",
+                chip_family: "esp32s3",
+                flash_size_mb: 16,
+                psram_size_mb: 8,
+                gpio_definitions: [],
+                is_available: true,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (url === "/api/board-library/custom") {
         return new Response(JSON.stringify({ boards: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -2172,7 +2215,7 @@ describe("HomecoreOS interactive UI workflows", () => {
     // Clicking single "Recover / Re-pair" opens the one controller-action modal on its repair choice
     await user.click(recoverMenuItem);
     expect(
-      await screen.findByRole("dialog", { name: /Repair \/ Recover Controller/i })
+      await screen.findByRole("dialog", { name: /Repair \/ Recover Board/i })
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Recover with Bluetooth/i })).toBeInTheDocument();
     await user.keyboard("{Escape}");
@@ -2224,8 +2267,13 @@ describe("HomecoreOS interactive UI workflows", () => {
     expect(screen.queryByRole("button", { name: /USB Browser Flasher/i })).not.toBeInTheDocument();
 
     // Open the flasher from the controller actions -> responsive stage grid, not a cramped 6-col row
-    await user.click(screen.getByRole("button", { name: /Add Controller/i }));
-    await user.click(await screen.findByRole("button", { name: /Flash Controller/i }));
+    await user.click(screen.getByRole("button", { name: /Add Board/i }));
+    await user.click(await screen.findByRole("button", { name: /Flash Board/i }));
+    // Board first, then its firmware: only then can the flow move on.
+    await user.click(
+      await screen.findByRole("combobox", { name: /Choose the board you are flashing/i })
+    );
+    await user.click(await screen.findByRole("option", { name: /ESP32-S3-DevKitC-1 N16R8/ }));
     const nextBtn = await screen.findByRole("button", { name: /^Next$/i });
     await user.click(nextBtn);
     const stageGrid = await screen.findByTestId("usb-stage-grid");
