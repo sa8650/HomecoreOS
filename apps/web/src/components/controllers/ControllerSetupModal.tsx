@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import {
   RiAlertLine,
   RiArrowLeftLine,
@@ -38,6 +46,7 @@ import type {
 } from "@/features/types";
 import { ControllerActionArtwork } from "@/components/controllers/ControllerActionArtwork";
 import {
+  BluetoothGlyph,
   BluetoothPairingAnimation,
   WifiSignalAnimation,
 } from "@/components/graphics/ConnectionAnimations";
@@ -96,21 +105,21 @@ type BleFlowScreen = "discover" | "wifi" | "progress";
 type ProgressStepState = "pending" | "active" | "done" | "error";
 
 const SETUP_PROGRESS_LABELS = [
-  "1. Securely connecting to controller",
+  "1. Securely connecting to board",
   "2. Saving Wi-Fi configuration",
-  "3. Connecting controller to Wi-Fi",
-  "4. Pairing controller with your HomecoreOS account",
-  "5. Connecting controller to MQTT",
-  "6. Verifying controller connection",
+  "3. Connecting board to Wi-Fi",
+  "4. Pairing board with your HomecoreOS account",
+  "5. Connecting board to MQTT",
+  "6. Verifying board connection",
 ] as const;
 
 const RECOVERY_PROGRESS_LABELS = [
-  "1. Securely connecting to controller",
+  "1. Securely connecting to board",
   "2. Saving Wi-Fi configuration",
-  "3. Connecting controller to Wi-Fi",
-  "4. Verifying controller recovery",
-  "5. Connecting controller to MQTT",
-  "6. Verifying controller connection",
+  "3. Connecting board to Wi-Fi",
+  "4. Verifying board recovery",
+  "5. Connecting board to MQTT",
+  "6. Verifying board connection",
 ] as const;
 
 function normalizeHexSuffix(value?: string | null): string {
@@ -184,12 +193,19 @@ function ActionCard({
   title,
   description,
   meta,
+  illustration,
   onClick,
 }: {
   kind: "usb" | "bluetooth" | "wifi" | "recovery";
   title: string;
   description: string;
   meta?: string;
+  /**
+   * Optional live artwork for the 48px tile. When given it replaces the static
+   * `ControllerActionArtwork`, which keeps the tile's tinted frame so the rows
+   * still line up with one another.
+   */
+  illustration?: ReactNode;
   onClick: () => void;
 }) {
   return (
@@ -198,11 +214,20 @@ function ActionCard({
       onClick={onClick}
       className="group flex w-full cursor-pointer items-center gap-3 rounded-[10px] border bg-card px-3 py-2.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
     >
-      <ControllerActionArtwork
-        kind={kind}
-        tone="light"
-        className="size-12 shrink-0 [&>svg]:p-1"
-      />
+      {illustration ? (
+        <span
+          aria-hidden="true"
+          className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-blue-600/22 bg-[#eff6ff] dark:border-blue-400/25 dark:bg-blue-950/40"
+        >
+          {illustration}
+        </span>
+      ) : (
+        <ControllerActionArtwork
+          kind={kind}
+          tone="light"
+          className="size-12 shrink-0 [&>svg]:p-1"
+        />
+      )}
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-2">
           <span className="truncate text-sm font-semibold text-foreground">{title}</span>
@@ -238,19 +263,19 @@ function BleDiscoveryArtwork({
         {connected
           ? "Connected over Bluetooth"
           : mode === "recover"
-            ? "Bluetooth Controller Recovery"
-            : "Bluetooth Controller Setup"}
+            ? "Bluetooth Board Recovery"
+            : "Bluetooth Board Setup"}
       </span>
 
       <h3 className="mt-2.5 text-[15px] font-semibold tracking-[-0.01em] text-foreground">
         {mode === "recover"
-          ? "Prepare Controller for Recovery"
-          : "Discover HomecoreOS Controller"}
+          ? "Prepare Board for Recovery"
+          : "Discover HomecoreOS Board"}
       </h3>
       <p className="mx-auto mt-1 max-w-[320px] text-[12.5px] leading-relaxed text-muted-foreground">
         {mode === "recover"
-          ? "Hold the BOOT / Recovery button on your controller for 3 seconds."
-          : "Turn on your HomecoreOS controller and keep it nearby."}
+          ? "Hold the BOOT / Recovery button on your board for 3 seconds."
+          : "Turn on your HomecoreOS Board and keep it nearby."}
       </p>
     </div>
   );
@@ -268,15 +293,15 @@ function WifiPortalArtwork() {
   const softStroke = "#dfe3e8";
   const deviceStroke = "#8b939e";
   return (
-    <div className="flex items-center gap-4 rounded-[12px] border border-border bg-muted/30 p-3">
+    <div className="flex justify-center rounded-[12px] border border-border bg-muted/30 p-3">
       {/* ~35% of the previous full-width artwork: the four beats still read at
-          this size, and the dialog stays short enough to scroll on a laptop. */}
-      <WifiSignalAnimation className="size-14 shrink-0" />
+          this size, and the dialog stays short enough to scroll on a laptop.
+          The animated Wi-Fi glyph lives on the "Setup with Wi-Fi" option row. */}
       <svg
         viewBox="0 0 1230 392"
-        className="h-auto w-full max-w-[260px] select-none"
+        className="h-auto w-full max-w-[300px] select-none"
         role="img"
-        aria-label="Four steps: 1. Plug the controller into power. 2. Join its HomecoreOS-Setup-XXXX Wi-Fi network from your phone or computer. 3. Open http://192.168.4.1 in your browser. 4. Enter the Wi-Fi SSID, password and pairing code, then press Save and Apply."
+        aria-label="Four steps: 1. Plug the board into power. 2. Join its HomecoreOS-Setup-XXXX Wi-Fi network from your phone or computer. 3. Open http://192.168.4.1 in your browser. 4. Enter the Wi-Fi SSID, password and pairing code, then press Save and Apply."
       >
         {/* panel */}
         <rect x="6" y="6" width="1218" height="380" rx="18" fill="#fcfcfa" stroke="#e3e6ea" strokeWidth="2" />
@@ -456,7 +481,7 @@ export function ControllerSetupModal({
   const [progressDone, setProgressDone] = useState(false);
 
   // Preserved Setup / Recover with Wi-Fi (192.168.4.1) state
-  const [wifiPortalName, setWifiPortalName] = useState("HomecoreOS Controller");
+  const [wifiPortalName, setWifiPortalName] = useState("HomecoreOS Board");
   const [wifiPortalBoardChoice, setWifiPortalBoardChoice] = useState("");
   const [wifiPortalTargetId, setWifiPortalTargetId] = useState("");
   const [wifiPortalRecoverDeleted, setWifiPortalRecoverDeleted] = useState(false);
@@ -735,13 +760,13 @@ export function ControllerSetupModal({
             disconnectRejectRef.current(
               new BleClientError(
                 "DISCONNECTED",
-                "Bluetooth connection dropped during configuration. Keep your controller nearby and try again."
+                "Bluetooth connection dropped during configuration. Keep your board nearby and try again."
               )
             );
           } else {
             setBleErrorCode("DISCONNECTED");
             setBleError(
-              "Bluetooth connection to the controller was lost. Click Discover BLE Controller to reconnect."
+              "Bluetooth connection to the board was lost. Click Discover BLE Board to reconnect."
             );
             setBleScreen("discover");
           }
@@ -755,14 +780,14 @@ export function ControllerSetupModal({
         clientRef.current = null;
         setBleErrorCode("UNSUPPORTED");
         setBleError(
-          "This ESP32-H2 board has no integrated Wi-Fi radio and cannot be set up as a standalone Wi-Fi/MQTT HomecoreOS controller."
+          "This ESP32-H2 board has no integrated Wi-Fi radio and cannot be set up as a standalone Wi-Fi/MQTT HomecoreOS board."
         );
         return;
       }
 
       const displayName =
         client.deviceName ||
-        (info.mac_suffix ? `HomecoreOS-${info.mac_suffix}` : "HomecoreOS Controller");
+        (info.mac_suffix ? `HomecoreOS-${info.mac_suffix}` : "HomecoreOS Board");
       setConnectedDeviceName(displayName);
       setDeviceInfo(info);
 
@@ -791,7 +816,7 @@ export function ControllerSetupModal({
         setBleError(
           err instanceof Error
             ? err.message
-            : "Could not connect to a HomecoreOS controller over Bluetooth."
+            : "Could not connect to a HomecoreOS Board over Bluetooth."
         );
       }
     } finally {
@@ -851,7 +876,7 @@ export function ControllerSetupModal({
       const matchedBoard = matchBoardForDeviceInfo(info, catalogBoards, customBoardProfiles);
       if (!matchedBoard) {
         throw new Error(
-          "No compatible board profile is available in your catalog for this controller."
+          "No compatible board profile is available in your catalog for this board."
         );
       }
       const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
@@ -862,7 +887,7 @@ export function ControllerSetupModal({
             name:
               activeControllerIdRef.current && targetController?.name
                 ? targetController.name
-                : deviceLabel || "Recovered Controller",
+                : deviceLabel || "Recovered Board",
             homeId: homes[0]?.id,
             ...(matchedBoard.kind === "catalog"
               ? { boardProfileId: matchedBoard.board.id }
@@ -888,7 +913,7 @@ export function ControllerSetupModal({
     const matchedBoard = matchBoardForDeviceInfo(info, catalogBoards, customBoardProfiles);
     if (!matchedBoard) {
       throw new Error(
-        "No compatible board profile is available in your catalog for this controller."
+        "No compatible board profile is available in your catalog for this board."
       );
     }
 
@@ -957,7 +982,7 @@ export function ControllerSetupModal({
         finishReject(
           new BleClientError(
             "TIMEOUT",
-            "Timed out waiting for the controller to connect. Verify your Wi-Fi network and try again."
+            "Timed out waiting for the board to connect. Verify your Wi-Fi network and try again."
           )
         );
       }, 45_000);
@@ -1014,8 +1039,8 @@ export function ControllerSetupModal({
             const err = new Error(
               st.error ||
                 (st.paired
-                  ? "Controller paired, but MQTT authentication or broker connection failed."
-                  : "Controller pairing failed with HomecoreOS.")
+                  ? "Board paired, but MQTT authentication or broker connection failed."
+                  : "Board pairing failed with HomecoreOS.")
             );
             (err as Error & { stepIdx?: number }).stepIdx = failStep;
             finishReject(err);
@@ -1048,7 +1073,7 @@ export function ControllerSetupModal({
     const client = clientRef.current;
     if (!client || !client.isConnected) {
       setBleErrorCode("DISCONNECTED");
-      setBleError("Bluetooth connection to the controller was lost. Reconnect and try again.");
+      setBleError("Bluetooth connection to the board was lost. Reconnect and try again.");
       setBleScreen("discover");
       return;
     }
@@ -1091,7 +1116,7 @@ export function ControllerSetupModal({
           status.mqtt_connected && (await waitForControllerOnlineOnBackend(boardInstanceId));
         if (!backendVerified) {
           const err = new Error(
-            "Controller did not complete MQTT verification. Please check your network and retry."
+            "Board did not complete MQTT verification. Please check your network and retry."
           );
           (err as Error & { stepIdx?: number }).stepIdx = 4;
           throw err;
@@ -1184,7 +1209,7 @@ export function ControllerSetupModal({
           const onlineOk = await waitForControllerOnlineOnBackend(verifiedControllerId);
           if (!onlineOk) {
             const err = new Error(
-              "Controller connected to Wi-Fi, but MQTT verification with HomecoreOS did not succeed."
+              "Board connected to Wi-Fi, but MQTT verification with HomecoreOS did not succeed."
             );
             (err as Error & { stepIdx?: number }).stepIdx = 4;
             throw err;
@@ -1202,7 +1227,7 @@ export function ControllerSetupModal({
       setActiveStepIdx(5);
       setProgressDone(true);
       onSuccess?.(
-        `${connectedDeviceName || "Controller"} is connected and ready.`
+        `${connectedDeviceName || "Board"} is connected and ready.`
       );
     } catch (err) {
       const explicitIdx = (err as Error & { stepIdx?: number }).stepIdx;
@@ -1211,7 +1236,7 @@ export function ControllerSetupModal({
       setProgressError(
         err instanceof Error
           ? err.message
-          : "Could not complete controller configuration over Bluetooth."
+          : "Could not complete board configuration over Bluetooth."
       );
       // Wipe password if BLE disconnected so user reconnects cleanly
       if (err instanceof BleClientError && err.code === "DISCONNECTED") {
@@ -1230,14 +1255,14 @@ export function ControllerSetupModal({
       if (view === "setup_wifi") {
         const [kind, id] = wifiPortalBoardChoice.split(":");
         if (!id) {
-          throw new Error("Select a board model for this controller.");
+          throw new Error("Select a board model for this board.");
         }
         const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
           "/api/board-instances",
           {
             method: "POST",
             body: JSON.stringify({
-              name: wifiPortalName.trim() || "HomecoreOS Controller",
+              name: wifiPortalName.trim() || "HomecoreOS Board",
               homeId: homes[0]?.id,
               boardProfileId: kind === "catalog" ? id : undefined,
               customBoardProfileId: kind === "custom" ? id : undefined,
@@ -1260,14 +1285,14 @@ export function ControllerSetupModal({
         } else {
           const [kind, id] = wifiPortalBoardChoice.split(":");
           if (!id) {
-            throw new Error("Select the controller board model.");
+            throw new Error("Select the board model.");
           }
           const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
             "/api/board-instances/recover",
             {
               method: "POST",
               body: JSON.stringify({
-                name: wifiPortalName.trim() || "Recovered Controller",
+                name: wifiPortalName.trim() || "Recovered Board",
                 homeId: homes[0]?.id,
                 boardProfileId: kind === "catalog" ? id : undefined,
                 customBoardProfileId: kind === "custom" ? id : undefined,
@@ -1513,6 +1538,7 @@ export function ControllerSetupModal({
                     kind="wifi"
                     title="Setup with Wi-Fi"
                     description="Join HomecoreOS-Setup-XXXX and configure from 192.168.4.1."
+                    illustration={<WifiSignalAnimation className="size-9" />}
                     onClick={() => openChildView("setup_wifi")}
                   />
                 </>
@@ -1613,18 +1639,19 @@ export function ControllerSetupModal({
                   </StatusAlert>
                 )}
 
-                <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                <div className="flex justify-center pt-1">
                   <Button
                     type="button"
+                    className="min-w-[190px]"
                     disabled={bleConnecting || !bleSupport.supported}
                     onClick={() => void handleDiscoverBle()}
                   >
                     {bleConnecting ? (
                       <RiLoader4Line className="size-4 animate-spin" aria-hidden="true" />
                     ) : (
-                      <RiBluetoothConnectLine className="size-4" aria-hidden="true" />
+                      <BluetoothGlyph className="size-4" />
                     )}
-                    {bleConnecting ? "Connecting..." : "Discover BLE Controller"}
+                    {bleConnecting ? "Connecting..." : "Discover BLE Board"}
                   </Button>
                 </div>
               </div>
@@ -1639,7 +1666,7 @@ export function ControllerSetupModal({
                     </div>
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold text-foreground">
-                        {connectedDeviceName || "HomecoreOS Controller"}
+                        {connectedDeviceName || "HomecoreOS Board"}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {isRecoveryBle
@@ -1712,13 +1739,13 @@ export function ControllerSetupModal({
                   <div>
                     <h3 className="text-base font-semibold text-foreground">
                       {progressDone
-                        ? "Your controller is ready!"
+                        ? "Your board is ready!"
                         : isRecoveryBle
-                          ? "Recovering your controller"
-                          : "Setting up your controller"}
+                          ? "Recovering your board"
+                          : "Setting up your board"}
                     </h3>
                     <p className="text-xs text-muted-foreground">
-                      {connectedDeviceName || "HomecoreOS Controller"}
+                      {connectedDeviceName || "HomecoreOS Board"}
                     </p>
                   </div>
                   {progressDone ? (
@@ -1780,10 +1807,10 @@ export function ControllerSetupModal({
                 </Frame>
 
                 {progressDone && (
-                  <StatusAlert tone="success" title="Your controller is ready!">
+                  <StatusAlert tone="success" title="Your board is ready!">
                     {isRecoveryBle
-                      ? "Wi-Fi and MQTT connection verified. Your controller has returned to normal operation."
-                      : "Your controller is paired to your HomecoreOS account and online over MQTT."}
+                      ? "Wi-Fi and MQTT connection verified. Your board has returned to normal operation."
+                      : "Your board is paired to your HomecoreOS account and online over MQTT."}
                   </StatusAlert>
                 )}
 
@@ -1840,12 +1867,6 @@ export function ControllerSetupModal({
 
         {(view === "setup_wifi" || view === "recover_wifi") && (
           <>
-            <p className="text-[13px] text-muted-foreground">
-              {view === "recover_wifi"
-                ? "Reconnect or re-pair your board using its local recovery page."
-                : "Join the board's temporary HomecoreOS-Setup-XXXX network."}
-            </p>
-
             <div className="space-y-4">
               <WifiPortalArtwork />
 
@@ -1853,14 +1874,14 @@ export function ControllerSetupModal({
                 <FramePanel className="space-y-2 p-4 text-xs leading-relaxed text-muted-foreground">
                   <p className="text-sm font-semibold text-foreground">
                     {view === "recover_wifi"
-                      ? "Steps on your controller & browser"
+                      ? "Steps on your Board & browser"
                       : "Steps to set up via Wi-Fi"}
                   </p>
                   <ol className="list-decimal space-y-1.5 pl-4">
                     <li>
                       {view === "recover_wifi"
-                        ? "Hold the BOOT / Recovery button on your controller for 3 seconds."
-                        : "Power on your new HomecoreOS controller."}
+                        ? "Hold the BOOT / Recovery button on your board for 3 seconds."
+                        : "Power on your new HomecoreOS Board."}
                     </li>
                     <li>
                       Connect your phone or computer to{" "}
@@ -1881,7 +1902,7 @@ export function ControllerSetupModal({
                         If only your Wi-Fi network changed, choose{" "}
                         <strong>Update Wi-Fi Credentials Only</strong> and click{" "}
                         <strong>Save &amp; Apply</strong>. If re-pairing is needed, choose{" "}
-                        <strong>Recover / Re-pair Existing Controller</strong> and enter your
+                        <strong>Recover / Re-pair Existing Board</strong> and enter your
                         Wi-Fi details, server URL, and 6-digit recovery code below.
                       </li>
                     ) : (
@@ -1925,7 +1946,7 @@ export function ControllerSetupModal({
                 <form onSubmit={handleGenerateWifiPortalCode} className="space-y-3">
                   {view === "recover_wifi" && controllers.length > 0 && (
                     <div className="space-y-2">
-                      <FormField id="wifi-rec-target" label="Controller to Re-pair (if needed)">
+                      <FormField id="wifi-rec-target" label="Board to Re-Pair (if needed)">
                         <Select
                           value={wifiPortalRecoverDeleted ? "__deleted__" : wifiPortalTargetId}
                           onValueChange={(val) => {
@@ -1938,7 +1959,7 @@ export function ControllerSetupModal({
                           }}
                         >
                           <SelectTrigger id="wifi-rec-target" className="w-full">
-                            <SelectValue placeholder="Select controller..." />
+                            <SelectValue placeholder="Select board..." />
                           </SelectTrigger>
                           <SelectContent>
                             {controllers.map((c) => (
@@ -1947,7 +1968,7 @@ export function ControllerSetupModal({
                               </SelectItem>
                             ))}
                             <SelectItem value="__deleted__">
-                              Deleted / Not Listed Controller
+                              Deleted / Not Listed Board
                             </SelectItem>
                           </SelectContent>
                         </Select>
@@ -1957,11 +1978,11 @@ export function ControllerSetupModal({
 
                   {(view === "setup_wifi" || wifiPortalRecoverDeleted || controllers.length === 0) && (
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <FormField id="wifi-portal-name" label="Controller Name">
+                      <FormField id="wifi-portal-name" label="Board Name">
                         <Input
                           id="wifi-portal-name"
                           required
-                          placeholder="e.g. Hallway Controller"
+                          placeholder="e.g. Hallway Board"
                           value={wifiPortalName}
                           onChange={(e) => setWifiPortalName(e.target.value)}
                         />
@@ -2054,12 +2075,12 @@ export function ControllerSetupModal({
                   </Frame>
 
                   {wifiPortalOnline ? (
-                    <StatusAlert tone="success" title="Your controller is ready!">
-                      Controller paired and connected online over MQTT.
+                    <StatusAlert tone="success" title="Your board is ready!">
+                      Board paired and connected online over MQTT.
                     </StatusAlert>
                   ) : (
                     <StatusAlert tone="info">
-                      Waiting for your controller to apply settings from{" "}
+                      Waiting for your board to apply settings from{" "}
                       <code className="font-mono">http://192.168.4.1</code> and connect...
                     </StatusAlert>
                   )}
@@ -2069,7 +2090,7 @@ export function ControllerSetupModal({
                       type="button"
                       onClick={() => {
                         if (wifiPortalOnline) {
-                          onSuccess?.("Controller configured via Wi-Fi.");
+                          onSuccess?.("Board configured via Wi-Fi.");
                         }
                         handleCloseModal();
                       }}

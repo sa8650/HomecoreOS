@@ -25,6 +25,38 @@ function useInstanceId(kind: string) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Bluetooth rune glyph (geometry shared by the icon and the animation)        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The canonical Bluetooth rune on a 24×24 grid: a vertical stem (x=12) with two
+ * mirrored arms that meet at (17,7) and (17,17) and cross to the opposite
+ * corners. Shared by the button glyph, the pairing animation and the action
+ * card so the mark never drifts between them.
+ */
+export const BLUETOOTH_RUNE_PATH = "m7 7 10 10-5 5V2l5 5-10 10";
+
+export function BluetoothGlyph({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={cn("shrink-0", className)}
+      fill="none"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        d={BLUETOOTH_RUNE_PATH}
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* Bluetooth: concentric pairing rings behind a Bluetooth rune                 */
 /* -------------------------------------------------------------------------- */
 
@@ -45,27 +77,29 @@ export function BluetoothPairingAnimation({ className }: { className?: string })
         </filter>
       </defs>
 
-      {/* A ring that grows out of the centre and fades, three times per loop. */}
+      {/* A ring that grows out of the disc and fades, three times per loop.
+          Stops at 88 so it stays inside the 240 artboard: a tight pulse rather
+          than a full-card ripple. */}
       {[0, 1, 2].map((i) => (
         <circle
           key={i}
           cx="120"
           cy="120"
-          r="56"
+          r="40"
           stroke="#4586ff"
-          strokeOpacity="0.55"
-          strokeWidth="2.5"
+          strokeOpacity="0.45"
+          strokeWidth="2"
         >
           <animate
             attributeName="r"
-            values="44;112"
+            values="40;88"
             dur="2s"
             begin={`${i * 0.666}s`}
             repeatCount="indefinite"
           />
           <animate
             attributeName="stroke-opacity"
-            values="0.6;0"
+            values="0.5;0"
             dur="2s"
             begin={`${i * 0.666}s`}
             repeatCount="indefinite"
@@ -87,23 +121,25 @@ export function BluetoothPairingAnimation({ className }: { className?: string })
         filter={`url(#${uid}-glow)`}
       />
 
-      {/* Rune disc */}
+      {/* Rune disc: the shared 24-grid geometry, scaled ×2 and centred. */}
       <circle cx="120" cy="120" r="34" fill="#2176ff" />
-      <path
-        d="M124 99l14 12-14 12v-24M124 123l14 12-14 12v-24M106 111l36 24M106 135l36-24"
-        stroke="#ffffff"
-        strokeWidth="3.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <animate
-          attributeName="opacity"
-          values="1;1;0.55;1"
-          keyTimes="0;0.5;0.75;1"
-          dur="2s"
-          repeatCount="indefinite"
-        />
-      </path>
+      <g transform="translate(96 96) scale(2)">
+        <path
+          d={BLUETOOTH_RUNE_PATH}
+          stroke="#ffffff"
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <animate
+            attributeName="opacity"
+            values="1;1;0.55;1"
+            keyTimes="0;0.5;0.75;1"
+            dur="2s"
+            repeatCount="indefinite"
+          />
+        </path>
+      </g>
     </svg>
   );
 }
