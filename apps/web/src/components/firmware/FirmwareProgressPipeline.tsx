@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { UsbCableAnimation } from "@/components/graphics/ConnectionAnimations";
+import { useId, useState } from "react";
 import {
   RiAlertLine,
   RiArrowDownSLine,
@@ -43,29 +42,64 @@ export function UsbFlashIllustration({
   /** `banner` fills the dialog width; `sm` is the small status thumbnail; `none` hides it. */
   size?: "banner" | "sm" | "none";
 }) {
+  const uid = `usb-flash-${useId().replace(/:/g, "")}`;
   if (size === "none") return null;
+
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-[10px] border border-blue-600/20 bg-blue-50/70 dark:border-blue-400/25 dark:bg-blue-950/40",
-        size === "banner"
-          ? "mb-4 flex h-[104px] w-full items-center justify-center"
-          : "h-[51px] w-[68px] shrink-0"
+        "relative flex items-center justify-center overflow-hidden rounded-[10px] border border-blue-600/15 bg-gradient-to-br from-amber-50/55 via-card to-cyan-50/70 dark:border-blue-400/20 dark:from-amber-950/15 dark:via-card dark:to-cyan-950/25",
+        size === "banner" ? "mb-4 h-[124px] w-full px-4 py-2.5" : "h-[51px] w-[76px] shrink-0 p-1"
       )}
-      aria-label="USB connection illustration"
+      aria-label="Computer connected to a board over USB"
       data-testid="usb-flash-illustration"
       data-active={active ? "true" : "false"}
     >
-      {/* Portrait artboard: in the banner it sits centred, tall enough to read
-          the plug travel without stretching. */}
-      <UsbCableAnimation
-        active={active}
-        className={cn(
-          "block h-full w-auto",
-          size === "banner" ? "py-1.5" : "",
-          active ? "opacity-100" : "opacity-90"
-        )}
-      />
+      <svg
+        viewBox="0 0 360 150"
+        className="block h-full max-h-[112px] w-full max-w-[360px]"
+        fill="none"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <defs>
+          <linearGradient id={`${uid}-screen`} x1="38" y1="28" x2="205" y2="112">
+            <stop stopColor="var(--color-amber-100)" stopOpacity=".75" />
+            <stop offset="1" stopColor="var(--color-cyan-100)" stopOpacity=".85" />
+          </linearGradient>
+          <linearGradient id={`${uid}-cable`} x1="193" y1="112" x2="296" y2="112">
+            <stop stopColor="var(--color-cyan-400)" />
+            <stop offset="1" stopColor="var(--color-blue-500)" />
+          </linearGradient>
+        </defs>
+
+        {/* Monitor */}
+        <rect x="25" y="20" width="180" height="90" rx="12" fill={`url(#${uid}-screen)`} />
+        <rect x="25" y="20" width="180" height="90" rx="12" stroke="currentColor" strokeOpacity=".24" strokeWidth="3" />
+        <path d="M105 110v20M82 132h66" stroke="currentColor" strokeOpacity=".3" strokeWidth="6" strokeLinecap="round" />
+        <path d="M52 89h86" stroke="var(--color-blue-500)" strokeOpacity=".18" strokeWidth="3" strokeLinecap="round" />
+
+        {/* USB cable: a short animated dash travels from the computer to the board. */}
+        <path d="M193 110v18c0 7 6 12 13 12h84c8 0 14-6 14-14v-11" stroke="currentColor" strokeOpacity=".18" strokeWidth="4" strokeLinecap="round" strokeDasharray="7 8" />
+        <path d="M193 110v18c0 7 6 12 13 12h84c8 0 14-6 14-14v-11" stroke={`url(#${uid}-cable)`} strokeWidth="4" strokeLinecap="round" strokeDasharray="14 110" opacity={active ? ".95" : ".55"}>
+          {active && <animate attributeName="stroke-dashoffset" values="0;-124" dur="1.35s" repeatCount="indefinite" />}
+        </path>
+
+        {/* ESP development board */}
+        <rect x="265" y="25" width="70" height="92" rx="8" fill="var(--color-cyan-950)" fillOpacity=".9" />
+        <rect x="265" y="25" width="70" height="92" rx="8" stroke="var(--color-cyan-400)" strokeOpacity=".6" strokeWidth="2" />
+        <path d="M281 35v18h8V40h8v13h8V40h12v-5" stroke="var(--color-cyan-200)" strokeWidth="2" strokeLinejoin="round" />
+        <rect x="282" y="57" width="36" height="36" rx="3" fill="var(--color-slate-300)" fillOpacity=".9" />
+        <rect x="286" y="61" width="28" height="28" rx="2" stroke="var(--color-slate-500)" strokeOpacity=".65" />
+        {[42, 54, 66, 78, 90, 102].map((y) => (
+          <g key={y} fill="var(--color-amber-100)">
+            <rect x="270" y={y} width="5" height="5" rx="1" />
+            <rect x="325" y={y} width="5" height="5" rx="1" />
+          </g>
+        ))}
+        <rect x="291" y="100" width="18" height="17" rx="2" fill="var(--color-slate-200)" />
+        <rect x="295" y="113" width="10" height="8" rx="1" fill="var(--color-cyan-300)" />
+      </svg>
     </div>
   );
 }

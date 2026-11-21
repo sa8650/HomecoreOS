@@ -177,8 +177,16 @@ async function goToFlashStep(user: ReturnType<typeof userEvent.setup>) {
 
 /** The board is chosen first; its factory image is then selected automatically. */
 async function selectBoard(user: ReturnType<typeof userEvent.setup>, label: RegExp) {
-  await user.click(screen.getByRole("combobox", { name: /Choose the board you are flashing/i }));
-  await user.click(await screen.findByRole("option", { name: label }));
+  const trigger = screen.getByRole("combobox", { name: /Choose the board you are flashing/i });
+  await user.click(trigger);
+  const option = await screen.findByRole("option", { name: label });
+  for (const boardOption of screen.getAllByRole("option")) {
+    expect(boardOption).not.toHaveTextContent(/MB flash|PSRAM/i);
+  }
+  const boardName = option.textContent ?? "";
+  await user.click(option);
+  expect(trigger).toHaveTextContent(boardName);
+  expect(trigger).not.toHaveTextContent(/MB flash|PSRAM/i);
 }
 
 describe("USB flashing from the Controllers page: board check before writing", () => {

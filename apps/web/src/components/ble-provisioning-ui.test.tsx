@@ -182,6 +182,12 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
       name: /Choose the board you are flashing/i,
     });
     expect(boardSelect.className).toContain("flow-trigger");
+
+    // The nested onboarding primitive must not repaint the dialog with the
+    // app's darker page background.
+    const onboarding = dialog.querySelector<HTMLElement>("[data-slot='onboarding']");
+    expect(onboarding?.className).toContain("bg-transparent");
+
     // The rule wins over SelectTrigger's h-8 because it lives in the utilities
     // layer; assert the source kept that contract.
     const css = readFileSync(resolve(__dirname, "../styles/globals.css"), "utf8");
