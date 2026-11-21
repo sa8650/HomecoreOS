@@ -8,9 +8,6 @@
 :root {
   color-scheme: light;
 
-  /* Floor Plan Blueprint Grid */
-  --hc-floor-grid: rgba(15, 23, 42, 0.045);
-
   /* ReUI + Radix Nova Semantic Tokens (Soft Light) */
   --radius: 0.625rem;
   --background: #f5f7fa;
@@ -63,9 +60,6 @@
 
 .dark {
   color-scheme: dark;
-
-  /* Floor Plan Blueprint Grid (Soft Dark) */
-  --hc-floor-grid: rgba(148, 163, 184, 0.075);
 
   /* ReUI + Radix Nova Semantic Tokens (Soft Dark) */
   --background: #0f131b;
@@ -381,14 +375,14 @@
   background-size: 22px 22px, 100% 100%, 100% 100%, 100% 100%;
 }
 
-/* 2D smart-home floor map stage: bright paper-like surface with a faint grid */
+/* 2D smart-home floor map stage: a plain, quiet surface (no grid lines). */
 .hc-blueprint-bg {
-  background-color: color-mix(in srgb, var(--background) 72%, #c3d2e2);
-  background-image:
-    radial-gradient(ellipse 70% 60% at 50% 8%, color-mix(in srgb, var(--card) 92%, transparent), transparent 72%),
-    linear-gradient(to right, var(--hc-floor-grid) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--hc-floor-grid) 1px, transparent 1px);
-  background-size: 100% 100%, 32px 32px, 32px 32px;
+  background-color: #fcfdfe;
+  background-image: none;
+}
+
+.dark .hc-blueprint-bg {
+  background-color: #101418;
 }
 
 /* Controller card board-map stage: soft blueprint panel with a dot grid */
@@ -583,24 +577,6 @@
   animation: hc-stage-glow 1.8s ease-in-out infinite;
 }
 
-@keyframes hc-boot-press {
-  0%,
-  100% {
-    transform: scale(0.95);
-    opacity: 0.75;
-  }
-  50% {
-    transform: scale(1.18);
-    opacity: 0.25;
-  }
-}
-
-.hc-boot-press {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: hc-boot-press 1.5s ease-in-out infinite;
-}
-
 @keyframes hc-caret-blink {
   0%,
   49% {
@@ -678,47 +654,16 @@
   animation: hc-light-pulse 2.6s ease-in-out infinite;
 }
 
-@keyframes hc-ble-wave {
-  0% {
-    transform: scale(0.84);
-    opacity: 0.55;
-  }
-  70% {
-    transform: scale(1.42);
-    opacity: 0;
-  }
-  100% {
-    transform: scale(1.42);
-    opacity: 0;
-  }
-}
-
-.hc-ble-wave {
-  animation: hc-ble-wave 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
-}
-
-.hc-ble-wave-2 {
-  animation: hc-ble-wave 2.6s cubic-bezier(0.22, 1, 0.36, 1) 0.85s infinite;
-}
-
-.hc-ble-wave-3 {
-  animation: hc-ble-wave 2.6s cubic-bezier(0.22, 1, 0.36, 1) 1.7s infinite;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .hc-pulse-ring,
   .hc-progress-shimmer::after,
   .hc-step-enter,
   .hc-stage-active,
-  .hc-boot-press,
   .hc-caret-blink,
   .hc-fan-spin,
   .hc-tv-glow,
   .hc-ac-wave,
   .hc-light-pulse,
-  .hc-ble-wave,
-  .hc-ble-wave-2,
-  .hc-ble-wave-3,
   .hc-usb-write,
   .tile {
     animation: none !important;
@@ -793,28 +738,47 @@
   background: var(--muted);
 }
 
-/* 44 px select trigger used by the board and firmware pickers. */
-@utility flow-trigger {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  align-items: center;
-  gap: 0.5rem;
-  height: 2.75rem;
-  border-radius: 8px;
-  border: 1px solid var(--input);
-  background: var(--card);
-  padding-inline: 0.625rem;
-  text-align: left;
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-  transition: border-color 0.15s, box-shadow 0.15s;
+/* 44 px select trigger used by the board and firmware pickers.
+ *
+ * Declared in @layer utilities (not @utility) on purpose: Tailwind emits plain
+ * @utility rules before the core utilities, so SelectTrigger's h-8 / w-fit would
+ * win on equal specificity. In the utilities layer this comes after them. */
+@layer utilities {
+  .flow-trigger {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    height: 2.75rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    border-radius: 8px;
+    border: 1px solid var(--input);
+    background: var(--card);
+    padding: 0 0.625rem;
+    text-align: left;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    white-space: normal;
+    transition:
+      border-color 0.15s,
+      box-shadow 0.15s;
+  }
 
-  &:hover {
+  .flow-trigger [data-slot="select-value"] {
+    display: block;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .flow-trigger:hover {
     border-color: var(--color-muted-foreground);
   }
 
-  &:focus-visible {
+  .flow-trigger:focus-visible {
     border-color: var(--color-foreground);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-foreground) 14%, transparent);
     outline: none;
@@ -1017,6 +981,17 @@
 @media (prefers-reduced-motion: reduce) {
   .hc-flow .flow-step[data-state="active"] .flow-node::after {
     animation: none;
+  }
+
+  /* Connection illustrations are SMIL inside the SVG; freezing them leaves the
+     first frame, which still reads as Bluetooth / Wi-Fi / USB artwork. */
+  .hc-connection-anim *,
+  .hc-connection-anim animate,
+  .hc-connection-anim animateTransform {
+    animation: none;
+    /* SMIL has no CSS switch, so drop the animated nodes entirely and keep the
+       static shapes underneath. */
+    display: none;
   }
 }
 

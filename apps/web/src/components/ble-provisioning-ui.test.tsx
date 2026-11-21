@@ -1,4 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BleStatusPayload } from "@homecoreos/shared";
@@ -145,6 +147,78 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     expect(screen.queryByLabelText(/Setup PIN/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/Pairing Code/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/AES-256-GCM/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps one scrolling body with a pinned footer, and shrinks the Wi-Fi artwork", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <ControllerSetupModal
+        open={true}
+        onClose={() => {}}
+        controllers={[makeController()]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+      />
+    );
+
+    // The dialog is a flex column: a scrolling body with the footer pinned
+    // outside it, so long steps never clip the actions.
+    const dialog = screen.getByRole("dialog", { name: /Board Actions/i });
+    expect(dialog.className).toContain("flex-col");
+
+    await user.click(screen.getByRole("button", { name: /Flash Board/i }));
+    const body = dialog.querySelector<HTMLElement>(".overflow-y-auto");
+    expect(body).not.toBeNull();
+    expect(body!.className).toContain("flex-1");
+    expect(body!.className).toContain("min-h-0");
+    // The footer is a sibling of the body, not inside the scroll area.
+    const back = within(dialog).getByRole("button", { name: /^Back$/i });
+    expect(body!.contains(back)).toBe(false);
+    expect(dialog.contains(back)).toBe(true);
+
+    // The picker's selects are full-width 44px rows, not the 32px default.
+    const boardSelect = within(dialog).getByRole("combobox", {
+      name: /Choose the board you are flashing/i,
+    });
+    expect(boardSelect.className).toContain("flow-trigger");
+    // The rule wins over SelectTrigger's h-8 because it lives in the utilities
+    // layer; assert the source kept that contract.
+    const css = readFileSync(resolve(__dirname, "../styles/globals.css"), "utf8");
+    const rule = css.slice(css.indexOf(".flow-trigger {"));
+    expect(css.indexOf("@layer utilities {")).toBeGreaterThan(-1);
+    expect(rule.slice(0, rule.indexOf("}"))).toContain("height: 2.75rem");
+    expect(rule).not.toContain("!important");
+    expect(container).toBeTruthy();
+  });
+
+  it("shows the animated Bluetooth, Wi-Fi and USB artwork", async () => {
+    const user = userEvent.setup();
+    render(
+      <ControllerSetupModal
+        open={true}
+        onClose={() => {}}
+        controllers={[]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Flash Board/i }));
+    expect(await screen.findByTestId("usb-flash-illustration")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    await user.click(screen.getByRole("button", { name: /Setup Board/i }));
+    await user.click(screen.getByRole("button", { name: /Setup with Bluetooth/i }));
+    expect(await screen.findByTestId("bt-pairing-animation")).toBeInTheDocument();
+
+    // The Wi-Fi view is the other branch of the same chooser.
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    await user.click(screen.getByRole("button", { name: /Repair \/ Recover Board/i }));
+    await user.click(screen.getByRole("button", { name: /Recover with Wi-Fi/i }));
+    expect(await screen.findByTestId("wifi-signal-animation")).toBeInTheDocument();
   });
 
   it("completes Setup with BLE across Screen A -> Screen B (SSID & Password only) -> Screen C 6-step progress and MQTT verification", async () => {
