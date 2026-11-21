@@ -7,6 +7,8 @@
  * reads as one hardware-setup surface.
  */
 
+import { BLUETOOTH_RUNE_PATH } from "@/components/graphics/ConnectionAnimations";
+
 export type ControllerActionArtworkKind = "usb" | "bluetooth" | "wifi" | "recovery";
 
 const PALETTE: Record<
@@ -137,6 +139,7 @@ export function ControllerActionArtwork({
           )}
           {kind === "bluetooth" && (
             <>
+              {/* Bluetooth rune on a soft tile: correct glyph, not Wi-Fi arcs. */}
               <rect
                 x="5"
                 y="12"
@@ -146,12 +149,13 @@ export function ControllerActionArtwork({
                 fill={light.ink}
                 fillOpacity="0.12"
               />
-              <circle cx="16" cy="20" r="2.2" fill={light.ink} />
               <path
-                d="M10 9a8.5 8.5 0 0 1 12 0M13 5.5a4.5 4.5 0 0 1 6 0"
+                d={BLUETOOTH_RUNE_PATH}
                 stroke={light.ink}
                 strokeWidth="2"
                 strokeLinecap="round"
+                strokeLinejoin="round"
+                transform="translate(-1.5 4) scale(1.12)"
               />
             </>
           )}
