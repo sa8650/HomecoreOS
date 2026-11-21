@@ -7,12 +7,14 @@ import {
   RiBluetoothConnectLine,
   RiCheckLine,
   RiCheckboxCircleFill,
+  RiCloseLine,
   RiCpuLine,
   RiErrorWarningLine,
   RiEyeLine,
   RiEyeOffLine,
   RiFileCopyLine,
   RiLoader4Line,
+  RiPauseCircleLine,
   RiUsbLine,
 } from "@remixicon/react";
 import {
@@ -38,6 +40,7 @@ import { ControllerActionArtwork } from "@/components/controllers/ControllerActi
 import {
   UsbFlashWizard,
   type UsbFlashWizardHandle,
+  type UsbFlashWizardState,
 } from "@/components/firmware/UsbFlashWizard";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";
@@ -56,9 +59,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -192,65 +192,26 @@ function ActionCard({
     <button
       type="button"
       onClick={onClick}
-      className="group flex w-full cursor-pointer items-start gap-3 rounded-2xl border border-border bg-card p-3 text-left transition hover:border-primary/60 hover:bg-primary/5 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:items-center sm:gap-4 sm:p-3.5"
+      className="group flex w-full cursor-pointer items-center gap-3 rounded-[10px] border bg-card px-3 py-2.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
     >
-      <ControllerActionArtwork kind={kind} className="size-14 shrink-0 sm:size-20" />
+      <ControllerActionArtwork
+        kind={kind}
+        tone="light"
+        className="size-12 shrink-0 [&>svg]:p-1"
+      />
       <span className="min-w-0 flex-1">
-        <span className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-semibold text-foreground">{title}</span>
-          {meta && (
-            <Badge variant="outline" size="xs">
-              {meta}
-            </Badge>
-          )}
+        <span className="flex items-center gap-2">
+          <span className="truncate text-sm font-semibold text-foreground">{title}</span>
         </span>
-        <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+        <span className="mt-0.5 block truncate text-[12.5px] text-muted-foreground">
+          {meta ? `${meta} · ` : ""}
           {description}
         </span>
       </span>
       <RiArrowRightSLine
         aria-hidden="true"
-        className="size-5 shrink-0 self-center text-muted-foreground transition group-hover:translate-x-0.5 group-hover:text-primary"
+        className="size-5 shrink-0 text-muted-foreground/60 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground"
       />
-    </button>
-  );
-}
-
-/** A large illustrated choice card used for the BLE / Wi-Fi decision. */
-function ChoiceCard({
-  kind,
-  title,
-  description,
-  actionLabel,
-  onClick,
-}: {
-  kind: "usb" | "bluetooth" | "wifi" | "recovery";
-  title: string;
-  description: string;
-  actionLabel: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group flex w-full cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-card text-left transition hover:border-primary/60 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-    >
-      <ControllerActionArtwork
-        kind={kind}
-        className="h-24 w-full rounded-none shadow-none sm:h-28"
-      />
-      <span className="flex flex-1 flex-col gap-1.5 p-3.5 sm:p-4">
-        <span className="text-sm font-semibold text-foreground">{title}</span>
-        <span className="text-xs leading-relaxed text-muted-foreground">{description}</span>
-        <span className="mt-auto inline-flex items-center gap-1 pt-2 text-xs font-semibold text-primary">
-          {actionLabel}
-          <RiArrowRightSLine
-            aria-hidden="true"
-            className="size-4 transition group-hover:translate-x-0.5"
-          />
-        </span>
-      </span>
     </button>
   );
 }
@@ -1472,103 +1433,192 @@ export function ControllerSetupModal({
     setView(nextView);
   }
 
+  // The prototype language: one dialog, one header, one 3-px progress rail,
+  // a scrolling body and a grey footer bar with the actions.
+  const flowTitle =
+    view === "entry"
+      ? "Board"
+      : view === "flash"
+        ? "Flash Board"
+        : view === "setup"
+          ? "Setup Board"
+          : view === "recover"
+            ? "Repair / Recover Board"
+            : view === "setup_ble"
+              ? "Setup with Bluetooth"
+              : view === "setup_wifi"
+                ? "Setup with Wi-Fi"
+                : view === "recover_ble"
+                  ? "Recover with Bluetooth"
+                  : "Recover with Wi-Fi";
+  /**
+   * The accessible name of the dialog. It changes with the visible step, so
+   * assistive tech announces "Flash Board over USB" once the flasher opens
+   * instead of the umbrella "Board Actions" label.
+   */
+  const flowA11yTitle =
+    view === "entry"
+      ? "Board Actions"
+      : view === "flash"
+        ? "Flash Board over USB"
+        : view === "setup"
+          ? "Setup Board"
+          : view === "recover"
+            ? "Repair / Recover Board"
+            : view === "setup_ble"
+              ? "Setup with Bluetooth"
+              : view === "setup_wifi"
+                ? "Setup with Wi-Fi"
+                : view === "recover_ble"
+                  ? "Recover with Bluetooth"
+                  : "Recover with Wi-Fi";
+
+  const flowSubtitle =
+    view === "entry"
+      ? "What would you like to do?"
+      : view === "flash"
+        ? "Choose the board, then its firmware."
+        : view === "setup"
+          ? "Bluetooth or Wi-Fi."
+          : view === "recover"
+            ? "Offline, deleted or re-pairing."
+            : view === "setup_wifi" || view === "recover_wifi"
+              ? "Join the board's temporary HomecoreOS network."
+              : "";
+  /** Lifted by the flasher for the header rail and the footer bar. */
+  const [flashState, setFlashState] = useState<UsbFlashWizardState>({
+    step: 0,
+    busy: false,
+    ready: false,
+    writable: false,
+    completed: false,
+    forcedWillNotStart: false,
+    paused: false,
+  });
+  const showProgressRail = view === "flash";
+  const flashStepIndex = showProgressRail ? flashState.step : 0;
+  const flashingBusy = view === "flash" && flashState.busy;
+
   return (
     <Dialog open={open} onOpenChange={(next) => !next && handleCloseModal()}>
-      {/* One dialog, one width: every step swaps in place, so the frame never
-          jumps or re-opens while the user moves between flash, setup and repair. */}
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent
+        showCloseButton={false}
+        className={cn(
+          "hc-flow grid max-h-[min(88dvh,760px)] gap-0 overflow-hidden rounded-[14px] p-0 sm:max-w-[min(560px,calc(100vw-2rem))]",
+          view === "setup_wifi" || view === "recover_wifi"
+            ? "sm:max-w-[min(720px,calc(100vw-2rem))]"
+            : ""
+        )}
+      >
+        <DialogTitle className="sr-only">{flowA11yTitle}</DialogTitle>
+        <div className="flex items-start gap-2 px-5 pt-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-[16px] font-semibold tracking-[-0.01em] text-foreground">
+              {flowTitle}
+            </h2>
+            {flowSubtitle ? (
+              <p className="mt-0.5 text-[13px] text-muted-foreground">{flowSubtitle}</p>
+            ) : null}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="-mr-1 shrink-0 text-muted-foreground"
+            aria-label="Close"
+            onClick={handleCloseModal}
+          >
+            <RiCloseLine className="size-4" aria-hidden="true" />
+          </Button>
+        </div>
+
+        {showProgressRail && (
+          <div
+            className="mt-3 flex gap-1 px-5"
+            role="progressbar"
+            aria-label="Flash progress"
+            aria-valuemin={1}
+            aria-valuemax={3}
+          >
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className={cn(
+                  "h-[3px] flex-1 rounded-full transition-colors",
+                  i <= flashStepIndex ? "bg-foreground" : "bg-border"
+                )}
+              />
+            ))}
+          </div>
+        )}
+
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 pt-3 pb-4">
         {view === "entry" && (
           <>
-            <DialogHeader>
-              <DialogTitle>Board Actions</DialogTitle>
-              <DialogDescription>
-                Install firmware on a new board, set it up, or repair one that stopped
-                connecting.
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="space-y-2.5">
+            <div className="grid gap-2">
               <ActionCard
                 kind="usb"
                 title="Flash Board"
-                meta="New board"
-                description="Install the published HomecoreOS factory image on a bare board over USB, with chip verification."
+                description="New hardware over USB."
                 onClick={() => openChildView("flash")}
               />
               <ActionCard
                 kind="bluetooth"
                 title="Setup Board"
-                meta="Bluetooth or Wi-Fi"
-                description="Pair a board that already has firmware and connect it to your home network."
+                description="Bluetooth or Wi-Fi."
                 onClick={() => openChildView("setup")}
               />
               <ActionCard
                 kind="recovery"
                 title="Repair / Recover Board"
-                meta="Offline · deleted · re-pairing"
-                description="Restore Wi-Fi credentials, re-pair, or bring back a board that is no longer connecting."
+                description="Offline · deleted · re-pairing."
                 onClick={() => openChildView("recover")}
               />
             </div>
-
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={handleCloseModal}>
-                Cancel
-              </Button>
-            </DialogFooter>
           </>
         )}
 
         {(view === "setup" || view === "recover") && (
           <>
-            <DialogHeader>
-              <DialogTitle>
-                {view === "recover" ? "Repair / Recover Board" : "Setup Board"}
-                {targetController ? (
-                  <span className="ml-2 text-sm font-normal text-muted-foreground">
-                    {targetController.name}
-                  </span>
-                ) : null}
-              </DialogTitle>
-              <DialogDescription>
-                {view === "recover"
-                  ? "Choose how to reach the controller. Works for offline, disconnected, deleted and re-paired controllers."
-                  : "Choose how this browser should talk to the controller while you configure it."}
-              </DialogDescription>
-            </DialogHeader>
+            <p className="text-[13px] text-muted-foreground">
+              {view === "recover"
+                ? "Choose how to reach the board. Works for offline, disconnected, deleted and re-paired boards."
+                : "Choose how this browser should talk to the board while you configure it."}
+              {targetController ? (
+                <span className="ml-1 font-medium text-foreground">
+                  {targetController.name}
+                </span>
+              ) : null}
+            </p>
 
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-2">
               {view === "recover" ? (
                 <>
-                  <ChoiceCard
-                    kind="recovery"
+                  <ActionCard
+                    kind="bluetooth"
                     title="Recover with Bluetooth"
-                    description="Connect over Bluetooth from this browser and push the Wi-Fi and pairing details back."
-                    actionLabel="Start Bluetooth recovery"
+                    description="Push the Wi-Fi and pairing details back over Bluetooth."
                     onClick={() => openChildView("recover_ble")}
                   />
-                  <ChoiceCard
+                  <ActionCard
                     kind="wifi"
                     title="Recover with Wi-Fi"
-                    description="Join the controller's HomecoreOS-Setup-XXXX network and recover it from 192.168.4.1."
-                    actionLabel="Start Wi-Fi recovery"
+                    description="Join HomecoreOS-Setup-XXXX and recover from 192.168.4.1."
                     onClick={() => openChildView("recover_wifi")}
                   />
                 </>
               ) : (
                 <>
-                  <ChoiceCard
+                  <ActionCard
                     kind="bluetooth"
                     title="Setup with Bluetooth"
-                    description="Fastest option. Pair nearby, then send Wi-Fi and home details in one guided pass."
-                    actionLabel="Start Bluetooth setup"
+                    description="Fastest: pair nearby and send Wi-Fi and home details."
                     onClick={() => openChildView("setup_ble")}
                   />
-                  <ChoiceCard
+                  <ActionCard
                     kind="wifi"
                     title="Setup with Wi-Fi"
-                    description="Join the controller's HomecoreOS-Setup-XXXX network and configure it from 192.168.4.1."
-                    actionLabel="Start Wi-Fi setup"
+                    description="Join HomecoreOS-Setup-XXXX and configure from 192.168.4.1."
                     onClick={() => openChildView("setup_wifi")}
                   />
                 </>
@@ -1576,42 +1626,20 @@ export function ControllerSetupModal({
             </div>
 
             {view === "recover" && (
-              <p className="rounded-lg border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-                Recovery needs the controller's recovery code. Deleted controllers stay listed in the
-                Controllers trash so they can be restored to a home.
+              <p className="rounded-[8px] border bg-muted/40 px-3 py-2 text-[11.5px] leading-relaxed text-muted-foreground">
+                Recovery needs the board's recovery code. Deleted boards stay listed in the My
+                Boards trash so they can be restored to a home.
               </p>
             )}
-
-            <DialogFooter className="flex items-center justify-between gap-2 sm:justify-between">
-              <Button type="button" variant="ghost" onClick={handleBackToEntry}>
-                <RiArrowLeftLine className="size-4" aria-hidden="true" />
-                Back
-              </Button>
-              <Button type="button" variant="outline" onClick={handleCloseModal}>
-                Cancel
-              </Button>
-            </DialogFooter>
           </>
         )}
 
         {view === "flash" && (
           <>
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2.5">
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-500 to-teal-600 text-white shadow-sm">
-                  <RiUsbLine className="size-4" aria-hidden="true" />
-                </span>
-                <span className="min-w-0 break-words">Flash Board over USB</span>
-              </DialogTitle>
-              <DialogDescription>
-                Connect the board with a USB cable. The browser verifies the chip before writing the
-                factory image.
-              </DialogDescription>
-            </DialogHeader>
-
             <UsbFlashWizard
               key={initialFlashBoardSlug ?? "flash"}
               ref={flashRef}
+              onStateChange={setFlashState}
               canManage={canManage}
               initialBoardSlug={initialFlashBoardSlug}
               onBack={handleBackToEntry}
@@ -1632,14 +1660,6 @@ export function ControllerSetupModal({
 
         {(view === "setup_ble" || view === "recover_ble") && (
           <>
-            <DialogHeader className="sr-only">
-              <DialogTitle>
-                {isRecoveryBle ? "Recover with BLE" : "Setup with BLE"}
-              </DialogTitle>
-              <DialogDescription>
-                Connect your HomecoreOS controller over Bluetooth and configure Wi-Fi.
-              </DialogDescription>
-            </DialogHeader>
 
             {bleScreen === "discover" && (
               <div className="space-y-4">
@@ -1699,16 +1719,7 @@ export function ControllerSetupModal({
                   </StatusAlert>
                 )}
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                  <div className="flex items-center gap-2">
-                    <Button type="button" variant="ghost" size="sm" onClick={handleBackToEntry}>
-                      <RiArrowLeftLine className="size-4" aria-hidden="true" />
-                      Back
-                    </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={handleCloseModal}>
-                      Cancel
-                    </Button>
-                  </div>
+                <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
                   <Button
                     type="button"
                     disabled={bleConnecting || !bleSupport.supported}
@@ -1789,21 +1800,10 @@ export function ControllerSetupModal({
                   </FormField>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                  <div className="flex items-center gap-2">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleBackToWifiDiscover}
-                    >
-                      <RiArrowLeftLine className="size-4" aria-hidden="true" />
-                      Back
-                    </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={handleCloseModal}>
-                      Cancel
-                    </Button>
-                  </div>
+                <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                  <Button type="button" variant="outline" size="sm" onClick={handleCloseModal}>
+                    Cancel
+                  </Button>
                   <Button type="submit" disabled={!wifiSsid.trim()}>
                     {isRecoveryBle ? "Save & Recover" : "Save & Connect"}
                     <RiArrowRightLine className="size-4" aria-hidden="true" />
@@ -1899,7 +1899,7 @@ export function ControllerSetupModal({
                   </StatusAlert>
                 )}
 
-                <DialogFooter className="flex-wrap justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
                   {progressDone ? (
                     <Button type="button" className="ml-auto" onClick={handleCloseModal}>
                       Done
@@ -1938,7 +1938,7 @@ export function ControllerSetupModal({
                       Cancel
                     </Button>
                   )}
-                </DialogFooter>
+                </div>
               </div>
             )}
           </>
@@ -1946,16 +1946,11 @@ export function ControllerSetupModal({
 
         {(view === "setup_wifi" || view === "recover_wifi") && (
           <>
-            <DialogHeader>
-              <DialogTitle>
-                {view === "recover_wifi" ? "Recover with Wi-Fi" : "Setup with Wi-Fi"}
-              </DialogTitle>
-              <DialogDescription>
-                {view === "recover_wifi"
-                  ? "Reconnect or re-pair your controller using its local http://192.168.4.1 recovery webpage."
-                  : "Set up your controller by joining its temporary HomecoreOS-Setup-XXXX Wi-Fi network."}
-              </DialogDescription>
-            </DialogHeader>
+            <p className="text-[13px] text-muted-foreground">
+              {view === "recover_wifi"
+                ? "Reconnect or re-pair your board using its local recovery page."
+                : "Join the board's temporary HomecoreOS-Setup-XXXX network."}
+            </p>
 
             <div className="space-y-4">
               <WifiPortalArtwork />
@@ -2119,11 +2114,7 @@ export function ControllerSetupModal({
                     return null;
                   })()}
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                    <Button type="button" variant="ghost" size="sm" onClick={handleBackToEntry}>
-                      <RiArrowLeftLine className="size-4" aria-hidden="true" />
-                      Back
-                    </Button>
+                  <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
                     <Button
                       type="submit"
                       disabled={
@@ -2179,11 +2170,7 @@ export function ControllerSetupModal({
                     </StatusAlert>
                   )}
 
-                  <div className="flex items-center justify-between pt-1">
-                    <Button type="button" variant="ghost" size="sm" onClick={handleBackToEntry}>
-                      <RiArrowLeftLine className="size-4" aria-hidden="true" />
-                      Back
-                    </Button>
+                  <div className="flex items-center justify-end pt-1">
                     <Button
                       type="button"
                       onClick={() => {
@@ -2200,6 +2187,103 @@ export function ControllerSetupModal({
               )}
             </div>
           </>
+        )}
+        </div>
+
+        {/* One footer for every step, like the prototype: a quiet Back on the
+            left and the primary action on the right. Hidden on the chooser. */}
+        {view !== "entry" && (
+          <div className="flex items-center gap-2 border-t bg-muted/50 px-5 py-3">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              disabled={flashingBusy}
+              onClick={() => {
+                if (view === "flash" && flashRef.current) {
+                  flashRef.current.back();
+                  return;
+                }
+                if (view === "setup_ble" || view === "recover_ble") {
+                  if (bleScreen === "discover") {
+                    handleBackToEntry();
+                  } else if (bleScreen === "wifi") {
+                    handleBackToWifiDiscover();
+                  } else {
+                    handleBackToEntry();
+                  }
+                  return;
+                }
+                handleBackToEntry();
+              }}
+            >
+              <RiArrowLeftLine className="size-4" aria-hidden="true" />
+              Back
+            </Button>
+            <div className="ml-auto flex items-center gap-2">
+              {view === "flash" ? (
+                flashState.step === 0 ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!flashState.ready || flashState.busy}
+                    onClick={() => flashRef.current?.next()}
+                  >
+                    Next
+                  </Button>
+                ) : flashState.step === 1 ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!flashState.writable || flashState.busy || flashState.paused}
+                    onClick={() => flashRef.current?.startFlash()}
+                  >
+                    {flashState.paused ? (
+                      <RiPauseCircleLine className="size-3.5" aria-hidden="true" />
+                    ) : flashState.busy ? (
+                      <RiLoader4Line className="size-3.5 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <RiUsbLine className="size-3.5" aria-hidden="true" />
+                    )}
+                    {flashState.paused
+                      ? "Paused: board check"
+                      : flashState.busy
+                        ? "Flashing via USB..."
+                        : "Flash board over USB"}
+                  </Button>
+                ) : flashState.forcedWillNotStart ? (
+                  <Button type="button" size="sm" onClick={() => flashRef.current?.restart()}>
+                    Install again
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => {
+                      // Hand off to board setup in the same modal: nothing
+                      // closes and nothing reloads.
+                      const board = boardsForSlugLookup.find(
+                        (b) => b.slug === initialFlashBoardSlug
+                      );
+                      if (board && wifiPortalBoardChoice === "") {
+                        setWifiPortalBoardChoice(`catalog:${board.id}`);
+                      }
+                      clearSensitiveState();
+                      setBleScreen("discover");
+                      setView("setup");
+                    }}
+                  >
+                    Continue to Setup
+                  </Button>
+                )
+              ) : (
+                <Button type="button" variant="outline" size="sm" onClick={handleCloseModal}>
+                  Close
+                </Button>
+              )}
+            </div>
+          </div>
         )}
       </DialogContent>
 

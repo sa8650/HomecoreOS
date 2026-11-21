@@ -2276,9 +2276,12 @@ describe("HomecoreOS interactive UI workflows", () => {
     await user.click(await screen.findByRole("option", { name: /ESP32-S3-DevKitC-1 N16R8/ }));
     const nextBtn = await screen.findByRole("button", { name: /^Next$/i });
     await user.click(nextBtn);
+    // The six USB stages are a vertical timeline: one per line, never cramped
+    // into a six-column row.
     const stageGrid = await screen.findByTestId("usb-stage-grid");
-    expect(stageGrid.className).toContain("grid-cols-2");
-    expect(stageGrid.className).toContain("sm:grid-cols-2");
+    expect(stageGrid.tagName).toBe("OL");
+    expect(stageGrid.className).toContain("flow-steps");
+    expect(stageGrid.querySelectorAll("li[data-step]")).toHaveLength(6);
     await user.keyboard("{Escape}");
 
     ctrlView.unmount();

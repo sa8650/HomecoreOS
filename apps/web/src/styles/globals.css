@@ -772,6 +772,254 @@
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * Board flow surface (Board Actions modal).
+ *
+ * The flash/setup/repair dialog follows the prototype language: near-white
+ * card on a dimmed page, a hairline header, 3 px progress rail, grey footer
+ * bar, 44 px selects, a numbered step timeline and a collapsible console. All
+ * of it is scoped to `.hc-flow`, so nothing here leaks into the rest of the
+ * console, and every colour resolves from the app's own light/dark tokens.
+ * ───────────────────────────────────────────────────────────────────────── */
+@utility flow-card {
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+
+@utility flow-sunken {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+}
+
+/* 44 px select trigger used by the board and firmware pickers. */
+@utility flow-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--input);
+  background: var(--card);
+  padding-inline: 0.625rem;
+  text-align: left;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+
+  &:hover {
+    border-color: var(--color-muted-foreground);
+  }
+
+  &:focus-visible {
+    border-color: var(--color-foreground);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-foreground) 14%, transparent);
+    outline: none;
+  }
+}
+
+/* Numbered timeline used by the USB flash stages. */
+.hc-flow .flow-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hc-flow .flow-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.25rem 0;
+}
+
+.hc-flow .flow-step::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 28px;
+  bottom: -6px;
+  width: 1px;
+  background: var(--border);
+}
+
+.hc-flow .flow-step:last-child::before {
+  display: none;
+}
+
+.hc-flow .flow-step[data-state="done"]::before {
+  background: var(--success);
+}
+
+.hc-flow .flow-node {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  border: 1.5px solid var(--border);
+  background: var(--card);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.hc-flow .flow-step[data-state="active"] .flow-node {
+  border-color: var(--color-foreground);
+  color: var(--color-foreground);
+}
+
+.hc-flow .flow-step[data-state="active"] .flow-node::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 9999px;
+  border: 1.5px solid transparent;
+  border-top-color: var(--color-foreground);
+  animation: hc-flow-spin 0.8s linear infinite;
+}
+
+.hc-flow .flow-step[data-state="done"] .flow-node {
+  border-color: var(--success);
+  background: var(--success);
+  color: white;
+}
+
+.hc-flow .flow-step[data-state="error"] .flow-node {
+  border-color: var(--destructive);
+  background: var(--destructive);
+  color: white;
+}
+
+.hc-flow .flow-step[data-state="done"] .flow-node > span[data-step-number],
+.hc-flow .flow-step[data-state="error"] .flow-node > span[data-step-number] {
+  display: none;
+}
+
+.hc-flow .flow-step-title {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--color-muted-foreground);
+}
+
+.hc-flow .flow-step[data-state="active"] .flow-step-title,
+.hc-flow .flow-step[data-state="done"] .flow-step-title,
+.hc-flow .flow-step[data-state="error"] .flow-step-title {
+  color: var(--color-foreground);
+}
+
+.hc-flow .flow-step-detail {
+  margin-top: 1px;
+  font-size: 0.75rem;
+  color: color-mix(in oklab, var(--color-muted-foreground) 75%, transparent);
+}
+
+.hc-flow .flow-step-state {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in oklab, var(--color-muted-foreground) 75%, transparent);
+}
+
+.hc-flow .flow-step[data-state="active"] .flow-step-state {
+  color: var(--color-foreground);
+}
+
+.hc-flow .flow-step[data-state="done"] .flow-step-state {
+  color: var(--success-foreground);
+}
+
+@keyframes hc-flow-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Plain 3 px rail, matching the prototype's progress bar. */
+.hc-flow .flow-bar {
+  height: 6px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  overflow: hidden;
+}
+
+.hc-flow .flow-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--color-foreground);
+  transition: width 0.3s ease, background 0.2s ease;
+}
+
+.hc-flow .flow-bar[data-state="done"] > i {
+  background: var(--success);
+}
+
+.hc-flow .flow-bar[data-state="error"] > i {
+  background: var(--destructive);
+}
+
+/* Console. Deliberately dark in both themes, like a terminal. */
+.hc-flow .flow-console {
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.hc-flow .flow-console-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  background: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-align: left;
+}
+
+.hc-flow .flow-console-lines {
+  max-height: 9rem;
+  overflow: auto;
+  background: #18181b;
+  padding: 0.25rem 0.75rem 0.625rem;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.72rem;
+  line-height: 1.7;
+  color: #d4d4d8;
+}
+
+.hc-flow .flow-console-lines .ln {
+  display: grid;
+  grid-template-columns: auto 42px minmax(0, 1fr);
+  gap: 0.5rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.hc-flow .flow-console-lines .lv-INFO { color: #60a5fa; }
+.hc-flow .flow-console-lines .lv-DEBUG { color: #8b8b95; }
+.hc-flow .flow-console-lines .lv-WARN { color: #fbbf24; }
+.hc-flow .flow-console-lines .lv-ERROR { color: #f87171; }
+.hc-flow .flow-console-lines .lv-OK { color: #4ade80; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hc-flow .flow-step[data-state="active"] .flow-node::after {
+    animation: none;
+  }
+}
+
 /* Scrollable tab rows (and similar horizontal strips) keep keyboard and touch
  * scrolling but never paint a scrollbar over the pills. */
 @utility no-scrollbar {

@@ -79,15 +79,136 @@ function BoardShape({ stroke, accent }: { stroke: string; accent: string }) {
   );
 }
 
+/**
+ * Flat two-tone thumbnails for the Board Actions list: a tinted tile with a
+ * single ink-coloured line drawing, matching the prototype. The gradient tiles
+ * remain for the larger BLE / Wi-Fi chooser cards.
+ */
+const LIGHT_PALETTE: Record<
+  ControllerActionArtworkKind,
+  { bg: string; border: string; ink: string; accent: string }
+> = {
+  usb: { bg: "#f0fdf4", border: "rgba(22,163,74,0.22)", ink: "#16a34a", accent: "#d97706" },
+  bluetooth: { bg: "#eff6ff", border: "rgba(37,99,235,0.22)", ink: "#2563eb", accent: "#16a34a" },
+  wifi: { bg: "#eff6ff", border: "rgba(37,99,235,0.22)", ink: "#2563eb", accent: "#16a34a" },
+  recovery: { bg: "#fffbeb", border: "rgba(217,119,6,0.25)", ink: "#b45309", accent: "#16a34a" },
+};
+
 export function ControllerActionArtwork({
   kind,
   className = "",
   animated = false,
+  tone = "gradient",
 }: {
   kind: ControllerActionArtworkKind;
   className?: string;
   animated?: boolean;
+  /** `light` draws the flat tinted thumbnail used by the Board Actions list. */
+  tone?: "gradient" | "light";
 }) {
+  if (tone === "light") {
+    const light = LIGHT_PALETTE[kind];
+    return (
+      <div
+        aria-hidden="true"
+        className={`relative overflow-hidden rounded-xl border ${className}`}
+        style={{ backgroundColor: light.bg, borderColor: light.border }}
+      >
+        <svg viewBox="0 0 32 32" className="size-full p-1.5" fill="none">
+          {kind === "usb" && (
+            <>
+              <rect
+                x="14"
+                y="8"
+                width="15"
+                height="16"
+                rx="3"
+                fill={light.ink}
+                fillOpacity="0.12"
+              />
+              <rect x="18" y="12" width="7" height="8" rx="1.5" fill={light.ink} />
+              <path
+                d="M4 16h6M10 13v6M14 12h-1M14 20h-1"
+                stroke={light.ink}
+                strokeWidth="2.2"
+                strokeLinecap="round"
+              />
+            </>
+          )}
+          {kind === "bluetooth" && (
+            <>
+              <rect
+                x="5"
+                y="12"
+                width="22"
+                height="14"
+                rx="3"
+                fill={light.ink}
+                fillOpacity="0.12"
+              />
+              <circle cx="16" cy="20" r="2.2" fill={light.ink} />
+              <path
+                d="M10 9a8.5 8.5 0 0 1 12 0M13 5.5a4.5 4.5 0 0 1 6 0"
+                stroke={light.ink}
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </>
+          )}
+          {kind === "wifi" && (
+            <>
+              <rect
+                x="5"
+                y="12"
+                width="22"
+                height="14"
+                rx="3"
+                fill={light.ink}
+                fillOpacity="0.12"
+              />
+              <circle cx="16" cy="20" r="2.2" fill={light.ink} />
+              <path
+                d="M10 9a8.5 8.5 0 0 1 12 0M13 5.5a4.5 4.5 0 0 1 6 0"
+                stroke={light.ink}
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </>
+          )}
+          {kind === "recovery" && (
+            <>
+              <rect
+                x="6"
+                y="13"
+                width="20"
+                height="13"
+                rx="3"
+                fill={light.ink}
+                fillOpacity="0.12"
+                stroke={light.ink}
+                strokeWidth="1.6"
+              />
+              <path
+                d="M10 8a8 8 0 0 1 11 0"
+                stroke={light.ink}
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+              <path
+                d="M22 4.5v3.5h-3.5"
+                stroke={light.ink}
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <circle cx="16" cy="19.5" r="2.2" fill={light.accent} />
+            </>
+          )}
+        </svg>
+      </div>
+    );
+  }
+
   const palette = PALETTE[kind];
   return (
     <div
