@@ -72,6 +72,13 @@ import {
   recordFailedAttempt,
   resetAttempts,
 } from "../lib/rate-limit";
+import {
+  loadBoardDetail,
+  loadBoardEntities,
+  loadCustomerMonitoring,
+  parsePagination,
+  type BoardEntityKind,
+} from "../lib/customer-monitoring";
 import { requireAdminSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
 
@@ -3141,6 +3148,82 @@ export function createAdminRoutes() {
       return c.json({ settings: data });
     }
   );
+
+  // ---------------- CUSTOMER BOARD & DEVICE MONITORING (READ-ONLY) ----------------
+  // Monitoring-only: every route below is GET, requires an admin session
+  // (via the /accounts/* guard above), scopes every query by account_id, and
+  // never publishes MQTT, calls EMQX, or writes to the database. Admins can
+  // observe and diagnose customer environments but cannot control hardware.
+  // See docs/ADMIN_CUSTOMER_MONITORING.md for the health rules.
+
+  app.get("/accounts/:id/monitoring", async (c) => {
+    const db = c.get("db");
+    const pagination = parsePagination(new URL(c.req.url).searchParams, 25, 100);
+    const result = await loadCustomerMonitoring(db, c.req.param("id"), pagination);
+    if (!result) return c.json({ error: "Customer account not found." }, 404);
+    // Strip the internal compat record; the console only needs display fields.
+    return c.json({
+      account: result.account,
+      owner: result.owner,
+      summary: result.summary,
+      health: result.health,
+      settings: result.settings,
+      pagination: result.pagination,
+      boards: result.boards.map(({ compatBoard: _compatBoard, ...board }) => board),
+    });
+  });
+
+  app.get("/accounts/:id/boards/:boardId", async (c) => {
+    const db = c.get("db");
+    const result = await loadBoardDetail(
+      db,
+      c.req.param("id"),
+      c.req.param("boardId")
+    );
+    if (!result) {
+      return c.json(
+        { error: "Board not found for this customer account." },
+        404
+      );
+    }
+    const { compatBoard: _compatBoard, ...board } = result.board;
+    return c.json({
+      board,
+      firmwareHistory: result.firmwareHistory,
+      recentActivity: result.recentActivity,
+      attachedNodes: result.attachedNodes,
+      parentBoard: result.parentBoard,
+      sensorCompatibility: result.sensorCompatibility,
+    });
+  });
+
+  const boardEntityRoute = (kind: BoardEntityKind) =>
+    async (c: import("hono").Context<AppEnv>) => {
+      const db = c.get("db");
+      const pagination = parsePagination(
+        new URL(c.req.url).searchParams,
+        50,
+        100
+      );
+      const result = await loadBoardEntities(
+        db,
+        c.req.param("id") ?? "",
+        c.req.param("boardId") ?? "",
+        kind,
+        pagination
+      );
+      if (!result) {
+        return c.json(
+          { error: "Board not found for this customer account." },
+          404
+        );
+      }
+      return c.json(result);
+    };
+
+  app.get("/accounts/:id/boards/:boardId/devices", boardEntityRoute("devices"));
+  app.get("/accounts/:id/boards/:boardId/sensors", boardEntityRoute("sensors"));
+  app.get("/accounts/:id/boards/:boardId/switches", boardEntityRoute("switches"));
 
   // Additional Admin management endpoints
   app.get("/accounts/:id/controllers", async (c) => {
