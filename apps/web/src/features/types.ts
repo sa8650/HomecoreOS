@@ -355,6 +355,209 @@ export interface BoardUsageInfo {
   consequences: string[];
 }
 
+/** Admin Customer Monitoring (read-only). See docs/ADMIN_CUSTOMER_MONITORING.md. */
+export type BoardHealthStatus = "healthy" | "warning" | "offline" | "unknown";
+
+export interface BoardEntityCounts {
+  devices: number;
+  devicesOnline: number;
+  sensors: number;
+  sensorsOnline: number;
+  sensorsStale: number;
+  switches: number;
+  switchesOnline: number;
+}
+
+export interface BoardHealth {
+  status: BoardHealthStatus;
+  reasons: string[];
+  telemetry: {
+    hasTelemetry: boolean;
+    heartbeatAgeSeconds: number | null;
+    communicationAgeSeconds: number | null;
+    heartbeatFresh: boolean;
+    offlineTimeoutSeconds: number;
+    sensorStaleSeconds: number;
+  };
+}
+
+export interface MonitoredBoardProfile {
+  id: string;
+  slug: string;
+  manufacturer: string;
+  model: string;
+  revision?: string | null;
+  chip_family: string;
+  chip_variant: string;
+  flash_size_mb: number;
+  psram_size_mb: number;
+  firmware_status?: string | null;
+  verification_status?: string | null;
+  catalog_category?: string | null;
+  partition_scheme?: string | null;
+  psram_mode?: string | null;
+  flash_mode?: string | null;
+  flash_freq?: string | null;
+  bootloader_offset?: string | null;
+  ota_app_offset?: string | null;
+  boot_button_gpio?: number | null;
+  usb_interface?: string | null;
+  supports_wifi?: boolean | null;
+  supports_ble?: boolean | null;
+  supports_ble_wifi_provisioning?: boolean | null;
+  supports_ota_rollback?: boolean | null;
+  firmware_compat_key?: string | null;
+  connectivity_note?: string | null;
+}
+
+export interface MonitoredBoard {
+  id: string;
+  account_id: string;
+  home_id: string | null;
+  room_id: string | null;
+  board_profile_id: string | null;
+  custom_board_profile_id: string | null;
+  name: string;
+  hardware_uid: string | null;
+  board_model: string;
+  chip_variant: string;
+  flash_size_mb: number;
+  psram_size_mb: number;
+  firmware_version: string | null;
+  status: string;
+  pairing_status?: string | null;
+  board_role?: "controller" | "node" | string | null;
+  comm_mode?: string | null;
+  node_link_state?: string | null;
+  assigned_controller_id?: string | null;
+  assigned_controller_name?: string | null;
+  attached_node_count?: number;
+  mqtt_connected: boolean;
+  wifi_connected?: boolean | null;
+  wifi_ssid: string | null;
+  wifi_rssi: number | null;
+  local_ip: string | null;
+  last_heartbeat_at: string | null;
+  last_communication_at: string | null;
+  wifi_last_connected_at?: string | null;
+  mqtt_last_connected_at?: string | null;
+  last_error?: string | null;
+  last_error_at?: string | null;
+  paired_at: string | null;
+  connection_history?: Array<{ event: string; at: string; ip?: string }>;
+  created_at: string;
+  updated_at: string;
+  config_revision?: number | null;
+  config_hash?: string | null;
+  last_synced_config_revision?: number | null;
+  last_config_published_at?: string | null;
+  last_config_synced_at?: string | null;
+  pending_config_sync?: boolean | null;
+  heartbeat_interval_sec?: number | null;
+  detected_flash_size_mb?: number | null;
+  detected_chip_name?: string | null;
+  reported_board_slug?: string | null;
+  provisioning_transport?: string | null;
+  installed_firmware_release_id?: string | null;
+  reported_driver_manifest_hash?: string | null;
+  board_profile: MonitoredBoardProfile | null;
+  custom_board_profile: MonitoredBoardProfile | null;
+  room_name: string | null;
+  home_name: string | null;
+  mqtt: {
+    mqtt_username: string;
+    mqtt_client_id: string;
+    topic_prefix: string;
+    emqx_synced: boolean;
+    status: string;
+    last_rotated_at: string | null;
+  } | null;
+  installed_release: {
+    id: string;
+    name: string;
+    version: string;
+    channel: string;
+    status: string;
+    published_at: string | null;
+  } | null;
+  available_update: {
+    id: string;
+    name: string;
+    version: string;
+    channel: string;
+    published_at: string | null;
+  } | null;
+  counts: BoardEntityCounts;
+  health: BoardHealth;
+}
+
+export interface CustomerMonitoringData {
+  account: {
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+    created_at: string;
+    paused_at?: string | null;
+    owner_user_id: string;
+  };
+  owner: {
+    id: string;
+    email: string;
+    full_name: string;
+    created_at: string | null;
+  } | null;
+  summary: {
+    totalBoards: number;
+    totalDevices: number;
+    totalSensors: number;
+    totalSwitches: number;
+    onlineBoards: number;
+    offlineBoards: number;
+    controllers: number;
+    nodes: number;
+    lastSyncAt: string | null;
+    lastHeartbeatAt: string | null;
+    lastCommunicationAt: string | null;
+    lastActivityAt: string | null;
+  };
+  health: {
+    status: BoardHealthStatus;
+    counts: Record<BoardHealthStatus, number>;
+    offlineTimeoutSeconds: number;
+    heartbeatIntervalSeconds: number;
+  };
+  settings: {
+    offlineTimeoutSeconds: number;
+    heartbeatIntervalSeconds: number;
+  };
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrev: boolean;
+  };
+  boards: MonitoredBoard[];
+}
+
+export interface BoardDetailData {
+  board: MonitoredBoard;
+  firmwareHistory: Array<Record<string, unknown>>;
+  recentActivity: Array<{
+    id: string;
+    category: string;
+    action: string;
+    summary: string;
+    board_instance_id: string | null;
+    created_at: string;
+  }>;
+  attachedNodes: Array<Record<string, unknown>>;
+  parentBoard: { id: string; name: string; status: string } | null;
+  sensorCompatibility: unknown;
+}
+
 export interface BoardSyncRunItem {
   id: string;
   source_name: string;

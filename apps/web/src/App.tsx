@@ -50,6 +50,11 @@ const AdminAccountsStaffPage = lazy(() =>
     default: m.AdminAccountsStaffPage,
   }))
 );
+const AdminCustomerDetailsPage = lazy(() =>
+  import("@/features/admin/AdminCustomerDetailsPage").then((m) => ({
+    default: m.AdminCustomerDetailsPage,
+  }))
+);
 const AdminBoardsPage = lazy(() =>
   import("@/features/admin/AdminAccountsAndBoardsPages").then((m) => ({
     default: m.AdminBoardsPage,
@@ -339,10 +344,28 @@ export function App() {
       adminSession.platformDefaultTimezone ??
       "UTC";
 
+    // Customer details is a nested view under Users & Staff, not a sidebar
+    // item: /admin/accounts/:id highlights Users & Staff in the shell.
+    const customerDetailMatch = path.match(/^\/admin\/accounts\/([^/]+)$/);
+    const customerDetailAccountId = customerDetailMatch
+      ? decodeURIComponent(customerDetailMatch[1]!)
+      : null;
+
     const activeAdminRoute =
-      ADMIN_ROUTES.find((r) => r.path === path) ?? ADMIN_ROUTES[0]!;
+      ADMIN_ROUTES.find((r) => r.path === path) ??
+      (customerDetailAccountId
+        ? ADMIN_ROUTES.find((r) => r.id === "admin-accounts")!
+        : ADMIN_ROUTES[0]!);
 
     const renderAdminPage = () => {
+      if (customerDetailAccountId) {
+        return (
+          <AdminCustomerDetailsPage
+            accountId={customerDetailAccountId}
+            onNavigate={navigate}
+          />
+        );
+      }
       switch (path) {
         case "/admin/setup":
           return <AdminSetupStatusPage />;
@@ -351,6 +374,7 @@ export function App() {
             <AdminAccountsStaffPage
               isSuperAdmin={isSuperAdmin}
               canManageAccounts={canOperateAdmin}
+              onNavigate={navigate}
             />
           );
         case "/admin/firmware":

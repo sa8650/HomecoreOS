@@ -6,6 +6,7 @@ import {
   RiDeleteBinLine,
   RiDownloadCloud2Line,
   RiExternalLinkLine,
+  RiEyeLine,
   RiRefreshLine,
   RiUserSettingsLine,
 } from "@remixicon/react";
@@ -73,9 +74,11 @@ interface PlatformStaffRow {
 export function AdminAccountsStaffPage({
   isSuperAdmin,
   canManageAccounts = true,
+  onNavigate,
 }: {
   isSuperAdmin: boolean;
   canManageAccounts?: boolean;
+  onNavigate?: (path: string) => void;
 }) {
   const timezone = useEffectiveTimezone();
   const [tab, setTab] = useState("customers");
@@ -255,7 +258,7 @@ export function AdminAccountsStaffPage({
                   <TableHead>Account</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Created ({timezone})</TableHead>
-                  {canManageAccounts && <TableHead>Actions</TableHead>}
+                  <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -281,10 +284,26 @@ export function AdminAccountsStaffPage({
                     <TableCell className="tabular-nums text-muted-foreground">
                       {formatTimestamp(acc.created_at, timezone)}
                     </TableCell>
-                    {canManageAccounts && (
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1.5">
-                          {acc.status === "active" ? (
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => {
+                            const target = `/admin/accounts/${acc.id}`;
+                            if (onNavigate) {
+                              onNavigate(target);
+                            } else {
+                              window.history.pushState({}, "", target);
+                              window.dispatchEvent(new PopStateEvent("popstate"));
+                            }
+                          }}
+                        >
+                          <RiEyeLine className="size-3.5" aria-hidden="true" />
+                          Details
+                        </Button>
+                        {canManageAccounts &&
+                          (acc.status === "active" ? (
                             <Button
                               variant="outline"
                               size="xs"
@@ -300,20 +319,19 @@ export function AdminAccountsStaffPage({
                             >
                               Reactivate
                             </Button>
-                          )}
-                          {isSuperAdmin && (
-                            <Button
-                              variant="destructive"
-                              size="xs"
-                              onClick={() => setDeleteTarget(acc)}
-                            >
-                              <RiDeleteBinLine className="size-3.5" aria-hidden="true" />
-                              Delete
-                            </Button>
-                          )}
-                        </div>
-                      </TableCell>
-                    )}
+                          ))}
+                        {canManageAccounts && isSuperAdmin && (
+                          <Button
+                            variant="destructive"
+                            size="xs"
+                            onClick={() => setDeleteTarget(acc)}
+                          >
+                            <RiDeleteBinLine className="size-3.5" aria-hidden="true" />
+                            Delete
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
