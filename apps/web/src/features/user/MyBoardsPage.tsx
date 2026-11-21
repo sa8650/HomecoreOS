@@ -570,7 +570,7 @@ export function MyBoardsPage({
         method: "DELETE",
       });
       toast.success(
-        `Permanently deleted "${permanentDeleteTarget.name}". You can still re-add the physical hardware later via Recover Existing Controller.`
+        `Permanently deleted "${permanentDeleteTarget.name}". You can still re-add the physical hardware later via Recover Existing Board.`
       );
       setPermanentDeleteTarget(null);
       await load();
@@ -648,7 +648,7 @@ export function MyBoardsPage({
             {canManage && (
               <Button size="sm" onClick={() => openSetupFlow("entry")}>
                 <RiAddLine className="size-4" aria-hidden="true" />
-                Add Controller
+                Add Board
               </Button>
             )}
             <Button variant="outline" size="sm" onClick={() => void load(true)}>
@@ -705,17 +705,17 @@ export function MyBoardsPage({
               <EmptyStatePanel
                 icon={<RiCpuLine />}
                 title="No active controllers paired yet"
-                description="Add a new controller over Bluetooth or Wi-Fi, or recover an existing HomecoreOS controller."
+                description="Add a new board over Bluetooth or Wi-Fi, or recover an existing HomecoreOS board."
                 action={
                   canManage ? (
                     <div className="flex flex-wrap justify-center gap-2">
                       <Button onClick={() => openSetupFlow("entry")}>
                         <RiAddLine className="size-4" aria-hidden="true" />
-                        Add Controller
+                        Add Board
                       </Button>
                       <Button variant="outline" onClick={() => openSetupFlow("recover")}>
                         <RiShieldCheckLine className="size-4" aria-hidden="true" />
-                        Recover Existing Controller
+                        Recover Existing Board
                       </Button>
                     </div>
                   ) : undefined
@@ -1575,7 +1575,7 @@ export function MyBoardsPage({
                           }}
                         >
                           <RiShieldCheckLine className="size-4" aria-hidden="true" />
-                          {detailTarget.paired_at ? "Repair / Recover" : "Setup Controller"}
+                          {detailTarget.paired_at ? "Repair / Recover" : "Setup Board"}
                         </Button>
                       )}
                       {canOperate && detailTarget.status === "online" && (
@@ -1687,7 +1687,7 @@ export function MyBoardsPage({
         open={Boolean(permanentDeleteTarget)}
         onOpenChange={(open) => !open && setPermanentDeleteTarget(null)}
         title={`Permanently delete "${permanentDeleteTarget?.name ?? ""}"?`}
-        description="This permanently erases the controller record, MQTT credentials, and attached switches/devices/sensors from HomecoreOS. You can still re-add the physical hardware later via Recover Existing Controller."
+        description="This permanently erases the controller record, MQTT credentials, and attached switches/devices/sensors from HomecoreOS. You can still re-add the physical hardware later via Recover Existing Board."
         confirmLabel="Delete Permanently"
         busy={deleting}
         onConfirm={handlePermanentDelete}

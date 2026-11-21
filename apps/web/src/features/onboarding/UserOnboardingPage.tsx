@@ -115,7 +115,7 @@ const STEP_COPY: Record<OnboardingStepId, StepCopy> = {
       {
         icon: <RiBookOpenLine className="size-4" aria-hidden="true" />,
         term: "Flash, Setup & Recover",
-        text: "Flash Controller installs HomecoreOS on a new board, Setup Controller walks you through Wi-Fi and pairing, and Repair / Recover Controller brings a Node back if it loses its connection.",
+        text: "Flash Board installs HomecoreOS on a new board, Setup Board walks you through Wi-Fi and pairing, and Repair / Recover Board brings a Node back if it loses its connection.",
       },
     ],
     footnote: "Physical Device → Node → Home Wi-Fi → HomecoreOS",

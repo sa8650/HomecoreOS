@@ -10,6 +10,7 @@ import {
   RiArrowLeftLine,
   RiArrowRightLine,
   RiCheckDoubleLine,
+  RiCpuLine,
   RiLoader4Line,
   RiPauseCircleLine,
   RiRefreshLine,
@@ -17,6 +18,7 @@ import {
 } from "@remixicon/react";
 import {
   chipFamilyLabel,
+  evaluateReleaseCompatibilityForBoard,
   supportsBleProvisioningForBoard,
   usbBoardMismatchImpact,
 } from "@homecoreos/shared";
@@ -59,6 +61,21 @@ type LoadedData = {
   boards: BoardProfileItem[];
 };
 
+/** True when a published USB factory image can be written to this board. */
+function releaseSupportsBoard(
+  release: FirmwareReleaseItem,
+  board: { id?: string | null; slug?: string | null; chip_family?: string | null }
+): boolean {
+  if (!release.usb_available || !board.slug) return false;
+  if (release.compatible_boards && release.compatible_boards.length > 0) {
+    return release.compatible_boards.some((b) => b.slug === board.slug);
+  }
+  if (release.compatible_board_ids.length > 0) {
+    return Boolean(board.id) && release.compatible_board_ids.includes(board.id!);
+  }
+  return release.chip_family === board.chip_family;
+}
+
 /**
  * The Browser USB Factory Flasher workflow (Web Serial), extracted from the
  * Firmware page so it can live inside the unified controller action modal.
@@ -73,17 +90,25 @@ export const UsbFlashWizard = forwardRef<
     canManage: boolean;
     /** Preselected factory release, when opened from a specific release. */
     initialReleaseId?: string;
+    /**
+     * The board to start on, when the controller action was opened from an
+     * existing controller (its Board Library profile slug).
+     */
+    initialBoardSlug?: string;
     /** Step 3 / navigation: carry on to provisioning after a successful flash. */
     onContinueToSetup: () => void;
     /** Back to the action picker (only reachable while nothing is streaming). */
     onBack: () => void;
   }
->(function UsbFlashWizard({ canManage, initialReleaseId, onContinueToSetup, onBack }, ref) {
+>(function UsbFlashWizard(
+  { canManage, initialReleaseId, initialBoardSlug, onContinueToSetup, onBack },
+  ref
+) {
   const [data, setData] = useState<LoadedData>({ releases: [], boards: [] });
   const [loading, setLoading] = useState(true);
   const [usbStep, setUsbStep] = useState(1);
   const [usbReleaseId, setUsbReleaseId] = useState(initialReleaseId ?? "");
-  const [usbBoardSlug, setUsbBoardSlug] = useState("");
+  const [usbBoardSlug, setUsbBoardSlug] = useState(initialBoardSlug ?? "");
   const [eraseAll, setEraseAll] = useState(false);
 
   const {
@@ -128,8 +153,8 @@ export const UsbFlashWizard = forwardRef<
         }).catch(() => ({ boards: [] as BoardProfileItem[] })),
       ]);
       setData({ releases: relRes.releases, boards: [...catRes.boards, ...custRes.boards] });
-      const firstUsb = relRes.releases.find((r) => r.usb_available);
-      setUsbReleaseId((prev) => prev || firstUsb?.id || "");
+      // No factory image is preselected: the board is chosen first and its
+      // compatible firmware follows. A release passed in explicitly wins.
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to load USB factory firmware releases."
@@ -159,39 +184,52 @@ export const UsbFlashWizard = forwardRef<
     [releases, usbReleaseId]
   );
 
-  const usbMatchingBoards = useMemo(() => {
-    if (!selectedUsbRelease) return [];
-    if (
-      selectedUsbRelease.compatible_boards &&
-      selectedUsbRelease.compatible_boards.length > 0
-    ) {
-      return selectedUsbRelease.compatible_boards;
-    }
-    return boards.filter((b) =>
-      selectedUsbRelease.compatible_board_ids.length > 0
-        ? selectedUsbRelease.compatible_board_ids.includes(b.id)
-        : b.chip_family === selectedUsbRelease.chip_family
-    );
-  }, [selectedUsbRelease, boards]);
-
-  useEffect(() => {
-    if (!selectedUsbRelease) {
-      setUsbBoardSlug("");
-      return;
-    }
-    const preferredSlug = selectedUsbRelease.target_board_slug || usbMatchingBoards[0]?.slug || "";
-    setUsbBoardSlug((prev) =>
-      prev && usbMatchingBoards.some((b) => b.slug === prev) ? prev : preferredSlug
-    );
-  }, [selectedUsbRelease, usbMatchingBoards]);
+  // Board first: every board in the library can be picked, then the firmware
+  // list shrinks to the releases that actually support that board.
+  const usbBoards = useMemo(
+    () =>
+      [...boards].sort((a, b) =>
+        `${a.manufacturer} ${a.model}`.localeCompare(`${b.manufacturer} ${b.model}`)
+      ),
+    [boards]
+  );
 
   const usbTargetBoard = useMemo(
-    () =>
-      boards.find((b) => b.slug === usbBoardSlug) ??
-      usbMatchingBoards.find((b) => b.slug === usbBoardSlug) ??
-      null,
-    [boards, usbMatchingBoards, usbBoardSlug]
+    () => usbBoards.find((b) => b.slug === usbBoardSlug) ?? null,
+    [usbBoards, usbBoardSlug]
   );
+
+  const releasesForBoard = useMemo(
+    () => (usbTargetBoard ? usbReleases.filter((r) => releaseSupportsBoard(r, usbTargetBoard)) : []),
+    [usbReleases, usbTargetBoard]
+  );
+
+  // Choosing a board selects the factory image that was built for it. A release
+  // the user picked by hand is kept as long as it still supports the board.
+  useEffect(() => {
+    if (!usbTargetBoard) {
+      if (usbBoardSlug === "") setUsbReleaseId("");
+      return;
+    }
+    setUsbReleaseId((prev) => {
+      const stillValid = releasesForBoard.some((r) => r.id === prev);
+      if (stillValid) return prev;
+      const exact =
+        releasesForBoard.find((r) => r.target_board_slug === usbTargetBoard.slug) ??
+        releasesForBoard[0];
+      return exact?.id ?? "";
+    });
+  }, [usbTargetBoard, releasesForBoard, usbBoardSlug]);
+
+  // What the shared compatibility rules say about this board + image pair.
+  const compatibility = useMemo(() => {
+    if (!usbTargetBoard || !selectedUsbRelease) return null;
+    return evaluateReleaseCompatibilityForBoard({
+      release: selectedUsbRelease,
+      board: usbTargetBoard,
+      requirePublished: false,
+    });
+  }, [usbTargetBoard, selectedUsbRelease]);
 
   // After an attempt that stopped on a board mismatch: the board selected now,
   // when it is one the check found to fit the connected hardware exactly.
@@ -244,19 +282,11 @@ export const UsbFlashWizard = forwardRef<
 
   /** The USB release that can be installed on a board, if one is published. */
   function findUsbReleaseForBoard(board: UsbFlashTargetBoardSpec): FirmwareReleaseItem | null {
-    const supports = (r: FirmwareReleaseItem) => {
-      if (!r.usb_available) return false;
-      if (r.compatible_boards && r.compatible_boards.length > 0) {
-        return r.compatible_boards.some((b) => b.slug === board.slug);
-      }
-      if (r.compatible_board_ids.length > 0) {
-        return Boolean(board.id) && r.compatible_board_ids.includes(board.id!);
-      }
-      return r.chip_family === board.chip_family;
-    };
     // Prefer the release that is already selected, so only the board changes.
-    if (selectedUsbRelease && supports(selectedUsbRelease)) return selectedUsbRelease;
-    return releases.find(supports) ?? null;
+    if (selectedUsbRelease && releaseSupportsBoard(selectedUsbRelease, board)) {
+      return selectedUsbRelease;
+    }
+    return usbReleases.find((r) => releaseSupportsBoard(r, board)) ?? null;
   }
 
   function handleUseRecommendedBoard(board: UsbFlashTargetBoardSpec) {
@@ -287,7 +317,11 @@ export const UsbFlashWizard = forwardRef<
       onValueChange={setUsbStep}
       totalSteps={3}
       canGoNext={(s: number) =>
-        s === 1 ? Boolean(usbReleaseId) : s === 2 ? flashStage === "completed" : true
+        s === 1
+          ? Boolean(usbTargetBoard && usbReleaseId)
+          : s === 2
+            ? flashStage === "completed"
+            : true
       }
       onComplete={onContinueToSetup}
       className="min-w-0 space-y-4 overflow-hidden border-0 p-0 shadow-none"
@@ -328,54 +362,85 @@ export const UsbFlashWizard = forwardRef<
             )}
           </StatusAlert>
         )}
-        <FormField id="usb-rel" label="Factory Firmware Release">
+        <FormField id="usb-board" label="1. Choose the board you are flashing">
           <Select
-            value={usbReleaseId || "__none__"}
-            onValueChange={(v) => setUsbReleaseId(v === "__none__" ? "" : v)}
-            disabled={usbReleases.length === 0 || flashing}
+            value={usbBoardSlug || "__none__"}
+            onValueChange={(v) => setUsbBoardSlug(v === "__none__" ? "" : v)}
+            disabled={usbBoards.length === 0 || flashing}
           >
             <SelectTrigger
-              id="usb-rel"
+              id="usb-board"
               className="w-full min-w-0 max-w-full [&_[data-slot=select-value]]:truncate"
             >
-              <SelectValue placeholder="No USB factory releases published" />
+              <SelectValue placeholder="Select a board from your Board Library" />
             </SelectTrigger>
             <SelectContent>
-              {usbReleases.length === 0 && (
-                <SelectItem value="__none__">No USB factory releases published</SelectItem>
+              {usbBoards.length === 0 && (
+                <SelectItem value="__none__">No boards in your Board Library</SelectItem>
               )}
-              {usbReleases.map((r) => (
-                <SelectItem key={r.id} value={r.id}>
-                  {r.name} v{r.version} ({chipFamilyLabel(r.chip_family)} · {r.channel})
+              {usbBoards.map((b) => (
+                <SelectItem key={b.slug} value={b.slug}>
+                  {b.manufacturer} {b.model} ({chipFamilyLabel(b.chip_family)} · {b.flash_size_mb}MB)
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </FormField>
 
-        {usbMatchingBoards.length > 0 && (
-          <FormField id="usb-board" label="Target Development Board">
+        {usbTargetBoard && (
+          <FormField
+            id="usb-rel"
+            label="2. Factory firmware for this board"
+            hint={
+              releasesForBoard.length > 0
+                ? undefined
+                : "No USB factory image is published for this board yet."
+            }
+          >
             <Select
-              value={usbBoardSlug || "__auto__"}
-              onValueChange={(v) => setUsbBoardSlug(v === "__auto__" ? "" : v)}
-              disabled={flashing}
+              value={usbReleaseId || "__none__"}
+              onValueChange={(v) => setUsbReleaseId(v === "__none__" ? "" : v)}
+              disabled={releasesForBoard.length === 0 || flashing}
             >
               <SelectTrigger
-                id="usb-board"
+                id="usb-rel"
                 className="w-full min-w-0 max-w-full [&_[data-slot=select-value]]:truncate"
               >
-                <SelectValue placeholder="Auto-detect compatible board" />
+                <SelectValue placeholder="No matching factory firmware" />
               </SelectTrigger>
               <SelectContent>
-                {usbMatchingBoards.map((b) => (
-                  <SelectItem key={b.slug} value={b.slug}>
-                    {b.manufacturer} {b.model} ({b.flash_size_mb}MB · BOOT GPIO
-                    {b.boot_button_gpio ?? 0})
+                {releasesForBoard.length === 0 && (
+                  <SelectItem value="__none__">No matching factory firmware</SelectItem>
+                )}
+                {releasesForBoard.map((r) => (
+                  <SelectItem key={r.id} value={r.id}>
+                    {r.name} v{r.version} ({chipFamilyLabel(r.chip_family)} · {r.channel})
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </FormField>
+        )}
+
+        {usbTargetBoard && selectedUsbRelease && compatibility && (
+          <div className="flex flex-wrap items-center gap-1.5 rounded-lg border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+            <Badge
+              variant={compatibility.compatible ? "success-light" : "warning-light"}
+              size="xs"
+            >
+              <RiCpuLine className="size-3" aria-hidden="true" />
+              {compatibility.compatible
+                ? `Matches ${chipFamilyLabel(selectedUsbRelease.chip_family)} firmware`
+                : "Check before flashing"}
+            </Badge>
+            {compatibility.compatible ? (
+              <span>
+                {selectedUsbRelease.name} v{selectedUsbRelease.version} is built for this board.
+              </span>
+            ) : (
+              <span>{compatibility.reasons[0]}</span>
+            )}
+          </div>
         )}
 
         {usbTargetBoard && (
@@ -428,25 +493,36 @@ export const UsbFlashWizard = forwardRef<
           />
         </div>
 
-        <div className="flex justify-end">
-          <Button
-            disabled={!canManage || !serialSupport.supported || !usbReleaseId || flashing}
-            onClick={() => void handleUsbFlash()}
-          >
-            <RiUsbLine className="size-4" aria-hidden="true" />
-            Connect USB &amp; Flash Factory Image
-          </Button>
-        </div>
+        {/* No flash button on this page: the board and its image are chosen
+            here, then Next starts the USB write on the flashing step. */}
+        {usbTargetBoard && usbReleaseId && (
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            Next installs{" "}
+            <strong className="text-foreground">
+              {selectedUsbRelease?.name} v{selectedUsbRelease?.version}
+            </strong>{" "}
+            on {usbTargetBoard.manufacturer} {usbTargetBoard.model}.
+          </p>
+        )}
       </Onboarding.Step>
 
       <Onboarding.Step step={2} className="min-w-0 space-y-4">
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-          <p className="text-xs text-muted-foreground">
-            Automatic verification and USB installation progress.
-          </p>
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold text-foreground">
+              {usbTargetBoard
+                ? `Write ${selectedUsbRelease?.name ?? "firmware"} to ${usbTargetBoard.model}`
+                : "USB installation"}
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              The browser verifies the chip before anything is written.
+            </p>
+          </div>
           <Button
             size="sm"
-            disabled={!canManage || !serialSupport.supported || !usbReleaseId || flashing}
+            disabled={
+              !canManage || !serialSupport.supported || !usbTargetBoard || !usbReleaseId || flashing
+            }
             onClick={() => void handleUsbFlash()}
           >
             {boardMismatch ? (
@@ -460,7 +536,7 @@ export const UsbFlashWizard = forwardRef<
               ? "Paused: board check"
               : flashing
                 ? "Flashing via USB..."
-                : "Start / Retry USB Flash"}
+                : "Flash board over USB"}
           </Button>
         </div>
         {boardMismatch && (
@@ -544,7 +620,9 @@ export const UsbFlashWizard = forwardRef<
           <Button
             type="button"
             size="sm"
-            disabled={usbStep === 1 ? !usbReleaseId : flashStage !== "completed"}
+            disabled={
+              usbStep === 1 ? !usbTargetBoard || !usbReleaseId : flashStage !== "completed"
+            }
             onClick={() => setUsbStep((s) => Math.min(3, s + 1))}
           >
             Next
