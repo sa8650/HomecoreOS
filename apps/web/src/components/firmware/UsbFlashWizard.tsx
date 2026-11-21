@@ -458,19 +458,31 @@ export const UsbFlashWizard = forwardRef<
             disabled={usbBoards.length === 0 || flashing}
           >
             <SelectTrigger id="usb-board" className="flow-trigger">
-              <SelectValue placeholder="Select a board from your Board Library" />
+              {usbTargetBoard ? (
+                <span className="flex min-w-0 flex-col items-start leading-tight">
+                  <span className="w-full truncate text-[13.5px] font-medium text-foreground">
+                    {usbTargetBoard.manufacturer} {usbTargetBoard.model}
+                  </span>
+                  <span className="w-full truncate text-[12px] text-muted-foreground">
+                    {chipFamilyLabel(usbTargetBoard.chip_family)} ·{" "}
+                    {usbTargetBoard.flash_size_mb} MB flash
+                  </span>
+                </span>
+              ) : (
+                <SelectValue placeholder="Select a board from your Board Library" />
+              )}
             </SelectTrigger>
             <SelectContent className="min-w-[var(--radix-select-trigger-width)]">
               {usbBoards.length === 0 && (
                 <SelectItem value="__none__">No boards in your Board Library</SelectItem>
               )}
               {usbBoards.map((b) => (
-                <SelectItem key={b.slug} value={b.slug}>
-                  <span className="flex min-w-0 flex-col items-start">
-                    <span className="truncate font-medium">
+                <SelectItem key={b.slug} value={b.slug} className="py-2">
+                  <span className="flex min-w-0 flex-col items-start gap-0.5">
+                    <span className="w-full truncate text-[13px] font-medium">
                       {b.manufacturer} {b.model}
                     </span>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="w-full truncate text-[11.5px] text-muted-foreground">
                       {chipFamilyLabel(b.chip_family)} · {b.flash_size_mb} MB flash
                     </span>
                   </span>
@@ -491,23 +503,34 @@ export const UsbFlashWizard = forwardRef<
             disabled={!usbTargetBoard || releasesForBoard.length === 0 || flashing}
           >
             <SelectTrigger id="usb-rel" className="flow-trigger">
-              <SelectValue
-                placeholder={
-                  usbTargetBoard ? "No matching factory firmware" : "Choose a board first"
-                }
-              />
+              {selectedUsbRelease ? (
+                <span className="flex min-w-0 flex-col items-start leading-tight">
+                  <span className="w-full truncate text-[13.5px] font-medium text-foreground">
+                    {selectedUsbRelease.name} v{selectedUsbRelease.version}
+                  </span>
+                  <span className="w-full truncate text-[12px] text-muted-foreground">
+                    {chipFamilyLabel(selectedUsbRelease.chip_family)} · {selectedUsbRelease.channel}
+                  </span>
+                </span>
+              ) : (
+                <SelectValue
+                  placeholder={
+                    usbTargetBoard ? "No matching factory firmware" : "Choose a board first"
+                  }
+                />
+              )}
             </SelectTrigger>
             <SelectContent className="min-w-[var(--radix-select-trigger-width)]">
               {releasesForBoard.length === 0 && (
                 <SelectItem value="__none__">No matching factory firmware</SelectItem>
               )}
               {releasesForBoard.map((r) => (
-                <SelectItem key={r.id} value={r.id}>
-                  <span className="flex min-w-0 flex-col items-start">
-                    <span className="truncate font-medium">
+                <SelectItem key={r.id} value={r.id} className="py-2">
+                  <span className="flex min-w-0 flex-col items-start gap-0.5">
+                    <span className="w-full truncate text-[13px] font-medium">
                       {r.name} v{r.version}
                     </span>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="w-full truncate text-[11.5px] text-muted-foreground">
                       {chipFamilyLabel(r.chip_family)} · {r.channel}
                     </span>
                   </span>
