@@ -70,6 +70,8 @@ esp_err_t hc_wifi_start(homecore_config_t *cfg, bool allow_ap_portal) {
 #else
 
 #include "esp_wifi.h"
+#include "recovery_console.h"
+#include "recovery_logic.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -351,6 +353,83 @@ static esp_err_t portal_post_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Unified recovery API (same JSON protocol as USB and BLE)                   */
+/* ------------------------------------------------------------------------- */
+
+static esp_err_t set_json_headers(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    return ESP_OK;
+}
+
+static esp_err_t portal_recovery_get_handler(httpd_req_t *req) {
+    /* One response carries discovery + diagnostics so the browser needs a
+     * single round trip: {"recovery": {…HELLO…}, "status": {…STATUS…}}. */
+    char hello[HC_RECOVERY_RESPONSE_MAX];
+    char status[HC_RECOVERY_RESPONSE_MAX];
+    int hello_len = hc_recovery_handle_json("HC HELLO", hello, sizeof(hello));
+    int status_len = hc_recovery_handle_json("HC STATUS", status, sizeof(status));
+    if (hello_len <= 0 || status_len <= 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Recovery snapshot unavailable");
+        return ESP_FAIL;
+    }
+    set_json_headers(req);
+    httpd_resp_sendstr_chunk(req, "{\"recovery\":");
+    httpd_resp_sendstr_chunk(req, hello);
+    httpd_resp_sendstr_chunk(req, ",\"status\":");
+    httpd_resp_sendstr_chunk(req, status);
+    httpd_resp_sendstr_chunk(req, "}");
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
+static esp_err_t portal_recovery_post_handler(httpd_req_t *req) {
+    char buf[320];
+    if (req->content_len >= sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Recovery request too large");
+        return ESP_FAIL;
+    }
+    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty recovery request");
+        return ESP_FAIL;
+    }
+    buf[received] = '\0';
+
+    /* The browser posts {"command":"HC REPAIR {…}"} so the exact same line
+     * parser (and its guards) handles every transport. */
+    char command[HC_RECOVERY_LINE_MAX + 8];
+    if (!hc_rec_json_get_string(buf, "command", command, sizeof(command))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing command");
+        return ESP_FAIL;
+    }
+    char response[HC_RECOVERY_RESPONSE_MAX];
+    int written = hc_recovery_handle_json(command, response, sizeof(response));
+    if (written <= 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Recovery command failed");
+        return ESP_FAIL;
+    }
+    set_json_headers(req);
+    esp_err_t send_err = httpd_resp_sendstr(req, response);
+    if (hc_recovery_restart_pending()) {
+        /* Only restart once the browser has the ack; otherwise it would see a
+         * dropped connection and report a failure that did not happen. */
+        vTaskDelay(pdMS_TO_TICKS(300));
+        hc_recovery_apply_pending_restart();
+    }
+    return send_err;
+}
+
+static esp_err_t portal_options_handler(httpd_req_t *req) {
+    set_json_headers(req);
+    httpd_resp_sendstr(req, "");
+    return ESP_OK;
+}
+
 static void start_http_portal_server(void) {
     if (s_httpd) return;
     httpd_config_t httpd_cfg = HTTPD_DEFAULT_CONFIG();
@@ -365,8 +444,26 @@ static void start_http_portal_server(void) {
             .method = HTTP_POST,
             .handler = portal_post_handler,
         };
+        httpd_uri_t get_recovery = {
+            .uri = "/api/recovery",
+            .method = HTTP_GET,
+            .handler = portal_recovery_get_handler,
+        };
+        httpd_uri_t post_recovery = {
+            .uri = "/api/recovery",
+            .method = HTTP_POST,
+            .handler = portal_recovery_post_handler,
+        };
+        httpd_uri_t options_recovery = {
+            .uri = "/api/recovery",
+            .method = HTTP_OPTIONS,
+            .handler = portal_options_handler,
+        };
         httpd_register_uri_handler(s_httpd, &get_root);
         httpd_register_uri_handler(s_httpd, &post_prov);
+        httpd_register_uri_handler(s_httpd, &get_recovery);
+        httpd_register_uri_handler(s_httpd, &post_recovery);
+        httpd_register_uri_handler(s_httpd, &options_recovery);
     }
 }
 
@@ -487,7 +584,7 @@ esp_err_t hc_wifi_start_portal_ap(homecore_config_t *cfg) {
     start_http_portal_server();
     ESP_LOGW(
         TAG,
-        "[HC_SETUP] BOARD=%s AP_SSID=%s URL=http://192.168.4.1",
+        "[HC_SETUP] BOARD=%s AP_SSID=%s URL=http://192.168.4.1 RECOVERY_API=/api/recovery",
         HOMECORE_BOARD_SLUG,
         (char *)ap_cfg.ap.ssid
     );

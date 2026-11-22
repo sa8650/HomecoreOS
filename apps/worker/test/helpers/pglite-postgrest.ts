@@ -35,17 +35,21 @@ export async function createPglitePostgrest(): Promise<PgliteHarness> {
         : input instanceof URL
           ? input.toString()
           : input.url;
+    // Support being called with a Request object (input carries method/headers/
+    // body) as well as the (url, init) fetch signature.
+    const request = input instanceof Request ? input : null;
     const url = new URL(rawUrl);
-    const method = (init?.method ?? "GET").toUpperCase();
-    const headers = new Headers(init?.headers);
+    const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
+    const headers = new Headers(init?.headers ?? request?.headers);
     const prefer = headers.get("Prefer") ?? "";
     const accept = headers.get("Accept") ?? "";
-    const bodyText =
-      typeof init?.body === "string"
+    const bodyText = init?.body
+      ? typeof init.body === "string"
         ? init.body
-        : init?.body
-          ? await new Response(init.body).text()
-          : "";
+        : await new Response(init.body as BodyInit).text()
+      : request
+        ? await request.clone().text()
+        : "";
 
     try {
       // RPC calls: /rest/v1/rpc/<fn>
