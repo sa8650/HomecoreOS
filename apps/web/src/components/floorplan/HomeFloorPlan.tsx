@@ -574,7 +574,9 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     const startPan = panRef.current;
     const nextZoom = clampFloorZoom(target.zoom);
     const duration = 190;
-    const startedAt = performance.now();
+    // RAF timestamps use the window clock (which can differ from the host
+    // performance clock in embedded/test environments).
+    const startedAt = window.performance.now();
 
     const step = (now: number) => {
       const t = Math.min(1, (now - startedAt) / duration);

@@ -1,4 +1,6 @@
 #include "homecore_config.h"
+#include "recovery_console.h"
+#include "recovery_logic.h"
 #include "role_runtime.h"
 #include "sensor_drivers.h"
 
@@ -20,6 +22,13 @@ static uint32_t s_ble_close_grace_ms = 0;
 static uint32_t s_ble_mqtt_verify_ms = 0;
 static bool s_waiting_wifi_only_confirm = false;
 static bool s_waiting_pair_mqtt_confirm = false;
+/** True once the last heartbeat HTTP round-trip succeeded (drives diagnostics). */
+static bool s_backend_ok = false;
+
+/** Records the outcome of the most recent heartbeat, for recovery diagnostics. */
+static void note_backend_result(esp_err_t err) {
+    s_backend_ok = (err == ESP_OK);
+}
 
 static void init_recovery_button(void) {
     gpio_config_t btn_cfg = {
@@ -64,6 +73,71 @@ static hc_prov_boot_btn_action_t check_boot_button_at_startup(void) {
     return act;
 }
 
+/**
+ * Publishes what the board knows about itself so the local recovery console
+ * (USB / BLE / Wi-Fi portal) can answer discovery and diagnostics honestly.
+ * Every field is either measured or left "unknown": nothing is guessed.
+ */
+static void publish_recovery_snapshot(
+    const homecore_config_t *cfg,
+    const hc_prov_state_t *prov,
+    bool wifi_connected,
+    const char *ip_str,
+    bool backend_ok,
+    uint32_t heartbeat_age_ms
+) {
+    hc_recovery_snapshot_t snap;
+    hc_rec_snapshot_init(&snap);
+
+    hc_copy_str(snap.board_slug, sizeof(snap.board_slug), HOMECORE_BOARD_SLUG);
+    hc_copy_str(snap.chip, sizeof(snap.chip), CONFIG_IDF_TARGET);
+    hc_copy_str(snap.fw_version, sizeof(snap.fw_version), hc_get_runtime_fw_version());
+    char uid[24] = {0};
+    hc_wifi_get_mac_uid(uid, sizeof(uid));
+    hc_copy_str(snap.hardware_uid, sizeof(snap.hardware_uid), uid);
+
+    const char *mode = "normal";
+    if (prov) {
+        if (prov->mode == HC_PROV_MODE_RECOVERY) {
+            mode = "recovery";
+        } else if (prov->mode == HC_PROV_MODE_UNPROVISIONED) {
+            mode = "unprovisioned";
+        }
+    }
+    hc_copy_str(snap.mode, sizeof(snap.mode), mode);
+
+    snap.paired = cfg ? cfg->paired : false;
+    snap.has_wifi = HOMECORE_HAS_WIFI != 0;
+    snap.has_ble = HOMECORE_HAS_BLE != 0;
+    snap.physical_confirmed = cfg ? cfg->physical_confirmed : false;
+    snap.recovery_supported = true;
+
+    snap.wifi_connected = wifi_connected;
+    if (cfg) hc_copy_str(snap.wifi_ssid, sizeof(snap.wifi_ssid), cfg->wifi_ssid);
+    if (ip_str) hc_copy_str(snap.ip, sizeof(snap.ip), ip_str);
+    hc_copy_str(snap.wifi_last_error, sizeof(snap.wifi_last_error), hc_wifi_get_last_error());
+    snap.mqtt_connected = hc_mqtt_is_connected();
+    hc_copy_str(snap.mqtt_last_error, sizeof(snap.mqtt_last_error), hc_mqtt_get_last_error());
+    if (cfg) {
+        snap.backend_reachable = wifi_connected;
+        snap.backend_ok = backend_ok;
+        snap.backend_authenticated = backend_ok && cfg->paired;
+        snap.config_revision = (unsigned)hc_io_get_config_revision();
+        snap.synced_config_revision = (unsigned)hc_io_get_config_revision();
+        snap.config_pending_sync = false;
+        snap.heartbeat_interval_sec = hc_io_get_heartbeat_interval_sec();
+    }
+    snap.heartbeat_age_sec = heartbeat_age_ms / 1000U;
+
+    /* Entity counts are owned by the IO manager's telemetry builder, which is
+     * the only component that knows which sensors/switches actually exist on
+     * this board. Until it reports, the console shows "reporting unknown". */
+    snap.entities_known = false;
+    snap.nodes_known = false;
+
+    hc_recovery_publish_snapshot(&snap);
+}
+
 static void sync_cloud_and_report_state(char *telem_buf, size_t telem_cap, bool fetch_http_config) {
     if (!s_config.paired) return;
     // A Node keeps no independent EMQX session while its ESP-NOW link is healthy;
@@ -79,7 +153,8 @@ static void sync_cloud_and_report_state(char *telem_buf, size_t telem_cap, bool 
     if (fetch_http_config || s_config.config_revision == 0 || !hc_mqtt_is_connected()) {
         hc_http_fetch_config(&s_config);
     }
-    if (hc_http_post_heartbeat(&s_config) == ESP_OK) {
+    note_backend_result(hc_http_post_heartbeat(&s_config));
+    if (s_backend_ok) {
         hc_ota_notify_heartbeat_ok();
     }
     hc_ota_process_boot_validation(&s_config);
@@ -221,6 +296,18 @@ static void controller_supervision_task(void *pvParam) {
         char ip_str[20];
         hc_net_get_sta_ip(ip_str, sizeof(ip_str));
 
+        // Publish the recovery snapshot as soon as the board is on the network,
+        // so a local console (USB / BLE / portal) never reports stale data while
+        // the rest of this tick is still waiting on the cloud.
+        publish_recovery_snapshot(
+            &s_config,
+            &s_prov_state,
+            true,
+            ip_str,
+            s_backend_ok,
+            hb_elapsed_ms
+        );
+
         // Handle BLE Wi-Fi-only update completion while preserving pairing (verify MQTT first)
         if (s_waiting_wifi_only_confirm && s_config.paired && !hc_role_wants_mqtt()) {
             // A linked Node intentionally holds no EMQX session, so a Wi-Fi
@@ -361,7 +448,8 @@ static void controller_supervision_task(void *pvParam) {
         if (hb_interval_ms < 30000U) hb_interval_ms = HOMECORE_DEFAULT_HEARTBEAT_SEC * 1000U;
         if (s_config.paired && hb_elapsed_ms >= hb_interval_ms) {
             hb_elapsed_ms = 0;
-            if (hc_http_post_heartbeat(&s_config) == ESP_OK) {
+            note_backend_result(hc_http_post_heartbeat(&s_config));
+            if (s_backend_ok) {
                 hc_ota_notify_heartbeat_ok();
             }
             hc_ota_process_boot_validation(&s_config);
@@ -442,6 +530,11 @@ void app_main(void) {
     } else if (hc_prov_should_ble_be_active(&s_prov_state)) {
         hc_ble_prov_start(&s_config, s_prov_state.mode);
     }
+
+    /* Local recovery console (USB serial + shared JSON used by BLE and the
+     * Wi-Fi portal). Read-only until the board is in recovery mode. */
+    publish_recovery_snapshot(&s_config, &s_prov_state, hc_wifi_is_connected(), "0.0.0.0", false, 0);
+    hc_recovery_console_start(&s_config);
 
 #if !HOMECORE_HAS_WIFI
     ESP_LOGW(TAG, "Non-Wi-Fi board target (%s): running BLE provisioning / local GPIO supervision", HOMECORE_BOARD_SLUG);

@@ -42,7 +42,7 @@ export type BleProvisioningAction =
   | "recover";
 
 export interface BleCommandPayload {
-  action: BleProvisioningAction;
+  action: BleProvisioningAction | `hc ${string}`;
   ssid?: string;
   password?: string;
   backend_url?: string;
@@ -166,7 +166,7 @@ export function supportsBleProvisioningForBoard(
 }
 
 export function validateBleProvisioningInputs(params: {
-  action: BleProvisioningAction;
+  action: BleProvisioningAction | `hc ${string}`;
   setupPin?: string;
   ssid?: string;
   password?: string;
@@ -182,6 +182,14 @@ export function validateBleProvisioningInputs(params: {
         error: "Enter the controller's Setup PIN / Proof-of-Possession (6-32 characters).",
       };
     }
+  }
+
+  if (params.action.startsWith("hc ")) {
+    const command = params.action.slice(3);
+    return /^HC (?:PING|HELLO|STATUS|REPAIR \{[^\r\n]*\})$/.test(command) &&
+      new TextEncoder().encode(command).length < 224
+      ? { valid: true }
+      : { valid: false, error: "Invalid recovery console command." };
   }
 
   const requiresWifi =

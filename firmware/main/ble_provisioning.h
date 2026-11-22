@@ -22,6 +22,9 @@ bool hc_ble_prov_is_active(void);
 bool hc_ble_prov_is_mem_released(void);
 
 hc_ble_apply_kind_t hc_ble_prov_consume_pending_apply(void);
+/** Sends one pre-built JSON payload as an encrypted BLE status notification. */
+void hc_ble_prov_push_chunked_status(const char *json, size_t len);
+void hc_ble_prov_push_raw_status(const char *json, size_t len);
 void hc_ble_prov_update_status(
     const char *state_str,
     bool wifi_connected,

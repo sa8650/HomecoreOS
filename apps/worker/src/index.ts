@@ -21,6 +21,7 @@ import {
 } from "./routes/notifications";
 import { createPlannerRoutes } from "./routes/planner";
 import { createRealtimeRoutes } from "./routes/realtime";
+import { createRecoveryRoutes } from "./routes/recovery";
 import type { AppEnv, WorkerRuntimeDeps } from "./types/context";
 
 export function createWorkerApp(defaultDeps?: WorkerRuntimeDeps) {
@@ -68,6 +69,7 @@ export function createWorkerApp(defaultDeps?: WorkerRuntimeDeps) {
   app.route("/api/notifications", createUserNotificationRoutes());
   app.route("/api/planner", createPlannerRoutes());
   app.route("/api/realtime", createRealtimeRoutes());
+  app.route("/api/recovery", createRecoveryRoutes());
   app.route("/api", createDeviceRoutes());
 
   // Device / ESP32 Controller APIs

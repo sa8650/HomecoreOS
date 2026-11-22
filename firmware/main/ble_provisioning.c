@@ -1,5 +1,7 @@
 #include "ble_provisioning.h"
 #include "homecore_config.h"
+#include "recovery_console.h"
+#include "recovery_logic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +48,16 @@ void hc_ble_prov_update_status(
     (void)mqtt_connected;
     (void)ip_str;
     (void)error_msg;
+}
+
+void hc_ble_prov_push_raw_status(const char *json, size_t len) {
+    (void)json;
+    (void)len;
+}
+
+void hc_ble_prov_push_chunked_status(const char *json, size_t len) {
+    (void)json;
+    (void)len;
 }
 
 #else /* HOMECORE_HAS_BLE */
@@ -218,6 +230,77 @@ static void push_status_notification(void) {
     struct os_mbuf *om = ble_hs_mbuf_from_flat(enc_buf, (uint16_t)enc_len);
     if (om) {
         ble_gatts_notify_custom(s_conn_handle, s_status_val_handle, om);
+    }
+}
+
+/**
+ * Pushes one already-built JSON payload (protocol response from
+ * recovery_console.c) as an encrypted status notification.
+ */
+void hc_ble_prov_push_raw_status(const char *json, size_t len) {
+    if (!json || len == 0 || len + 28 > sizeof(s_status_json)) return;
+    hc_copy_str(s_status_json, sizeof(s_status_json), json);
+    push_status_notification();
+}
+
+/**
+ * Recovery responses can exceed one ATT notification once they include the full
+ * diagnostics object, so they are delivered as numbered chunks inside the same
+ * encrypted envelope:
+ *
+ *   {"chunk":{"i":0,"n":3,"d":"<encrypted payload slice>"}}
+ *
+ * The browser reassembles by `i` until `n` chunks arrived (bounded by
+ * HC_BLE_STATUS_CHUNKS_MAX) and then parses `d` as the protocol response. A
+ * lost chunk is never guessed: the console asks again with HC STATUS.
+ */
+#define HC_BLE_STATUS_CHUNK_RAW 150
+#define HC_BLE_STATUS_CHUNKS_MAX 8
+
+void hc_ble_prov_push_chunked_status(const char *json, size_t len) {
+    if (!json || len == 0) return;
+    if (len <= HC_BLE_STATUS_CHUNK_RAW) {
+        hc_ble_prov_push_raw_status(json, len);
+        return;
+    }
+
+    const size_t chunks = (len + HC_BLE_STATUS_CHUNK_RAW - 1) / HC_BLE_STATUS_CHUNK_RAW;
+    if (chunks > HC_BLE_STATUS_CHUNKS_MAX) {
+        ESP_LOGW(TAG, "Recovery response too large for BLE (%u bytes)", (unsigned)len);
+        return;
+    }
+
+    for (size_t i = 0; i < chunks; i++) {
+        const size_t offset = i * HC_BLE_STATUS_CHUNK_RAW;
+        size_t slice = len - offset;
+        if (slice > HC_BLE_STATUS_CHUNK_RAW) slice = HC_BLE_STATUS_CHUNK_RAW;
+
+        char payload[HC_BLE_STATUS_CHUNK_RAW + 1];
+        memcpy(payload, json + offset, slice);
+        payload[slice] = '\0';
+
+        char *escaped = calloc(1, HC_BLE_STATUS_CHUNK_RAW * 2 + 1);
+        if (!escaped) return;
+        if (hc_rec_escape_json(payload, escaped, HC_BLE_STATUS_CHUNK_RAW * 2 + 1) < 0) {
+            free(escaped);
+            return;
+        }
+        char envelope[sizeof(s_status_json)];
+        int n = snprintf(
+            envelope,
+            sizeof(envelope),
+            "{\"chunk\":{\"i\":%u,\"n\":%u,\"d\":\"%s\"}}",
+            (unsigned)i,
+            (unsigned)chunks,
+            escaped
+        );
+        free(escaped);
+        if (n <= 0 || (size_t)n >= sizeof(envelope)) return;
+        hc_copy_str(s_status_json, sizeof(s_status_json), envelope);
+        push_status_notification();
+        /* One notification per connection event keeps the NimBLE host from
+         * overflowing its mbuf pool on boards with little RAM. */
+        vTaskDelay(pdMS_TO_TICKS(60));
     }
 }
 
@@ -457,6 +540,23 @@ static int handle_command_write(const uint8_t *buf, uint16_t len) {
     }
 
     cJSON *act_j = cJSON_GetObjectItem(root, "action");
+
+    // Unified recovery protocol over the same encrypted channel. The BLE
+    // transport answers exactly what USB and the Wi-Fi portal answer, because
+    // every command body is relayed to recovery_console.c.
+    if (cJSON_IsString(act_j) && act_j->valuestring &&
+        strncmp(act_j->valuestring, "hc ", 3) == 0) {
+        char line[HC_RECOVERY_LINE_MAX + 8];
+        hc_copy_str(line, sizeof(line), act_j->valuestring);
+        cJSON_Delete(root);
+        char response[HC_RECOVERY_RESPONSE_MAX];
+        int written = hc_recovery_handle_line(line, response, sizeof(response));
+        mbedtls_platform_zeroize(line, sizeof(line));
+        if (written <= 0) return BLE_ATT_ERR_UNLIKELY;
+        hc_ble_prov_push_chunked_status(response, (size_t)written);
+        return 0;
+    }
+
     cJSON *ssid_j = cJSON_GetObjectItem(root, "ssid");
     cJSON *pass_j = cJSON_GetObjectItem(root, "password");
     cJSON *backend_j = cJSON_GetObjectItem(root, "backend_url");

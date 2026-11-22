@@ -592,6 +592,8 @@ export * from "./usb-board-identity";
 export * from "./board-firmware-compat";
 export * from "./sensor-drivers";
 export * from "./ble-provisioning";
+export * from "./recovery";
+export * from "./recovery-protocol";
 export * from "./board-role";
 export * from "./user-onboarding";
 export * from "./automations";

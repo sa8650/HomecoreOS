@@ -44,6 +44,8 @@ idf_component_register(
         "role_logic.c"
         "role_runtime.c"
         "espnow_link.c"
+        "recovery_logic.c"
+        "recovery_console.c"
     INCLUDE_DIRS "."
     REQUIRES ${HC_REQUIRES}
 )
