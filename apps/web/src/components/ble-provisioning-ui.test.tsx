@@ -1,0 +1,798 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { BleStatusPayload } from "@homecoreos/shared";
+import { BleClientError, HomecoreBleClient } from "../lib/ble-provisioning";
+import { TimezoneContext } from "../lib/timezone";
+import { ControllerSetupModal } from "./controllers/ControllerSetupModal";
+import { MyBoardsPage } from "../features/user/MyBoardsPage";
+import type { BoardProfileItem, ControllerItem, HomeItem } from "../features/types";
+
+const originalFetch = globalThis.fetch;
+const originalBluetooth = (navigator as unknown as { bluetooth?: unknown }).bluetooth;
+const originalSecureContext = window.isSecureContext;
+
+const sampleCatalogBoards: BoardProfileItem[] = [
+  {
+    id: "board-s3",
+    slug: "esp32-s3-devkitc-1-n16r8",
+    manufacturer: "Espressif",
+    model: "ESP32-S3-DevKitC-1-N16R8",
+    revision: "1.0",
+    chip_family: "esp32s3",
+    chip_variant: "ESP32-S3",
+    flash_size_mb: 16,
+    psram_size_mb: 8,
+    supports_wifi: true,
+    supports_ble: true,
+    supports_ble_wifi_provisioning: true,
+    boot_button_gpio: 0,
+    usb_interface: "USB-OTG + UART",
+    gpio_definitions: [],
+  },
+  {
+    id: "board-h2",
+    slug: "esp32-h2-devkitm-1",
+    manufacturer: "Espressif",
+    model: "ESP32-H2-DevKitM-1",
+    revision: "1.0",
+    chip_family: "esp32h2",
+    chip_variant: "ESP32-H2",
+    flash_size_mb: 4,
+    psram_size_mb: 0,
+    supports_wifi: false,
+    supports_ble: true,
+    supports_ble_wifi_provisioning: false,
+    boot_button_gpio: 9,
+    usb_interface: "USB-Serial-JTAG",
+    gpio_definitions: [],
+  },
+];
+
+const sampleHomes: HomeItem[] = [
+  { id: "home-1", account_id: "acct-1", name: "Main Home", timezone: "UTC" },
+];
+
+function makeController(overrides: Partial<ControllerItem> = {}): ControllerItem {
+  return {
+    id: "ctrl-ble-1",
+    account_id: "acct-1",
+    home_id: "home-1",
+    board_profile_id: "board-s3",
+    custom_board_profile_id: null,
+    name: "Studio S3 Hub",
+    board_model: "ESP32-S3-DevKitC-1-N16R8",
+    chip_variant: "ESP32-S3",
+    hardware_uid: "11:22:33:44:55:66",
+    flash_size_mb: 16,
+    psram_size_mb: 8,
+    status: "offline",
+    pairing_status: "paired",
+    wifi_connected: false,
+    mqtt_connected: false,
+    wifi_rssi: null,
+    wifi_ssid: "Studio24G",
+    local_ip: null,
+    firmware_version: "1.5.0",
+    paired_at: "2026-11-10T00:00:00.000Z",
+    last_heartbeat_at: null,
+    last_communication_at: null,
+    deleted_at: null,
+    connection_history: [],
+    ble_setup_pin: "Z9X8C7V6",
+    provisioning_transport: "ble",
+    board_compat: {
+      slug: "esp32-s3-devkitc-1-n16r8",
+      model: "ESP32-S3-DevKitC-1-N16R8",
+      chip_family: "esp32s3",
+      partition_scheme: "dual_ota_16mb",
+      boot_button_gpio: 0,
+      usb_interface: "USB-OTG + UART",
+      supports_wifi: true,
+      supports_ble: true,
+      supports_ble_wifi_provisioning: true,
+      connectivity_note: null,
+    },
+    ...overrides,
+  };
+}
+
+describe("Unified controller action modal & BLE provisioning UI", () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(navigator, "bluetooth", {
+      value: originalBluetooth,
+      configurable: true,
+    });
+    Object.defineProperty(window, "isSecureContext", {
+      value: originalSecureContext,
+      configurable: true,
+    });
+    vi.restoreAllMocks();
+  });
+
+  it("offers three illustrated controller actions, each opening its own nested choice, with zero Setup PINs or codes", async () => {
+    const user = userEvent.setup();
+    render(
+      <ControllerSetupModal
+        open={true}
+        onClose={() => {}}
+        controllers={[]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+      />
+    );
+
+    // One modal, one level 1: flash, setup, repair.
+    expect(screen.getByRole("dialog", { name: /Board Actions/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Flash Board/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Setup Board/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Repair \/ Recover Board/i })).toBeInTheDocument();
+
+    // Level 2: setup offers Bluetooth or Wi-Fi, and Back returns to the actions.
+    await user.click(screen.getByRole("button", { name: /Setup Board/i }));
+    expect(screen.getByRole("button", { name: /Setup with Bluetooth/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Setup with Wi-Fi/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+
+    // Level 2: repair offers all three transports.
+    await user.click(screen.getByRole("button", { name: /Repair \/ Recover Board/i }));
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with BLE/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Recover with Wi-Fi/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with USB/i })).toBeInTheDocument();
+    expect(screen.getByText(/offline, disconnected, deleted and re-paired/i)).toBeInTheDocument();
+
+    expect(screen.queryByLabelText(/Setup PIN/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Pairing Code/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/AES-256-GCM/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps one scrolling body with a pinned footer, and shrinks the Wi-Fi artwork", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <ControllerSetupModal
+        open={true}
+        onClose={() => {}}
+        controllers={[makeController()]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+      />
+    );
+
+    // The dialog is a flex column: a scrolling body with the footer pinned
+    // outside it, so long steps never clip the actions.
+    const dialog = screen.getByRole("dialog", { name: /Board Actions/i });
+    expect(dialog.className).toContain("flex-col");
+
+    await user.click(screen.getByRole("button", { name: /Flash Board/i }));
+    const body = dialog.querySelector<HTMLElement>(".overflow-y-auto");
+    expect(body).not.toBeNull();
+    expect(body!.className).toContain("flex-1");
+    expect(body!.className).toContain("min-h-0");
+    // The footer is a sibling of the body, not inside the scroll area.
+    const back = within(dialog).getByRole("button", { name: /^Back$/i });
+    expect(body!.contains(back)).toBe(false);
+    expect(dialog.contains(back)).toBe(true);
+
+    // The picker's selects are full-width 44px rows, not the 32px default.
+    const boardSelect = within(dialog).getByRole("combobox", {
+      name: /Choose the board you are flashing/i,
+    });
+    expect(boardSelect.className).toContain("flow-trigger");
+
+    // The nested onboarding primitive must not repaint the dialog with the
+    // app's darker page background.
+    const onboarding = dialog.querySelector<HTMLElement>("[data-slot='onboarding']");
+    expect(onboarding?.className).toContain("bg-transparent");
+
+    // The rule wins over SelectTrigger's h-8 because it lives in the utilities
+    // layer; assert the source kept that contract.
+    const css = readFileSync(resolve(__dirname, "../styles/globals.css"), "utf8");
+    const rule = css.slice(css.indexOf(".flow-trigger {"));
+    expect(css.indexOf("@layer utilities {")).toBeGreaterThan(-1);
+    expect(rule.slice(0, rule.indexOf("}"))).toContain("height: 2.75rem");
+    expect(rule).not.toContain("!important");
+    expect(container).toBeTruthy();
+  });
+
+  it("shows the animated Bluetooth, Wi-Fi and USB artwork", async () => {
+    const user = userEvent.setup();
+    render(
+      <ControllerSetupModal
+        open={true}
+        onClose={() => {}}
+        controllers={[]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Flash Board/i }));
+    expect(await screen.findByTestId("usb-flash-illustration")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    await user.click(screen.getByRole("button", { name: /Setup Board/i }));
+    await user.click(screen.getByRole("button", { name: /Setup with Bluetooth/i }));
+    expect(await screen.findByTestId("bt-pairing-animation")).toBeInTheDocument();
+
+    // The animated Wi-Fi SVG belongs to the Wi-Fi option row in the chooser.
+    // BLE -> setup chooser -> action picker -> Setup chooser.
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    await user.click(screen.getByRole("button", { name: /Setup Board/i }));
+    const wifiOption = screen.getByRole("button", { name: /Setup with Wi-Fi/i });
+    expect(within(wifiOption).getByTestId("wifi-signal-animation")).toBeInTheDocument();
+
+    // ... and is deliberately absent from the Wi-Fi setup modal itself.
+    await user.click(wifiOption);
+    expect(screen.queryByTestId("wifi-signal-animation")).not.toBeInTheDocument();
+  });
+
+  it("completes Setup with BLE across Screen A -> Screen B (SSID & Password only) -> Screen C 6-step progress and MQTT verification", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    Object.defineProperty(navigator, "bluetooth", {
+      value: { requestDevice: vi.fn() },
+      configurable: true,
+    });
+
+    let statusCb: ((st: BleStatusPayload) => void) | null = null;
+    let connected = false;
+
+    vi.spyOn(HomecoreBleClient.prototype, "deviceName", "get").mockImplementation(
+      () => "HomecoreOS-A1B2"
+    );
+    vi.spyOn(HomecoreBleClient.prototype, "isConnected", "get").mockImplementation(
+      () => connected
+    );
+    vi.spyOn(HomecoreBleClient.prototype, "connectAndAuthenticate").mockImplementation(
+      async () => {
+        connected = true;
+        return {
+          deviceInfo: {
+            board: "esp32-s3-devkitc-1-n16r8",
+            chip: "esp32s3",
+            fw: "1.5.0",
+            mode: "unprovisioned",
+            wifi: true,
+            ble_wifi: true,
+            paired: false,
+            mac_suffix: "A1B2",
+            proto: 1,
+            s1_mode: "auto",
+          },
+        };
+      }
+    );
+    vi.spyOn(HomecoreBleClient.prototype, "onStatusUpdate").mockImplementation((cb) => {
+      statusCb = cb;
+    });
+    const sendCmdSpy = vi
+      .spyOn(HomecoreBleClient.prototype, "sendEncryptedCommand")
+      .mockImplementation(async () => {
+        queueMicrotask(() => {
+          statusCb?.({
+            state: "connecting_wifi",
+            wifi_connected: false,
+            paired: false,
+            mqtt_connected: false,
+          });
+          statusCb?.({
+            state: "pairing",
+            wifi_connected: true,
+            paired: false,
+            mqtt_connected: false,
+            ip: "192.168.1.44",
+          });
+          statusCb?.({
+            state: "paired",
+            wifi_connected: true,
+            paired: true,
+            mqtt_connected: true,
+            ip: "192.168.1.44",
+          });
+        });
+      });
+    vi.spyOn(HomecoreBleClient.prototype, "disconnect").mockImplementation(() => {
+      connected = false;
+    });
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/board-instances" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            controller: makeController({
+              id: "ctrl-new-1",
+              status: "pending",
+              pairing_status: "pending",
+              mqtt_connected: false,
+            }),
+            pairingCode: "778899",
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (url === "/api/board-instances/pairing-status" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ pairingCode: "778899" });
+        return new Response(
+          JSON.stringify({
+            controller: makeController({
+              id: "ctrl-new-1",
+              status: "online",
+              pairing_status: "paired",
+              wifi_connected: true,
+              mqtt_connected: true,
+            }),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+
+    const onSuccess = vi.fn();
+    render(
+      <ControllerSetupModal
+        open={true}
+        onClose={() => {}}
+        controllers={[]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+        onSuccess={onSuccess}
+      />
+    );
+
+    // Actions -> Setup Board -> Setup with Bluetooth (Screen A)
+    await user.click(screen.getByRole("button", { name: /Setup Board/i }));
+    await user.click(screen.getByRole("button", { name: /Setup with Bluetooth/i }));
+    expect(screen.getByText(/Discover HomecoreOS Board/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Turn on your HomecoreOS Board and keep it nearby/i)
+    ).toBeInTheDocument();
+
+    // Screen A -> Screen B
+    await user.click(screen.getByRole("button", { name: /Discover BLE Board/i }));
+    await waitFor(() => {
+      expect(screen.getByText("HomecoreOS-A1B2")).toBeInTheDocument();
+    });
+
+    // Screen B asks ONLY for Wi-Fi Network Name (SSID) and Wi-Fi Password
+    const ssidInput = screen.getByLabelText(/Wi-Fi Network Name \(SSID\)/i);
+    const passInput = screen.getByLabelText("Wi-Fi Password");
+    expect(screen.queryByLabelText(/Setup PIN/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Pairing Code/i)).not.toBeInTheDocument();
+
+    await user.type(ssidInput, "HomeNet24");
+    await user.type(passInput, "SecretPass123");
+    await user.click(screen.getByRole("button", { name: /Save & Connect/i }));
+
+    // Screen C -> 6 clear progress steps & ready confirmation
+    await waitFor(() => {
+      expect(screen.getAllByText(/Your board is ready!/i).length).toBeGreaterThan(0);
+    });
+    expect(screen.getByText(/1\. Securely connecting to board/i)).toBeInTheDocument();
+    expect(screen.getByText(/6\. Verifying board connection/i)).toBeInTheDocument();
+
+    expect(sendCmdSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "provision_wifi",
+        ssid: "HomeNet24",
+        password: "SecretPass123",
+        pair_code: "778899",
+      }),
+      { supportsWifi: true }
+    );
+    expect(onSuccess).toHaveBeenCalledWith("HomecoreOS-A1B2 is connected and ready.");
+  });
+
+  it("opens BLE recovery without silently escalating to account re-pairing", async () => {
+    const user = userEvent.setup();
+    const existing = makeController();
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+    render(<ControllerSetupModal open initialView="recover_ble" targetController={existing}
+      onClose={() => {}} controllers={[existing]} homes={sampleHomes}
+      catalogBoards={sampleCatalogBoards} customBoardProfiles={[]} />);
+    expect(screen.getByText(/Prepare Board for Recovery/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Discover BLE Board/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Save & Recover/i)).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with USB/i })).toBeInTheDocument();
+  });
+
+  it("handles ESP32-H2 rejection, Web Bluetooth permission fallback, MQTT failure at Step 5, and Wi-Fi portal setup", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    Object.defineProperty(navigator, "bluetooth", {
+      value: { requestDevice: vi.fn() },
+      configurable: true,
+    });
+
+    // 1) ESP32-H2 rejection on Screen A
+    const authSpy = vi
+      .spyOn(HomecoreBleClient.prototype, "connectAndAuthenticate")
+      .mockResolvedValueOnce({
+        deviceInfo: {
+          board: "esp32-h2-devkitm-1",
+          chip: "esp32h2",
+          fw: "1.5.0",
+          mode: "unprovisioned",
+          wifi: false,
+          ble_wifi: false,
+          paired: false,
+          mac_suffix: "H200",
+          proto: 1,
+          s1_mode: "auto",
+        },
+      });
+
+    render(
+      <ControllerSetupModal
+        open={true}
+        initialView="setup_ble"
+        onClose={() => {}}
+        controllers={[]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Discover BLE Board/i }));
+    await waitFor(() => {
+      expect(
+        screen.getByText(/ESP32-H2 board has no integrated Wi-Fi radio/i)
+      ).toBeInTheDocument();
+    });
+
+    // 2) Permission denied -> offers "Setup with Wi-Fi" fallback button
+    authSpy.mockRejectedValueOnce(
+      new BleClientError(
+        "PERMISSION_DENIED",
+        "Bluetooth permission was denied. Allow Bluetooth access in your browser or switch to Wi-Fi setup."
+      )
+    );
+    await user.click(screen.getByRole("button", { name: /Discover BLE Board/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Bluetooth permission was denied/i)).toBeInTheDocument();
+    });
+
+    // Switch to Setup with Wi-Fi fallback cleanly and generate 6-digit pairing code
+    await user.click(screen.getByRole("button", { name: /Setup with Wi-Fi/i }));
+    expect(screen.getAllByText(/HomecoreOS-Setup-XXXX/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/http:\/\/192\.168\.4\.1/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Setup PIN/i)).not.toBeInTheDocument();
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/board-instances" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({ controller: makeController({ id: "ctrl-wifi-1" }), pairingCode: "908070" }),
+          { status: 201, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (url === "/api/board-instances/pairing-status" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ pairingCode: "908070" });
+        return new Response(
+          JSON.stringify({
+            controller: makeController({
+              id: "ctrl-wifi-1",
+              status: "online",
+              pairing_status: "paired",
+              mqtt_connected: true,
+            }),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+
+    await user.type(screen.getByLabelText(/Board Name/i), "Porch Sensor Hub");
+    await user.click(screen.getByRole("button", { name: /Get Pairing Code/i }));
+    await waitFor(() => {
+      expect(screen.getByText("908070")).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Your board is ready!/i)).toBeInTheDocument();
+    });
+  });
+
+  it("handles unexpected BLE disconnect by clearing Wi-Fi password and offering reconnect", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    Object.defineProperty(navigator, "bluetooth", {
+      value: { requestDevice: vi.fn() },
+      configurable: true,
+    });
+
+    let disconnectHandler: (() => void) | undefined;
+    let connected = false;
+
+    vi.spyOn(HomecoreBleClient.prototype, "isConnected", "get").mockImplementation(
+      () => connected
+    );
+    vi.spyOn(HomecoreBleClient.prototype, "connectAndAuthenticate").mockImplementation(
+      async (opts) => {
+        disconnectHandler = opts?.onDisconnected;
+        connected = true;
+        return {
+          deviceInfo: {
+            board: "esp32-s3-devkitc-1-n16r8",
+            chip: "esp32s3",
+            fw: "1.5.0",
+            mode: "unprovisioned",
+            wifi: true,
+            ble_wifi: true,
+            paired: false,
+            mac_suffix: "D1D1",
+            proto: 1,
+            s1_mode: "auto",
+          },
+        };
+      }
+    );
+    vi.spyOn(HomecoreBleClient.prototype, "onStatusUpdate").mockImplementation(() => {});
+    vi.spyOn(HomecoreBleClient.prototype, "sendEncryptedCommand").mockImplementation(
+      async () => {
+        connected = false;
+        queueMicrotask(() => disconnectHandler?.());
+      }
+    );
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/board-instances") {
+        return new Response(
+          JSON.stringify({ controller: makeController({ id: "ctrl-disc-1" }), pairingCode: "119988" }),
+          { status: 201, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+
+    render(
+      <ControllerSetupModal
+        open={true}
+        initialView="setup_ble"
+        onClose={() => {}}
+        controllers={[]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Discover BLE Board/i }));
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Wi-Fi Network Name \(SSID\)/i)).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText(/Wi-Fi Network Name \(SSID\)/i), "DropNet");
+    await user.type(screen.getByLabelText("Wi-Fi Password"), "TempSecret");
+    await user.click(screen.getByRole("button", { name: /Save & Connect/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Bluetooth connection dropped during configuration/i)
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: /Reconnect via Bluetooth/i })).toBeInTheDocument();
+
+    // Returning to Screen A and reconnecting should NOT retain the wiped password
+    await user.click(screen.getByRole("button", { name: /Reconnect via Bluetooth/i }));
+    await user.click(screen.getByRole("button", { name: /Discover BLE Board/i }));
+    await waitFor(() => {
+      expect(screen.getByLabelText("Wi-Fi Password")).toHaveValue("");
+    });
+  });
+
+  it("shows Step 5 MQTT error cleanly and allows editing Wi-Fi to retry when BLE stays open", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    Object.defineProperty(navigator, "bluetooth", {
+      value: { requestDevice: vi.fn() },
+      configurable: true,
+    });
+
+    let statusCb: ((st: BleStatusPayload) => void) | null = null;
+    let connected = false;
+
+    vi.spyOn(HomecoreBleClient.prototype, "isConnected", "get").mockImplementation(
+      () => connected
+    );
+    vi.spyOn(HomecoreBleClient.prototype, "connectAndAuthenticate").mockImplementation(
+      async () => {
+        connected = true;
+        return {
+          deviceInfo: {
+            board: "esp32-s3-devkitc-1-n16r8",
+            chip: "esp32s3",
+            fw: "1.5.0",
+            mode: "unprovisioned",
+            wifi: true,
+            ble_wifi: true,
+            paired: false,
+            mac_suffix: "E5E5",
+            proto: 1,
+            s1_mode: "auto",
+          },
+        };
+      }
+    );
+    vi.spyOn(HomecoreBleClient.prototype, "onStatusUpdate").mockImplementation((cb) => {
+      statusCb = cb;
+    });
+    vi.spyOn(HomecoreBleClient.prototype, "sendEncryptedCommand").mockImplementation(
+      async () => {
+        queueMicrotask(() => {
+          statusCb?.({
+            state: "error",
+            wifi_connected: true,
+            paired: true,
+            mqtt_connected: false,
+            error: "MQTT authentication or broker connection failed",
+          });
+        });
+      }
+    );
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/board-instances") {
+        return new Response(
+          JSON.stringify({ controller: makeController({ id: "ctrl-err-1" }), pairingCode: "112233" }),
+          { status: 201, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+
+    render(
+      <ControllerSetupModal
+        open={true}
+        initialView="setup_ble"
+        onClose={() => {}}
+        controllers={[]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Discover BLE Board/i }));
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Wi-Fi Network Name \(SSID\)/i)).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText(/Wi-Fi Network Name \(SSID\)/i), "HomeWiFi");
+    await user.type(screen.getByLabelText("Wi-Fi Password"), "Pass1234");
+    await user.click(screen.getByRole("button", { name: /Save & Connect/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/MQTT authentication or broker connection failed/i)
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: /Edit Wi-Fi & Retry/i })).toBeInTheDocument();
+  });
+
+  it("recovers an existing controller over Wi-Fi from the unified repair choice", async () => {
+    const user = userEvent.setup();
+    render(
+      <ControllerSetupModal
+        open={true}
+        onClose={() => {}}
+        controllers={[makeController()]}
+        trashedControllers={[makeController({ id: "ctrl-trash", name: "Garage Hub", deleted_at: "2026-11-01T00:00:00Z" })]}
+        homes={sampleHomes}
+        catalogBoards={sampleCatalogBoards}
+        customBoardProfiles={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Repair \/ Recover Board/i }));
+    // Deleted controllers stay recoverable, so the repair screen says so.
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with USB/i })).toBeInTheDocument();
+    expect(screen.getByText(/offline, disconnected, deleted and re-paired/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Recover with Wi-Fi/i }));
+
+    expect(
+      screen.getByRole("dialog", { name: /Recover with Wi-Fi/i })
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/192\.168\.4\.1/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/HomecoreOS-Setup-XXXX/i).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("combobox", { name: "Controller to repair" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect to Board" })).toBeInTheDocument();
+
+    // Back returns to the repair choice, not all the way out of the flow.
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with BLE/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Recover with Wi-Fi/i })).toBeInTheDocument();
+
+    // And back again returns to the three top-level actions.
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    expect(screen.getByRole("button", { name: /Flash Board/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Setup Board/i })).toBeInTheDocument();
+  });
+
+  it("opens ControllerSetupModal directly from MyBoardsPage Details modal without showing Setup PIN", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    Object.defineProperty(navigator, "bluetooth", {
+      value: { requestDevice: vi.fn() },
+      configurable: true,
+    });
+
+    const mockControllers = [makeController()];
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/homes")) {
+        return new Response(JSON.stringify({ homes: sampleHomes }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/board-instances/trash")) {
+        return new Response(JSON.stringify({ controllers: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/board-instances")) {
+        return new Response(JSON.stringify({ controllers: mockControllers }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/board-library/catalog")) {
+        return new Response(JSON.stringify({ boards: sampleCatalogBoards }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/board-library/custom")) {
+        return new Response(JSON.stringify({ boards: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+
+    render(
+      <TimezoneContext.Provider value="UTC">
+        <MyBoardsPage canManage={true} canOperate={true} onNavigate={() => {}} />
+      </TimezoneContext.Provider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Studio S3 Hub")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: /^Details$/i }));
+    await waitFor(() => {
+      expect(screen.getAllByText("11:22:33:44:55:66").length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText(/BLE \/ Setup AP PIN/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Z9X8C7V6")).not.toBeInTheDocument();
+
+    // Details -> the same modal, opened straight on the repair chooser for this controller.
+    await user.click(screen.getByRole("button", { name: /Repair \/ Recover/i }));
+    await user.click(
+      await screen.findByRole("button", { name: /Repair \/ Recover with BLE/i })
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/Prepare Board for Recovery/i)).toBeInTheDocument();
+    });
+    expect(
+      screen.getByRole("button", { name: /Discover BLE Board/i })
+    ).toBeEnabled();
+  });
+});

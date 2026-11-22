@@ -1,0 +1,28 @@
+{
+  "board_slug": "nodemcu-esp8266",
+  "chip_family": "esp8266",
+  "chip_variant": "ESP-12E (ESP8266EX)",
+  "build_platform": "esp8266_rtos_sdk",
+  "toolchain": "platformio-espressif8266",
+  "flash_size": "4MB",
+  "flash_mode": "dio",
+  "flash_freq": "40m",
+  "psram_size_mb": 0,
+  "boot_button_gpio": 0,
+  "supports_wifi": true,
+  "supports_ble": false,
+  "supports_ble_wifi_provisioning": false,
+  "default_i2c_sda_gpio": 4,
+  "default_i2c_scl_gpio": 5,
+  "adc_pin": 17,
+  "manifest_version": "1.0",
+  "compiled_sensor_drivers": [
+    "dht22",
+    "ds18b20",
+    "bme280",
+    "pir",
+    "reed",
+    "bh1750",
+    "adc_voltage"
+  ]
+}

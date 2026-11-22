@@ -1,0 +1,956 @@
+#include "sensor_drivers.h"
+#include "homecore_config.h"
+
+#include <math.h>
+#include <string.h>
+#include "driver/gpio.h"
+#include "esp_log.h"
+#include "esp_rom_sys.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#if defined(CONFIG_HOMECORE_DRIVER_DHT22) && CONFIG_HOMECORE_DRIVER_DHT22
+#define HC_EN_DHT22 1
+#else
+#define HC_EN_DHT22 0
+#endif
+
+#if defined(CONFIG_HOMECORE_DRIVER_DS18B20) && CONFIG_HOMECORE_DRIVER_DS18B20
+#define HC_EN_DS18B20 1
+#else
+#define HC_EN_DS18B20 0
+#endif
+
+#if defined(CONFIG_HOMECORE_DRIVER_BME280) && CONFIG_HOMECORE_DRIVER_BME280
+#define HC_EN_BME280 1
+#else
+#define HC_EN_BME280 0
+#endif
+
+#if defined(CONFIG_HOMECORE_DRIVER_PIR) && CONFIG_HOMECORE_DRIVER_PIR
+#define HC_EN_PIR 1
+#else
+#define HC_EN_PIR 0
+#endif
+
+#if defined(CONFIG_HOMECORE_DRIVER_REED) && CONFIG_HOMECORE_DRIVER_REED
+#define HC_EN_REED 1
+#else
+#define HC_EN_REED 0
+#endif
+
+#if defined(CONFIG_HOMECORE_DRIVER_BH1750) && CONFIG_HOMECORE_DRIVER_BH1750
+#define HC_EN_BH1750 1
+#else
+#define HC_EN_BH1750 0
+#endif
+
+#if defined(CONFIG_HOMECORE_DRIVER_ADC_VOLTAGE) && CONFIG_HOMECORE_DRIVER_ADC_VOLTAGE
+#define HC_EN_ADC_VOLTAGE 1
+#else
+#define HC_EN_ADC_VOLTAGE 0
+#endif
+
+#if HC_EN_BME280 || HC_EN_BH1750
+#include "driver/i2c_master.h"
+#endif
+
+#if HC_EN_ADC_VOLTAGE
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#endif
+
+static const char *TAG = "hc_sensors";
+
+uint32_t hc_sensor_drivers_compiled_mask(void) {
+    uint32_t mask = 0;
+#if HC_EN_DHT22
+    mask |= HC_DRV_BIT_DHT22;
+#endif
+#if HC_EN_DS18B20
+    mask |= HC_DRV_BIT_DS18B20;
+#endif
+#if HC_EN_BME280
+    mask |= HC_DRV_BIT_BME280;
+#endif
+#if HC_EN_PIR
+    mask |= HC_DRV_BIT_PIR;
+#endif
+#if HC_EN_REED
+    mask |= HC_DRV_BIT_REED;
+#endif
+#if HC_EN_BH1750
+    mask |= HC_DRV_BIT_BH1750;
+#endif
+#if HC_EN_ADC_VOLTAGE
+    mask |= HC_DRV_BIT_ADC_VOLTAGE;
+#endif
+    return mask;
+}
+
+static int64_t now_ms(void) {
+    return esp_timer_get_time() / 1000LL;
+}
+
+static hc_sensor_reading_t make_error_reading(
+    hc_sensor_driver_id_t drv,
+    hc_sensor_measurement_t meas,
+    const char *error_code
+) {
+    hc_sensor_reading_t r = {
+        .ok = false,
+        .value = 0.0,
+        .unit = hc_sensor_default_unit(meas),
+        .driver_id = hc_sensor_driver_name(drv),
+        .error_code = error_code ? error_code : "read_failed",
+        .timestamp_ms = now_ms(),
+    };
+    return r;
+}
+
+static hc_sensor_reading_t make_ok_reading(
+    hc_sensor_driver_id_t drv,
+    hc_sensor_measurement_t meas,
+    double value
+) {
+    hc_sensor_reading_t r = {
+        .ok = true,
+        .value = value,
+        .unit = hc_sensor_default_unit(meas),
+        .driver_id = hc_sensor_driver_name(drv),
+        .error_code = NULL,
+        .timestamp_ms = now_ms(),
+    };
+    return r;
+}
+
+/* ============================================================================
+ * Shared I2C Bus Manager (BME280 & BH1750)
+ * ============================================================================ */
+#if HC_EN_BME280 || HC_EN_BH1750
+
+#define HC_MAX_I2C_BUSES 2
+#define HC_MAX_I2C_DEVS  8
+#define HC_I2C_TIMEOUT_MS 120
+
+typedef struct {
+    bool in_use;
+    int sda_pin;
+    int scl_pin;
+    i2c_master_bus_handle_t handle;
+} hc_i2c_bus_slot_t;
+
+typedef struct {
+    bool in_use;
+    int bus_idx;
+    uint8_t addr;
+    i2c_master_dev_handle_t handle;
+    /* BME280 state */
+    bool bme_calib_loaded;
+    hc_bme280_calib_t bme_calib;
+    bool bme_sample_valid;
+    int64_t bme_sample_ms;
+    hc_bme280_sample_t bme_sample;
+    /* BH1750 state */
+    bool bh_initialized;
+    int64_t bh_init_ms;
+} hc_i2c_dev_slot_t;
+
+static hc_i2c_bus_slot_t s_i2c_buses[HC_MAX_I2C_BUSES];
+static hc_i2c_dev_slot_t s_i2c_devs[HC_MAX_I2C_DEVS];
+
+static bool resolve_i2c_pins(int16_t configured_pin, int *out_sda, int *out_scl) {
+    int def_sda = HOMECORE_I2C_DEFAULT_SDA_GPIO;
+    int def_scl = HOMECORE_I2C_DEFAULT_SCL_GPIO;
+    int sda = (configured_pin >= 0) ? (int)configured_pin : def_sda;
+    int scl = def_scl;
+    if (sda == scl && def_sda >= 0 && def_sda != sda) {
+        scl = def_sda;
+    }
+    if (sda < 0 || scl < 0 || sda == scl) {
+        return false;
+    }
+    if (!hc_io_is_safe_gpio((uint8_t)sda) || !hc_io_is_safe_gpio((uint8_t)scl)) {
+        return false;
+    }
+    if (!GPIO_IS_VALID_OUTPUT_GPIO((gpio_num_t)sda) || !GPIO_IS_VALID_OUTPUT_GPIO((gpio_num_t)scl)) {
+        return false;
+    }
+    *out_sda = sda;
+    *out_scl = scl;
+    return true;
+}
+
+static int get_or_init_i2c_bus(int sda_pin, int scl_pin) {
+    for (int i = 0; i < HC_MAX_I2C_BUSES; i++) {
+        if (s_i2c_buses[i].in_use && s_i2c_buses[i].sda_pin == sda_pin && s_i2c_buses[i].scl_pin == scl_pin) {
+            return i;
+        }
+    }
+    int slot = -1;
+    for (int i = 0; i < HC_MAX_I2C_BUSES; i++) {
+        if (!s_i2c_buses[i].in_use) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return -1;
+
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = -1,
+        .sda_io_num = (gpio_num_t)sda_pin,
+        .scl_io_num = (gpio_num_t)scl_pin,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags = {
+            .enable_internal_pullup = true,
+        },
+    };
+    i2c_master_bus_handle_t bus_handle = NULL;
+    esp_err_t err = i2c_new_master_bus(&bus_cfg, &bus_handle);
+    if (err != ESP_OK || !bus_handle) {
+        ESP_LOGW(TAG, "Failed to init I2C master bus (SDA=%d, SCL=%d): %s", sda_pin, scl_pin, esp_err_to_name(err));
+        return -1;
+    }
+    s_i2c_buses[slot].in_use = true;
+    s_i2c_buses[slot].sda_pin = sda_pin;
+    s_i2c_buses[slot].scl_pin = scl_pin;
+    s_i2c_buses[slot].handle = bus_handle;
+    ESP_LOGI(TAG, "Initialized I2C master bus #%d (SDA=GPIO%d, SCL=GPIO%d)", slot, sda_pin, scl_pin);
+    return slot;
+}
+
+static hc_i2c_dev_slot_t *get_or_init_i2c_dev(int16_t configured_pin, uint8_t addr) {
+    int sda = -1;
+    int scl = -1;
+    if (!resolve_i2c_pins(configured_pin, &sda, &scl)) {
+        return NULL;
+    }
+    int bus_idx = get_or_init_i2c_bus(sda, scl);
+    if (bus_idx < 0) return NULL;
+
+    for (int i = 0; i < HC_MAX_I2C_DEVS; i++) {
+        if (s_i2c_devs[i].in_use && s_i2c_devs[i].bus_idx == bus_idx && s_i2c_devs[i].addr == addr) {
+            return &s_i2c_devs[i];
+        }
+    }
+    int slot = -1;
+    for (int i = 0; i < HC_MAX_I2C_DEVS; i++) {
+        if (!s_i2c_devs[i].in_use) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return NULL;
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = addr,
+        .scl_speed_hz = 100000,
+    };
+    i2c_master_dev_handle_t dev_handle = NULL;
+    esp_err_t err = i2c_master_bus_add_device(s_i2c_buses[bus_idx].handle, &dev_cfg, &dev_handle);
+    if (err != ESP_OK || !dev_handle) {
+        ESP_LOGW(TAG, "Failed to attach I2C device 0x%02x: %s", addr, esp_err_to_name(err));
+        return NULL;
+    }
+
+    memset(&s_i2c_devs[slot], 0, sizeof(s_i2c_devs[slot]));
+    s_i2c_devs[slot].in_use = true;
+    s_i2c_devs[slot].bus_idx = bus_idx;
+    s_i2c_devs[slot].addr = addr;
+    s_i2c_devs[slot].handle = dev_handle;
+    return &s_i2c_devs[slot];
+}
+
+static esp_err_t i2c_read_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t *buf, size_t len) {
+    return i2c_master_transmit_receive(dev, &reg, 1, buf, len, HC_I2C_TIMEOUT_MS);
+}
+
+static esp_err_t i2c_write_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t val) {
+    uint8_t payload[2] = { reg, val };
+    return i2c_master_transmit(dev, payload, sizeof(payload), HC_I2C_TIMEOUT_MS);
+}
+
+static void reset_i2c_manager(void) {
+    for (int i = 0; i < HC_MAX_I2C_DEVS; i++) {
+        if (s_i2c_devs[i].in_use && s_i2c_devs[i].handle) {
+            i2c_master_bus_rm_device(s_i2c_devs[i].handle);
+        }
+        memset(&s_i2c_devs[i], 0, sizeof(s_i2c_devs[i]));
+    }
+    for (int i = 0; i < HC_MAX_I2C_BUSES; i++) {
+        if (s_i2c_buses[i].in_use && s_i2c_buses[i].handle) {
+            i2c_del_master_bus(s_i2c_buses[i].handle);
+        }
+        memset(&s_i2c_buses[i], 0, sizeof(s_i2c_buses[i]));
+    }
+}
+#endif
+
+/* ============================================================================
+ * BME280 I2C Driver (Temperature, Humidity, Barometric Pressure)
+ * ============================================================================ */
+#if HC_EN_BME280
+static hc_sensor_reading_t read_bme280(
+    const hc_sensor_binding_t *binding,
+    hc_sensor_measurement_t meas,
+    bool allow_cached
+) {
+    uint8_t addr = binding->i2c_addr != 0 ? binding->i2c_addr : 0x76;
+    hc_i2c_dev_slot_t *dev = get_or_init_i2c_dev(binding->gpio_pin, addr);
+    if (!dev) {
+        return make_error_reading(HC_DRV_BME280, meas, "i2c_bus_not_configured");
+    }
+
+    int64_t t_now = now_ms();
+    if (allow_cached && dev->bme_sample_valid && (t_now - dev->bme_sample_ms) < 1500) {
+        double v = (meas == HC_MEAS_HUMIDITY) ? dev->bme_sample.humidity_pct
+                 : (meas == HC_MEAS_PRESSURE) ? dev->bme_sample.pressure_hpa
+                 : dev->bme_sample.temp_c;
+        return make_ok_reading(HC_DRV_BME280, meas, v);
+    }
+
+    if (!dev->bme_calib_loaded) {
+        uint8_t chip_id = 0;
+        if (i2c_read_reg(dev->handle, 0xD0, &chip_id, 1) != ESP_OK) {
+            return make_error_reading(HC_DRV_BME280, meas, "i2c_nack");
+        }
+        if (chip_id != 0x60) {
+            ESP_LOGW(TAG, "BME280 at 0x%02x unexpected chip_id=0x%02x (expected 0x60)", addr, chip_id);
+            return make_error_reading(HC_DRV_BME280, meas, "chip_id_mismatch");
+        }
+        uint8_t c1[26] = {0};
+        uint8_t c2[7] = {0};
+        if (i2c_read_reg(dev->handle, 0x88, c1, sizeof(c1)) != ESP_OK ||
+            i2c_read_reg(dev->handle, 0xE1, c2, sizeof(c2)) != ESP_OK) {
+            return make_error_reading(HC_DRV_BME280, meas, "i2c_calib_read_failed");
+        }
+        hc_bme280_parse_calib(c1, c2, &dev->bme_calib);
+        dev->bme_calib_loaded = true;
+    }
+
+    /* Trigger forced-mode oversampling x1 (H, T, P) */
+    if (i2c_write_reg(dev->handle, 0xF2, 0x01) != ESP_OK ||
+        i2c_write_reg(dev->handle, 0xF5, 0x00) != ESP_OK ||
+        i2c_write_reg(dev->handle, 0xF4, 0x25) != ESP_OK) {
+        dev->bme_calib_loaded = false;
+        return make_error_reading(HC_DRV_BME280, meas, "i2c_nack");
+    }
+
+    /* Wait up to 40ms for measuring flag (bit 3 of status reg 0xF3) to clear */
+    vTaskDelay(pdMS_TO_TICKS(15));
+    for (int attempt = 0; attempt < 5; attempt++) {
+        uint8_t st = 0;
+        if (i2c_read_reg(dev->handle, 0xF3, &st, 1) == ESP_OK && (st & 0x08) == 0) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+
+    uint8_t raw[8] = {0};
+    if (i2c_read_reg(dev->handle, 0xF7, raw, sizeof(raw)) != ESP_OK) {
+        return make_error_reading(HC_DRV_BME280, meas, "i2c_read_failed");
+    }
+
+    int32_t adc_p = ((int32_t)raw[0] << 12) | ((int32_t)raw[1] << 4) | ((int32_t)raw[2] >> 4);
+    int32_t adc_t = ((int32_t)raw[3] << 12) | ((int32_t)raw[4] << 4) | ((int32_t)raw[5] >> 4);
+    int32_t adc_h = ((int32_t)raw[6] << 8) | (int32_t)raw[7];
+
+    hc_bme280_sample_t sample = {0};
+    if (!hc_bme280_compensate(&dev->bme_calib, adc_t, adc_p, adc_h, &sample)) {
+        return make_error_reading(HC_DRV_BME280, meas, "compensation_range_error");
+    }
+
+    dev->bme_sample = sample;
+    dev->bme_sample_ms = now_ms();
+    dev->bme_sample_valid = true;
+
+    double v = (meas == HC_MEAS_HUMIDITY) ? sample.humidity_pct
+             : (meas == HC_MEAS_PRESSURE) ? sample.pressure_hpa
+             : sample.temp_c;
+    return make_ok_reading(HC_DRV_BME280, meas, v);
+}
+#endif
+
+/* ============================================================================
+ * BH1750 I2C Ambient Light Driver
+ * ============================================================================ */
+#if HC_EN_BH1750
+static hc_sensor_reading_t read_bh1750(
+    const hc_sensor_binding_t *binding,
+    hc_sensor_measurement_t meas
+) {
+    uint8_t addr = binding->i2c_addr != 0 ? binding->i2c_addr : 0x23;
+    hc_i2c_dev_slot_t *dev = get_or_init_i2c_dev(binding->gpio_pin, addr);
+    if (!dev) {
+        return make_error_reading(HC_DRV_BH1750, meas, "i2c_bus_not_configured");
+    }
+
+    if (!dev->bh_initialized) {
+        uint8_t power_on = 0x01;
+        uint8_t cont_hres = 0x10;
+        if (i2c_master_transmit(dev->handle, &power_on, 1, HC_I2C_TIMEOUT_MS) != ESP_OK ||
+            i2c_master_transmit(dev->handle, &cont_hres, 1, HC_I2C_TIMEOUT_MS) != ESP_OK) {
+            return make_error_reading(HC_DRV_BH1750, meas, "i2c_nack");
+        }
+        dev->bh_initialized = true;
+        dev->bh_init_ms = now_ms();
+        vTaskDelay(pdMS_TO_TICKS(180));
+    }
+
+    uint8_t raw[2] = {0};
+    if (i2c_master_receive(dev->handle, raw, sizeof(raw), HC_I2C_TIMEOUT_MS) != ESP_OK) {
+        dev->bh_initialized = false;
+        return make_error_reading(HC_DRV_BH1750, meas, "i2c_read_failed");
+    }
+
+    double lux = 0.0;
+    if (!hc_bh1750_decode_lux(raw, &lux)) {
+        return make_error_reading(HC_DRV_BH1750, meas, "decode_failed");
+    }
+    return make_ok_reading(HC_DRV_BH1750, meas, lux);
+}
+#endif
+
+/* ============================================================================
+ * DHT22 / AM2302 Single-Wire Driver (with 2s per-pin sample cache)
+ * ============================================================================ */
+#if HC_EN_DHT22
+
+#define HC_MAX_DHT_PINS 6
+
+typedef struct {
+    bool in_use;
+    uint8_t pin;
+    bool valid;
+    int64_t last_read_ms;
+    double temp_c;
+    double humidity_pct;
+} hc_dht_cache_t;
+
+static hc_dht_cache_t s_dht_cache[HC_MAX_DHT_PINS];
+
+static hc_dht_cache_t *find_dht_cache(uint8_t pin) {
+    for (int i = 0; i < HC_MAX_DHT_PINS; i++) {
+        if (s_dht_cache[i].in_use && s_dht_cache[i].pin == pin) return &s_dht_cache[i];
+    }
+    for (int i = 0; i < HC_MAX_DHT_PINS; i++) {
+        if (!s_dht_cache[i].in_use) {
+            memset(&s_dht_cache[i], 0, sizeof(s_dht_cache[i]));
+            s_dht_cache[i].in_use = true;
+            s_dht_cache[i].pin = pin;
+            return &s_dht_cache[i];
+        }
+    }
+    return NULL;
+}
+
+static int64_t wait_gpio_level_us(gpio_num_t pin, int target_level, int64_t timeout_us) {
+    int64_t start = esp_timer_get_time();
+    while (gpio_get_level(pin) != target_level) {
+        if ((esp_timer_get_time() - start) > timeout_us) {
+            return -1;
+        }
+    }
+    return esp_timer_get_time() - start;
+}
+
+static hc_sensor_reading_t read_dht22(
+    const hc_sensor_binding_t *binding,
+    hc_sensor_measurement_t meas,
+    bool allow_cached
+) {
+    if (binding->gpio_pin < 0 || !hc_io_is_safe_gpio((uint8_t)binding->gpio_pin) ||
+        !GPIO_IS_VALID_OUTPUT_GPIO((gpio_num_t)binding->gpio_pin)) {
+        return make_error_reading(HC_DRV_DHT22, meas, "invalid_gpio");
+    }
+
+    uint8_t pin_u8 = (uint8_t)binding->gpio_pin;
+    gpio_num_t pin = (gpio_num_t)pin_u8;
+    hc_dht_cache_t *cache = find_dht_cache(pin_u8);
+    int64_t t_now = now_ms();
+
+    /* DHT22 hardware requires >= 2 seconds between conversions */
+    if (cache && cache->valid && (allow_cached || (t_now - cache->last_read_ms) < 2000) &&
+        (t_now - cache->last_read_ms) < 2500) {
+        double v = (meas == HC_MEAS_HUMIDITY_DHT22 || meas == HC_MEAS_HUMIDITY)
+            ? cache->humidity_pct
+            : cache->temp_c;
+        return make_ok_reading(HC_DRV_DHT22, meas, v);
+    }
+
+    /* Send host start signal: LOW for 2ms, then HIGH for 30us, then release to input */
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(pin, 0);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    gpio_set_level(pin, 1);
+    esp_rom_delay_us(30);
+    gpio_set_direction(pin, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
+
+    /* Sensor response handshake: LOW (~80us) -> HIGH (~80us) -> LOW (start of bit 0) */
+    if (wait_gpio_level_us(pin, 0, 120) < 0 ||
+        wait_gpio_level_us(pin, 1, 140) < 0 ||
+        wait_gpio_level_us(pin, 0, 140) < 0) {
+        return make_error_reading(HC_DRV_DHT22, meas, "no_response");
+    }
+
+    uint8_t bytes[5] = {0};
+    for (int bit = 0; bit < 40; bit++) {
+        if (wait_gpio_level_us(pin, 1, 100) < 0) {
+            return make_error_reading(HC_DRV_DHT22, meas, "timeout");
+        }
+        int64_t high_us = wait_gpio_level_us(pin, 0, 120);
+        if (high_us < 0) {
+            return make_error_reading(HC_DRV_DHT22, meas, "timeout");
+        }
+        bytes[bit / 8] <<= 1;
+        if (high_us > 45) {
+            bytes[bit / 8] |= 1U;
+        }
+    }
+
+    double temp_c = 0.0;
+    double hum_pct = 0.0;
+    if (!hc_dht22_decode(bytes, &temp_c, &hum_pct)) {
+        return make_error_reading(HC_DRV_DHT22, meas, "checksum_failed");
+    }
+
+    if (cache) {
+        cache->temp_c = temp_c;
+        cache->humidity_pct = hum_pct;
+        cache->last_read_ms = now_ms();
+        cache->valid = true;
+    }
+
+    double v = (meas == HC_MEAS_HUMIDITY_DHT22 || meas == HC_MEAS_HUMIDITY) ? hum_pct : temp_c;
+    return make_ok_reading(HC_DRV_DHT22, meas, v);
+}
+#endif
+
+/* ============================================================================
+ * DS18B20 1-Wire Temperature Driver (Dallas/Maxim CRC-8 verified)
+ * ============================================================================ */
+#if HC_EN_DS18B20
+
+#define HC_MAX_OW_PINS 6
+
+typedef struct {
+    bool in_use;
+    uint8_t pin;
+    bool valid;
+    int64_t last_read_ms;
+    double temp_c;
+} hc_ow_cache_t;
+
+static hc_ow_cache_t s_ow_cache[HC_MAX_OW_PINS];
+static portMUX_TYPE s_ow_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static hc_ow_cache_t *find_ow_cache(uint8_t pin) {
+    for (int i = 0; i < HC_MAX_OW_PINS; i++) {
+        if (s_ow_cache[i].in_use && s_ow_cache[i].pin == pin) return &s_ow_cache[i];
+    }
+    for (int i = 0; i < HC_MAX_OW_PINS; i++) {
+        if (!s_ow_cache[i].in_use) {
+            memset(&s_ow_cache[i], 0, sizeof(s_ow_cache[i]));
+            s_ow_cache[i].in_use = true;
+            s_ow_cache[i].pin = pin;
+            return &s_ow_cache[i];
+        }
+    }
+    return NULL;
+}
+
+static bool ow_reset(gpio_num_t pin) {
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT_OD);
+    gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
+    gpio_set_level(pin, 0);
+    esp_rom_delay_us(480);
+
+    portENTER_CRITICAL(&s_ow_mux);
+    gpio_set_level(pin, 1);
+    esp_rom_delay_us(70);
+    int presence = gpio_get_level(pin);
+    portEXIT_CRITICAL(&s_ow_mux);
+
+    esp_rom_delay_us(410);
+    return presence == 0;
+}
+
+static void ow_write_bit(gpio_num_t pin, uint8_t bit) {
+    portENTER_CRITICAL(&s_ow_mux);
+    gpio_set_level(pin, 0);
+    if (bit) {
+        esp_rom_delay_us(6);
+        gpio_set_level(pin, 1);
+        esp_rom_delay_us(64);
+    } else {
+        esp_rom_delay_us(60);
+        gpio_set_level(pin, 1);
+        esp_rom_delay_us(10);
+    }
+    portEXIT_CRITICAL(&s_ow_mux);
+}
+
+static uint8_t ow_read_bit(gpio_num_t pin) {
+    portENTER_CRITICAL(&s_ow_mux);
+    gpio_set_level(pin, 0);
+    esp_rom_delay_us(6);
+    gpio_set_level(pin, 1);
+    esp_rom_delay_us(9);
+    uint8_t bit = (uint8_t)(gpio_get_level(pin) ? 1U : 0U);
+    portEXIT_CRITICAL(&s_ow_mux);
+    esp_rom_delay_us(55);
+    return bit;
+}
+
+static void ow_write_byte(gpio_num_t pin, uint8_t byte) {
+    for (int i = 0; i < 8; i++) {
+        ow_write_bit(pin, (byte >> i) & 0x01U);
+    }
+}
+
+static uint8_t ow_read_byte(gpio_num_t pin) {
+    uint8_t byte = 0;
+    for (int i = 0; i < 8; i++) {
+        if (ow_read_bit(pin)) {
+            byte |= (uint8_t)(1U << i);
+        }
+    }
+    return byte;
+}
+
+static hc_sensor_reading_t read_ds18b20(
+    const hc_sensor_binding_t *binding,
+    hc_sensor_measurement_t meas,
+    bool allow_cached
+) {
+    if (binding->gpio_pin < 0 || !hc_io_is_safe_gpio((uint8_t)binding->gpio_pin) ||
+        !GPIO_IS_VALID_OUTPUT_GPIO((gpio_num_t)binding->gpio_pin)) {
+        return make_error_reading(HC_DRV_DS18B20, meas, "invalid_gpio");
+    }
+
+    uint8_t pin_u8 = (uint8_t)binding->gpio_pin;
+    gpio_num_t pin = (gpio_num_t)pin_u8;
+    hc_ow_cache_t *cache = find_ow_cache(pin_u8);
+    int64_t t_now = now_ms();
+
+    if (allow_cached && cache && cache->valid && (t_now - cache->last_read_ms) < 3000) {
+        return make_ok_reading(HC_DRV_DS18B20, meas, cache->temp_c);
+    }
+
+    if (!ow_reset(pin)) {
+        return make_error_reading(HC_DRV_DS18B20, meas, "no_presence");
+    }
+    ow_write_byte(pin, 0xCC); /* Skip ROM */
+    ow_write_byte(pin, 0x44); /* Convert T */
+
+    /* 12-bit DS18B20 conversion takes up to 750ms; yield task during conversion */
+    vTaskDelay(pdMS_TO_TICKS(750));
+
+    if (!ow_reset(pin)) {
+        return make_error_reading(HC_DRV_DS18B20, meas, "no_presence");
+    }
+    ow_write_byte(pin, 0xCC); /* Skip ROM */
+    ow_write_byte(pin, 0xBE); /* Read Scratchpad */
+
+    uint8_t scratchpad[9] = {0};
+    for (int i = 0; i < 9; i++) {
+        scratchpad[i] = ow_read_byte(pin);
+    }
+
+    double temp_c = 0.0;
+    if (!hc_ds18b20_decode_scratchpad(scratchpad, &temp_c)) {
+        return make_error_reading(HC_DRV_DS18B20, meas, "crc_failed");
+    }
+
+    if (cache) {
+        cache->temp_c = temp_c;
+        cache->last_read_ms = now_ms();
+        cache->valid = true;
+    }
+    return make_ok_reading(HC_DRV_DS18B20, meas, temp_c);
+}
+#endif
+
+/* ============================================================================
+ * Calibrated ADC Oneshot Voltage Driver
+ * ============================================================================ */
+#if HC_EN_ADC_VOLTAGE
+
+#define HC_MAX_ADC_UNITS 2
+
+typedef struct {
+    bool initialized;
+    adc_oneshot_unit_handle_t unit_handle;
+    bool cali_ready;
+    adc_cali_handle_t cali_handle;
+} hc_adc_unit_slot_t;
+
+static hc_adc_unit_slot_t s_adc_units[HC_MAX_ADC_UNITS];
+
+static bool ensure_adc_unit(adc_unit_t unit_id) {
+    int idx = (int)unit_id;
+    if (idx < 0 || idx >= HC_MAX_ADC_UNITS) return false;
+    if (s_adc_units[idx].initialized) return true;
+
+    adc_oneshot_unit_init_cfg_t init_cfg = {
+        .unit_id = unit_id,
+        .ulp_mode = ADC_ULP_MODE_DISABLE,
+    };
+    if (adc_oneshot_new_unit(&init_cfg, &s_adc_units[idx].unit_handle) != ESP_OK) {
+        return false;
+    }
+    s_adc_units[idx].initialized = true;
+
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    adc_cali_curve_fitting_config_t cali_cfg = {
+        .unit_id = unit_id,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_adc_units[idx].cali_handle) == ESP_OK) {
+        s_adc_units[idx].cali_ready = true;
+    }
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    adc_cali_line_fitting_config_t cali_cfg = {
+        .unit_id = unit_id,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    if (adc_cali_create_scheme_line_fitting(&cali_cfg, &s_adc_units[idx].cali_handle) == ESP_OK) {
+        s_adc_units[idx].cali_ready = true;
+    }
+#endif
+    return true;
+}
+
+static hc_sensor_reading_t read_adc_voltage(
+    const hc_sensor_binding_t *binding,
+    hc_sensor_measurement_t meas
+) {
+    if (binding->gpio_pin < 0 || !hc_io_is_safe_gpio((uint8_t)binding->gpio_pin)) {
+        return make_error_reading(HC_DRV_ADC_VOLTAGE, meas, "invalid_gpio");
+    }
+
+    adc_unit_t unit_id;
+    adc_channel_t channel;
+    if (adc_oneshot_io_to_channel((int)binding->gpio_pin, &unit_id, &channel) != ESP_OK) {
+        return make_error_reading(HC_DRV_ADC_VOLTAGE, meas, "adc_channel_invalid");
+    }
+    if (!ensure_adc_unit(unit_id)) {
+        return make_error_reading(HC_DRV_ADC_VOLTAGE, meas, "adc_init_failed");
+    }
+
+    hc_adc_unit_slot_t *slot = &s_adc_units[(int)unit_id];
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    if (adc_oneshot_config_channel(slot->unit_handle, channel, &chan_cfg) != ESP_OK) {
+        return make_error_reading(HC_DRV_ADC_VOLTAGE, meas, "adc_config_failed");
+    }
+
+    int32_t raw_sum = 0;
+    const int samples = 8;
+    for (int i = 0; i < samples; i++) {
+        int raw = 0;
+        if (adc_oneshot_read(slot->unit_handle, channel, &raw) != ESP_OK) {
+            return make_error_reading(HC_DRV_ADC_VOLTAGE, meas, "adc_read_failed");
+        }
+        raw_sum += raw;
+    }
+    int raw_avg = (int)(raw_sum / samples);
+    int mv = 0;
+    if (slot->cali_ready && adc_cali_raw_to_voltage(slot->cali_handle, raw_avg, &mv) == ESP_OK) {
+        /* calibrated millivolts */
+    } else {
+        /* Fallback linear scaling for uncalibrated chips */
+        mv = (int)((raw_avg * 3300LL) / 4095LL);
+    }
+
+    double volts = 0.0;
+    if (!hc_adc_mv_to_volts(mv, 1.0, &volts)) {
+        return make_error_reading(HC_DRV_ADC_VOLTAGE, meas, "adc_range_error");
+    }
+    return make_ok_reading(HC_DRV_ADC_VOLTAGE, meas, volts);
+}
+
+static void reset_adc_manager(void) {
+    for (int i = 0; i < HC_MAX_ADC_UNITS; i++) {
+        if (s_adc_units[i].cali_ready && s_adc_units[i].cali_handle) {
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+            adc_cali_delete_scheme_curve_fitting(s_adc_units[i].cali_handle);
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+            adc_cali_delete_scheme_line_fitting(s_adc_units[i].cali_handle);
+#endif
+        }
+        if (s_adc_units[i].initialized && s_adc_units[i].unit_handle) {
+            adc_oneshot_del_unit(s_adc_units[i].unit_handle);
+        }
+        memset(&s_adc_units[i], 0, sizeof(s_adc_units[i]));
+    }
+}
+#endif
+
+/* ============================================================================
+ * Public Driver Configuration, Dispatch & Cleanup
+ * ============================================================================ */
+
+esp_err_t hc_sensor_driver_configure(const hc_sensor_binding_t *binding) {
+    if (!binding) return ESP_ERR_INVALID_ARG;
+    hc_sensor_driver_id_t drv = hc_sensor_resolve_driver(binding->sensor_type, binding->explicit_driver_id);
+    if (drv == HC_DRV_NONE || !hc_sensor_is_driver_in_mask(hc_sensor_drivers_compiled_mask(), drv)) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    switch (drv) {
+        case HC_DRV_BME280:
+        case HC_DRV_BH1750: {
+#if HC_EN_BME280 || HC_EN_BH1750
+            uint8_t addr = binding->i2c_addr != 0
+                ? binding->i2c_addr
+                : hc_sensor_driver_default_i2c_addr(drv);
+            return get_or_init_i2c_dev(binding->gpio_pin, addr) ? ESP_OK : ESP_ERR_INVALID_ARG;
+#else
+            return ESP_ERR_NOT_SUPPORTED;
+#endif
+        }
+        case HC_DRV_DHT22:
+        case HC_DRV_DS18B20: {
+            if (binding->gpio_pin < 0 || !hc_io_is_safe_gpio((uint8_t)binding->gpio_pin) ||
+                !GPIO_IS_VALID_OUTPUT_GPIO((gpio_num_t)binding->gpio_pin)) {
+                return ESP_ERR_INVALID_ARG;
+            }
+            gpio_config_t cfg = {
+                .pin_bit_mask = (1ULL << (uint8_t)binding->gpio_pin),
+                .mode = GPIO_MODE_INPUT,
+                .pull_up_en = GPIO_PULLUP_ENABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                .intr_type = GPIO_INTR_DISABLE,
+            };
+            return gpio_config(&cfg);
+        }
+        case HC_DRV_PIR: {
+            if (binding->gpio_pin < 0 || !hc_io_is_safe_gpio((uint8_t)binding->gpio_pin)) {
+                return ESP_ERR_INVALID_ARG;
+            }
+            gpio_config_t cfg = {
+                .pin_bit_mask = (1ULL << (uint8_t)binding->gpio_pin),
+                .mode = GPIO_MODE_INPUT,
+                .pull_up_en = GPIO_PULLUP_DISABLE,
+                .pull_down_en = GPIO_PULLDOWN_ENABLE,
+                .intr_type = GPIO_INTR_DISABLE,
+            };
+            return gpio_config(&cfg);
+        }
+        case HC_DRV_REED: {
+            if (binding->gpio_pin < 0 || !hc_io_is_safe_gpio((uint8_t)binding->gpio_pin)) {
+                return ESP_ERR_INVALID_ARG;
+            }
+            gpio_config_t cfg = {
+                .pin_bit_mask = (1ULL << (uint8_t)binding->gpio_pin),
+                .mode = GPIO_MODE_INPUT,
+                .pull_up_en = GPIO_PULLUP_ENABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                .intr_type = GPIO_INTR_DISABLE,
+            };
+            return gpio_config(&cfg);
+        }
+        case HC_DRV_ADC_VOLTAGE: {
+#if HC_EN_ADC_VOLTAGE
+            if (binding->gpio_pin < 0 || !hc_io_is_safe_gpio((uint8_t)binding->gpio_pin)) {
+                return ESP_ERR_INVALID_ARG;
+            }
+            adc_unit_t unit_id;
+            adc_channel_t channel;
+            if (adc_oneshot_io_to_channel((int)binding->gpio_pin, &unit_id, &channel) != ESP_OK) {
+                return ESP_ERR_INVALID_ARG;
+            }
+            return ensure_adc_unit(unit_id) ? ESP_OK : ESP_FAIL;
+#else
+            return ESP_ERR_NOT_SUPPORTED;
+#endif
+        }
+        default:
+            return ESP_ERR_NOT_SUPPORTED;
+    }
+}
+
+hc_sensor_reading_t hc_sensor_driver_read(const hc_sensor_binding_t *binding, bool allow_cached) {
+    (void)allow_cached;
+    if (!binding) {
+        return make_error_reading(HC_DRV_NONE, HC_MEAS_UNKNOWN, "invalid_binding");
+    }
+    hc_sensor_measurement_t meas = hc_sensor_resolve_measurement(binding->sensor_type);
+    hc_sensor_driver_id_t drv = hc_sensor_resolve_driver(binding->sensor_type, binding->explicit_driver_id);
+
+    if (drv == HC_DRV_NONE) {
+        return make_error_reading(HC_DRV_NONE, meas, "unknown_driver");
+    }
+    if (!hc_sensor_is_driver_in_mask(hc_sensor_drivers_compiled_mask(), drv)) {
+        return make_error_reading(drv, meas, "driver_not_compiled");
+    }
+
+    switch (drv) {
+#if HC_EN_BME280
+        case HC_DRV_BME280:
+            return read_bme280(binding, meas, allow_cached);
+#endif
+#if HC_EN_BH1750
+        case HC_DRV_BH1750:
+            return read_bh1750(binding, meas);
+#endif
+#if HC_EN_DHT22
+        case HC_DRV_DHT22:
+            return read_dht22(binding, meas, allow_cached);
+#endif
+#if HC_EN_DS18B20
+        case HC_DRV_DS18B20:
+            return read_ds18b20(binding, meas, allow_cached);
+#endif
+#if HC_EN_PIR
+        case HC_DRV_PIR: {
+            if (binding->gpio_pin < 0 || !hc_io_is_safe_gpio((uint8_t)binding->gpio_pin)) {
+                return make_error_reading(HC_DRV_PIR, meas, "invalid_gpio");
+            }
+            int lvl = gpio_get_level((gpio_num_t)binding->gpio_pin);
+            return make_ok_reading(HC_DRV_PIR, meas, hc_pir_decode(lvl, binding->inverted));
+        }
+#endif
+#if HC_EN_REED
+        case HC_DRV_REED: {
+            if (binding->gpio_pin < 0 || !hc_io_is_safe_gpio((uint8_t)binding->gpio_pin)) {
+                return make_error_reading(HC_DRV_REED, meas, "invalid_gpio");
+            }
+            int lvl = gpio_get_level((gpio_num_t)binding->gpio_pin);
+            return make_ok_reading(HC_DRV_REED, meas, hc_reed_decode(lvl, binding->inverted));
+        }
+#endif
+#if HC_EN_ADC_VOLTAGE
+        case HC_DRV_ADC_VOLTAGE:
+            return read_adc_voltage(binding, meas);
+#endif
+        default:
+            return make_error_reading(drv, meas, "driver_not_compiled");
+    }
+}
+
+void hc_sensor_drivers_reset(void) {
+    (void)TAG;
+#if HC_EN_BME280 || HC_EN_BH1750
+    reset_i2c_manager();
+#endif
+#if HC_EN_DHT22
+    memset(s_dht_cache, 0, sizeof(s_dht_cache));
+#endif
+#if HC_EN_DS18B20
+    memset(s_ow_cache, 0, sizeof(s_ow_cache));
+#endif
+#if HC_EN_ADC_VOLTAGE
+    reset_adc_manager();
+#endif
+}

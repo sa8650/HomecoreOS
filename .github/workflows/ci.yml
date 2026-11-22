@@ -1,0 +1,36 @@
+name: HomecoreOS Workspace CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      - name: Verify database migrations match the schema snapshot
+        run: npm run db:verify
+      - name: Run test suites
+        shell: bash
+        # Keep the full output so a flaky failure can be inspected from the artifact.
+        run: |
+          set -o pipefail
+          npm run test 2>&1 | tee test-output.log
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.log
+          if-no-files-found: ignore

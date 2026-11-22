@@ -1,0 +1,581 @@
+name: Build HomecoreOS ESP32 Firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "firmware/**"
+      - ".github/workflows/build-firmware.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Firmware semantic version (e.g. 1.2.0)"
+        required: true
+        default: "1.2.0"
+      channel:
+        description: "Release channel"
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+          - development
+        default: "stable"
+      board_slug:
+        description: "Target board slug or 'all'"
+        required: true
+        default: "all"
+
+jobs:
+  verify-host-tests-and-profiles:
+    name: Host C Tests, Board Overlays & Isolated ESP8266 Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run host-compilable firmware C logic unit tests
+        shell: bash
+        run: |
+          set -eu
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_io_state_logic.c firmware/main/io_state_logic.c -o /tmp/test_io_state_logic && /tmp/test_io_state_logic
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_ota_boot_logic.c firmware/main/ota_boot_logic.c -o /tmp/test_ota_boot_logic && /tmp/test_ota_boot_logic
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_provisioning_logic.c firmware/main/provisioning_logic.c -o /tmp/test_provisioning_logic && /tmp/test_provisioning_logic
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_sensor_driver_logic.c firmware/main/sensor_driver_logic.c -lm -o /tmp/test_sensor_driver_logic && /tmp/test_sensor_driver_logic
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_role_logic.c firmware/main/role_logic.c -o /tmp/test_role_logic && /tmp/test_role_logic
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_recovery_logic.c firmware/main/recovery_logic.c -o /tmp/test_recovery_logic && /tmp/test_recovery_logic
+
+      - name: Verify board overlays, driver manifest verifier & ESP8266 isolation
+        shell: bash
+        run: |
+          set -eu
+          python3 firmware/scripts/verify_firmware_image.py --verify-board-overlays firmware/boards
+          python3 firmware/scripts/verify_firmware_image.py --verify-esp8266-profile firmware/esp8266/board-profile.json
+          python3 -m unittest -v firmware/scripts/test_verify_firmware_image.py
+
+  prepare-matrix:
+    name: Resolve Firmware Build Matrix
+    needs: verify-host-tests-and-profiles
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      version: ${{ steps.set-matrix.outputs.version }}
+      channel: ${{ steps.set-matrix.outputs.channel }}
+    steps:
+      - name: Generate board matrix JSON
+        id: set-matrix
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_BOARD_SLUG: ${{ github.event.inputs.board_slug || '' }}
+          INPUT_VERSION: ${{ github.event.inputs.version || '' }}
+          INPUT_CHANNEL: ${{ github.event.inputs.channel || '' }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          # All 21 ESP-IDF published / partner boards (nodemcu-esp8266 is isolated under firmware/esp8266/
+          # and unpublished draft boards are excluded from release publishing).
+          all_boards = [
+              {
+                  "board_slug": "esp32-s3-devkitc-1-n16r8",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3-WROOM-1-N16R8",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_16mb",
+                  "psram_mode": "octal",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "16MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "seeed-xiao-esp32s3",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3R8 (Seeed XIAO)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_8mb",
+                  "psram_mode": "octal",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "8MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "seeed-xiao-esp32s3-sense",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3R8 (Seeed XIAO Sense)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_8mb",
+                  "psram_mode": "octal",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "8MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "seeed-xiao-esp32s3-plus",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3R8 (Seeed XIAO Plus)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_16mb",
+                  "psram_mode": "octal",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "16MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "seeed-xiao-esp32c3",
+                  "chip_family": "esp32c3",
+                  "chip_variant": "ESP32-C3 (Seeed XIAO)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "none",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "seeed-xiao-esp32c6",
+                  "chip_family": "esp32c6",
+                  "chip_variant": "ESP32-C6 (Seeed XIAO)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "none",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "seeed-xiao-esp32c5",
+                  "chip_family": "esp32c5",
+                  "chip_variant": "ESP32-C5 (Seeed XIAO)",
+                  "idf_version": "v5.5.2",
+                  "partition_scheme": "dual_ota_8mb",
+                  "psram_mode": "quad",
+                  "bootloader_offset": "0x2000",
+                  "flash_size": "8MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "waveshare-esp32-s3-zero",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3FH4R2 (Waveshare Zero)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "quad",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "waveshare-esp32-s3-pico",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3R2 (Waveshare Pico)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_16mb",
+                  "psram_mode": "quad",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "16MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "waveshare-esp32-s3-relay-6ch",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3-WROOM-1-N16R8 (Waveshare Relay-6CH)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_16mb",
+                  "psram_mode": "octal",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "16MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "waveshare-esp32-c3-zero",
+                  "chip_family": "esp32c3",
+                  "chip_variant": "ESP32-C3FH4 (Waveshare Zero)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "none",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "waveshare-esp32-c6-zero",
+                  "chip_family": "esp32c6",
+                  "chip_variant": "ESP32-C6FH4 (Waveshare Zero)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "none",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "esp32-s3-devkitc-1-v1-0",
+                  "chip_family": "esp32s3",
+                  "chip_variant": "ESP32-S3-WROOM-1-N8R8",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_8mb",
+                  "psram_mode": "octal",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "8MB",
+                  "flash_mode": "qio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "esp32-c6-devkitc-1",
+                  "chip_family": "esp32c6",
+                  "chip_variant": "ESP32-C6-WROOM-1-N8",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_8mb",
+                  "psram_mode": "none",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "8MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "esp32-c3-devkitm-1",
+                  "chip_family": "esp32c3",
+                  "chip_variant": "ESP32-C3-MINI-1-N4",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "none",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "esp32-devkitc-v4",
+                  "chip_family": "esp32",
+                  "chip_variant": "ESP32-WROOM-32D",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "none",
+                  "bootloader_offset": "0x1000",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "40m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "esp32-s2-devkitc-1",
+                  "chip_family": "esp32s2",
+                  "chip_variant": "ESP32-S2-WROVER-N4R2",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "quad",
+                  "bootloader_offset": "0x1000",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": False,
+                  "supports_ble_wifi_provisioning": False,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "esp32-c5-devkitc-1",
+                  "chip_family": "esp32c5",
+                  "chip_variant": "ESP32-C5-WROOM-1-N8R8",
+                  "idf_version": "v5.5.2",
+                  "partition_scheme": "dual_ota_8mb",
+                  "psram_mode": "quad",
+                  "bootloader_offset": "0x2000",
+                  "flash_size": "8MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "esp32-c61-devkitc-1",
+                  "chip_family": "esp32c61",
+                  "chip_variant": "ESP32-C61-WROOM-1-N8R2",
+                  "idf_version": "v5.5.2",
+                  "partition_scheme": "dual_ota_8mb",
+                  "psram_mode": "quad",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "8MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "80m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 3145728,
+              },
+              {
+                  "board_slug": "esp8684-devkitm-1",
+                  "chip_family": "esp32c2",
+                  "chip_variant": "ESP8684-H4 (ESP32-C2)",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "none",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "60m",
+                  "supports_wifi": True,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": True,
+                  "max_ota_bytes": 1966080,
+              },
+              {
+                  "board_slug": "esp32-h2-devkitm-1",
+                  "chip_family": "esp32h2",
+                  "chip_variant": "ESP32-H2-MINI-1-N4",
+                  "idf_version": "v5.4",
+                  "partition_scheme": "dual_ota_4mb",
+                  "psram_mode": "none",
+                  "bootloader_offset": "0x0",
+                  "flash_size": "4MB",
+                  "flash_mode": "dio",
+                  "flash_freq": "64m",
+                  "supports_wifi": False,
+                  "supports_ble": True,
+                  "supports_ble_wifi_provisioning": False,
+                  "max_ota_bytes": 1966080,
+              },
+          ]
+
+          event_name = os.environ.get("EVENT_NAME", "").strip()
+          board_input = os.environ.get("INPUT_BOARD_SLUG", "").strip()
+          run_number = os.environ.get("RUN_NUMBER", "1").strip() or "1"
+          raw_version = os.environ.get("INPUT_VERSION", "").strip() or f"1.2.{run_number}"
+          version = raw_version.lstrip("vV").strip()
+          if not version:
+              print("ERROR: Firmware version resolved to empty string.", file=sys.stderr)
+              sys.exit(1)
+          channel = os.environ.get("INPUT_CHANNEL", "").strip() or "stable"
+
+          if event_name != "workflow_dispatch" or not board_input or board_input == "all":
+              selected = all_boards
+          else:
+              selected = [b for b in all_boards if b["board_slug"] == board_input]
+              if not selected:
+                  print(f"ERROR: Unknown board_slug '{board_input}'.", file=sys.stderr)
+                  sys.exit(1)
+
+          payload = json.dumps({"include": selected}, separators=(",", ":"))
+          print(f"Resolved {len(selected)} board build target(s) for v{version} ({channel}): {[b['board_slug'] for b in selected]}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"matrix={payload}\n")
+              fh.write(f"version={version}\n")
+              fh.write(f"channel={channel}\n")
+          PY
+
+  build-board-matrix:
+    name: Build ${{ matrix.board_slug }} (${{ matrix.chip_family }})
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build ESP-IDF firmware (${{ matrix.board_slug }})
+        uses: espressif/esp-idf-ci-action@v1
+        env:
+          HOMECORE_FW_VERSION: ${{ needs.prepare-matrix.outputs.version }}
+        with:
+          esp_idf_version: ${{ matrix.idf_version }}
+          target: ${{ matrix.chip_family }}
+          path: firmware
+          # IMPORTANT: espressif/esp-idf-ci-action wraps command inside single quotes: /bin/bash -c '... && command'.
+          # Keep ZERO single quotes anywhere in this command block to prevent shell syntax errors.
+          command: |
+            set -eu
+            set -o pipefail
+            HOMECORE_FW_VERSION="${{ needs.prepare-matrix.outputs.version }}"
+            export HOMECORE_FW_VERSION
+            if [ -z "${HOMECORE_FW_VERSION}" ]; then
+              echo "ERROR: HOMECORE_FW_VERSION is empty; refusing to build firmware." >&2
+              exit 1
+            fi
+            echo "Building ${{ matrix.board_slug }} (${{ matrix.chip_family }}) with requested HOMECORE_FW_VERSION=${HOMECORE_FW_VERSION}"
+            rm -rf sdkconfig sdkconfig.version build
+            python3 scripts/verify_firmware_image.py --write-sdkconfig-version "${HOMECORE_FW_VERSION}" --out sdkconfig.version
+            SDKCFG="sdkconfig.defaults;boards/${{ matrix.board_slug }}.sdkconfig;sdkconfig.version"
+            BUILD_LOG="build.log"
+            : > "${BUILD_LOG}"
+            { idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" set-target "${{ matrix.chip_family }}" && idf.py -DSDKCONFIG_DEFAULTS="${SDKCFG}" -DHOMECORE_FW_VERSION="${HOMECORE_FW_VERSION}" build; } 2>&1 | tee -a "${BUILD_LOG}"
+            python3 scripts/verify_firmware_image.py \
+              --verify-build \
+              --version "${HOMECORE_FW_VERSION}" \
+              --target "${{ matrix.chip_family }}" \
+              --board "${{ matrix.board_slug }}" \
+              --partition-scheme "${{ matrix.partition_scheme }}" \
+              --psram-mode "${{ matrix.psram_mode }}" \
+              --flash-size "${{ matrix.flash_size }}" \
+              --max-ota-bytes "${{ matrix.max_ota_bytes }}" \
+              --image build/homecoreos.bin \
+              --sdkconfig sdkconfig \
+              --partition-table build/partition_table/partition-table.bin
+            cd build
+            esptool.py --chip "${{ matrix.chip_family }}" merge_bin -o homecoreos-usb-factory.bin "@flash_args"
+
+      - name: Report firmware build errors
+        if: failure()
+        shell: bash
+        run: |
+          LOG="${{ github.workspace }}/firmware/build.log"
+          if [ ! -f "${LOG}" ]; then
+            echo "::error::No build log was written to ${LOG}; listing firmware/ instead."
+            ls -la "${{ github.workspace }}/firmware" || true
+            exit 0
+          fi
+          echo "----- last 80 lines -----"
+          tail -n 80 "${LOG}" || true
+          echo "----- compiler / CMake errors -----"
+          grep -aE "error:|CMake Error|FAILED:|undefined reference|ninja: build stopped" "${LOG}" \
+            | head -n 25 \
+            | while IFS= read -r line; do
+                echo "::error::$(printf "%s" "${line}" | tr -d "\r" | cut -c1-900)"
+              done
+
+      - name: Package release archive & SHA-256 driver manifest
+        id: package
+        shell: bash
+        run: |
+          set -eu
+          VERSION="${{ needs.prepare-matrix.outputs.version }}"
+          CHANNEL="${{ needs.prepare-matrix.outputs.channel }}"
+          BOARD_SLUG="${{ matrix.board_slug }}"
+          if [ -z "${VERSION}" ]; then
+            echo "ERROR: Firmware release version is empty." >&2
+            exit 1
+          fi
+          DIST_DIR="${{ github.workspace }}/firmware-dist/${BOARD_SLUG}"
+          mkdir -p "${DIST_DIR}"
+
+          USB_BIN="homecoreos-${BOARD_SLUG}-usb-factory.bin"
+          OTA_BIN="homecoreos-${BOARD_SLUG}-ota.bin"
+          cp firmware/build/homecoreos-usb-factory.bin "${DIST_DIR}/${USB_BIN}"
+          cp firmware/build/homecoreos.bin "${DIST_DIR}/${OTA_BIN}"
+
+          python3 "${{ github.workspace }}/firmware/scripts/verify_firmware_image.py" \
+            --build-release-manifest \
+            --version "${VERSION}" \
+            --channel "${CHANNEL}" \
+            --target "${{ matrix.chip_family }}" \
+            --chip-variant "${{ matrix.chip_variant }}" \
+            --board "${BOARD_SLUG}" \
+            --partition-scheme "${{ matrix.partition_scheme }}" \
+            --psram-mode "${{ matrix.psram_mode }}" \
+            --flash-size "${{ matrix.flash_size }}" \
+            --flash-mode "${{ matrix.flash_mode }}" \
+            --flash-freq "${{ matrix.flash_freq }}" \
+            --idf-version "${{ matrix.idf_version }}" \
+            --commit-sha "${GITHUB_SHA}" \
+            --supports-wifi "${{ matrix.supports_wifi }}" \
+            --supports-ble "${{ matrix.supports_ble }}" \
+            --supports-ble-wifi "${{ matrix.supports_ble_wifi_provisioning }}" \
+            --sdkconfig "${{ github.workspace }}/firmware/sdkconfig" \
+            --usb-bin "${DIST_DIR}/${USB_BIN}" \
+            --ota-bin "${DIST_DIR}/${OTA_BIN}" \
+            --out "${DIST_DIR}/manifest.json"
+
+          python3 "${{ github.workspace }}/firmware/scripts/verify_firmware_image.py" \
+            --verify-package \
+            --version "${VERSION}" \
+            --target "${{ matrix.chip_family }}" \
+            --board "${BOARD_SLUG}" \
+            --partition-scheme "${{ matrix.partition_scheme }}" \
+            --bootloader-offset "${{ matrix.bootloader_offset }}" \
+            --usb-bin "${DIST_DIR}/${USB_BIN}" \
+            --ota-bin "${DIST_DIR}/${OTA_BIN}" \
+            --manifest "${DIST_DIR}/manifest.json"
+
+          cd "${DIST_DIR}"
+          ZIP_NAME="homecoreos-${BOARD_SLUG}-v${VERSION}.zip"
+          zip -9 "${ZIP_NAME}" manifest.json "${USB_BIN}" "${OTA_BIN}"
+          echo "zip_path=${DIST_DIR}/${ZIP_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "zip_name=${ZIP_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload HomecoreOS Firmware Release Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.zip_name }}
+          path: ${{ steps.package.outputs.zip_path }}
+          retention-days: 90

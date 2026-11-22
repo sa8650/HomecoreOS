@@ -1,0 +1,26 @@
+node_modules/
+__pycache__/
+*.pyc
+dist/
+build/
+.wrangler/
+.dev.vars
+.env
+.env.local
+.env.*.local
+*.local
+.DS_Store
+coverage/
+firmware/build/
+firmware/build.log
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+*.bin
+*.elf
+*.map
+*.zip
+*.tsbuildinfo
+
+# local visual-QA scratch output
+.tmp-visual/

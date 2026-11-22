@@ -1,0 +1,543 @@
+/**
+ * Device side of the Unified Repair & Recovery Engine.
+ *
+ * The firmware (`firmware/main/recovery_logic.c`) speaks one small JSON
+ * protocol on every local transport:
+ *
+ *   Wi-Fi setup portal : GET  http://192.168.4.1/api/recovery
+ *                        POST {"command":"HC REPAIR {…}"}
+ *   Bluetooth LE       : encrypted command `action:"hc HC …"` + status notifications
+ *   USB serial (115200): `HC …\n` in, one JSON line out
+ *
+ * This module is the single place that turns those device payloads into the
+ * engine's `RecoveryBoardInfo` / `RecoveryTelemetry`. Having it in `shared`
+ * (rather than once per transport, or once in the web app and once in the
+ * worker) is what makes "one engine, three transports" true: Wi-Fi, BLE and USB
+ * differ only in how bytes arrive, never in how they are interpreted.
+ *
+ * Everything here is pure: no DOM, no Web Bluetooth, no Web Serial, no fetch.
+ */
+import {
+  RECOVERY_STALE_HEARTBEAT_SEC,
+  classifyWifiError,
+  emptyRecoveryTelemetry,
+  type ProblemCode,
+  type RecoveryBoardInfo,
+  type RecoveryBoardMode,
+  type RecoveryTelemetry,
+} from "./recovery";
+
+export const RECOVERY_DEVICE_PROTO_VERSION = 1;
+
+/** `{"hc":"recovery",…}` — discovery answer (`HC HELLO`). */
+export interface RecoveryDeviceHello {
+  proto: number;
+  boardSlug: string | null;
+  chip: string | null;
+  firmwareVersion: string | null;
+  mode: RecoveryBoardMode;
+  paired: boolean | null;
+  hasWifi: boolean;
+  hasBle: boolean;
+  recoverySupported: boolean;
+  /** Last 4 hex characters of the hardware UID. Never a secret. */
+  uidSuffix: string | null;
+}
+
+/** `{"hc":"status",…}` — live diagnostics (`HC STATUS`). */
+export interface RecoveryDeviceStatus {
+  proto: number;
+  mode: RecoveryBoardMode;
+  firmwareVersion: string | null;
+  paired: boolean;
+  wifiConnected: boolean;
+  ssid: string | null;
+  /** 0 means "not measured"; negative dBm otherwise. */
+  rssi: number | null;
+  ip: string | null;
+  wifiError: string | null;
+  mqttConnected: boolean;
+  mqttError: string | null;
+  backendReachable: boolean;
+  backendAuthenticated: boolean;
+  backendOk: boolean;
+  configRevision: number | null;
+  syncedConfigRevision: number | null;
+  pendingConfig: boolean;
+  heartbeatAgeSec: number | null;
+  heartbeatIntervalSec: number | null;
+  entitiesKnown: boolean;
+  sensorsTotal: number | null;
+  sensorsReporting: number | null;
+  switchesTotal: number | null;
+  switchesReporting: number | null;
+  nodesKnown: boolean;
+  nodesTotal: number | null;
+  nodesLinked: number | null;
+  lastError: string | null;
+}
+
+export interface RecoveryDeviceAck {
+  action: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface RecoveryDeviceError {
+  code: string;
+  message: string;
+}
+
+export type RecoveryDeviceMessage =
+  | { kind: "hello"; hello: RecoveryDeviceHello }
+  | { kind: "status"; status: RecoveryDeviceStatus }
+  | { kind: "ack"; ack: RecoveryDeviceAck }
+  | { kind: "error"; error: RecoveryDeviceError }
+  | { kind: "pong"; proto: number }
+  | { kind: "unknown"; raw: string };
+
+type Json = Record<string, unknown>;
+
+function asObject(value: unknown): Json | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Json) : null;
+}
+
+function str(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function num(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+  return null;
+}
+
+function bool(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  return null;
+}
+
+function mode(value: unknown): RecoveryBoardMode {
+  return value === "unprovisioned" || value === "recovery" || value === "normal" || value === "unknown"
+    ? value
+    : "unknown";
+}
+
+/**
+ * Parses one device payload. Never throws: an unreadable payload becomes
+ * `{kind:"unknown"}`, so a garbled BLE notification or a partial serial line can
+ * only ever be retried, never misread as a repair result.
+ */
+export function parseRecoveryDeviceMessage(raw: string | null | undefined): RecoveryDeviceMessage {
+  const text = (raw ?? "").trim();
+  if (!text) return { kind: "unknown", raw: "" };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { kind: "unknown", raw: text };
+  }
+  const obj = asObject(parsed);
+  if (!obj) return { kind: "unknown", raw: text };
+
+  const hc = str(obj.hc);
+
+  if (hc === "recovery") {
+    return {
+      kind: "hello",
+      hello: {
+        proto: num(obj.proto) ?? RECOVERY_DEVICE_PROTO_VERSION,
+        boardSlug: str(obj.board),
+        chip: str(obj.chip),
+        firmwareVersion: str(obj.fw),
+        mode: mode(obj.mode),
+        paired: bool(obj.paired),
+        hasWifi: bool(obj.wifi) ?? true,
+        hasBle: bool(obj.ble) ?? true,
+        recoverySupported: bool(obj.recovery_supported) ?? true,
+        uidSuffix: str(obj.uid_suffix),
+      },
+    };
+  }
+
+  if (hc === "status") {
+    const rssiRaw = num(obj.rssi);
+    const hbAge = num(obj.heartbeat_age_sec);
+    const hbInterval = num(obj.heartbeat_interval_sec);
+    return {
+      kind: "status",
+      status: {
+        proto: num(obj.proto) ?? RECOVERY_DEVICE_PROTO_VERSION,
+        mode: mode(obj.mode),
+        firmwareVersion: str(obj.fw),
+        paired: bool(obj.paired) ?? false,
+        wifiConnected: bool(obj.wifi_connected) ?? false,
+        ssid: str(obj.ssid),
+        rssi: rssiRaw !== null && rssiRaw < 0 ? rssiRaw : null,
+        ip: str(obj.ip),
+        wifiError: str(obj.wifi_error),
+        mqttConnected: bool(obj.mqtt_connected) ?? false,
+        mqttError: str(obj.mqtt_error),
+        backendReachable: bool(obj.backend_reachable) ?? false,
+        backendAuthenticated: bool(obj.backend_authenticated) ?? false,
+        backendOk: bool(obj.backend_ok) ?? false,
+        configRevision: num(obj.config_revision),
+        syncedConfigRevision: num(obj.synced_config_revision),
+        pendingConfig: bool(obj.pending_config) ?? false,
+        // 0 from the firmware means "never", which is not the same as "just now".
+        heartbeatAgeSec: hbAge !== null && hbAge > 0 ? hbAge : null,
+        heartbeatIntervalSec: hbInterval !== null && hbInterval > 0 ? hbInterval : null,
+        entitiesKnown: bool(obj.entities_known) ?? false,
+        sensorsTotal: num(obj.sensors_total),
+        sensorsReporting: num(obj.sensors_reporting),
+        switchesTotal: num(obj.switches_total),
+        switchesReporting: num(obj.switches_reporting),
+        nodesKnown: bool(obj.nodes_known) ?? false,
+        nodesTotal: num(obj.nodes_total),
+        nodesLinked: num(obj.nodes_linked),
+        lastError: str(obj.last_error),
+      },
+    };
+  }
+
+  if (hc === "ack") {
+    return {
+      kind: "ack",
+      ack: {
+        action: str(obj.action) ?? "",
+        ok: bool(obj.ok) ?? true,
+        detail: str(obj.detail) ?? "",
+      },
+    };
+  }
+
+  if (hc === "error") {
+    return {
+      kind: "error",
+      error: {
+        code: str(obj.code) ?? "device_error",
+        message: str(obj.message) ?? "The controller reported an error.",
+      },
+    };
+  }
+
+  if (hc === "pong") {
+    return { kind: "pong", proto: num(obj.proto) ?? RECOVERY_DEVICE_PROTO_VERSION };
+  }
+
+  return { kind: "unknown", raw: text };
+}
+
+/**
+ * Discovery → `RecoveryBoardInfo`. Board Library facts the device cannot know
+ * (radio capabilities for a chip we have no profile for, compatibility) are
+ * passed in as fallbacks rather than guessed.
+ */
+export function boardInfoFromHello(
+  hello: RecoveryDeviceHello,
+  fallbacks: Partial<RecoveryBoardInfo> = {}
+): RecoveryBoardInfo {
+  const capabilityIssues: string[] = [];
+  if (!hello.hasWifi) {
+    capabilityIssues.push("This board has no integrated Wi-Fi radio, so it cannot join your network.");
+  }
+  if (!hello.recoverySupported) {
+    capabilityIssues.push(
+      "This firmware predates Repair & Recovery. Update the firmware from Firmware & Updates first."
+    );
+  }
+
+  return {
+    ...(fallbacks as RecoveryBoardInfo),
+    boardSlug: hello.boardSlug ?? fallbacks.boardSlug ?? null,
+    chip: hello.chip ?? fallbacks.chip ?? null,
+    model: fallbacks.model ?? null,
+    hardwareUid: hello.uidSuffix ?? fallbacks.hardwareUid ?? null,
+    firmwareVersion: hello.firmwareVersion ?? fallbacks.firmwareVersion ?? null,
+    mode: hello.mode,
+    paired: hello.paired ?? fallbacks.paired ?? null,
+    supportsWifi: hello.hasWifi,
+    supportsBle: hello.hasBle,
+    lastTransport: fallbacks.lastTransport ?? null,
+    diagnosticsSupported: hello.recoverySupported && hello.proto >= 1,
+    capabilityIssues,
+  };
+}
+
+/**
+ * Diagnostics → `RecoveryTelemetry`, merged onto whatever the server already
+ * knows. A fact the device does not report stays `available:false` (unknown),
+ * which the engine treats as "unable to verify", never as a failure.
+ */
+export function telemetryFromDeviceStatus(
+  status: RecoveryDeviceStatus,
+  nowMs = Date.now(),
+  base: RecoveryTelemetry = emptyRecoveryTelemetry(nowMs)
+): RecoveryTelemetry {
+  const recent: Array<{ code?: string; message: string; at?: string | null }> = [];
+  if (status.lastError) recent.push({ message: status.lastError });
+  if (status.wifiError) recent.push({ code: "wifi", message: status.wifiError });
+  if (status.mqttError) recent.push({ code: "mqtt", message: status.mqttError });
+
+  const staleAfter = Math.max(
+    RECOVERY_STALE_HEARTBEAT_SEC,
+    (status.heartbeatIntervalSec ?? 60) * 2
+  );
+
+  return {
+    ...base,
+    wifi: {
+      available: true,
+      connected: status.wifiConnected,
+      ssid: status.ssid,
+      rssi: status.rssi,
+      ipAssigned: status.ip ? true : status.wifiConnected ? false : null,
+      lastError: status.wifiError,
+      credentialsRewritten: base.wifi.credentialsRewritten,
+    },
+    internet: status.backendOk
+      ? { available: true, reachable: true }
+      : { available: false, reachable: null },
+    backend: {
+      available: true,
+      reachable: status.backendReachable,
+      authenticated: status.backendAuthenticated,
+      status: null,
+      lastError: status.backendReachable ? null : "The controller has not reached the HomecoreOS Worker.",
+    },
+    pairing: {
+      available: true,
+      paired: status.paired,
+      credentialsValid:
+        status.paired && status.backendReachable ? (status.backendAuthenticated ? true : false) : null,
+    },
+    mqtt: {
+      available: true,
+      connected: status.mqttConnected,
+      authenticated: status.mqttConnected ? true : status.mqttError ? false : null,
+      lastError: status.mqttError,
+    },
+    heartbeat: {
+      available: true,
+      lastHeartbeatAt:
+        status.heartbeatAgeSec !== null
+          ? new Date(nowMs - status.heartbeatAgeSec * 1000).toISOString()
+          : null,
+      lastSyncAt: base.heartbeat.lastSyncAt,
+      nowMs,
+      staleAfterSeconds: staleAfter,
+    },
+    firmware: {
+      available: true,
+      version: status.firmwareVersion ?? base.firmware.version,
+      compatible: base.firmware.compatible,
+      updateAvailable: base.firmware.updateAvailable,
+    },
+    config: {
+      available: true,
+      revision: status.configRevision,
+      syncedRevision: status.syncedConfigRevision,
+      pendingSync: status.pendingConfig,
+      hashValid: base.config.hashValid,
+    },
+    entities: status.entitiesKnown
+      ? {
+          available: true,
+          sensorsTotal: status.sensorsTotal,
+          sensorsReporting: status.sensorsReporting,
+          switchesTotal: status.switchesTotal,
+          switchesReporting: status.switchesReporting,
+        }
+      : { available: false, sensorsTotal: null, sensorsReporting: null, switchesTotal: null, switchesReporting: null },
+    nodes: status.nodesKnown
+      ? { available: true, total: status.nodesTotal, linked: status.nodesLinked }
+      : { available: false, total: null, linked: null },
+    // A status answer *is* the controller's error log: an empty list means it
+    // reported no error, which is different from never having been asked.
+    errors: { available: true, recent },
+  };
+}
+
+/** Problem codes the device itself already knows about (used for the plan preview). */
+export function problemsFromDeviceStatus(status: RecoveryDeviceStatus): ProblemCode[] {
+  const problems: ProblemCode[] = [];
+  if (!status.wifiConnected) {
+    const classified = classifyWifiError(status.wifiError);
+    problems.push(classified ?? "wifi_not_connected");
+  }
+  if (status.wifiConnected && !status.backendReachable) problems.push("backend_unreachable");
+  if (status.paired && !status.mqttConnected) {
+    problems.push(status.mqttError ? "mqtt_auth_failed" : "mqtt_disconnected");
+  }
+  if (!status.paired) problems.push("pairing_missing");
+  if (status.configRevision !== null && status.syncedConfigRevision !== null) {
+    if (status.pendingConfig || status.configRevision > status.syncedConfigRevision) {
+      problems.push("config_unsynced");
+    }
+  }
+  if (status.entitiesKnown) {
+    const sensorsBehind =
+      status.sensorsTotal !== null &&
+      status.sensorsReporting !== null &&
+      status.sensorsReporting < status.sensorsTotal;
+    const switchesBehind =
+      status.switchesTotal !== null &&
+      status.switchesReporting !== null &&
+      status.switchesReporting < status.switchesTotal;
+    if (sensorsBehind || switchesBehind) problems.push("sensors_not_reporting");
+  }
+  return Array.from(new Set(problems));
+}
+
+// ---------------------------------------------------------------------------
+// Commands (what the console sends down the same three transports)
+// ---------------------------------------------------------------------------
+
+export type RecoveryDeviceAction =
+  | "wifi"
+  | "mqtt"
+  | "config"
+  | "restart"
+  | "pair"
+  | "factory_reset";
+
+export interface RecoveryRepairRequest {
+  action: RecoveryDeviceAction;
+  ssid?: string;
+  password?: string;
+  backendUrl?: string;
+  /** Single-use 6-digit account recovery code (`action:"pair"`). */
+  pairCode?: string;
+  confirm?: boolean;
+}
+
+/** One protocol line for any transport (`HC REPAIR {…}`, `HC STATUS`, …). */
+export function buildRecoveryCommand(
+  kind: "PING" | "HELLO" | "STATUS" | "REPAIR",
+  repair?: RecoveryRepairRequest
+): string {
+  if (kind !== "REPAIR") return `HC ${kind}`;
+  const body: Json = { action: repair?.action ?? "config" };
+  if (repair?.ssid) body.ssid = repair.ssid;
+  if (repair?.password) body.password = repair.password;
+  if (repair?.backendUrl) body.backend_url = repair.backendUrl;
+  if (repair?.pairCode) body.pair_code = repair.pairCode;
+  if (repair?.confirm) body.confirm = true;
+  return `HC REPAIR ${JSON.stringify(body)}`;
+}
+
+/**
+ * The BLE command payload for a recovery line. The firmware relays any
+ * `action` starting with `"hc "` straight to the same parser USB uses.
+ */
+export function bleRecoveryCommandPayload(line: string): { action: string } {
+  return { action: `hc ${line}` };
+}
+
+// ---------------------------------------------------------------------------
+// Transport framing: chunked BLE notifications and serial line buffering
+// ---------------------------------------------------------------------------
+
+export interface BleStatusChunk {
+  index: number;
+  total: number;
+  data: string;
+}
+
+/** Reads `{"chunk":{"i":0,"n":3,"d":"…"}}` (the firmware's chunk envelope). */
+export function parseBleStatusChunk(payload: unknown): BleStatusChunk | null {
+  const obj = asObject(payload);
+  const chunk = obj ? asObject(obj.chunk) : null;
+  if (!chunk) return null;
+  const index = num(chunk.i);
+  const total = num(chunk.n);
+  const data = typeof chunk.d === "string" ? chunk.d : null;
+  if (index === null || total === null || data === null) return null;
+  if (total < 1 || total > 8 || index < 0 || index >= total) return null;
+  return { index, total, data };
+}
+
+export interface BleStatusReassembler {
+  /** Feed one decrypted notification. Returns the completed payload, or null. */
+  push: (payload: unknown) => string | null;
+  /** Drops a half-received message (e.g. after a reconnect). */
+  reset: () => void;
+  /** True while part of a message is buffered. */
+  inProgress: () => boolean;
+}
+
+/**
+ * Reassembles chunked BLE responses. A plain (unchunked) payload passes
+ * straight through, and an out-of-order / incomplete set is discarded instead
+ * of being guessed — the caller re-asks with `HC STATUS`.
+ */
+export function createBleStatusReassembler(maxBytes = 8192): BleStatusReassembler {
+  let expected = 0;
+  let parts = new Map<number, string>();
+
+  const reset = () => {
+    expected = 0;
+    parts = new Map();
+  };
+
+  return {
+    push(payload: unknown) {
+      const chunk = parseBleStatusChunk(payload);
+      if (!chunk) {
+        // Not a chunk envelope: a whole response arrived on its own.
+        reset();
+        if (typeof payload === "string") return payload;
+        return payload ? JSON.stringify(payload) : null;
+      }
+
+      if (expected !== chunk.total) {
+        reset();
+        expected = chunk.total;
+      }
+      parts.set(chunk.index, chunk.data);
+      if (parts.size < expected) return null;
+
+      const ordered = Array.from({ length: expected }, (_, i) => parts.get(i) ?? null);
+      reset();
+      if (ordered.some((p) => p === null)) return null;
+      const joined = ordered.join("");
+      return joined.length > maxBytes ? null : joined;
+    },
+    reset,
+    inProgress: () => parts.size > 0,
+  };
+}
+
+export interface SerialLineBuffer {
+  /** Feed a decoded chunk; returns the complete lines it contained. */
+  push: (chunk: string) => string[];
+  reset: () => void;
+}
+
+/**
+ * Line buffering for the USB console. Firmware writes one `\n`-terminated JSON
+ * line per response, but a serial read can split or merge them arbitrarily.
+ */
+export function createSerialLineBuffer(maxLineLength = 4096): SerialLineBuffer {
+  let buffer = "";
+  return {
+    push(chunk: string) {
+      buffer += chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      if (buffer.length > maxLineLength) buffer = "";
+      return lines.map((l) => l.trim()).filter((l) => l.length > 0);
+    },
+    reset() {
+      buffer = "";
+    },
+  };
+}
+
+/** `HC PING` → the controller answered with its protocol version. */
+export function isRecoveryProtocolMessage(message: RecoveryDeviceMessage): boolean {
+  return message.kind !== "unknown";
+}
