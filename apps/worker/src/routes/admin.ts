@@ -1,3 +1,4 @@
+import { listRecoverySessions } from "../lib/recovery";
 import { Hono } from "hono";
 import { unzipSync, strFromU8 } from "fflate";
 import { z } from "zod";
@@ -3155,6 +3156,13 @@ export function createAdminRoutes() {
   // never publishes MQTT, calls EMQX, or writes to the database. Admins can
   // observe and diagnose customer environments but cannot control hardware.
   // See docs/ADMIN_CUSTOMER_MONITORING.md for the health rules.
+
+  app.get("/accounts/:id/recovery-history", async (c) => {
+    const result = await listRecoverySessions(c.get("db"), {
+      accountId: c.req.param("id"), limit: 20, offset: 0,
+    });
+    return c.json(result);
+  });
 
   app.get("/accounts/:id/monitoring", async (c) => {
     const db = c.get("db");

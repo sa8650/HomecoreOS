@@ -25,6 +25,7 @@ import {
   type RecoveryDeviceHello,
   type RecoveryDeviceStatus,
   type RecoveryTransportKind,
+  type BleCommandPayload,
 } from "@homecoreos/shared";
 
 /** Where a transport gets its bytes from. */
@@ -46,7 +47,7 @@ export interface RecoveryTransport {
   /** True once the board has answered on this transport. */
   readonly connected: boolean;
   /** Connect and read discovery + diagnostics. Bounded by `timeoutMs`. */
-  connect: (options?: { timeoutMs?: number; onProgress?: (message: string) => void }) => Promise<RecoveryTransportConnectResult>;
+  connect: (options?: { timeoutMs?: number; onProgress?: (message: string) => void; onDisconnected?: (error: RecoveryTransportError) => void }) => Promise<RecoveryTransportConnectResult>;
   /** Send one protocol line (`HC STATUS`, `HC REPAIR {…}`) and return the reply. */
   request: (line: string, options?: { timeoutMs?: number }) => Promise<string>;
   /** Ask the board for fresh diagnostics. */
@@ -247,7 +248,7 @@ export interface RecoveryBleSession {
     onLog?: (message: string) => void;
     onDisconnected?: () => void;
   }) => Promise<{ deviceInfo: { mac_suffix?: string; chip?: string; fw?: string } }>;
-  sendEncryptedCommand: (payload: { action: string }, options?: { supportsWifi?: boolean }) => Promise<void>;
+  sendEncryptedCommand: (payload: BleCommandPayload, options?: { supportsWifi?: boolean }) => Promise<void>;
   onStatusUpdate: (
     callback: (status: unknown) => void,
     onError?: (err: Error) => void
@@ -305,7 +306,7 @@ export function createBleRecoveryTransport(options: {
     });
   };
 
-  client.onStatusUpdate(
+  const listenForStatus = () => client.onStatusUpdate(
     (payload) => {
       // The firmware may split a response across notifications; a partial set
       // is dropped rather than guessed (the flow re-asks with HC STATUS).
@@ -322,7 +323,7 @@ export function createBleRecoveryTransport(options: {
     get connected() {
       return connected && client.isConnected;
     },
-    async connect({ timeoutMs = RECOVERY_TRANSPORT_CONNECT_TIMEOUT_MS, onProgress } = {}) {
+    async connect({ timeoutMs = RECOVERY_TRANSPORT_CONNECT_TIMEOUT_MS, onProgress, onDisconnected } = {}) {
       const support = options.support;
       if (support && !support.supported) {
         throw new RecoveryTransportError(
@@ -341,6 +342,7 @@ export function createBleRecoveryTransport(options: {
             onDisconnected: () => {
               connected = false;
               if (!disposed) {
+                onDisconnected?.(new RecoveryTransportError("ble_disconnected", "Bluetooth disconnected. Reconnect and run diagnostics before continuing."));
                 failAll(
                   new RecoveryTransportError(
                     "ble_disconnected",
@@ -361,6 +363,7 @@ export function createBleRecoveryTransport(options: {
           err instanceof Error ? err.message : "Could not connect over Bluetooth."
         );
       }
+      listenForStatus();
       connected = true;
       onProgress?.("Secure session established. Reading board information …");
 
@@ -480,6 +483,7 @@ export function createUsbRecoveryTransport(options: {
   let queue: string[] = [];
   const waiters: Array<{ resolve: (v: string) => void; reject: (e: Error) => void; timer: number }> = [];
   const logs: string[] = [];
+  let onDisconnected: ((error: RecoveryTransportError) => void) | undefined;
 
   const settle = (raw: string) => {
     const waiter = waiters.shift();
@@ -538,7 +542,9 @@ export function createUsbRecoveryTransport(options: {
       // A yanked cable ends the stream; the disconnected state is reported by
       // the next request timing out with a specific message.
     } finally {
+      const unexpected = connected;
       connected = false;
+      if (unexpected) onDisconnected?.(new RecoveryTransportError("usb_disconnected", "USB disconnected. Reconnect the cable and run diagnostics again."));
       failAll(
         new RecoveryTransportError(
           "usb_disconnected",
@@ -559,7 +565,8 @@ export function createUsbRecoveryTransport(options: {
     get connected() {
       return connected;
     },
-    async connect({ onProgress } = {}) {
+    async connect({ onProgress, onDisconnected: disconnected } = {}) {
+      onDisconnected = disconnected;
       const support = options.support ?? isRecoverySerialSupported();
       if (!support.available) {
         throw new RecoveryTransportError(
@@ -572,7 +579,10 @@ export function createUsbRecoveryTransport(options: {
       try {
         const requestPort =
           options.requestPort ??
-          (navigator as Navigator & { serial: RecoverySerialNavigator }).serial!.requestPort!;
+          (() => {
+            const serial = (navigator as Navigator & { serial: RecoverySerialNavigator }).serial!;
+            return serial.requestPort!.call(serial);
+          });
         port = await requestPort();
       } catch (err) {
         throw new RecoveryTransportError(
@@ -592,6 +602,8 @@ export function createUsbRecoveryTransport(options: {
         );
       }
       connected = true;
+      const info = port.getInfo?.();
+      if (info) onProgress?.(`USB serial port · VID ${info.usbVendorId?.toString(16) ?? "unknown"} · PID ${info.usbProductId?.toString(16) ?? "unknown"} · ${RECOVERY_SERIAL_BAUD} baud`);
       onProgress?.("Connected over USB. Asking the controller to identify itself …");
       void pump();
 

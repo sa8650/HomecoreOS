@@ -110,7 +110,7 @@ static void test_repair_pairing_gating(void) {
     assert(hc_rec_action_allowed(&snap, HC_REC_ACTION_PAIR, false, reason, sizeof(reason)) == true);
     strcpy(snap.mode, "normal");
     snap.physical_confirmed = true;
-    assert(hc_rec_action_allowed(&snap, HC_REC_ACTION_PAIR, false, reason, sizeof(reason)) == true);
+    assert(hc_rec_action_allowed(&snap, HC_REC_ACTION_PAIR, false, reason, sizeof(reason)) == false);
 }
 
 static void test_factory_reset_gating(void) {
@@ -129,10 +129,10 @@ static void test_factory_reset_gating(void) {
 
     assert(hc_rec_action_allowed(&snap, HC_REC_ACTION_FACTORY_RESET, true, reason, sizeof(reason)) == true);
 
-    // Physical confirmation from the button also qualifies.
+    // Historical physical confirmation cannot authorize a new reset.
     strcpy(snap.mode, "normal");
     snap.physical_confirmed = true;
-    assert(hc_rec_action_allowed(&snap, HC_REC_ACTION_FACTORY_RESET, true, reason, sizeof(reason)) == true);
+    assert(hc_rec_action_allowed(&snap, HC_REC_ACTION_FACTORY_RESET, true, reason, sizeof(reason)) == false);
 
     // Ordinary repairs never require confirmation or recovery mode.
     hc_rec_snapshot_init(&snap);

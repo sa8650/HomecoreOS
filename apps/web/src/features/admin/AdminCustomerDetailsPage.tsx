@@ -1,3 +1,4 @@
+import { RecoveryHistory } from "@/components/controllers/RecoveryHistory";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   RiArrowLeftLine,
@@ -999,6 +1000,7 @@ export function AdminCustomerDetailsPage({
         }
       />
 
+      <RecoveryHistory endpoint={`/api/admin/accounts/${accountId}/recovery-history`} />
       <StatusAlert tone="info" title="Read-only monitoring">
         You can observe and diagnose this customer's hardware environment, but you cannot
         switch devices, change configurations, restart boards, or install firmware from

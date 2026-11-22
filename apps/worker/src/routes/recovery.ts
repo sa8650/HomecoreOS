@@ -286,6 +286,12 @@ export function createRecoveryRoutes() {
     const board = await loadBoard(db, auth.accountId, parsed.data.boardInstanceId);
     if (!board) return c.json({ error: "Controller not found in your account." }, 404);
 
+    const expectedSuffix = board.hardware_uid?.replace(/[^a-f0-9]/gi, "").slice(-4).toUpperCase();
+    const detectedSuffix = parsed.data.hardwareUidSuffix?.toUpperCase();
+    if (expectedSuffix && detectedSuffix && expectedSuffix !== detectedSuffix) {
+      return c.json({ error: "Connected board identity does not match this controller." }, 409);
+    }
+
     const created = await createRecoverySession({
       db,
       accountId: auth.accountId,

@@ -1550,7 +1550,7 @@ export function describeTransportCapability(params: {
       requirements: [
         "The controller is powered and within Wi-Fi range",
         "Hold BOOT for 3 seconds to open HomecoreOS-Setup-XXXX",
-        "Works in any browser on this device",
+        "Browser must permit local HTTP / private-network access to the portal",
       ],
       available: boardSupportsWifi,
       unavailableReason: boardSupportsWifi

@@ -1,3 +1,5 @@
+import { RecoveryHistory } from "./RecoveryHistory";
+import { UnifiedRecoveryPanel } from "./UnifiedRecoveryPanel";
 import {
   useCallback,
   useEffect,
@@ -91,12 +93,13 @@ export type ControllerSetupView =
   | "setup_ble"
   | "setup_wifi"
   | "recover_ble"
-  | "recover_wifi";
+  | "recover_wifi"
+  | "recover_usb";
 
 /** The screen a "Back" button returns to from a leaf flow. */
 function parentViewOf(view: ControllerSetupView): ControllerSetupView {
   if (view === "setup_ble" || view === "setup_wifi") return "setup";
-  if (view === "recover_ble" || view === "recover_wifi") return "recover";
+  if (view === "recover_ble" || view === "recover_wifi" || view === "recover_usb") return "recover";
   return "entry";
 }
 
@@ -232,7 +235,7 @@ function ActionCard({
         <span className="flex items-center gap-2">
           <span className="truncate text-sm font-semibold text-foreground">{title}</span>
         </span>
-        <span className="mt-0.5 block truncate text-[12.5px] text-muted-foreground">
+        <span className="mt-0.5 block text-[12.5px] text-muted-foreground">
           {meta ? `${meta} · ` : ""}
           {description}
         </span>
@@ -621,7 +624,7 @@ export function ControllerSetupModal({
     if (
       !open ||
       !wifiPortalControllerId ||
-      (view !== "setup_wifi" && view !== "recover_wifi")
+      view !== "setup_wifi"
     ) {
       return;
     }
@@ -827,78 +830,9 @@ export function ControllerSetupModal({
   }
 
   async function issuePairingAuthorization(
-    isRecovery: boolean,
     info: BleDeviceInfoPayload | null,
     deviceLabel: string
   ): Promise<{ boardInstanceId: string; pairingCode: string }> {
-    const matched = matchControllerByBleInfo(
-      info,
-      controllers,
-      trashedControllers,
-      targetController
-    );
-
-    if (isRecovery) {
-      if (matched.kind === "active") {
-        activeControllerIdRef.current = matched.controller.id;
-        const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-          "/api/board-instances/recover",
-          {
-            method: "POST",
-            body: JSON.stringify({ boardInstanceId: matched.controller.id }),
-          }
-        );
-        return { boardInstanceId: res.controller.id, pairingCode: res.pairingCode };
-      }
-
-      if (matched.kind === "trashed") {
-        const res = await apiFetch<{
-          controller: ControllerItem;
-          pairingCode?: string | null;
-        }>(`/api/board-instances/${matched.controller.id}/restore`, {
-          method: "POST",
-        });
-        activeControllerIdRef.current = res.controller.id;
-        if (res.pairingCode) {
-          return { boardInstanceId: res.controller.id, pairingCode: res.pairingCode };
-        }
-        const rec = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-          "/api/board-instances/recover",
-          {
-            method: "POST",
-            body: JSON.stringify({ boardInstanceId: res.controller.id }),
-          }
-        );
-        return { boardInstanceId: rec.controller.id, pairingCode: rec.pairingCode };
-      }
-
-      // Permanently deleted or missing from account -> create a fresh recovery slot bound to user's account
-      const matchedBoard = matchBoardForDeviceInfo(info, catalogBoards, customBoardProfiles);
-      if (!matchedBoard) {
-        throw new Error(
-          "No compatible board profile is available in your catalog for this board."
-        );
-      }
-      const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-        "/api/board-instances/recover",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            name:
-              activeControllerIdRef.current && targetController?.name
-                ? targetController.name
-                : deviceLabel || "Recovered Board",
-            homeId: homes[0]?.id,
-            ...(matchedBoard.kind === "catalog"
-              ? { boardProfileId: matchedBoard.board.id }
-              : { customBoardProfileId: matchedBoard.board.id }),
-          }),
-        }
-      );
-      activeControllerIdRef.current = res.controller.id;
-      return { boardInstanceId: res.controller.id, pairingCode: res.pairingCode };
-    }
-
     // New Controller Setup authorization
     if (activeControllerIdRef.current || targetController?.id) {
       const existingId = activeControllerIdRef.current ?? targetController!.id;
@@ -1090,10 +1024,8 @@ export function ControllerSetupModal({
       // Step 1 complete (secure BLE session established) -> Step 2 active (Saving Wi-Fi configuration)
       setStepProgress(1, 1);
 
-      if (!isRecoveryBle) {
         // Setup with BLE: auto-generate pairing code from authenticated account & send encrypted payload
         const { boardInstanceId, pairingCode } = await issuePairingAuthorization(
-          false,
           deviceInfo,
           connectedDeviceName
         );
@@ -1121,101 +1053,6 @@ export function ControllerSetupModal({
           (err as Error & { stepIdx?: number }).stepIdx = 4;
           throw err;
         }
-      } else {
-        // Recover with BLE: determine Case A (Wi-Fi changed only) vs Case B (Account / controller re-pair)
-        const matched = matchControllerByBleInfo(
-          deviceInfo,
-          controllers,
-          trashedControllers,
-          targetController
-        );
-        const canTryWifiOnly =
-          matched.kind === "active" &&
-          matched.controller.pairing_status === "paired" &&
-          Boolean(matched.controller.paired_at) &&
-          deviceInfo?.paired !== false;
-
-        let verifiedControllerId: string | null =
-          matched.kind === "active" ? matched.controller.id : null;
-
-        if (canTryWifiOnly && matched.kind === "active") {
-          activeControllerIdRef.current = matched.controller.id;
-          try {
-            currentErrorStep = 2;
-            await sendAndAwaitBleStatus(
-              client,
-              {
-                action: "wifi_only",
-                ssid: cleanSsid,
-                password: wifiPass,
-              },
-              "wifi_only"
-            );
-          } catch (caseAErr) {
-            const failStep =
-              (caseAErr as Error & { stepIdx?: number }).stepIdx ?? currentErrorStep;
-            // If Wi-Fi connected (step >= 3) but MQTT / pairing verification failed, auto-escalate to Case B re-pair!
-            if (failStep >= 3 && client.isConnected) {
-              setStepProgress(3, 3);
-              const { boardInstanceId, pairingCode } = await issuePairingAuthorization(
-                true,
-                deviceInfo,
-                connectedDeviceName
-              );
-              verifiedControllerId = boardInstanceId;
-              currentErrorStep = 3;
-              await sendAndAwaitBleStatus(
-                client,
-                {
-                  action: "recover",
-                  ssid: cleanSsid,
-                  password: wifiPass,
-                  backend_url: serverOrigin,
-                  pair_code: pairingCode,
-                  physical_confirm: true,
-                },
-                "pair_or_recover"
-              );
-            } else {
-              throw caseAErr;
-            }
-          }
-        } else {
-          // Case B: Controller was deleted, in Trash, recovery_pending, or factory reset
-          const { boardInstanceId, pairingCode } = await issuePairingAuthorization(
-            true,
-            deviceInfo,
-            connectedDeviceName
-          );
-          verifiedControllerId = boardInstanceId;
-          currentErrorStep = 2;
-          await sendAndAwaitBleStatus(
-            client,
-            {
-              action: "recover",
-              ssid: cleanSsid,
-              password: wifiPass,
-              backend_url: serverOrigin,
-              pair_code: pairingCode,
-              physical_confirm: true,
-            },
-            "pair_or_recover"
-          );
-        }
-
-        currentErrorStep = 5;
-        setStepProgress(5, 5);
-        if (verifiedControllerId) {
-          const onlineOk = await waitForControllerOnlineOnBackend(verifiedControllerId);
-          if (!onlineOk) {
-            const err = new Error(
-              "Board connected to Wi-Fi, but MQTT verification with HomecoreOS did not succeed."
-            );
-            (err as Error & { stepIdx?: number }).stepIdx = 4;
-            throw err;
-          }
-        }
-      }
 
       // Clear sensitive temporary credentials immediately upon verified completion
       bleExpectedDisconnectRef.current = true;
@@ -1271,37 +1108,6 @@ export function ControllerSetupModal({
         );
         setWifiPortalControllerId(res.controller.id);
         setWifiPortalCode(res.pairingCode);
-      } else if (view === "recover_wifi") {
-        if (!wifiPortalRecoverDeleted && wifiPortalTargetId) {
-          const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-            "/api/board-instances/recover",
-            {
-              method: "POST",
-              body: JSON.stringify({ boardInstanceId: wifiPortalTargetId }),
-            }
-          );
-          setWifiPortalControllerId(res.controller.id);
-          setWifiPortalCode(res.pairingCode);
-        } else {
-          const [kind, id] = wifiPortalBoardChoice.split(":");
-          if (!id) {
-            throw new Error("Select the board model.");
-          }
-          const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-            "/api/board-instances/recover",
-            {
-              method: "POST",
-              body: JSON.stringify({
-                name: wifiPortalName.trim() || "Recovered Board",
-                homeId: homes[0]?.id,
-                boardProfileId: kind === "catalog" ? id : undefined,
-                customBoardProfileId: kind === "custom" ? id : undefined,
-              }),
-            }
-          );
-          setWifiPortalControllerId(res.controller.id);
-          setWifiPortalCode(res.pairingCode);
-        }
       }
     } catch (err) {
       setWifiPortalError(
@@ -1366,8 +1172,8 @@ export function ControllerSetupModal({
               : view === "setup_wifi"
                 ? "Setup with Wi-Fi"
                 : view === "recover_ble"
-                  ? "Recover with Bluetooth"
-                  : "Recover with Wi-Fi";
+                  ? "Repair / Recover with BLE"
+                  : view === "recover_usb" ? "Repair / Recover with USB" : "Repair / Recover with Wi-Fi";
   /**
    * The accessible name of the dialog. It changes with the visible step, so
    * assistive tech announces "Flash Board over USB" once the flasher opens
@@ -1387,8 +1193,8 @@ export function ControllerSetupModal({
               : view === "setup_wifi"
                 ? "Setup with Wi-Fi"
                 : view === "recover_ble"
-                  ? "Recover with Bluetooth"
-                  : "Recover with Wi-Fi";
+                  ? "Repair / Recover with BLE"
+                  : view === "recover_usb" ? "Repair / Recover with USB" : "Repair / Recover with Wi-Fi";
 
   const flowSubtitle =
     view === "entry"
@@ -1515,15 +1321,21 @@ export function ControllerSetupModal({
                 <>
                   <ActionCard
                     kind="bluetooth"
-                    title="Recover with Bluetooth"
-                    description="Push the Wi-Fi and pairing details back over Bluetooth."
+                    title="Repair / Recover with BLE"
+                    description="Encrypted diagnostics and in-place repair. Needs Bluetooth LE, Chrome/Edge and HTTPS. Disconnected."
                     onClick={() => openChildView("recover_ble")}
                   />
                   <ActionCard
                     kind="wifi"
-                    title="Recover with Wi-Fi"
-                    description="Join HomecoreOS-Setup-XXXX and recover from 192.168.4.1."
+                    title="Repair / Recover with Wi-Fi"
+                    description="Powered Wi-Fi board required. Join HomecoreOS-Setup-XXXX, then read diagnostics at 192.168.4.1. Disconnected."
                     onClick={() => openChildView("recover_wifi")}
+                  />
+                  <ActionCard
+                    kind="usb"
+                    title="Repair / Recover with USB"
+                    description="Repair installed firmware over a USB data cable. Desktop Chrome/Edge and HTTPS required. No flashing or erasing. Disconnected."
+                    onClick={() => openChildView("recover_usb")}
                   />
                 </>
               ) : (
@@ -1545,10 +1357,10 @@ export function ControllerSetupModal({
               )}
             </div>
 
+            {view === "recover" && <RecoveryHistory />}
             {view === "recover" && (
               <p className="rounded-[8px] border bg-muted/40 px-3 py-2 text-[11.5px] leading-relaxed text-muted-foreground">
-                Recovery needs the board's recovery code. Deleted boards stay listed in the My
-                Boards trash so they can be restored to a home.
+                Ordinary repairs preserve pairing and device assignments. Account re-pairing requires explicit authorization. Restore deleted boards from My Boards trash first.
               </p>
             )}
           </>
@@ -1578,7 +1390,13 @@ export function ControllerSetupModal({
           </>
         )}
 
-        {(view === "setup_ble" || view === "recover_ble") && (
+        {(view === "recover_usb" || view === "recover_ble" || view === "recover_wifi") && (
+          <UnifiedRecoveryPanel kind={view === "recover_usb" ? "usb" : view === "recover_ble" ? "ble" : "wifi"}
+            controllers={controllers} target={targetController} profiles={boardsForSlugLookup} canManage={canManage}
+            onFlash={() => openChildView("flash")} />
+        )}
+
+        {["setup_ble"].includes(view) && (
           <>
 
             {bleScreen === "discover" && (
@@ -1865,7 +1683,7 @@ export function ControllerSetupModal({
           </>
         )}
 
-        {(view === "setup_wifi" || view === "recover_wifi") && (
+        {["setup_wifi"].includes(view) && (
           <>
             <div className="space-y-4">
               <WifiPortalArtwork />
@@ -2120,7 +1938,7 @@ export function ControllerSetupModal({
                   flashRef.current.back();
                   return;
                 }
-                if (view === "setup_ble" || view === "recover_ble") {
+                if (view === "setup_ble") {
                   if (bleScreen === "discover") {
                     handleBackToEntry();
                   } else if (bleScreen === "wifi") {

@@ -357,6 +357,24 @@ describe("Admin Customer Monitoring API (read-only, isolated)", () => {
     expect(cross.status).toBe(404);
   });
 
+  it("exposes account-scoped recovery history to administrators as read-only", async () => {
+    await dbHarness.pg.query(`INSERT INTO recovery_sessions
+      (account_id, board_instance_id, transport, status, expires_at)
+      VALUES ($1, $2, 'usb', 'failed', now() + interval '15 minutes'),
+             ($3, $4, 'ble', 'completed', now() + interval '15 minutes')`,
+      [accountAId, boardAId, accountBId, boardBId]);
+    const path = `/api/admin/accounts/${accountAId}/recovery-history`;
+    expect((await req(path)).status).toBe(401);
+    const res = await req(path, { headers: { Cookie: adminCookie } });
+    expect(res.status).toBe(200);
+    const data = await res.json() as { sessions: Array<{ board_instance_id: string; transport: string }> };
+    expect(data.sessions).toHaveLength(1);
+    expect(data.sessions[0]).toMatchObject({ board_instance_id: boardAId, transport: "usb" });
+    expect(JSON.stringify(data)).not.toMatch(/password|private_key|pairing_code/);
+    const write = await req(path, { method: "POST", headers: { Cookie: adminCookie } });
+    expect([404, 405]).toContain(write.status);
+  });
+
   it("returns 404 for unknown accounts and paginates board inventory", async () => {
     const missing = await req(
       `/api/admin/accounts/00000000-0000-0000-0000-000000000000/monitoring`,

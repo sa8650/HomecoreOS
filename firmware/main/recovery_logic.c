@@ -244,8 +244,9 @@ bool hc_rec_action_allowed(
         case HC_REC_ACTION_PAIR:
             /* Re-pairing rotates the board's MQTT credentials, so it needs the
              * same physical proof as a factory reset: the user is standing at
-             * the controller holding BOOT. */
-            if (!(in_recovery || snap->physical_confirmed)) {
+             * the controller holding BOOT. Persisted physical_confirmed is
+             * historical setup proof, not authorization for a new repair. */
+            if (!in_recovery) {
                 if (out_reason && reason_cap) {
                     copy_str(
                         out_reason,
@@ -258,7 +259,7 @@ bool hc_rec_action_allowed(
             return true;
 
         case HC_REC_ACTION_FACTORY_RESET:
-            if (!(in_recovery || snap->physical_confirmed)) {
+            if (!in_recovery) {
                 if (out_reason && reason_cap) {
                     copy_str(
                         out_reason,

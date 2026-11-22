@@ -140,6 +140,15 @@ describe("Unified Repair & Recovery API", () => {
     expect(res.status).toBe(404);
   });
 
+  it("rejects a connected board identity mismatch before opening a session", async () => {
+    const res = await req("/api/recovery/sessions", {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ boardInstanceId: boardId, transport: "usb", hardwareUidSuffix: "FFFF" }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "Connected board identity does not match this controller." });
+  });
+
   it("starts one server-verified session with diagnostics and a plan", async () => {
     const res = await startSession("ble");
     expect([200, 201]).toContain(res.status);

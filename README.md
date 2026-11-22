@@ -73,3 +73,7 @@ npm run db:verify   # replays migrations, fails on schema drift
 ```
 
 See `DEPLOYMENT.md` for full setup instructions across GitHub, Supabase, Cloudflare Workers, Cloudflare R2, and EMQX Serverless, `DESIGN_SYSTEM.md` for UI rules, and `docs/REALTIME_SYNC.md` for how live state reaches the console.
+
+## Board repair and recovery
+
+Add Board → Repair / Recover Board offers **Wi-Fi, BLE and USB** through one diagnostic and recovery engine. USB repairs running HomecoreOS firmware; firmware flashing remains a separate action. See [Board Recovery](docs/BOARD_RECOVERY.md) for operator steps, API routes, safety, compatibility limits and troubleshooting. Real-device/ESP-IDF validation remains required before hardware rollout.

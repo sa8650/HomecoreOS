@@ -112,6 +112,7 @@ export interface RecoveryServerApi {
 
 export type RecoveryFlowPhase =
   | "idle"
+  | "identified"
   | "identifying"
   | "diagnostics"
   | "plan"
@@ -217,6 +218,7 @@ export interface RecoveryControllerOptions {
   /** Browser/board capability of each transport, for the method chooser. */
   capabilityFor: (kind: RecoveryTransportKind) => ReturnType<typeof describeTransportCapability>;
   boardInstanceId: string;
+  expectedHardwareUid?: string | null;
   /** Board Library facts used to identify the controller. */
   boardFallbacks?: Partial<RecoveryBoardInfo>;
   now?: () => number;
@@ -265,6 +267,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
   const listeners = new Set<(s: RecoveryFlowState) => void>();
   let transport: RecoveryTransport | null = null;
   let busy = false;
+  let cancelled = false;
 
   const emit = (patch: Partial<RecoveryFlowState>) => {
     state = { ...state, ...patch };
@@ -319,6 +322,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         // The session will expire on its own.
       }
     }
+    await releaseTransport();
   };
 
   /** Which action needs which input, so the UI can ask before anything runs. */
@@ -454,56 +458,30 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
               ? { action: "config" }
               : { action: "config" };
 
-    let lastMessage = "";
-    for (let attempt = 1; attempt <= RECOVERY_MAX_ATTEMPTS; attempt++) {
-      try {
-        const raw = await transport.request(buildRecoveryCommand("REPAIR", request), {
-          timeoutMs: RECOVERY_OPERATION_TIMEOUT_MS,
-        });
-        const parsed = JSON.parse(raw) as {
-          hc?: string;
-          ok?: boolean;
-          detail?: string;
-          code?: string;
-          message?: string;
-        };
-        if (parsed.hc === "ack" && parsed.ok !== false) {
-          return {
-            actionId,
-            status: "applied",
-            message: parsed.detail ?? "The controller accepted the repair.",
-            at: new Date(now()).toISOString(),
-          };
-        }
-        lastMessage = parsed.message ?? parsed.detail ?? "The controller refused this repair.";
-        // A refusal ("needs recovery mode", "not paired") will not change on a
-        // retry, so it fails immediately instead of hammering the board.
-        return {
-          actionId,
-          status: "failed",
-          message: lastMessage,
-          technical: parsed.code,
-          at: new Date(now()).toISOString(),
-        };
-      } catch (err) {
-        lastMessage = err instanceof Error ? err.message : "The controller did not answer.";
-        if (attempt === RECOVERY_MAX_ATTEMPTS) {
-          return {
-            actionId,
-            status: "failed",
-            message: lastMessage,
-            at: new Date(now()).toISOString(),
-          };
-        }
-        await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    // A command is sent exactly once: a lost acknowledgement is not proof
+    // that a mutation failed to execute. Retrying requires a fresh diagnosis.
+    try {
+      const raw = await transport.request(buildRecoveryCommand("REPAIR", request), {
+        timeoutMs: RECOVERY_OPERATION_TIMEOUT_MS,
+      });
+      const parsed = JSON.parse(raw) as {
+        hc?: string; ok?: boolean; detail?: string; code?: string; message?: string;
+      };
+      if (parsed.hc === "ack" && parsed.ok !== false) {
+        return { actionId, status: "applied", message: parsed.detail ?? "The controller accepted the repair.", at: new Date(now()).toISOString() };
       }
+      return {
+        actionId, status: "failed",
+        message: parsed.message ?? parsed.detail ?? "The controller refused this repair.",
+        technical: parsed.code, at: new Date(now()).toISOString(),
+      };
+    } catch (err) {
+      return {
+        actionId, status: "failed",
+        message: err instanceof Error ? err.message : "The controller did not answer.",
+        at: new Date(now()).toISOString(),
+      };
     }
-    return {
-      actionId,
-      status: "failed",
-      message: lastMessage || "The repair did not complete.",
-      at: new Date(now()).toISOString(),
-    };
   }
 
   return {
@@ -515,6 +493,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
 
     async connect(kind) {
       if (busy) return;
+      cancelled = false;
       busy = true;
       const capability = options.capabilityFor(kind);
       emit({
@@ -544,17 +523,23 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         const candidate = options.createTransport(kind);
         transport = candidate;
         const { hello, status } = await candidate.connect({
+          onDisconnected: (error) => { cancelled = true; void fail(error); },
           onProgress: (message) => {
             emit({ progress: message });
             logTechnical(message);
           },
         });
 
+        if (cancelled) { await candidate.release(); return; }
+        const expectedSuffix = options.expectedHardwareUid?.replace(/[^a-f0-9]/gi, "").slice(-4).toUpperCase();
+        if (expectedSuffix && hello.uidSuffix?.toUpperCase() !== expectedSuffix) {
+          throw new RecoveryTransportError("identity_mismatch", "The connected board does not match the selected controller. No repair was performed.", false);
+        }
         const board = boardInfoFromHello(hello, options.boardFallbacks ?? {});
         emit({ board, boardStatus: status });
         setStep("detect", "done", `${capability.label.split("·")[0]?.trim() ?? kind} connected.`);
         setStep("read", "done", `${board.model ?? board.boardSlug ?? "Controller"} · firmware v${board.firmwareVersion ?? "unknown"}`);
-        emit({ progress: "Controller identified." });
+        emit({ phase: "identified", progress: "Controller identified." });
 
         if (board.capabilityIssues.length > 0) {
           // Capability problems are real findings, not transport failures.
@@ -591,6 +576,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
             hardwareUidSuffix: state.board.hardwareUid,
             firmwareVersion: state.board.firmwareVersion,
           });
+          if (cancelled) { await options.api.abandon(started.session.id, "Recovery cancelled during connection."); return; }
           serverDiagnostics = started.server.diagnostics;
           emit({
             sessionId: started.session.id,
@@ -601,6 +587,10 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
             `Server session ${started.session.id} (${started.resumed ? "resumed" : "new"}), expires ${started.session.expiresAt}.`
           );
         } catch (err) {
+          // Authorization, identity and concurrency refusals must never fall
+          // through to offline repair. Only an unavailable server may do so.
+          const status = (err as { status?: number })?.status;
+          if (status && status >= 400 && status < 500) throw err;
           // The local diagnosis still works without the server; it just cannot
           // be recorded, which the report says explicitly.
           logTechnical(
@@ -608,6 +598,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
           );
         }
 
+        if (cancelled) return;
         setStepStage(2, "active");
         const clientDiagnostics = runDiagnostics({
           board: state.board,
@@ -641,7 +632,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
           board: state.board,
           diagnostics,
           transport: state.transport!,
-          allowRePair: false,
+          allowRePair: true,
         });
 
         setStepStage(4, "active");
@@ -671,7 +662,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
           }
         }
       } catch (err) {
-        await fail(err, "diagnostics");
+        await fail(err, "error");
       } finally {
         busy = false;
       }
@@ -680,7 +671,15 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
     async repair(inputs) {
       if (busy || !transport) return;
       const plan = state.plan;
-      if (!plan) return;
+      if (!plan || cancelled || state.phase === "error" || plan.requiresFirmwareWorkflow) return;
+      if (isRecoveryFlowExpired(state.sessionExpiresAt, now())) {
+        await fail(new RecoveryTransportError("session_expired", "This recovery session expired. Reconnect and run diagnostics before repairing.", false));
+        return;
+      }
+      if (plan.actions.some((a) => a.changesIdentity) && !state.sessionId) {
+        await fail(new RecoveryTransportError("authorization_required", "Account recovery requires a live authorized server session. Reconnect to HomecoreOS and try again.", false));
+        return;
+      }
 
       const blocking = requiredInputs(plan, inputs)[0];
       if (blocking) {
@@ -710,8 +709,29 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
       try {
         setStepStage(5, "active");
         for (const action of plan.actions) {
+          if (cancelled) return;
           if (action.id === "none") continue;
           emit({ progress: `${action.title} …` });
+          // Saving credentials only acknowledges NVS. Wait for the station to
+          // obtain an address before dependent HTTP/pairing/MQTT operations.
+          if (action.id !== "rewrite_wifi" && outcomes.some((o) => o.actionId === "rewrite_wifi" && o.status === "applied")) {
+            const networkDeadline = now() + Math.min(30_000, verifyTimeoutMs);
+            let networkReady = false;
+            do {
+              if (cancelled) return;
+              try {
+                const fresh = await readFresh({ attempts: 1, base: beforeTelemetry });
+                emit({ boardStatus: fresh.status, progress: "Waiting for Wi-Fi and an IP address before the next repair …" });
+                networkReady = fresh.status.wifiConnected === true && Boolean(fresh.status.ip);
+              } catch { /* Unknown is not ready; the deadline bounds the wait. */ }
+              if (!networkReady && now() < networkDeadline) await new Promise((resolve) => setTimeout(resolve, Math.min(1000, verifyPollMs)));
+            } while (!networkReady && now() < networkDeadline);
+            if (!networkReady) {
+              outcomes.push({ actionId: action.id, status: "failed", message: "Wi-Fi credentials were saved, but the controller has not obtained an IP address. Dependent repair was not sent.", at: new Date(now()).toISOString() });
+              emit({ outcomes: [...outcomes] });
+              break;
+            }
+          }
           const outcome = await executeAction(action.id, inputs);
           outcomes.push(outcome);
           emit({ outcomes: [...outcomes] });
@@ -724,6 +744,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
           }
           logTechnical(`${action.id}: ${outcome.message}`);
         }
+        if (cancelled) return;
         const repairOk = repairExecutionSucceeded({ outcomes, transportFailed: false });
         setStep(
           "repair",
@@ -735,7 +756,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         emit({ phase: "verifying", progress: "Waiting for the controller to report back …" });
         setStepStage(6, "active");
         const deadline = now() + verifyTimeoutMs;
-        let after = beforeTelemetry;
+        let after = emptyRecoveryTelemetry(now());
         let verification: VerificationResult | null = null;
 
         if (plan.actions.length === 0) {
@@ -750,6 +771,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
           }
         } else {
           while (now() <= deadline) {
+            if (cancelled) return;
             try {
               const fresh = await readFresh({ base: beforeTelemetry });
               after = mergeRecoveryTelemetry(beforeTelemetry, fresh.telemetry);
@@ -769,6 +791,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
           }
         }
 
+        if (cancelled) return;
         verification =
           verification ?? verifyRecovery({ board: state.board, before: beforeTelemetry, after, plan });
         emit({ verification });
@@ -842,7 +865,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
 
         if (!report) {
           report = buildRecoveryReport({
-            sessionId: state.sessionId ?? "local",
+            sessionId: "local",
             boardInstanceId: options.boardInstanceId,
             boardName: null,
             board: state.board,
@@ -889,6 +912,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
     },
 
     async cancel(reason = "The user stopped the recovery.") {
+      cancelled = true;
       if (state.sessionId) {
         try {
           await options.api.abandon(state.sessionId, reason);
