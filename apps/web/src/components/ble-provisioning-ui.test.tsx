@@ -134,7 +134,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     // Level 2: setup offers Bluetooth or Wi-Fi, and Back returns to the actions.
     await user.click(screen.getByRole("button", { name: /Setup Board/i }));
-    expect(screen.getByRole("button", { name: /Setup with Bluetooth/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Setup with BLE/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Setup with Wi-Fi/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^Back$/i }));
 
@@ -217,7 +217,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     await user.click(screen.getByRole("button", { name: /^Back$/i }));
     await user.click(screen.getByRole("button", { name: /Setup Board/i }));
-    await user.click(screen.getByRole("button", { name: /Setup with Bluetooth/i }));
+    await user.click(screen.getByRole("button", { name: /Setup with BLE/i }));
     expect(await screen.findByTestId("bt-pairing-animation")).toBeInTheDocument();
 
     // The animated Wi-Fi SVG belongs to the Wi-Fi option row in the chooser.
@@ -349,9 +349,9 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
       />
     );
 
-    // Actions -> Setup Board -> Setup with Bluetooth (Screen A)
+    // Actions -> Setup Board -> Setup with BLE (Screen A)
     await user.click(screen.getByRole("button", { name: /Setup Board/i }));
-    await user.click(screen.getByRole("button", { name: /Setup with Bluetooth/i }));
+    await user.click(screen.getByRole("button", { name: /Setup with BLE/i }));
     expect(screen.getByText(/Discover HomecoreOS Board/i)).toBeInTheDocument();
     expect(
       screen.getByText(/Turn on your HomecoreOS Board and keep it nearby/i)
@@ -497,7 +497,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     }) as typeof fetch;
 
     await user.type(screen.getByLabelText(/Board Name/i), "Porch Sensor Hub");
-    await user.click(screen.getByRole("button", { name: /Get Pairing Code/i }));
+    await user.click(screen.getByRole("button", { name: /Generate Pairing Code/i }));
     await waitFor(() => {
       expect(screen.getByText("908070")).toBeInTheDocument();
     });
@@ -707,8 +707,11 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     ).toBeInTheDocument();
     expect(screen.getAllByText(/192\.168\.4\.1/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/HomecoreOS-Setup-XXXX/i).length).toBeGreaterThan(0);
-    expect(screen.queryByRole("combobox", { name: "Controller to repair" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect to Board" })).toBeInTheDocument();
+    // The website hands out a recovery code; the board's local page takes the
+    // code, the (optional) Wi-Fi details and the website URL.
+    expect(screen.getByLabelText(/Board to Recover/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Generate Recovery Code/i })).toBeInTheDocument();
+    expect(screen.getByText(/ever flashed during recovery/i)).toBeInTheDocument();
 
     // Back returns to the repair choice, not all the way out of the flow.
     await user.click(screen.getByRole("button", { name: /^Back$/i }));

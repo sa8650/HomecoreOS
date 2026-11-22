@@ -43,6 +43,7 @@ const char *hc_rec_action_name(hc_rec_action_t action) {
         case HC_REC_ACTION_RESTART: return "restart";
         case HC_REC_ACTION_FACTORY_RESET: return "factory_reset";
         case HC_REC_ACTION_PAIR: return "pair";
+        case HC_REC_ACTION_ESPNOW: return "espnow";
         default: return "none";
     }
 }
@@ -55,6 +56,7 @@ hc_rec_action_t hc_rec_action_from_name(const char *name) {
     if (strcmp(name, "restart") == 0 || strcmp(name, "reboot") == 0) return HC_REC_ACTION_RESTART;
     if (strcmp(name, "factory_reset") == 0) return HC_REC_ACTION_FACTORY_RESET;
     if (strcmp(name, "pair") == 0 || strcmp(name, "recover") == 0) return HC_REC_ACTION_PAIR;
+    if (strcmp(name, "espnow") == 0 || strcmp(name, "relink") == 0) return HC_REC_ACTION_ESPNOW;
     return HC_REC_ACTION_NONE;
 }
 
@@ -237,6 +239,7 @@ bool hc_rec_action_allowed(
         case HC_REC_ACTION_MQTT:
         case HC_REC_ACTION_CONFIG:
         case HC_REC_ACTION_RESTART:
+        case HC_REC_ACTION_ESPNOW:
             /* Ordinary repairs never need physical confirmation: they keep
              * identity, pairing and every device assignment. */
             return true;
@@ -387,12 +390,15 @@ int hc_rec_build_hello(const hc_recovery_snapshot_t *snap, char *out, size_t cap
         }
     }
 
+    char partition[32];
+    if (hc_rec_escape_json(snap->partition, partition, sizeof(partition)) < 0) return -1;
+
     int n = snprintf(
         out,
         cap,
         "{\"hc\":\"recovery\",\"proto\":%d,\"board\":\"%s\",\"chip\":\"%s\",\"fw\":\"%s\","
         "\"mode\":\"%s\",\"paired\":%s,\"wifi\":%s,\"ble\":%s,\"recovery_supported\":%s,"
-        "\"uid_suffix\":\"%s\"}",
+        "\"uid_suffix\":\"%s\",\"partition\":\"%s\"}",
         HC_RECOVERY_PROTO_VERSION,
         slug,
         chip,
@@ -402,14 +408,15 @@ int hc_rec_build_hello(const hc_recovery_snapshot_t *snap, char *out, size_t cap
         snap->has_wifi ? "true" : "false",
         snap->has_ble ? "true" : "false",
         snap->recovery_supported ? "true" : "false",
-        suffix
+        suffix,
+        partition
     );
     return (n < 0 || (size_t)n >= cap) ? -1 : n;
 }
 
 int hc_rec_build_status(const hc_recovery_snapshot_t *snap, char *out, size_t cap) {
     if (!snap || !out || cap == 0) return -1;
-    char ssid[96], ip[48], werr[192], merr[192], lerr[256], mode[32], fw[48];
+    char ssid[96], ip[48], werr[192], merr[192], lerr[256], mode[32], fw[48], board_esc[96];
     if (hc_rec_escape_json(snap->wifi_ssid, ssid, sizeof(ssid)) < 0) return -1;
     if (hc_rec_escape_json(snap->ip, ip, sizeof(ip)) < 0) return -1;
     if (hc_rec_escape_json(snap->wifi_last_error, werr, sizeof(werr)) < 0) return -1;
@@ -417,6 +424,7 @@ int hc_rec_build_status(const hc_recovery_snapshot_t *snap, char *out, size_t ca
     if (hc_rec_escape_json(snap->last_error, lerr, sizeof(lerr)) < 0) return -1;
     if (hc_rec_escape_json(snap->mode, mode, sizeof(mode)) < 0) return -1;
     if (hc_rec_escape_json(snap->fw_version, fw, sizeof(fw)) < 0) return -1;
+    if (hc_rec_escape_json(snap->board_slug, board_esc, sizeof(board_esc)) < 0) return -1;
 
     size_t len = 0;
     if (append(
@@ -458,8 +466,7 @@ int hc_rec_build_status(const hc_recovery_snapshot_t *snap, char *out, size_t ca
             &len,
             "\"entities_known\":%s,\"sensors_total\":%u,\"sensors_reporting\":%u,"
             "\"switches_total\":%u,\"switches_reporting\":%u,"
-            "\"nodes_known\":%s,\"nodes_total\":%u,\"nodes_linked\":%u,"
-            "\"last_error\":\"%s\"}",
+            "\"nodes_known\":%s,\"nodes_total\":%u,\"nodes_linked\":%u,",
             snap->entities_known ? "true" : "false",
             snap->sensor_total,
             snap->sensor_reporting,
@@ -467,7 +474,50 @@ int hc_rec_build_status(const hc_recovery_snapshot_t *snap, char *out, size_t ca
             snap->switch_reporting,
             snap->nodes_known ? "true" : "false",
             snap->node_total,
-            snap->node_linked,
+            snap->node_linked
+        ) < 0) {
+        return -1;
+    }
+
+    /* Running image, server URL and radio capabilities. Everything here is a
+     * fact the board owns; the console reports Unknown for anything this image
+     * does not fill in rather than inventing a failure. */
+    char partition[32], backend[208], ota_err[112], espnow_link[32];
+    if (hc_rec_escape_json(snap->partition, partition, sizeof(partition)) < 0) return -1;
+    if (hc_rec_escape_json(snap->backend_url, backend, sizeof(backend)) < 0) return -1;
+    if (hc_rec_escape_json(snap->ota_last_error, ota_err, sizeof(ota_err)) < 0) return -1;
+    if (hc_rec_escape_json(snap->espnow_link, espnow_link, sizeof(espnow_link)) < 0) return -1;
+
+    if (append(
+            out,
+            cap,
+            &len,
+            "\"board\":\"%s\",\"partition\":\"%s\",\"uptime_sec\":%u,\"free_heap\":%u,"
+            "\"backend_url\":\"%s\","
+            "\"ota_supported\":%s,\"ota_pending\":%s,\"ota_error\":\"%s\","
+            "\"has_wifi\":%s,\"has_ble\":%s,"
+            "\"espnow_supported\":%s,\"espnow_link\":\"%s\",",
+            board_esc,
+            partition,
+            snap->uptime_sec,
+            snap->free_heap_bytes,
+            backend,
+            snap->ota_supported ? "true" : "false",
+            snap->ota_pending ? "true" : "false",
+            ota_err,
+            snap->has_wifi ? "true" : "false",
+            snap->has_ble ? "true" : "false",
+            snap->espnow_supported ? "true" : "false",
+            espnow_link
+        ) < 0) {
+        return -1;
+    }
+
+    if (append(
+            out,
+            cap,
+            &len,
+            "\"last_error\":\"%s\"}",
             lerr
         ) < 0) {
         return -1;

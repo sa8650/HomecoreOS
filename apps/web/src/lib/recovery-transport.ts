@@ -19,6 +19,7 @@
  *    flow can retry, never as a silently hung promise.
  */
 import {
+  buildRecoveryCommand,
   createBleStatusReassembler,
   createSerialLineBuffer,
   parseRecoveryDeviceMessage,
@@ -52,6 +53,12 @@ export interface RecoveryTransport {
   request: (line: string, options?: { timeoutMs?: number }) => Promise<string>;
   /** Ask the board for fresh diagnostics. */
   readStatus: () => Promise<RecoveryDeviceStatus>;
+  /**
+   * Wi-Fi only: hand the repair form to the board's local page. The local page
+   * saves Wi-Fi, the server URL and the recovery code together and applies the
+   * same repair the API path would. Optional: other transports never need it.
+   */
+  submitForm?: (values: WifiRecoveryFormValues) => Promise<{ ok: boolean; message: string }>;
   /** Release the board and every OS-level resource (serial lock, GATT link). */
   release: () => Promise<void>;
 }
@@ -134,15 +141,51 @@ interface FetchLike {
  * `HomecoreOS-Setup-XXXX`, so this is a plain same-origin-ish HTTP call to
  * 192.168.4.1 — no service worker, no proxy, nothing to configure.
  */
+/**
+ * The recovery-code hand-off for the Wi-Fi flow. The website mints the code in
+ * the board-modal (exactly like Setup with Wi-Fi), then the same code is typed
+ * into the board's local page. Keeping it a plain mutable record means the
+ * transport can be created before the code exists.
+ */
+export interface WifiRecoveryCodeState {
+  /** 6-digit single-use recovery code shown in the website modal. */
+  code: string | null;
+  /** True once the user pressed "Generate recovery code". */
+  generated: boolean;
+}
+
+/**
+ * Wi-Fi recovery works in two halves, because the user must finish the flow on
+ * the board's own local page (that is the only way the browser can reach a
+ * device that is not on the network yet):
+ *
+ *   1. The website generates a recovery code (`codeState`) and shows the form
+ *      fields the local page asks for.
+ *   2. The local page posts them as one `HC REPAIR` line — over the portal API
+ *      when this browser can reach http://192.168.4.1, or as a real HTML form
+ *      when it cannot (mixed-content / private-network policies).
+ *
+ * Both halves speak the same protocol line, so the device code path is the same
+ * as BLE and USB.
+ */
+export interface WifiRecoveryFormValues {
+  ssid: string;
+  password: string;
+  backendUrl: string;
+  recoveryCode: string;
+}
+
 export function createWifiRecoveryTransport(options: {
   origin?: string;
   fetchImpl?: FetchLike;
+  /** Filled in by the website once the user generated a recovery code. */
+  codeState?: WifiRecoveryCodeState;
 } = {}): RecoveryTransport {
   const origin = (options.origin ?? RECOVERY_PORTAL_ORIGIN).replace(/\/+$/, "");
   const doFetch: FetchLike =
-    options.fetchImpl ??
-    ((input, init) => fetch(input, init as RequestInit) as unknown as ReturnType<FetchLike>);
+    options.fetchImpl ?? ((input, init) => fetch(input, init as RequestInit) as unknown as ReturnType<FetchLike>);
 
+  const codeState: WifiRecoveryCodeState | null = options.codeState ?? null;
   let connected = false;
 
   const post = async (command: string, timeoutMs: number): Promise<string> => {
@@ -177,7 +220,10 @@ export function createWifiRecoveryTransport(options: {
       let res;
       try {
         res = await withTimeout(
-          doFetch(`${origin}/api/recovery`, { method: "GET", cache: "no-store" }),
+          // The portal answers GET from its own tiny cache, so a stale read
+          // would silently show the pre-repair state. A cache-buster in the
+          // URL is the only lever that works across every browser.
+          doFetch(`${origin}/api/recovery?t=${Date.now()}`, { method: "GET", cache: "no-store" }),
           timeoutMs,
           "portal_unreachable",
           "Could not reach http://192.168.4.1. Join the HomecoreOS-Setup-XXXX network first."
@@ -228,6 +274,66 @@ export function createWifiRecoveryTransport(options: {
         throw new RecoveryTransportError("no_status", "The controller did not return its status.");
       }
       return msg.status;
+    },
+    /**
+     * The equivalent of "Save and Restart" on the board's local page, expressed
+     * as the one protocol line every transport shares. A recovery code makes it
+     * a re-pair (identity preserved, credentials rotated); without one it is the
+     * ordinary Wi-Fi + server-URL repair.
+     */
+    async submitForm(values) {
+      const code = (values.recoveryCode || codeState?.code || "").trim();
+      const ssid = values.ssid.trim();
+      const backendUrl = values.backendUrl.trim();
+      const lines: string[] = [];
+      if (ssid) {
+        lines.push(
+          buildRecoveryCommand("REPAIR", {
+            action: "wifi",
+            ssid,
+            password: values.password,
+            backendUrl,
+          })
+        );
+      } else if (backendUrl) {
+        lines.push(buildRecoveryCommand("REPAIR", { action: "config", backendUrl }));
+      }
+      if (code) {
+        lines.push(
+          buildRecoveryCommand("REPAIR", {
+            action: "pair",
+            pairCode: code,
+            backendUrl,
+          })
+        );
+      }
+      if (lines.length === 0) {
+        return { ok: false, message: "Enter a Wi-Fi network, a server URL or a recovery code first." };
+      }
+      try {
+        for (const line of lines) {
+          const response = await post(line, RECOVERY_TRANSPORT_TIMEOUT_MS);
+          const msg = parseRecoveryDeviceMessage(response);
+          if (msg.kind === "error") return { ok: false, message: msg.error.message };
+          if (msg.kind === "ack" && msg.ack.ok === false) {
+            return { ok: false, message: msg.ack.detail || "The controller refused the repair." };
+          }
+        }
+        return {
+          ok: true,
+          message: code
+            ? "Wi-Fi, server URL and recovery code saved on the controller."
+            : "Wi-Fi and server URL saved on the controller.",
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          message:
+            err instanceof Error
+              ? err.message
+              : "The controller's setup page could not be reached.",
+        };
+      }
     },
     async release() {
       connected = false;

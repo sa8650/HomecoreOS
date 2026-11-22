@@ -10,6 +10,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "role_runtime.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "hc_recovery";
@@ -169,6 +170,30 @@ static int execute_repair(hc_rec_command_t *cmd, char *out, size_t out_cap) {
                     out_cap
                 );
             }
+            break;
+
+        case HC_REC_ACTION_ESPNOW:
+            /* Re-open the ESP-NOW radio and re-sync the role block. This keeps
+             * the board role, pairing, devices and Node assignments; it never
+             * flashes, and a board with no ESP-NOW radio is told so plainly. */
+            if (!HOMECORE_HAS_WIFI) {
+                written = hc_rec_build_error(
+                    "no_espnow",
+                    "This board has no ESP-NOW-capable radio.",
+                    out,
+                    out_cap
+                );
+                break;
+            }
+            hc_role_request_relink(s_cfg);
+            written = hc_rec_build_ack(
+                HC_REC_ACTION_ESPNOW,
+                hc_role_is_node()
+                    ? "ESP-NOW re-opened; reconnecting to the assigned Controller."
+                    : "ESP-NOW re-opened; waiting for attached Nodes to check in.",
+                out,
+                out_cap
+            );
             break;
 
         case HC_REC_ACTION_RESTART: {

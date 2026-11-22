@@ -295,7 +295,19 @@
         "node_link_state text",
         "espnow_channel smallint",
         "node_last_linked_at timestamp with time zone",
-        "role_changed_at timestamp with time zone"
+        "role_changed_at timestamp with time zone",
+        "reported_partition_scheme text",
+        "uptime_sec integer",
+        "free_heap_bytes integer",
+        "backend_url text",
+        "ota_supported boolean",
+        "ota_pending boolean",
+        "ota_error text",
+        "espnow_supported boolean",
+        "espnow_link_state text",
+        "supports_wifi boolean",
+        "supports_ble boolean",
+        "health_reported_at timestamp with time zone"
       ],
       "constraints": [
         "board_instances_account_id_fkey f FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE",
@@ -338,6 +350,7 @@
         "board_instances_wifi_connected_not_null n NOT NULL wifi_connected"
       ],
       "indexes": [
+        "board_instances_backend_url_idx CREATE INDEX board_instances_backend_url_idx ON public.board_instances USING btree (backend_url) WHERE ((deleted_at IS NULL) AND (backend_url IS NOT NULL))",
         "board_instances_installed_fw_release_idx CREATE INDEX board_instances_installed_fw_release_idx ON public.board_instances USING btree (installed_firmware_release_id) WHERE ((deleted_at IS NULL) AND (installed_firmware_release_id IS NOT NULL))",
         "board_instances_pkey CREATE UNIQUE INDEX board_instances_pkey ON public.board_instances USING btree (id)",
         "idx_board_instances_account CREATE INDEX idx_board_instances_account ON public.board_instances USING btree (account_id) WHERE (deleted_at IS NULL)",

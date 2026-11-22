@@ -66,6 +66,8 @@ esp_err_t hc_role_relay_command_to_node(homecore_config_t *cfg, const char *node
 
 /** Number of Nodes currently linked to this Controller (0 when it is a Node). */
 uint8_t hc_role_linked_node_count(void);
+/** Every Node this Controller has heard from recently, linked or not. */
+uint8_t hc_role_node_count(void);
 
 /** Human readable comm mode for heartbeats/logs. */
 const char *hc_role_comm_mode_name(const homecore_config_t *cfg);

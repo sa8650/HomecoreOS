@@ -114,7 +114,82 @@ describe("device recovery protocol (shared by Wi-Fi, BLE and USB)", () => {
       transport: "usb",
     });
     expect(diag.problems).toEqual([]);
+    // The STATUS_JSON fixture is a v1 payload without the setup/repair facts, so
+    // those checks stay Unknown — never a failure.
+    expect(diag.checks.filter((c) => c.status === "unknown").map((c) => c.id).sort()).toEqual([
+      "backend_url",
+      "espnow",
+      "local_portal",
+      "ota",
+    ]);
+  });
+
+  it("diagnoses the full setup/repair contract from a complete status payload", () => {
+    const fullStatus = {
+      ...(parseRecoveryDeviceMessage(STATUS_JSON) as { status: RecoveryDeviceStatus }).status,
+      boardSlug: "esp32-s3-devkitc-1-n16r8",
+      chip: "esp32s3",
+      partitionScheme: "dual_ota_16mb",
+      uptimeSec: 20,
+      freeHeapBytes: 190_000,
+      backendUrl: "https://homecoreos.example",
+      otaSupported: true,
+      otaPendingVerify: false,
+      wifiApSupported: true,
+      bleSupported: true,
+      espnowSupported: true,
+      espnowLinkState: "linked",
+    };
+    const telemetry = telemetryFromDeviceStatus(
+      fullStatus,
+      NOW,
+      emptyRecoveryTelemetry(NOW),
+      "https://homecoreos.example"
+    );
+    expect(telemetry.backendUrl.matchesWebsite).toBe(true);
+    expect(telemetry.firmware.uptimeSec).toBe(20);
+    expect(telemetry.ota.supported).toBe(true);
+    expect(telemetry.espnow.linkState).toBe("linked");
+
+    const diag = runDiagnostics({
+      board: boardInfoFromHello({
+        proto: 1,
+        boardSlug: "esp32-s3-devkitc-1-n16r8",
+        chip: "esp32s3",
+        firmwareVersion: "1.5.0",
+        mode: "recovery",
+        paired: true,
+        hasWifi: true,
+        hasBle: true,
+        recoverySupported: true,
+        uidSuffix: "EE12",
+      }),
+      telemetry,
+      transport: "usb",
+    });
+    expect(diag.problems).toEqual([]);
     expect(diag.status).toBe("healthy");
+    expect(diag.checks.every((c) => c.status !== "unknown")).toBe(true);
+  });
+
+  it("flags a wrong server URL and an ESP-NOW outage as repairable problems", () => {
+    const status = {
+      ...(parseRecoveryDeviceMessage(STATUS_JSON) as { status: RecoveryDeviceStatus }).status,
+      backendUrl: "https://old-deployment.example",
+      espnowSupported: true,
+      espnowLinkState: "controller_lost",
+      otaSupported: false,
+    };
+    expect(problemsFromDeviceStatus(status, "https://homecoreos.example")).toEqual(
+      expect.arrayContaining(["backend_url_mismatch", "espnow_link_down", "ota_unavailable"])
+    );
+    const telemetry = telemetryFromDeviceStatus(
+      status,
+      NOW,
+      emptyRecoveryTelemetry(NOW),
+      "https://homecoreos.example"
+    );
+    expect(telemetry.backendUrl.matchesWebsite).toBe(false);
   });
 
   it("keeps 'cannot tell' separate from 'broken' when the board reports no entities", () => {

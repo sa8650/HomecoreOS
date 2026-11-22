@@ -128,7 +128,10 @@ static bool s_hs_awaiting_cli_proof = false;
 static uint64_t s_hs_started_sec = 0;
 
 static volatile hc_ble_apply_kind_t s_pending_apply = HC_BLE_APPLY_NONE;
-static char s_status_json[256] = "{\"state\":\"idle\",\"wifi_connected\":false,\"paired\":false,\"mqtt_connected\":false}";
+/* Sized for the enriched status payload (states, IP, error text plus the
+ * running-image and capability mirrors); a truncation here would produce an
+ * unparsable notification rather than a smaller one. */
+static char s_status_json[512] = "{\"state\":\"idle\",\"wifi_connected\":false,\"paired\":false,\"mqtt_connected\":false}";
 
 static uint64_t now_seconds(void) {
     return (uint64_t)(esp_timer_get_time() / 1000000ULL);
@@ -255,7 +258,10 @@ void hc_ble_prov_push_raw_status(const char *json, size_t len) {
  * lost chunk is never guessed: the console asks again with HC STATUS.
  */
 #define HC_BLE_STATUS_CHUNK_RAW 150
-#define HC_BLE_STATUS_CHUNKS_MAX 8
+/* The status answer now also carries the running-image and capability facts
+ * (partition, uptime, heap, server URL, OTA and ESP-NOW state), so the ceiling
+ * accounts for a full ~1 KB diagnostics object instead of truncating it. */
+#define HC_BLE_STATUS_CHUNKS_MAX 10
 
 void hc_ble_prov_push_chunked_status(const char *json, size_t len) {
     if (!json || len == 0) return;
@@ -324,6 +330,24 @@ void hc_ble_prov_update_status(
     if (error_msg && error_msg[0] != '\0') {
         cJSON_AddStringToObject(root, "error", error_msg);
     }
+    /* Mirror the running-image and capability facts the recovery console
+     * reports, so a browser that switched from provisioning to recovery (or
+     * simply stayed connected) sees the same truth on both channels. These are
+     * non-secret: no password, identity key or setup PIN is ever added here. */
+    hc_recovery_snapshot_t snap;
+    hc_recovery_get_snapshot(&snap);
+    if (snap.partition[0]) cJSON_AddStringToObject(root, "partition", snap.partition);
+    if (snap.board_slug[0]) cJSON_AddStringToObject(root, "board", snap.board_slug);
+    if (snap.chip[0]) cJSON_AddStringToObject(root, "chip", snap.chip);
+    if (snap.fw_version[0]) cJSON_AddStringToObject(root, "fw", snap.fw_version);
+    cJSON_AddNumberToObject(root, "uptime_sec", snap.uptime_sec);
+    cJSON_AddBoolToObject(root, "ota_supported", snap.ota_supported);
+    cJSON_AddBoolToObject(root, "ota_pending", snap.ota_pending);
+    cJSON_AddBoolToObject(root, "has_wifi", HOMECORE_HAS_WIFI ? true : false);
+    cJSON_AddBoolToObject(root, "has_ble", HOMECORE_HAS_BLE ? true : false);
+    cJSON_AddBoolToObject(root, "espnow_supported", snap.espnow_supported);
+    if (snap.espnow_link[0]) cJSON_AddStringToObject(root, "espnow_link", snap.espnow_link);
+    if (snap.backend_url[0]) cJSON_AddStringToObject(root, "backend_url", snap.backend_url);
     char *printed = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (printed) {

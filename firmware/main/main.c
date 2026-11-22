@@ -10,7 +10,9 @@
 #include "driver/gpio.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -23,6 +25,10 @@ static uint32_t s_ble_mqtt_verify_ms = 0;
 static bool s_waiting_wifi_only_confirm = false;
 static bool s_waiting_pair_mqtt_confirm = false;
 static bool s_waiting_cloud_confirm = false;
+/** True while a local-page "Save and Restart" awaits cloud confirmation. */
+static bool s_portal_save_pending = false;
+/** Milliseconds spent waiting for the cloud to confirm a local-page save. */
+static uint32_t s_portal_confirm_ms = 0;
 /** True once the last heartbeat HTTP round-trip succeeded (drives diagnostics). */
 static bool s_backend_ok = false;
 
@@ -130,11 +136,70 @@ static void publish_recovery_snapshot(
     }
     snap.heartbeat_age_sec = heartbeat_age_ms / 1000U;
 
+    /* --- Running image & capabilities -------------------------------------
+     * Everything here is measured by this image, so the recovery console can
+     * validate the firmware, prove a restart and correct a missing/stale
+     * server URL without guessing. */
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running) {
+        hc_copy_str(snap.partition, sizeof(snap.partition), running->label);
+    }
+    const esp_app_desc_t *app = esp_app_get_description();
+    if (app && app->project_name[0]) {
+        /* The build's own description is authoritative over the configured
+         * version string; a mismatch means the flashed image is not the one
+         * this configuration was built for. */
+        hc_copy_str(snap.fw_version, sizeof(snap.fw_version), app->version);
+    }
+    snap.uptime_sec = (unsigned)(esp_timer_get_time() / 1000000LL);
+    snap.free_heap_bytes = (unsigned)esp_get_free_heap_size();
+    if (cfg) {
+        hc_copy_str(snap.backend_url, sizeof(snap.backend_url), cfg->backend_url);
+    }
+    /* OTA works exactly when the partition table has a second app slot to
+     * write into; a factory-only image must not promise an update it cannot
+     * receive. */
+    snap.ota_supported = esp_ota_get_next_update_partition(NULL) != NULL;
+    snap.ota_pending = hc_ota_is_bootloader_pending_verify();
+    if (snap.ota_pending) {
+        hc_copy_str(
+            snap.ota_last_error,
+            sizeof(snap.ota_last_error),
+            "An over-the-air image is installed and awaits its first confirmed health report."
+        );
+    }
+    /* ESP-NOW only exists where a Wi-Fi radio and the role runtime do. */
+    snap.espnow_supported = HOMECORE_HAS_WIFI != 0;
+    if (snap.espnow_supported) {
+        hc_copy_str(
+            snap.espnow_link,
+            sizeof(snap.espnow_link),
+            hc_node_link_name(hc_role_link_state())
+        );
+    }
+
     /* Entity counts are owned by the IO manager's telemetry builder, which is
      * the only component that knows which sensors/switches actually exist on
-     * this board. Until it reports, the console shows "reporting unknown". */
-    snap.entities_known = false;
-    snap.nodes_known = false;
+     * this board. When it can report them, the console shows the real numbers;
+     * otherwise it says "reporting unknown" instead of "nothing assigned". */
+    hc_io_entity_counts_t counts;
+    if (hc_io_get_entity_counts(&counts)) {
+        snap.entities_known = true;
+        snap.sensor_total = counts.sensors_total;
+        snap.sensor_reporting = counts.sensors_reporting;
+        snap.switch_total = counts.switches_total;
+        snap.switch_reporting = counts.switches_reporting;
+    } else {
+        snap.entities_known = false;
+    }
+    /* Nodes are hosted by a Controller over ESP-NOW; a Node itself has none. */
+    if (HOMECORE_HAS_WIFI && !hc_role_is_node()) {
+        snap.nodes_known = true;
+        snap.node_total = hc_role_node_count();
+        snap.node_linked = hc_role_linked_node_count();
+    } else {
+        snap.nodes_known = false;
+    }
 
     hc_recovery_publish_snapshot(&snap);
 }
@@ -245,6 +310,11 @@ static void controller_supervision_task(void *pvParam) {
         }
 
         if (hc_wifi_take_portal_saved()) {
+            // The board's own local page stored Wi-Fi / URL / code: this is the
+            // "Save and Restart" hand-off, tracked separately from a pairing
+            // claim so the temporary interfaces close only for this flow.
+            s_portal_save_pending = true;
+            s_portal_confirm_ms = 0;
             s_waiting_cloud_confirm = true;
             s_backend_ok = false;
         }
@@ -296,6 +366,17 @@ static void controller_supervision_task(void *pvParam) {
                 hc_ble_prov_update_status("wifi_failed", false, s_config.paired, false, NULL, werr);
             }
             hc_ota_process_boot_validation(&s_config);
+            // Still publish (with wifi_connected=false) so a local console can
+            // diagnose a board that is *not* on the network — which is exactly
+            // the case recovery exists for.
+            publish_recovery_snapshot(
+                &s_config,
+                &s_prov_state,
+                false,
+                NULL,
+                s_backend_ok,
+                hb_elapsed_ms
+            );
             continue;
         }
 
@@ -364,6 +445,48 @@ static void controller_supervision_task(void *pvParam) {
                 s_waiting_wifi_only_confirm = false;
                 s_ble_mqtt_verify_ms = 0;
                 hc_ble_prov_update_status("error", true, true, false, ip_str, "MQTT authentication or broker connection failed");
+            }
+        }
+
+        // 6b. Local-page "Save and Restart": the portal has already stored the
+        //     Wi-Fi credentials, the server URL and any recovery code, and the
+        //     station is reconnecting. Once the cloud confirms this board (an
+        //     authenticated heartbeat, or MQTT where the role uses it), the
+        //     temporary setup network and BLE close on their own — a board that
+        //     never confirms keeps them open so the user can try again.
+        if (s_portal_save_pending) {
+            s_portal_confirm_ms += 500U;
+            const bool mqtt_ok = hc_mqtt_is_connected();
+            const bool role_uses_mqtt = hc_role_wants_mqtt();
+            if (!role_uses_mqtt || mqtt_ok) {
+                const esp_err_t hb = hc_http_post_heartbeat(&s_config);
+                note_backend_result(hb);
+                if (hb == ESP_OK) {
+                    ESP_LOGI(TAG, "Local setup confirmed by HomecoreOS; closing temporary interfaces");
+                    s_portal_save_pending = false;
+                    s_waiting_cloud_confirm = false;
+                    s_portal_confirm_ms = 0;
+                    hc_prov_on_wifi_reconfigured(
+                        &s_prov_state,
+                        strlen(s_config.wifi_ssid) > 0,
+                        strlen(s_config.backend_url) > 0
+                    );
+                    // The local page is answered already; closing the AP now
+                    // is what "the temporary network closes itself" means. BLE
+                    // gets a short grace so its final status notification is
+                    // delivered before the radio is reclaimed.
+                    hc_wifi_stop_portal_ap();
+                    if (hc_ble_prov_is_active()) {
+                        hc_ble_prov_update_status("paired", true, s_config.paired, mqtt_ok, ip_str, NULL);
+                        s_ble_close_grace_ms = 1000U;
+                    }
+                }
+            }
+            if (s_portal_confirm_ms >= 180000U) {
+                ESP_LOGW(TAG, "Local setup was saved but HomecoreOS never confirmed the board; keeping the setup network open");
+                s_portal_save_pending = false;
+                s_waiting_cloud_confirm = false;
+                s_portal_confirm_ms = 0;
             }
         }
 

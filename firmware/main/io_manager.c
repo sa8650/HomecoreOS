@@ -505,6 +505,39 @@ bool hc_io_evaluate_local_rules(void) {
     return changed;
 }
 
+bool hc_io_get_entity_counts(hc_io_entity_counts_t *out) {
+    if (!out) return false;
+    unsigned sensors_total = 0, sensors_reporting = 0;
+    unsigned switches_total = 0, switches_reporting = 0;
+
+    xSemaphoreTake(s_io_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < s_entry_count; i++) {
+        hc_io_entry_t *e = &s_entries[i];
+        if (e->kind == HC_IO_KIND_SENSOR) {
+            sensors_total++;
+            /* "Reporting" means the driver returns a value right now, which is
+             * the only honest definition: a configured sensor that fails to
+             * read is not reporting, and recovery should say so. */
+            hc_sensor_binding_t binding = make_sensor_binding(e);
+            hc_sensor_reading_t reading = hc_sensor_driver_read(&binding, true);
+            if (reading.ok) sensors_reporting++;
+        } else if (e->kind == HC_IO_KIND_SWITCH) {
+            switches_total++;
+            /* A switch has no notion of "reporting": an output the board still
+             * holds is by definition reachable, which is what the server side
+             * means by is_online. */
+            switches_reporting++;
+        }
+    }
+    xSemaphoreGive(s_io_mutex);
+
+    out->sensors_total = sensors_total;
+    out->sensors_reporting = sensors_reporting;
+    out->switches_total = switches_total;
+    out->switches_reporting = switches_reporting;
+    return true;
+}
+
 void hc_io_build_telemetry_json(char *out_buf, size_t out_len) {
     cJSON *root = cJSON_CreateObject();
     cJSON *sensors_arr = cJSON_CreateArray();

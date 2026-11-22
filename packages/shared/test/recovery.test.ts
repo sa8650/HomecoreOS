@@ -59,7 +59,20 @@ function healthyTelemetry(overrides: Partial<RecoveryTelemetry> = {}): RecoveryT
       nowMs: NOW,
       staleAfterSeconds: 180,
     },
-    firmware: { available: true, version: "1.5.0", compatible: true, updateAvailable: null },
+    firmware: {
+      available: true,
+      version: "1.5.0",
+      boardSlug: "esp32-s3-devkitc-1-n16r8",
+      partitionScheme: "dual_ota_16mb",
+      uptimeSec: 12,
+      freeHeapBytes: 180_000,
+      compatible: true,
+      updateAvailable: null,
+    },
+    ota: { available: true, supported: true, pendingVerify: false, lastError: null },
+    portal: { available: true, wifiApSupported: true, bleSupported: true },
+    espnow: { available: true, supported: true, linkState: "linked" },
+    backendUrl: { available: true, value: "https://homecoreos.example", matchesWebsite: true },
     config: { available: true, revision: 3, syncedRevision: 3, pendingSync: false, hashValid: true },
     entities: {
       available: true,
@@ -126,11 +139,27 @@ describe("Recovery engine — discovery & capability", () => {
       "read",
       "wifi_check",
       "backend_check",
+      "link_check",
+      "system_check",
       "plan",
       "repair",
+      "restart",
       "verify",
       "report",
     ]);
+    // The full contract is diagnosed for every transport: Wi-Fi, ESP-NOW, MQTT,
+    // local webpage/temporary Wi-Fi, pairing, firmware validity and OTA.
+    for (const transport of ["wifi", "ble", "usb"] as const) {
+      const capability = describeTransportCapability({
+        transport,
+        browserSupported: true,
+        boardSupportsWifi: true,
+        boardSupportsBle: true,
+        boardFirmwareSupportsDiagnostics: true,
+      });
+      expect(capability.available).toBe(true);
+      expect(capability.supportsDiagnostics).toBe(true);
+    }
   });
 });
 
@@ -473,5 +502,116 @@ describe("Recovery engine — report & session safety", () => {
     expect(merged.wifi.available).toBe(true);
     expect(merged.wifi.ssid).toBe("Home24G");
     expect(merged.mqtt.available).toBe(false);
+  });
+});
+
+describe("Recovery engine — endpoint, ESP-NOW and restart contract", () => {
+  it("re-configures the server URL automatically instead of asking the user to type it", () => {
+    const telemetry = healthyTelemetry({
+      backendUrl: { available: true, value: "", matchesWebsite: null },
+      backend: { available: true, reachable: false, authenticated: null, status: null, lastError: "no route" },
+    });
+    const diagnostics = runDiagnostics({ board: healthyBoard, telemetry, transport: "ble" });
+    expect(diagnostics.problems).toContain("backend_url_missing");
+    const plan = buildRepairPlan({ board: healthyBoard, diagnostics, transport: "ble" });
+    const endpoint = plan.actions.find((a) => a.id === "configure_endpoint");
+    expect(endpoint).toBeDefined();
+    // The repair never asks for a secret: the website already knows its own URL.
+    expect(endpoint!.requiresSecret).toBeNull();
+    expect(endpoint!.changesIdentity).toBe(false);
+    // It must not silently re-pair the board either.
+    expect(plan.actions.some((a) => a.changesIdentity)).toBe(false);
+    expect(plan.requiresUserConsent).toBe(false);
+  });
+
+  it("re-establishes a down ESP-NOW link without touching credentials", () => {
+    const telemetry = healthyTelemetry({
+      espnow: { available: true, supported: true, linkState: "controller_lost" },
+    });
+    const diagnostics = runDiagnostics({ board: healthyBoard, telemetry, transport: "usb" });
+    const plan = buildRepairPlan({ board: healthyBoard, diagnostics, transport: "usb" });
+    const relink = plan.actions.find((a) => a.id === "relink_espnow");
+    expect(relink).toBeDefined();
+    expect(relink!.requiresSecret).toBeNull();
+    expect(plan.actions.some((a) => a.id === "rewrite_wifi")).toBe(false);
+  });
+
+  it("treats OTA capability as information, never as an automatic firmware write", () => {
+    const telemetry = healthyTelemetry({
+      ota: { available: true, supported: false, pendingVerify: null, lastError: "app partition too small" },
+    });
+    const diagnostics = runDiagnostics({ board: healthyBoard, telemetry, transport: "wifi" });
+    expect(diagnostics.problems).toContain("ota_unavailable");
+    const plan = buildRepairPlan({ board: healthyBoard, diagnostics, transport: "wifi" });
+    expect(plan.actions.some((a) => a.id === "rewrite_wifi")).toBe(false);
+    expect(plan.requiresFirmwareWorkflow).toBe(false);
+    expect(plan.noActionNeeded).toBe(true);
+  });
+
+  it("hands a missing firmware image to the Flash Board workflow and never flashes", () => {
+    const telemetry = healthyTelemetry({
+      firmware: {
+        available: true,
+        version: null,
+        boardSlug: null,
+        partitionScheme: null,
+        uptimeSec: null,
+        freeHeapBytes: null,
+        compatible: null,
+        updateAvailable: null,
+      },
+    });
+    const diagnostics = runDiagnostics({ board: healthyBoard, telemetry, transport: "ble" });
+    const plan = buildRepairPlan({ board: healthyBoard, diagnostics, transport: "ble" });
+    expect(diagnostics.problems).toContain("firmware_missing");
+    expect(plan.requiresFirmwareWorkflow).toBe(true);
+    expect(plan.summary.map((row) => row.action).join(" ")).toMatch(/never flashes or updates firmware/i);
+  });
+
+  it("verifies a restart from a fresh uptime and never from a silent board", () => {
+    const before = healthyTelemetry();
+    const diagnostics = runDiagnostics({ board: healthyBoard, telemetry: before, transport: "ble" });
+    const plan = buildRepairPlan({ board: healthyBoard, diagnostics, transport: "ble" });
+
+    const restarted = verifyRecovery({
+      board: healthyBoard,
+      before,
+      after: healthyTelemetry({
+        firmware: {
+          available: true,
+          version: "1.5.0",
+          boardSlug: "esp32-s3-devkitc-1-n16r8",
+          partitionScheme: "dual_ota_16mb",
+          uptimeSec: 9,
+          freeHeapBytes: 180_000,
+          compatible: true,
+          updateAvailable: null,
+        },
+      }),
+      plan,
+    });
+    expect(restarted.checks.find((c) => c.id === "restart_verified")!.status).toBe("pass");
+
+    const silent = verifyRecovery({ board: healthyBoard, before, after: emptyRecoveryTelemetry(NOW), plan });
+    expect(silent.checks.find((c) => c.id === "restart_verified")!.status).toBe("unknown");
+    expect(silent.status).toBe("unverified");
+  });
+
+  it("reports the temporary setup interfaces as closed once the board is normal", () => {
+    const before = healthyTelemetry();
+    const plan = buildRepairPlan({
+      board: healthyBoard,
+      diagnostics: runDiagnostics({ board: healthyBoard, telemetry: before, transport: "wifi" }),
+      transport: "wifi",
+    });
+    const verification = verifyRecovery({
+      board: { ...healthyBoard, mode: "normal" },
+      before,
+      after: healthyTelemetry({
+        portal: { available: true, wifiApSupported: false, bleSupported: false },
+      }),
+      plan,
+    });
+    expect(verification.checks.find((c) => c.id === "temporary_interfaces_closed")!.status).toBe("pass");
   });
 });

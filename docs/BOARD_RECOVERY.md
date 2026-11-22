@@ -1,150 +1,253 @@
-# Unified board repair and recovery
+# Board setup, repair and recovery
+
+This document describes the implemented Wi-Fi / BLE / USB setup and repair
+flows, the shared diagnostic engine they all use, and what still requires
+physical-board validation.
 
 ## Architecture
 
-The shared recovery engine (`packages/shared/src/recovery.ts`) diagnoses telemetry, proposes explicit actions, and verifies the result. The browser controller (`apps/web/src/lib/recovery-engine.ts`) runs the same eight steps over Wi-Fi, BLE, or USB adapters. The Worker records recovery sessions and events; migration `0006_recovery_sessions.sql` must be applied before enabling these endpoints.
-
-The Repair / Recover Board chooser exposes Wi-Fi, BLE and USB. All three mount `UnifiedRecoveryPanel`, which uses `createRecoveryController` and `recoveryServerApi`; only its transport factory changes. Setup Board and Flash Board retain their separate workflows. Recovery never imports esptool or writes a firmware image.
-
-## Operator guide
-
-1. Open Add Board → Repair / Recover Board and choose a transport.
-2. No board dropdown is needed. Choose Discover BLE Board, Connect to Board (Wi-Fi) or Connect USB Board. The connected device is matched automatically to an installed controller in your account. Restore trashed boards from My Boards first; a new installation belongs in Setup Board.
-3. Power the board, hold BOOT / Recovery for three seconds, and follow the selected method's connection instructions. On USB, use a data cable and close serial monitors. Do not hold BOOT during a reset into the ROM bootloader: this workflow communicates with running HomecoreOS firmware.
-4. Discovery reads identity before diagnosis. The reported UID suffix must match exactly one account controller (or the controller whose details you opened). Unknown, missing and ambiguous identities stop the flow instead of choosing the first account record. Protocol v1 reports a suffix, not a cryptographically authenticated full USB identity. Treat physical access as trusted; a matching suffix is not an ownership credential.
-5. Diagnostics run automatically after identification. Ordinary credential-free repairs and verification continue automatically. The main screen shows a compact progress pipeline; individual checks, unknown results and technical logs are available under Diagnostic details. Nothing is changed during discovery or diagnosis.
-6. Provide Wi-Fi credentials only if requested. Account re-pairing is separate: it requires a live server session, physical recovery mode and explicit consent before requesting a single-use authorization. Ordinary MQTT failure does not automatically rotate credentials.
-7. If new credentials are needed, review the proposed repairs, enter Wi-Fi details and choose Save & Recover. Account re-pairing is a separate, explicitly labelled Authorize & Recover action. Then wait for verification. A sent command is not success; read the final status, next action and expandable verification details.
-8. Closing or backing out cancels the flow and releases the local transport. Reconnect & retry starts with new identification and diagnosis. No mutation is retransmitted automatically after an ambiguous timeout.
-
-Recovery history can be loaded on demand under Previous recovery sessions in the chooser. The discovery screens reuse the original BLE and Wi-Fi artwork; USB recovery uses the same UsbFlashIllustration component as the separate flashing workflow, without invoking a flasher. Administrators can load the same account-scoped, read-only summary in Customer Monitoring. Neither history view polls or sends hardware commands.
-
-## Device protocol
-
-Protocol version 1 accepts newline-delimited `HC PING`, `HC HELLO`, `HC STATUS`, and `HC REPAIR {json}`. Repair actions are `wifi`, `mqtt`, `config`, `restart`, `pair`, and `factory_reset`. Firmware gates identity-changing operations on recovery mode/physical confirmation. Re-pair requires a six-digit single-use recovery code. Restart acknowledges before restarting.
-
-- Wi-Fi: GET `/api/recovery` returns discovery and status; POST accepts `{ "command": "HC ..." }` at the setup portal, normally `http://192.168.4.1`.
-- BLE: encrypted command action `hc HC ...`; status may arrive as `{chunk:{i,n,d}}` notifications (150-byte chunks, maximum eight).
-- USB: Web Serial, 115200 baud, one JSON response per line. Boot log lines are ignored.
-
-Browser support, secure-context rules, local-network access and mixed-content restrictions still apply. A failed portal fetch must be explained, not interpreted as a healthy board.
-
-## Safety and verification
-
-Credentials stay in the current browser flow and must never be written to session diagnostics or logs. Unknown telemetry is not a passing check. A browser that sees a failed verification must not display a successful server report. A server outage can produce a local report, not proof of backend health. Sessions expire after 900 seconds. Cancelling releases the transport and abandons the session where possible.
-
-## Validation
-
-Targeted browser tests:
-
 ```
-npm --workspace=apps/web run test -- src/components/recovery-flow.test.ts src/components/recovery-transport.test.ts
-npm --workspace=packages/shared run test
-npm --workspace=apps/worker run test
-npm run typecheck
-npm run lint
-node database/verify/verify-schema.mjs
+packages/shared/src/recovery.ts          pure engine: diagnostics → plan → verify → report
+packages/shared/src/recovery-protocol.ts protocol v1 parsing ↔ telemetry
+apps/web/src/lib/recovery-engine.ts      browser orchestration (11 steps, 3 transports)
+apps/web/src/lib/recovery-transport.ts   Wi-Fi portal / BLE relay / USB serial adapters
+apps/web/src/components/controllers/      setup + recovery UI
+apps/worker/src/routes/recovery.ts       account-scoped sessions, independent verification
+apps/worker/src/lib/recovery.ts          server-side telemetry from the board's own rows
+firmware/main/recovery_logic.c           the board's answers (host-tested)
+firmware/main/recovery_console.c         repair execution (USB / BLE / portal)
+firmware/main/wifi_portal.c              local setup & recovery page + /api/recovery
+firmware/main/ble_provisioning.c         encrypted BLE channel
 ```
 
-Host firmware logic:
+The same eleven steps run for all three transports, so a report is comparable
+no matter how the browser reached the board:
 
-```
-gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_recovery_logic.c firmware/main/recovery_logic.c -o /tmp/recovery-test
-/tmp/recovery-test
-```
+`detect → read → wifi_check → backend_check → link_check → system_check → plan
+→ repair → restart → verify → report`
 
-ESP-IDF compilation and real Wi-Fi/BLE/USB hardware validation remain necessary. Host tests do not validate FreeRTOS task lifecycle, UART ownership, GATT encryption or actual network reconnection.
+## Setup
 
-## Remaining rollout work
+### Setup with Wi-Fi
 
-- Validate serial/flash port handoff and cleanup on real devices.
-- Confirm firmware build and all recovery transports on supported boards before deployment.
+1. Add Board → **Setup Board** → **Setup with Wi-Fi**.
+2. Choose the board model and, if you want, a name, then press
+   **Generate Pairing Code**. The website creates the board record and shows a
+   single-use 6-digit code plus this website's URL.
+3. Power the board (a freshly flashed board opens its temporary network
+   immediately) and join **HomecoreOS-Setup-XXXX** in your OS Wi-Fi settings.
+4. Open `http://192.168.4.1` and enter **SSID / Password / Website URL / Pairing
+   Code**, then **Save and Restart**.
+5. The board saves, restarts its Wi-Fi connection, pairs through the Worker,
+   authenticates with EMQX, and closes its temporary Wi-Fi by itself. The modal
+   watches the account record and only reports success once the board is paired
+   **and** connected to MQTT.
 
-## API reference
+A board whose ID already exists under the account resolves to that record (see
+migration `0007`); no second board is created, and devices, rooms, sensors,
+switches and Nodes are preserved.
 
-All customer routes require an authenticated owner/administrator session and enforce account scope:
+### Setup with BLE
+
+1. **Setup Board** → **Setup with BLE** → **Discover BLE Board** (animated
+   discovery, then Web Bluetooth chooser).
+2. The board is identified, paired and authenticated automatically; the code
+   the browser needs is created by the website behind the scenes.
+3. Enter **Wi-Fi SSID** and **Password** only, then **Save & Connect**.
+4. The board saves the credentials, the website URL and the MQTT material,
+   restarts, verifies MQTT, and turns BLE off. The same board ID is updated.
+
+### Setup with Wi-Fi when BLE is unavailable
+
+The Wi-Fi setup panel is the fallback offered when Web Bluetooth is missing or
+permission is denied. It shows the exact network name to join and the local page
+address, so nothing has to be guessed.
+
+## Repair / recovery
+
+Open **Repair / Recover Board** and choose a transport. No board dropdown is
+needed: discovery identifies the board and matches it to exactly one account
+record. Unknown, missing or ambiguous identities stop the flow rather than
+picking the first record.
+
+Diagnostics check, in this order: board identity, recovery access, Wi-Fi
+configuration/connection/signal/DHCP, internet, Worker reachability, the **server
+URL stored on the board**, pairing, MQTT, **ESP-NOW**, the **local webpage and
+temporary Wi-Fi**, heartbeat, **firmware validity and information**, **OTA
+capability**, configuration revision, entities, Nodes and recorded errors.
+
+A fact the board does not report is reported as *unable to verify*, never as a
+pass and never as a failure. The server re-runs the same diagnosis on its own
+rows, so a browser cannot declare success on its own.
+
+### Repair with BLE
+
+1. Hold BOOT / Recovery for 3 seconds. Both the BLE interface and the temporary
+   Wi-Fi network open.
+2. Press **Discover BLE Board** and pick the board.
+3. Diagnosis runs automatically. Ordinary, credential-free repairs run without
+   further input; a Wi-Fi change asks for the SSID/password first, and a
+   re-pairing repair is a separate, explicitly labelled action.
+4. The plan is applied, the board **restarts**, and verification runs against
+   fresh telemetry (a small `uptime_sec` is what proves the restart).
+5. A short report lists what was found, what was applied, what was verified and
+   what remains unresolved. BLE then closes.
+
+### Repair with Wi-Fi
+
+1. In the website, choose the board (or "deleted / not listed") and press
+   **Generate Recovery Code**. The 6-digit code and this website's URL are shown;
+   the code is single-use and is bound to that board.
+2. Hold BOOT / Recovery for 3 seconds, join **HomecoreOS-Setup-XXXX**, open
+   `http://192.168.4.1`.
+3. On the local page enter **only what is needed**: SSID/password when the
+   network changed, the website URL when it is missing or wrong, and the
+   recovery code. Then **Save and Restart**.
+4. The board repairs itself, restarts with its existing board ID, reconnects to
+   MQTT and closes the temporary Wi-Fi automatically. The website reports
+   success only once that has actually happened.
+
+### Repair with USB
+
+Same steps over Web Serial (115200 baud, running HomecoreOS firmware — not the
+ROM bootloader). Holding BOOT for 3 seconds is available but not required for a
+board whose firmware already answers on UART0. Flashing is never part of repair.
+
+## What recovery never does
+
+- **It never flashes or updates firmware.** A firmware problem is reported with
+  its reason and the Flash Board workflow is offered as a *separate* action.
+  Flash Board itself is unchanged.
+- It never re-pairs without explicit consent and physical recovery mode.
+- It never transfers board ownership and never introduces a duplicate board
+  record; an existing board ID is updated in place and its devices, nodes,
+  rooms and configuration are preserved.
+- It never treats a sent command, a password write or an unknown telemetry
+  value as success.
+
+## Device protocol (v1)
+
+Newline-delimited ASCII lines: `HC PING`, `HC HELLO`, `HC STATUS`,
+`HC REPAIR {json}`. Repair actions are `wifi`, `mqtt`, `config`, `espnow`,
+`restart`, `pair` and `factory_reset`. Every field added for the expanded
+diagnostics is optional and additive: an older image simply omits it and the
+console reports Unknown.
+
+- **Wi-Fi**: `GET /api/recovery` returns `{recovery, status}` in one round trip;
+  `POST /api/recovery` accepts `{"command":"HC …"}`. Reads are cache-busted
+  (`?t=…`) so a post-repair status is never served from cache.
+- **BLE**: encrypted command action `hc HC …`; responses arrive as
+  `{chunk:{i,n,d}}` notifications (150-byte chunks, up to ten).
+- **USB**: one JSON response per line; boot log lines are ignored.
+
+### Status fields
+
+`hc` `proto` `mode` `fw` `paired` `wifi_connected` `ssid` `rssi` `ip`
+`wifi_error` `mqtt_connected` `mqtt_error` `backend_reachable`
+`backend_authenticated` `backend_ok` `config_revision` `synced_config_revision`
+`pending_config` `heartbeat_age_sec` `heartbeat_interval_sec`
+`entities_known` `sensors_total` `sensors_reporting` `switches_total`
+`switches_reporting` `nodes_known` `nodes_total` `nodes_linked`
+`board` `partition` `uptime_sec` `free_heap` `backend_url`
+`ota_supported` `ota_pending` `ota_error`
+`has_wifi` `has_ble` `espnow_supported` `espnow_link`
+`last_error`
+
+`HC HELLO` adds `uid_suffix` and `partition`.
+
+The heartbeat the board posts to the Worker carries the same facts (short keys
+`up`, `heap`, `bu`, `os`, `oe`, `es`, `els`, `sw`, `sb`), and they are stored in
+`board_instances` (migration `0008_board_recovery_health.sql`). The server can
+therefore diagnose a board that is offline even when no local transport is in
+use.
+
+## Database
+
+| Migration | Purpose |
+| --- | --- |
+| `0006_recovery_sessions.sql` | recovery sessions, events, reports |
+| `0007_pairing_identity_reuse.sql` | resolve a provisional setup slot to the installed board under the same account |
+| `0008_board_recovery_health.sql` | additive, nullable health facts (`uptime_sec`, `backend_url`, OTA/ESP-NOW/radio state, partition) |
+
+Migrations are not applied automatically by the code change; apply them before
+deploying the Worker. Existing columns keep their meaning, so already-installed
+boards keep working and simply report Unknown for the new facts until they run
+the updated firmware.
+
+## API
+
+All routes require an authenticated owner/administrator session and enforce
+account scope.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/api/recovery/sessions` | Start/resume a 15-minute session for `boardInstanceId` and `transport` |
+| POST | `/api/recovery/sessions` | Start/resume a 15-minute session (`boardInstanceId`, `transport`, optional `websiteUrl`) |
 | GET | `/api/recovery/sessions/:id` | Session, events and server diagnostics |
 | POST | `/api/recovery/sessions/:id/diagnostics` | Structured checks, stage and plan inputs; never credentials |
-| POST | `/api/recovery/sessions/:id/complete` | Action outcomes; server independently verifies health |
+| POST | `/api/recovery/sessions/:id/complete` | Action outcomes; the server verifies health independently |
 | POST | `/api/recovery/sessions/:id/abandon` | Cancel with a sanitized reason |
 | GET | `/api/recovery/history` | Paginated account history, optionally filtered by board |
-| GET | `/api/admin/accounts/:id/recovery-history` | Admin-session-only summary, latest 20 records; no mutations |
+| GET | `/api/admin/accounts/:id/recovery-history` | Admin-only summary, latest 20 records; read-only |
 
-401/403/404/409/410 responses do not permit fallback to local repairs. A network/server outage can permit ordinary local diagnosis/repair, but cannot authorize re-pairing and is explicitly reported as local-only. A disconnected browser cannot store a server report until connectivity returns.
+401/403/404/409/410 never allow falling back to local repairs. A server outage
+allows ordinary local diagnosis/repair but never a re-pair, and the report says
+it is local-only.
 
-## Hardware and browser compatibility
+## Safety
 
-- Wi-Fi requires a powered board with a Wi-Fi radio. The browser cannot scan or select its AP; users choose HomecoreOS-Setup-XXXX in OS settings. HTTPS-to-HTTP portal access can be blocked by mixed-content/private-network policies: permit local network access if available, otherwise use USB/BLE. It is not guaranteed to work in every browser.
-- BLE requires the board's BLE radio, supported encrypted HomecoreOS provisioning service, a secure context and Web Bluetooth (typically Chrome/Edge desktop or Android, not Safari/iOS). Board Library capability flags can disable unsupported methods; actual discovery verifies firmware capabilities.
-- USB requires Web Serial in a secure desktop Chromium browser and access to the running firmware's UART0 serial console at 115200 baud. USB-UART bridge boards are the initial target. Native USB CDC/JTAG-only paths are **not claimed verified** by this implementation; a visible port is not proof it carries UART0. ESP8266 firmware and ROM download mode do not implement this recovery protocol.
-- Firmware without the recovery protocol cannot be repaired by guessing commands. Follow the separate, explicit firmware workflow when diagnostics say an update is required.
-- Hardware revision comes from the installed Board Library profile; missing profile/telemetry fields stay unknown.
+- Credentials stay in the current browser flow; diagnostics never store them.
+- Unknown telemetry is neither a pass nor a fail.
+- A repair command is sent exactly once: a lost acknowledgement is not proof a
+  mutation failed, so a retry requires a fresh diagnosis.
+- Sessions expire after 900 seconds; cancelling releases the transport and
+  abandons the session.
+- Re-pairing requires physical recovery mode plus a single-use code. A stored
+  `physical_confirmed` flag from an earlier setup is not authorization.
 
-## Troubleshooting
+## Browser / hardware compatibility
 
-| Symptom | Action |
-| --- | --- |
-| Wrong Wi-Fi password | Supply the correct 2.4 GHz credentials; pairing remains intact |
-| Wi-Fi connected, API/MQTT unreachable | Check router, internet, endpoint and broker availability; do not re-pair automatically |
-| Different board detected | Disconnect and select the intended physical controller; no repair is issued |
-| USB busy or no answer | Close serial monitors, use a data cable, verify the UART path, boot normal HomecoreOS firmware, then enter recovery |
-| BLE drops | Move closer, reconnect and re-diagnose; do not resend an uncertain mutation blindly |
-| Portal fetch blocked | Check OS Wi-Fi selection and local-network permissions, or choose BLE/USB |
-| Server refuses authorization / session expired | Sign in with an authorized account and start a fresh session; local repair cannot bypass refusal |
-| Unknown subscriptions, sensors or sync | Firmware/server does not expose that fact; unknown is not a passing verification |
+- **Wi-Fi** needs a board with a Wi-Fi radio and an OS-level choice of
+  `HomecoreOS-Setup-XXXX`. HTTPS→HTTP portal access can be blocked by
+  mixed-content/private-network policy; permit local network access, or use
+  BLE/USB.
+- **BLE** needs the board's BLE radio, a secure context and Web Bluetooth
+  (Chrome/Edge desktop or Android; not Safari/iOS).
+- **USB** needs Web Serial in a secure desktop Chromium browser and the running
+  firmware's UART0 console. Native USB-CDC/JTAG-only paths are **not verified**
+  by this implementation; a visible port is not proof it carries UART0. ESP8266
+  and ROM download mode do not implement this protocol.
 
-## Firmware implementation notes
+## Validation performed
 
-The BLE relay strips the lowercase `hc ` envelope before passing `HC ...` to the console parser. The browser installs its encrypted status listener only after authentication. Repairs on the controller acquire a cross-task critical-section guard to reject concurrent local transport mutations. Snapshots, logs and task scheduling still need on-device stress testing. No hardware or ESP-IDF test results should be inferred from mocked browser tests or host C tests.
+```bash
+npm --workspace=packages/shared run test      # engine + protocol + plan/verify
+npm --workspace=apps/worker run test          # sessions, heartbeat facts, URL compare
+npm --workspace=apps/web run test             # UI flows, engine, transports
+npm run typecheck
 
-Sensitive console operations require the **current** provisioning mode to be recovery. A persisted `physical_confirmed` setup flag is not sufficient to authorize a later re-pair or factory reset.
+gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_recovery_logic.c firmware/main/recovery_logic.c -o /tmp/t && /tmp/t
+gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_provisioning_logic.c firmware/main/provisioning_logic.c -o /tmp/t && /tmp/t
+# …plus io_state, ota_boot, role, sensor_driver suites (see CI)
+python3 firmware/scripts/verify_firmware_image.py --verify-board-overlays firmware/boards
+```
 
-## Setup reliability changes (migration 0007)
+**ESP-IDF is not available in this environment**, so target compilation was not
+run here; the CI workflow compiles every board overlay. Everything above is
+simulated/host-side.
 
-Apply `database/migrations/0007_pairing_identity_reuse.sql` before deploying the
-updated Worker. No migration is applied to a hosted database by the code change.
+## Requires physical-board testing
 
-- Pairing can resolve a never-paired provisional setup slot to an installed board
-  with the same hardware UID or identity in the **same account**. Resolution is
-  serialized per account. The installed record remains in place, preserving its
-  name, home/room, IO configuration, devices and linked Nodes. Slots with existing
-  identity, inventory or assignments are not silently merged. Cross-account
-  identities and ambiguous matches are rejected; no ownership-transfer step was
-  added.
-- `POST /api/board-instances/pairing-status` accepts `{pairingCode}` in the request
-  body and returns the resolved controller only for the signed-in account. Setup
-  polls this endpoint so merging a provisional slot does not break completion.
-  Codes are not placed in URLs. Broker credential provisioning now leaves
-  `mqtt_connected` false until actual telemetry arrives; setup no longer accepts
-  the generic `online` status as MQTT proof.
-- The shared recovery controller receives the website origin and supplies it in
-  Wi-Fi, pairing and config repair commands. Backend-unreachable plans include
-  config re-sync; the firmware saves that supplied endpoint before fetching
-  config. No extra Wi-Fi prompt or firmware update is needed for this repair.
-- Local form POSTs read the complete bounded request body rather than assuming one
-  TCP read contains the form. The unconditional 1.8-second portal shutdown timer
-  is removed. After a form save or pairing claim, the supervisor waits for backend
-  health and MQTT (unless the linked Node role intentionally does not use MQTT)
-  before scheduling AP/BLE teardown. Merely entering recovery on a healthy board
-  does not authorize immediate teardown. The existing recovery timeout remains.
-
-### Remaining work and validation limits
-
-This is a reliability increment, **not completion of the full expanded setup and
-repair specification**. The local form still uses Save & Apply, not a verified
-Save & Restart sequence. The website Wi-Fi recovery path still uses direct local
-API access; a dedicated website-generated recovery-code handoff to the local form
-is not implemented. Expanded ESP-NOW/AP/portal/firmware-validity/OTA-functionality
-checks and a restart-and-reconnect stage across all transports remain work to do.
-Do not infer OTA functionality from a reported firmware version. Recovery does not
-flash or update firmware automatically. Flash with USB has not been modified.
-
-Validation for this increment: 249 shared tests, 44 targeted browser recovery/UI
-and transport tests, 12 targeted Worker integration tests, strict host C recovery
-and provisioning tests, TypeScript checks, lint and schema snapshot verification.
-These tests are simulated/host-side. ESP-IDF target compilation, real EMQX, USB,
-BLE, AP behavior and the physical BOOT gesture have **not** been tested on boards.
+- Holding BOOT for exactly 3 seconds opening **both** the temporary AP and BLE,
+  and the 10-second factory reset still working.
+- Joining `HomecoreOS-Setup-XXXX` from Android/iOS/desktop and reaching
+  `192.168.4.1`; mixed-content and private-network policies vary by browser.
+- The portal's "Save and Restart" closing the AP by itself after the cloud
+  confirms the board, and the 3-minute fallback (180 s) leaving it open otherwise.
+- The restart stage over each transport (USB line drop, BLE disconnect, portal
+  connection loss) and `uptime_sec` resetting.
+- Real Wi-Fi password rejection, weak-signal and DHCP-failure classification;
+  ESP-NOW relink between a Controller and its Nodes; OTA pending-verify state.
+- Web Bluetooth handshake/chunking on the board's real NimBLE stack, and USB
+  serial ownership after the browser releases it.
+- EMQX credential rotation during re-pairing, and Supabase migration `0008`
+  applied to a real database.

@@ -30,7 +30,7 @@
  *   HC STATUS                                 -> {"hc":"status",...}
  *   HC REPAIR {"action":"wifi","ssid":"…","password":"…","backend_url":"…"}
  *                                             -> {"hc":"ack","action":"wifi",...}
- *   HC REPAIR {"action":"mqtt"|"config"|"restart"}
+ *   HC REPAIR {"action":"mqtt"|"config"|"espnow"|"restart"}
  *   HC REPAIR {"action":"pair","pair_code":"123456","backend_url":"https://…"}
  *   HC REPAIR {"action":"factory_reset","confirm":true}
  *                                             -> {"hc":"ack"...} or {"hc":"error"...}
@@ -47,7 +47,7 @@
 #define HC_RECOVERY_RESPONSE_MAX 1024
 
 /** Destructive repairs are only accepted while the board is in recovery mode. */
-#define HC_RECOVERY_ACTION_MAX 5
+#define HC_RECOVERY_ACTION_MAX 7
 
 typedef enum {
     HC_REC_CMD_NONE = 0,
@@ -76,6 +76,11 @@ typedef enum {
      * credentials are rotated by the Worker. Requires recovery mode.
      */
     HC_REC_ACTION_PAIR = 6,
+    /**
+     * Re-open the ESP-NOW radio and re-sync the role block so a Controller and
+     * its Nodes find each other again. Keeps every assignment; never flashes.
+     */
+    HC_REC_ACTION_ESPNOW = 7,
 } hc_rec_action_t;
 
 /** What the board knows about itself right now (filled by main.c each tick). */
@@ -113,6 +118,24 @@ typedef struct {
     /** Seconds since the last successful heartbeat (0 = never). */
     unsigned heartbeat_age_sec;
     unsigned heartbeat_interval_sec;
+    /* --- Running image & capability (additive, proto 1) ------------------- */
+    /** Partition the image is executing from ("app0"/"ota_1"…); "" if unknown. */
+    char partition[24];
+    /** Seconds since this image booted. A small value proves a restart. */
+    unsigned uptime_sec;
+    /** Free heap in bytes; an "is the image healthy" fact, not a fault. */
+    unsigned free_heap_bytes;
+    /** Server URL the board has stored; "" means it has none. */
+    char backend_url[192];
+    /** Whether this image can update itself over the air. */
+    bool ota_supported;
+    /** An OTA image is installed but not yet health-confirmed. */
+    bool ota_pending;
+    char ota_last_error[96];
+    /** ESP-NOW radio availability and the Controller/Node link verdict. */
+    bool espnow_supported;
+    /** "linked" | "controller_lost" | "reconnecting" | "standalone" | "unassigned" | "down" */
+    char espnow_link[24];
     /** False until the firmware can actually count its entities; the console
      * then reports "reporting unknown" instead of "nothing assigned". */
     bool entities_known;

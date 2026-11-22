@@ -5,7 +5,7 @@ import type { BoardProfileItem, ControllerItem } from "@/features/types";
 import { HomecoreBleClient, isWebBluetoothSupported } from "@/lib/ble-provisioning";
 import { createRecoveryController } from "@/lib/recovery-engine";
 import { recoveryServerApi } from "@/lib/recovery-api";
-import { createBleRecoveryTransport, createUsbRecoveryTransport, createWifiRecoveryTransport, isRecoverySerialSupported } from "@/lib/recovery-transport";
+import { createBleRecoveryTransport, createUsbRecoveryTransport, createWifiRecoveryTransport, isRecoverySerialSupported, type WifiRecoveryCodeState } from "@/lib/recovery-transport";
 import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +41,10 @@ export function UnifiedRecoveryPanel({ kind, controllers, target, profiles = EMP
 }) {
   const accountInputs = useRef({ controllers, target, profiles });
   accountInputs.current = { controllers, target, profiles };
+  // The Wi-Fi transport speaks to the board's local page, which needs the
+  // recovery code the website generated. The holder is created before the code
+  // exists and filled in right before a re-pairing repair runs.
+  const wifiCodeState = useRef<WifiRecoveryCodeState>({ code: null, generated: false });
   const mounted = useRef(true);
   const [matched, setMatched] = useState<ControllerItem | null>(null);
   const [ssid, setSsid] = useState("");
@@ -72,7 +76,7 @@ export function UnifiedRecoveryPanel({ kind, controllers, target, profiles = EMP
       });
     },
     createTransport: (transport) => transport === "usb" ? createUsbRecoveryTransport({})
-      : transport === "wifi" ? createWifiRecoveryTransport({})
+      : transport === "wifi" ? createWifiRecoveryTransport({ codeState: wifiCodeState.current })
         : createBleRecoveryTransport({ createClient: () => new HomecoreBleClient(),
           setupPinForDevice: (info) => matchRecoveryBoard(accountInputs.current.controllers, info.mac_suffix ?? null, accountInputs.current.target).ble_setup_pin ?? undefined,
           support: isWebBluetoothSupported() }),
@@ -127,6 +131,10 @@ export function UnifiedRecoveryPanel({ kind, controllers, target, profiles = EMP
           method: "POST", body: JSON.stringify({ boardInstanceId: matched.id }),
         });
         pairingCode = result.pairingCode;
+        // The protocol line the board receives carries the same code, so the
+        // local page and the website never disagree about which code is live.
+        wifiCodeState.current.code = result.pairingCode;
+        wifiCodeState.current.generated = true;
       } catch (error) {
         setAuthorizationError(error instanceof Error ? error.message : "Account recovery could not be authorized.");
         return;

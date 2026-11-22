@@ -229,6 +229,7 @@ function build(overrides: {
   capabilityFor?: (kind: "usb" | "ble" | "wifi") => ReturnType<typeof capability>;
   verifyTimeoutMs?: number;
   verifyPollMs?: number;
+  restartWaitMs?: number;
   expectedHardwareUid?: string;
   backendUrl?: string;
 } = {}) {
@@ -243,6 +244,7 @@ function build(overrides: {
     capabilityFor: (kind) => (overrides.capabilityFor ?? (() => capability(kind)))(kind as never),
     verifyTimeoutMs: overrides.verifyTimeoutMs ?? 50,
     verifyPollMs: overrides.verifyPollMs ?? 1,
+    restartWaitMs: overrides.restartWaitMs ?? 0,
     now: () => Date.now(),
   });
   return { controller, transport, calls };
@@ -432,7 +434,8 @@ describe("recovery flow (one engine, three transports)", () => {
     expect(state.verification?.checks.some((c) => c.id === "wifi_connected" && c.status === "fail")).toBe(
       true
     );
-    expect(state.steps[6]?.state).toBe("error");
+    expect(state.steps[9]?.id).toBe("verify");
+    expect(state.steps[9]?.state).toBe("error");
     expect(transport.sent.filter((line) => line.startsWith("HC REPAIR") && !line.includes('"action":"wifi"'))).toEqual([]);
   });
 
@@ -569,7 +572,72 @@ describe("recovery flow (one engine, three transports)", () => {
     expect(state.board.boardSlug).toBeNull();
   });
 
-  it("exposes the same eight steps for every transport", async () => {
+  it("restarts the controller after a configuration repair and proves the reboot from fresh telemetry", async () => {
+    const restarted: RecoveryDeviceStatus = {
+      ...STATUS,
+      wifiConnected: false,
+      ip: null,
+      mqttConnected: false,
+      backendOk: true,
+      backendUrl: "https://app.homecoreos.test",
+      uptimeSec: 6,
+    };
+    const reconnect: RecoveryDeviceStatus = {
+      ...STATUS,
+      backendUrl: "https://app.homecoreos.test",
+      uptimeSec: 12,
+    };
+    const transport = fakeTransport({
+      status: { ...STATUS, backendUrl: "", backendOk: false, mqttConnected: false },
+      statuses: [restarted, reconnect, reconnect, reconnect, reconnect],
+    });
+    const { controller, calls } = build({
+      transport,
+      backendUrl: "https://app.homecoreos.test",
+      verifyTimeoutMs: 200,
+      verifyPollMs: 1,
+    });
+
+    await controller.connect("usb");
+    await controller.diagnose();
+    // The missing server URL is the root cause, so it is repaired before the
+    // MQTT reconnect that depends on it.
+    expect(controller.getState().plan?.actions.map((action) => action.id)).toEqual([
+      "configure_endpoint",
+      "reconnect_mqtt",
+    ]);
+
+    await controller.repair({});
+
+    const state = controller.getState();
+    expect(state.steps.map((step) => step.id)).toContain("restart");
+    expect(state.steps[8]?.id).toBe("restart");
+    expect(state.steps[8]?.state).toBe("done");
+    // The restart is the last thing sent, and it carries nothing but intent.
+    expect(transport.sent.at(-1)).toContain('"action":"restart"');
+    const repairLines = transport.sent.filter((line) => line.startsWith("HC REPAIR"));
+    expect(repairLines[0]).toContain('"action":"config"');
+    expect(repairLines[0]).toContain("https://app.homecoreos.test");
+    // Verification only sees telemetry read after the restart.
+    expect(state.verification?.checks.find((check) => check.id === "backend_url_verified")?.status).toBe("pass");
+    expect(state.verification?.checks.find((check) => check.id === "restart_verified")?.status).toBe("pass");
+    expect(state.verification?.checks.find((check) => check.id === "restart_verified")?.required).toBe(false);
+    expect(state.phase).toBe("report");
+    expect(calls.complete).toBe(1);
+  });
+
+  it("does not restart a controller when nothing needed changing", async () => {
+    const transport = fakeTransport();
+    const { controller } = build({ transport });
+    await controller.connect("usb");
+    await controller.diagnose();
+    await controller.repair({});
+    expect(transport.sent.filter((line) => line.includes('"action":"restart"'))).toEqual([]);
+    expect(controller.getState().steps[8]?.state).toBe("done");
+    expect(controller.getState().steps[8]?.detail).toMatch(/No restart was needed/i);
+  });
+
+  it("exposes the same eleven steps for every transport", async () => {
     const kinds = ["wifi", "ble", "usb"] as const;
     for (const kind of kinds) {
       const transport = fakeTransport();
@@ -581,8 +649,11 @@ describe("recovery flow (one engine, three transports)", () => {
         "read",
         "wifi_check",
         "backend_check",
+        "link_check",
+        "system_check",
         "plan",
         "repair",
+        "restart",
         "verify",
         "report",
       ]);

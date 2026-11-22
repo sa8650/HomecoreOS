@@ -119,6 +119,33 @@ const char *hc_wifi_get_last_error(void) {
     return s_last_wifi_error;
 }
 
+/**
+ * Escapes text for an HTML attribute or text node. A board SSID or a typed URL
+ * is arbitrary user input: putting it into the page unescaped lets it break the
+ * form (and would be an injection in a page served by the board itself).
+ */
+static void hc_html_escape(const char *src, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    size_t o = 0;
+    for (const char *p = src ? src : ""; *p && o + 1 < cap; p++) {
+        const char *rep = NULL;
+        switch (*p) {
+            case '&': rep = "&amp;"; break;
+            case '<': rep = "&lt;"; break;
+            case '>': rep = "&gt;"; break;
+            case '"': rep = "&quot;"; break;
+            case '\'': rep = "&#39;"; break;
+            default: break;
+        }
+        if (!rep) { out[o++] = *p; continue; }
+        const size_t rep_len = strlen(rep);
+        if (o + rep_len + 1 > cap) break;
+        memcpy(out + o, rep, rep_len);
+        o += rep_len;
+    }
+    out[o] = '\0';
+}
+
 static void url_decode(char *dst, const char *src, size_t max_len) {
     size_t i = 0;
     while (*src && i + 1 < max_len) {
@@ -209,7 +236,17 @@ static esp_err_t portal_get_handler(httpd_req_t *req) {
     const bool is_paired = s_cfg_ref && s_cfg_ref->paired;
     const bool phys_btn = s_cfg_ref && s_cfg_ref->physical_confirmed;
 
-    char *page = calloc(1, 3584);
+    /* Escaped values are user-controlled (an SSID may contain quotes, a URL is
+     * typed by hand), so the page is sized from what it actually has to hold and
+     * HTML-escaped below — a fixed buffer that silently truncated was hiding
+     * both problems. */
+    char ssid_esc[192];
+    char url_esc[640];
+    hc_html_escape(s_cfg_ref ? s_cfg_ref->wifi_ssid : "", ssid_esc, sizeof(ssid_esc));
+    hc_html_escape(s_cfg_ref ? s_cfg_ref->backend_url : "", url_esc, sizeof(url_esc));
+
+    const size_t page_cap = 6144;
+    char *page = calloc(1, page_cap);
     if (!page) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
         return ESP_FAIL;
@@ -217,7 +254,7 @@ static esp_err_t portal_get_handler(httpd_req_t *req) {
 
     snprintf(
         page,
-        3584,
+        page_cap,
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>HomecoreOS Controller Setup &amp; Recovery</title>"
@@ -232,18 +269,22 @@ static esp_err_t portal_get_handler(httpd_req_t *req) {
         "Board: <code>%s</code> (%s, BOOT=GPIO%d)<br>"
         "Pairing: <strong>%s</strong> &middot; Wi-Fi: <strong>%s</strong></p>"
         "<form method='post' action='/provision'>"
-        "<label>Action<select name='mode'>"
-        "<option value='wifi_only'%s>Update Wi-Fi Credentials Only (Keep Pairing)</option>"
-        "<option value='pair'%s>Pair New Controller</option>"
-        "<option value='recover'>Recover / Re-pair Existing Controller</option>"
+        "<label>What do you want to do?<select name='mode'>"
+        "<option value='wifi_only'%s>Update Wi-Fi and/or website URL (keep pairing)</option>"
+        "<option value='pair'%s>Pair a new controller</option>"
+        "<option value='recover'>Recover / re-pair this controller with a recovery code</option>"
         "</select></label>"
         "<label>Wi-Fi SSID<input name='ssid' maxlength='63' value='%s' placeholder='HomeNetwork'></label>"
         "<label>Wi-Fi Password<input name='password' type='password' maxlength='63' placeholder='%s'></label>"
-        "<label>HomecoreOS Server URL<input name='backend_url' required placeholder='https://your-worker.workers.dev' value='%s'></label>"
-        "<label>6-Digit Pairing or Recovery Code (leave blank for Wi-Fi-only update)<input name='pair_code' maxlength='12' pattern='([0-9]{6})?' placeholder='123456'></label>"
+        "<label>HomecoreOS Website URL<input name='backend_url' required placeholder='https://your-worker.workers.dev' value='%s'></label>"
+        "<label>6-Digit Pairing or Recovery Code (from the HomecoreOS website; leave blank for a Wi-Fi-only update)"
+        "<input name='pair_code' maxlength='12' pattern='([0-9]{6})?' placeholder='123456'></label>"
         "<label class='chk'><input type='checkbox' name='phys_confirm' value='1'%s>"
         "<span>Confirm physical controller access for recovery re-pairing%s</span></label>"
-        "<button type='submit'>Save &amp; Apply</button>"
+        "<button type='submit'>Save and Restart</button>"
+        "<p class='meta'>Saving restarts this board with every stored setting kept "
+        "(board ID, rooms, sensors, switches, Nodes and pairing). A firmware update "
+        "is never installed by this page &mdash; use HomecoreOS &rarr; Firmware &amp; Updates.</p>"
         "</form></div></body></html>",
         uid,
         hc_get_runtime_fw_version(),
@@ -254,9 +295,9 @@ static esp_err_t portal_get_handler(httpd_req_t *req) {
         s_connected ? "Connected" : (strlen(s_last_wifi_error) > 0 ? s_last_wifi_error : "Disconnected"),
         is_paired ? " selected" : "",
         is_paired ? "" : " selected",
-        s_cfg_ref ? s_cfg_ref->wifi_ssid : "",
-        (s_cfg_ref && strlen(s_cfg_ref->wifi_pass) > 0) ? "Leave blank to keep saved password" : "Wi-Fi password",
-        s_cfg_ref ? s_cfg_ref->backend_url : "",
+        ssid_esc,
+        (s_cfg_ref && strlen(s_cfg_ref->wifi_pass) > 0) ? "Leave blank to keep the saved password" : "Wi-Fi password",
+        url_esc,
         phys_btn ? " checked" : "",
         phys_btn ? " (Recovery button verified)" : ""
     );
@@ -348,8 +389,9 @@ static esp_err_t portal_post_handler(httpd_req_t *req) {
     httpd_resp_sendstr(
         req,
         "<!doctype html><html><body style='font-family:sans-serif;padding:2rem;background:#0a0a0a;color:#fafafa'>"
-        "<h2>Settings Applied!</h2>"
-        "<p>Wi-Fi credentials and HomecoreOS configuration were saved. The controller is reconnecting to Wi-Fi and HomecoreOS now without losing saved pairing or local automations.</p>"
+        "<h2>Saved. Restarting the connection&hellip;</h2>"
+        "<p>Wi-Fi, the HomecoreOS website URL and any pairing/recovery code were saved. The controller is restarting its Wi-Fi connection and re-joining HomecoreOS with its existing board ID; devices, rooms, sensors, switches, Nodes and local automations are untouched.</p>"
+        "<p>This temporary Wi-Fi network closes by itself once HomecoreOS confirms the board. You can disconnect from it now.</p>"
         "</body></html>"
     );
 

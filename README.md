@@ -74,6 +74,33 @@ npm run db:verify   # replays migrations, fails on schema drift
 
 See `DEPLOYMENT.md` for full setup instructions across GitHub, Supabase, Cloudflare Workers, Cloudflare R2, and EMQX Serverless, `DESIGN_SYSTEM.md` for UI rules, and `docs/REALTIME_SYNC.md` for how live state reaches the console.
 
-## Board repair and recovery
+## Board setup, repair and recovery
 
-Add Board → Repair / Recover Board offers **Wi-Fi, BLE and USB** through one diagnostic and recovery engine. USB repairs running HomecoreOS firmware; firmware flashing remains a separate action. See [Board Recovery](docs/BOARD_RECOVERY.md) for operator steps, API routes, safety, compatibility limits and troubleshooting. Real-device/ESP-IDF validation remains required before hardware rollout. Setup identity reuse requires migration `0007_pairing_identity_reuse.sql`; setup completion waits for MQTT telemetry instead of broker credential creation. See the recovery guide’s “Remaining work and validation limits” for the unfinished expanded workflow requirements.
+Add Board offers three workflows, all built on one engine:
+
+- **Setup Board** → **Setup with Wi-Fi**: the website generates a 6-digit pairing
+  code and this site's URL; you join `HomecoreOS-Setup-XXXX`, open
+  `http://192.168.4.1`, fill in SSID / password / website URL / pairing code and
+  press **Save and Restart**. The board joins Wi-Fi, pairs, connects to MQTT and
+  closes the temporary network by itself.
+- **Setup Board** → **Setup with BLE**: animated discovery, automatic pairing,
+  then only Wi-Fi SSID and password. The board saves them with the website URL
+  and MQTT credentials, restarts, verifies MQTT and turns BLE off.
+- **Repair / Recover Board** → **BLE, Wi-Fi or USB**: hold BOOT for 3 seconds to
+  open the temporary Wi-Fi and BLE interfaces, then let the board diagnose
+  Wi-Fi, the stored server URL, ESP-NOW, MQTT, the local webpage/temporary Wi-Fi,
+  pairing, firmware validity and OTA. Only the necessary repairs are applied, the
+  board restarts, and verification runs against fresh telemetry before a short
+  report is shown. On Wi-Fi the website hands out a single-use **recovery code**
+  for the board's local page.
+
+Existing boards are updated in place — the same board ID keeps its devices,
+Nodes, rooms and configuration instead of creating a duplicate. Recovery
+**never flashes or updates firmware**; a firmware problem is explained and the
+separate Flash Board workflow is offered. Flash with USB is unchanged.
+
+See [Board Recovery](docs/BOARD_RECOVERY.md) for operator steps, the protocol,
+API routes, safety rules, migrations (`0006` sessions, `0007` setup identity
+reuse, `0008` recovery health facts), validation and the list of items that
+still require physical-board testing. ESP-IDF is not installed in this
+environment, so firmware validation here is host-C tests plus the CI build.

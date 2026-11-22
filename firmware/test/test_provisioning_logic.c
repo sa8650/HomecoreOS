@@ -88,6 +88,50 @@ static void test_initial_boot_modes(void) {
     assert(hc_prov_should_ap_be_active(&st) == true);
 }
 
+static void test_three_second_boot_press_opens_both_temporary_interfaces(void) {
+    // Requirement: a single 3-second BOOT press must open BOTH the temporary
+    // Wi-Fi setup network and BLE — on a paired board and on a fresh one, and
+    // without erasing anything.
+    for (int paired = 0; paired <= 1; paired++) {
+        hc_prov_boot_input_t in = {
+            .has_wifi = true,
+            .has_ble = true,
+            .paired = paired == 1,
+            .has_wifi_ssid = true,
+            .has_backend_url = true,
+            .has_pending_pair_code = false,
+            .recovery_requested = true,
+        };
+        hc_prov_state_t st;
+        hc_prov_init_state(&st, &in);
+        assert(st.mode == HC_PROV_MODE_RECOVERY);
+        assert(hc_prov_should_ap_be_active(&st) == true);
+        assert(hc_prov_should_ble_be_active(&st) == true);
+        // Recovery never removes the saved configuration that boot restored.
+        assert(st.paired == (paired == 1));
+        assert(st.has_saved_config == true);
+    }
+
+    // A board with no Wi-Fi radio opens BLE only; one with no BLE opens the AP
+    // only. Neither pretends an interface it does not have is running.
+    hc_prov_boot_input_t h2 = {
+        .has_wifi = false, .has_ble = true, .paired = false,
+        .has_backend_url = true, .recovery_requested = true,
+    };
+    hc_prov_state_t st;
+    hc_prov_init_state(&st, &h2);
+    assert(hc_prov_should_ble_be_active(&st) == true);
+    assert(hc_prov_should_ap_be_active(&st) == false);
+
+    hc_prov_boot_input_t wifi_only = {
+        .has_wifi = true, .has_ble = false, .paired = true,
+        .has_wifi_ssid = true, .has_backend_url = true, .recovery_requested = true,
+    };
+    hc_prov_init_state(&st, &wifi_only);
+    assert(hc_prov_should_ap_be_active(&st) == true);
+    assert(hc_prov_should_ble_be_active(&st) == false);
+}
+
 static void test_recovery_timeout_and_transitions(void) {
     hc_prov_boot_input_t paired_s3 = {
         .has_wifi = true,
@@ -233,6 +277,7 @@ int main(void) {
     test_cloud_verification_before_teardown();
     test_initial_boot_modes();
     test_recovery_timeout_and_transitions();
+    test_three_second_boot_press_opens_both_temporary_interfaces();
     test_wifi_exponential_backoff();
     test_boot_button_hold_thresholds();
     test_ble_auth_guard_rate_limit_and_expiry();
