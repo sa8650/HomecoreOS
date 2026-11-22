@@ -9,15 +9,15 @@ The Repair / Recover Board chooser exposes Wi-Fi, BLE and USB. All three mount `
 ## Operator guide
 
 1. Open Add Board → Repair / Recover Board and choose a transport.
-2. Select the installed controller explicitly (or use the controller's Repair / Recover action). Restore trashed boards from My Boards first. A new installation belongs in Setup Board.
+2. No board dropdown is needed. Choose Discover BLE Board, Connect to Board (Wi-Fi) or Connect USB Board. The connected device is matched automatically to an installed controller in your account. Restore trashed boards from My Boards first; a new installation belongs in Setup Board.
 3. Power the board, hold BOOT / Recovery for three seconds, and follow the selected method's connection instructions. On USB, use a data cable and close serial monitors. Do not hold BOOT during a reset into the ROM bootloader: this workflow communicates with running HomecoreOS firmware.
-4. Connect and read identity. The reported UID suffix must match the installed controller where its UID is known; additionally confirm the physical controller before running diagnostics. Protocol v1 reports a suffix, not a cryptographically authenticated full USB identity. Treat physical access as trusted; a matching suffix is not an ownership credential.
-5. Review individual checks, including Unknown / Unable to verify, and the proposed plan. Nothing is repaired during discovery or diagnosis.
+4. Discovery reads identity before diagnosis. The reported UID suffix must match exactly one account controller (or the controller whose details you opened). Unknown, missing and ambiguous identities stop the flow instead of choosing the first account record. Protocol v1 reports a suffix, not a cryptographically authenticated full USB identity. Treat physical access as trusted; a matching suffix is not an ownership credential.
+5. Diagnostics run automatically after identification. Ordinary credential-free repairs and verification continue automatically. The main screen shows a compact progress pipeline; individual checks, unknown results and technical logs are available under Diagnostic details. Nothing is changed during discovery or diagnosis.
 6. Provide Wi-Fi credentials only if requested. Account re-pairing is separate: it requires a live server session, physical recovery mode and explicit consent before requesting a single-use authorization. Ordinary MQTT failure does not automatically rotate credentials.
-7. Apply the plan and wait for verification. A sent command is not success. Read the report, unresolved problems, unknown checks and next action.
+7. If new credentials are needed, review the proposed repairs, enter Wi-Fi details and choose Save & Recover. Account re-pairing is a separate, explicitly labelled Authorize & Recover action. Then wait for verification. A sent command is not success; read the final status, next action and expandable verification details.
 8. Closing or backing out cancels the flow and releases the local transport. Reconnect & retry starts with new identification and diagnosis. No mutation is retransmitted automatically after an ambiguous timeout.
 
-Recovery history can be loaded on demand in the chooser. Administrators can load the same account-scoped, read-only summary in Customer Monitoring. Neither history view polls or sends hardware commands.
+Recovery history can be loaded on demand under Previous recovery sessions in the chooser. The discovery screens reuse the original BLE and Wi-Fi artwork; USB recovery uses the same UsbFlashIllustration component as the separate flashing workflow, without invoking a flasher. Administrators can load the same account-scoped, read-only summary in Customer Monitoring. Neither history view polls or sends hardware commands.
 
 ## Device protocol
 
