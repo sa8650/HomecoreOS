@@ -318,7 +318,8 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
           { status: 201, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/board-instances/ctrl-new-1") {
+      if (url === "/api/board-instances/pairing-status" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ pairingCode: "778899" });
         return new Response(
           JSON.stringify({
             controller: makeController({
@@ -478,7 +479,8 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
           { status: 201, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url === "/api/board-instances/ctrl-wifi-1") {
+      if (url === "/api/board-instances/pairing-status" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ pairingCode: "908070" });
         return new Response(
           JSON.stringify({
             controller: makeController({
