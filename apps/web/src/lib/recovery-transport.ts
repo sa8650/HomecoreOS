@@ -244,6 +244,7 @@ export interface RecoveryBleSession {
   connectAndAuthenticate: (params: {
     setupPin?: string;
     candidatePins?: string[];
+    setupPinForDevice?: (info: { mac_suffix?: string }) => string | undefined;
     onStage?: (stage: string) => void;
     onLog?: (message: string) => void;
     onDisconnected?: () => void;
@@ -261,6 +262,7 @@ export function createBleRecoveryTransport(options: {
   createClient: () => RecoveryBleSession;
   setupPin?: string;
   candidatePins?: string[];
+  setupPinForDevice?: (info: { mac_suffix?: string }) => string | undefined;
   support?: { supported: boolean; reason?: string };
 }): RecoveryTransport {
   const client = options.createClient();
@@ -338,6 +340,7 @@ export function createBleRecoveryTransport(options: {
           client.connectAndAuthenticate({
             setupPin: options.setupPin,
             candidatePins: options.candidatePins,
+            setupPinForDevice: options.setupPinForDevice,
             onLog: (msg) => onProgress?.(msg),
             onDisconnected: () => {
               connected = false;

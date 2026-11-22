@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { RiArrowRightLine, RiCheckLine, RiCpuLine, RiErrorWarningLine, RiLoader4Line, RiSubtractLine } from "@remixicon/react";
 import { describeTransportCapability, type RecoveryTransportKind } from "@homecoreos/shared";
 import type { BoardProfileItem, ControllerItem } from "@/features/types";
 import { HomecoreBleClient, isWebBluetoothSupported } from "@/lib/ble-provisioning";
@@ -8,8 +9,29 @@ import { createBleRecoveryTransport, createUsbRecoveryTransport, createWifiRecov
 import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/reui/badge";
+import { Frame, FramePanel } from "@/components/reui/frame";
+import { FormField, StatusAlert } from "@/components/shared/AppUi";
+import { UsbFlashIllustration } from "@/components/firmware/FirmwareProgressPipeline";
+import { BleDiscoveryArtwork, WifiPortalArtwork } from "./RecoveryArtwork";
 
-export function UnifiedRecoveryPanel({ kind, controllers, target, profiles = [], canManage, onFlash }: {
+const EMPTY_PROFILES: BoardProfileItem[] = [];
+const suffix = (uid: string | null | undefined) => uid?.replace(/[^a-f0-9]/gi, "").slice(-4).toUpperCase();
+
+/** Discovery chooses the account record, never the other way round. */
+export function matchRecoveryBoard(controllers: ControllerItem[], uid: string | null, target?: ControllerItem | null) {
+  const detected = suffix(uid);
+  if (!detected || detected.length !== 4) throw new Error("The board did not provide a verifiable identity. No changes were made.");
+  if (target) {
+    if (target.deleted_at || suffix(target.hardware_uid) !== detected) throw new Error("This is not the controller you opened. Connect the correct board and try again. No changes were made.");
+    return target;
+  }
+  const matches = controllers.filter((board) => !board.deleted_at && suffix(board.hardware_uid) === detected);
+  if (matches.length !== 1) throw new Error(matches.length ? "More than one controller matches this identity. Open Repair / Recover from the intended controller’s details." : "This board could not be matched to your account. Restore it from My Boards trash if deleted, or use Setup Board for a new installation.");
+  return matches[0];
+}
+
+export function UnifiedRecoveryPanel({ kind, controllers, target, profiles = EMPTY_PROFILES, canManage, onFlash }: {
   kind: RecoveryTransportKind;
   controllers: ControllerItem[];
   profiles?: BoardProfileItem[];
@@ -17,122 +39,157 @@ export function UnifiedRecoveryPanel({ kind, controllers, target, profiles = [],
   canManage: boolean;
   onFlash: () => void;
 }) {
-  const [selected, setSelected] = useState(target?.id ?? "");
-  const board = target ?? controllers.find((item) => item.id === selected);
-  if (!board) return <div className="space-y-3">
-    <p>{kind === "wifi" ? "Join HomecoreOS-Setup-XXXX; local portal: http://192.168.4.1." : kind === "usb" ? "USB data cable and desktop Chrome/Edge required. No firmware is written." : "Bluetooth LE and Chrome/Edge over HTTPS required."}</p>
-    <p>Select the existing controller to repair. Recovery never creates a duplicate board record.</p>
-    <label className="block">Controller<select aria-label="Controller to repair" className="mt-1 w-full rounded border p-2" value={selected} onChange={(e) => setSelected(e.target.value)}>
-      <option value="">Choose controller</option>
-      {controllers.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.hardware_uid ?? "identity unknown"}</option>)}
-    </select></label>
-    {!controllers.length && <p>No installed controllers found. Restore deleted boards from My Boards trash before repairing them. Use Setup Board for a new installation.</p>}
-  </div>;
-  return <RecoveryRun key={`${kind}:${board.id}`} kind={kind} board={board} profile={profiles.find((p) => p.id === (board.board_profile_id ?? board.custom_board_profile_id))} canManage={canManage} onFlash={onFlash} />;
-}
-
-function RecoveryRun({ kind, board, profile, canManage, onFlash }: { kind: RecoveryTransportKind; board: ControllerItem; profile?: BoardProfileItem; canManage: boolean; onFlash: () => void }) {
+  const accountInputs = useRef({ controllers, target, profiles });
+  accountInputs.current = { controllers, target, profiles };
+  const mounted = useRef(true);
+  const [matched, setMatched] = useState<ControllerItem | null>(null);
+  const [ssid, setSsid] = useState("");
+  const [password, setPassword] = useState("");
+  const [authorizing, setAuthorizing] = useState(false);
+  const [authorizationError, setAuthorizationError] = useState("");
   const controller = useMemo(() => createRecoveryController({
-    boardInstanceId: board.id,
-    boardFallbacks: { model: board.board_model },
-    expectedHardwareUid: board.hardware_uid,
+    boardInstanceId: "",
+    resolveBoard: (hello) => {
+      const { controllers, target } = accountInputs.current;
+      const board = matchRecoveryBoard(controllers, hello.uidSuffix, target);
+      setMatched(board);
+      setSsid(board.wifi_ssid ?? "");
+      return { id: board.id, hardwareUid: board.hardware_uid, model: board.board_model };
+    },
     api: recoveryServerApi,
     capabilityFor: (transport) => {
       const ble = isWebBluetoothSupported();
       const usb = isRecoverySerialSupported();
+      const { profiles, target } = accountInputs.current;
+      const profile = profiles.find((p) => p.id === (target?.board_profile_id ?? target?.custom_board_profile_id));
       return describeTransportCapability({ transport,
         browserSupported: transport === "ble" ? ble.supported : transport === "usb" ? usb.available : true,
         browserReason: transport === "ble" ? ble.reason : usb.reason,
-        boardSupportsWifi: profile?.supports_wifi !== false, boardSupportsBle: profile?.supports_ble !== false, boardFirmwareSupportsDiagnostics: true,
+        boardSupportsWifi: profile?.supports_wifi !== false,
+        boardSupportsBle: profile?.supports_ble !== false,
+        boardFirmwareSupportsDiagnostics: true,
       });
     },
     createTransport: (transport) => transport === "usb" ? createUsbRecoveryTransport({})
       : transport === "wifi" ? createWifiRecoveryTransport({})
-        : createBleRecoveryTransport({ createClient: () => new HomecoreBleClient(), candidatePins: board.ble_setup_pin ? [board.ble_setup_pin] : undefined, support: isWebBluetoothSupported() }),
-  }), [board, profile]);
+        : createBleRecoveryTransport({ createClient: () => new HomecoreBleClient(),
+          setupPinForDevice: (info) => matchRecoveryBoard(accountInputs.current.controllers, info.mac_suffix ?? null, accountInputs.current.target).ble_setup_pin ?? undefined,
+          support: isWebBluetoothSupported() }),
+  }), []);
   const [state, setState] = useState(controller.getState);
-  const [ssid, setSsid] = useState(board.wifi_ssid ?? "");
-  const [password, setPassword] = useState("");
-  const [consent, setConsent] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
-  const [code, setCode] = useState("");
-  const [codeError, setCodeError] = useState("");
-  const [issuingCode, setIssuingCode] = useState(false);
   useEffect(() => {
+    mounted.current = true;
+    setState(controller.getState());
     const unsubscribe = controller.subscribe(setState);
-    return () => { unsubscribe(); void controller.cancel("Recovery dialog closed."); };
+    return () => { mounted.current = false; unsubscribe(); void controller.cancel("Recovery dialog closed."); };
   }, [controller]);
   useEffect(() => {
-    if (state.error) { setPassword(""); setCode(""); setConsent(false); }
-  }, [state.error]);
-  const busy = ["identifying", "diagnostics", "repairing", "verifying"].includes(state.phase);
+    if (state.error || state.phase === "report") setPassword("");
+  }, [state.error, state.phase]);
+
+  const busy = ["identifying", "diagnostics", "repairing", "verifying"].includes(state.phase) || authorizing;
   const ready = state.phase === "plan" || state.phase === "awaiting_input";
-  const wifiNeeded = state.plan?.actions.some((a) => a.requiresSecret === "wifi");
-  const pairingNeeded = state.plan?.actions.some((a) => a.id === "repair_pairing");
-  const connected = Boolean(state.boardStatus) && state.phase !== "report" && state.phase !== "error";
+  const wifiNeeded = Boolean(state.plan?.actions.some((action) => action.requiresSecret === "wifi"));
+  const pairingNeeded = Boolean(state.plan?.actions.some((action) => action.changesIdentity));
+  const started = state.phase !== "idle";
+  const complete = state.phase === "report";
+  const verified = state.report?.finalStatus === "completed";
+  const method = kind === "ble" ? "Bluetooth" : kind === "wifi" ? "Wi-Fi" : "USB";
+  const support = kind === "ble" ? isWebBluetoothSupported() : kind === "usb" ? (() => { const usb = isRecoverySerialSupported(); return { supported: usb.available, reason: usb.reason }; })() : { supported: true, reason: null };
+
+  async function discover() {
+    setPassword(""); setMatched(null); setAuthorizationError("");
+    await controller.cancel();
+    if (!mounted.current) return;
+    await controller.connect(kind);
+    if (!mounted.current) return;
+    if (controller.getState().phase !== "identified") return;
+    await controller.diagnose();
+    if (!mounted.current) return;
+    const next = controller.getState();
+    // Ordinary, credential-free repairs continue without an extra checklist.
+    // Wi-Fi changes and identity-changing repairs wait for the user's input.
+    if (next.phase === "plan" && next.plan && !next.plan.requiresFirmwareWorkflow &&
+        !next.plan.actions.some((action) => action.requiresSecret || action.changesIdentity)) {
+      await controller.repair({});
+    }
+  }
+
+  async function recover() {
+    let pairingCode: string | undefined;
+    setAuthorizationError("");
+    if (pairingNeeded) {
+      if (!matched || !state.sessionId || state.boardStatus?.mode !== "recovery") return;
+      setAuthorizing(true);
+      try {
+        const result = await apiFetch<{ pairingCode: string }>("/api/board-instances/recover", {
+          method: "POST", body: JSON.stringify({ boardInstanceId: matched.id }),
+        });
+        pairingCode = result.pairingCode;
+      } catch (error) {
+        setAuthorizationError(error instanceof Error ? error.message : "Account recovery could not be authorized.");
+        return;
+      } finally { setAuthorizing(false); }
+    }
+    await controller.repair({ wifi: wifiNeeded ? { ssid, password } : undefined, pairingCode, consentToRePair: pairingNeeded });
+    setPassword("");
+  }
+
   return <section className="space-y-4" aria-label="Unified board recovery">
-    <div className="rounded border p-3 text-sm">
-      <h3 className="font-semibold">Prepare Board for Recovery</h3>
-      <p>Hold the BOOT / Recovery button on your board for 3 seconds.</p>
-      {kind === "usb" ? <p>Use desktop Chrome or Edge over HTTPS and a USB data cable. Close serial monitors. This repairs installed firmware; it never flashes or erases the board.</p>
-        : kind === "wifi" ? <p>Join HomecoreOS-Setup-XXXX in your device network settings, then connect below. Local portal: http://192.168.4.1. Permit local network access if prompted; this browser cannot select a Wi-Fi network for you.</p>
-          : <p>Enable Bluetooth in Chrome or Edge over HTTPS. Choose the correct nearby HomecoreOS board in the browser prompt.</p>}
-      <p>Selected: {board.name} · {board.hardware_uid ?? "identity unavailable"}</p>
-      <p role="status">Connection: {connected ? "Connected" : busy ? "Connecting / working" : "Disconnected"}</p>
-    </div>
-    {(state.phase === "idle" || state.phase === "error" || state.phase === "report") && <Button disabled={!canManage || busy} onClick={async () => {
-      setPassword(""); setCode(""); setConsent(false); setConfirmed(false);
-      await controller.cancel();
-      await controller.connect(kind);
-    }}>{state.phase === "idle" ? "Connect & identify controller" : "Reconnect & retry"}</Button>}
-    {state.boardStatus && <div className="rounded border p-3 text-sm">
-      <p>Detected: {state.board.model ?? state.board.boardSlug} · ID suffix {state.board.hardwareUid ?? "unknown"}</p>
-      <p>Hardware revision: {profile?.revision ?? "Unknown / Unable to verify"}</p>
-      <p>Firmware: {state.board.firmwareVersion ?? "Unknown"} · {state.boardStatus.paired ? "Paired" : "Unpaired"} · {state.boardStatus.mode}</p>
-      {!ready && !busy && state.phase !== "report" && state.phase !== "error" && <>
-        <label className="flex gap-2"><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />I confirm this is the physical controller I intend to repair.</label>
-        <Button disabled={!confirmed} onClick={() => controller.diagnose()}>Run diagnostics</Button>
+    {!started || state.phase === "identifying" || state.phase === "error" ? <>
+      {kind === "ble" ? <BleDiscoveryArtwork mode="recover" /> : kind === "wifi" ? <>
+        <WifiPortalArtwork recovery />
+        <div className="space-y-1"><h3 className="text-[15px] font-semibold">Recover over Wi-Fi</h3><p className="text-[12.5px] leading-relaxed text-muted-foreground">Hold BOOT / Recovery for 3 seconds, then join <strong className="font-medium text-foreground">HomecoreOS-Setup-XXXX</strong> in your Wi-Fi settings.</p></div>
+        <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-3 py-2.5 text-xs"><span className="text-muted-foreground">Board’s local portal</span><code className="font-medium">http://192.168.4.1</code></div>
+      </> : <>
+        <UsbFlashIllustration />
+        <div className="space-y-1"><h3 className="text-[15px] font-semibold">Recover your board over USB</h3><p className="text-[12.5px] leading-relaxed text-muted-foreground">Connect a USB data cable and close any serial monitor. Keep HomecoreOS running, then hold BOOT / Recovery for 3 seconds.</p></div>
       </>}
-    </div>}
-    <ol className="space-y-1 text-sm" aria-label="Recovery progress">{state.steps.map((step) => <li key={step.id}><strong>{step.label}</strong> — {step.state}{step.detail && <p className="text-muted-foreground">{step.detail}</p>}</li>)}</ol>
-    {state.progress && <p role="status">{state.progress}</p>}
-    {state.startedAt && state.finishedAt && <p>Elapsed: {Math.round((state.finishedAt - state.startedAt) / 1000)} seconds</p>}
-    {state.error && <p role="alert">{state.error.message}</p>}
-    {state.diagnostics && <div><h3 className="font-semibold">Diagnostics: {state.diagnostics.status}</h3><ul>{state.diagnostics.checks.map((check) => <li key={check.id} className="py-1 text-sm">{check.label}: <strong>{check.status === "unknown" ? "Unknown / Unable to verify" : check.status}</strong> — {check.summary}</li>)}</ul></div>}
-    {state.plan && <div className="space-y-2"><h3 className="font-semibold">Proposed recovery plan</h3>
-      {state.plan.noActionNeeded && <p>No changes are needed. Run verification to confirm health.</p>}
-      {state.plan.summary.map((row, i) => <div className="rounded border p-2 text-sm" key={i}><p>Problem: {row.problem}</p><p>Repair: {row.action}</p><p>Verification: {row.verification}</p></div>)}
-      {state.plan.requiresFirmwareWorkflow && <><p>Installed firmware cannot support this repair. No firmware will be written here.</p><Button onClick={onFlash}>Open separate Flash Board workflow</Button></>}
-    </div>}
-    {ready && <div className="space-y-3">
-      {wifiNeeded && <><label className="block">Wi-Fi SSID<Input value={ssid} onChange={(e) => setSsid(e.target.value)} autoComplete="off" /></label><label className="block">Wi-Fi password<Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" /></label></>}
-      {pairingNeeded && <><p>Account re-pairing changes authentication credentials. Ordinary network repairs preserve pairing and assignments. Physical recovery mode is required.</p>
-        <label className="flex gap-2"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />I authorize account re-pairing for this board.</label>
-        <Button disabled={!canManage || !consent || issuingCode || Boolean(code) || !state.sessionId || state.boardStatus?.mode !== "recovery"} onClick={async () => {
-          setIssuingCode(true); setCodeError("");
-          try {
-            const result = await apiFetch<{ pairingCode: string }>("/api/board-instances/recover", { method: "POST", body: JSON.stringify({ boardInstanceId: board.id }) });
-            setCode(result.pairingCode);
-          } catch (error) { setCodeError(error instanceof Error ? error.message : "Authorization failed"); }
-          finally { setIssuingCode(false); }
-        }}>Authorize re-pairing</Button>{codeError && <p role="alert">{codeError}</p>}{code && <p>Single-use authorization ready. Code is not displayed or logged.</p>}</>}
-      {state.needs && <p role="alert">{state.needs.message}</p>}
-      <Button disabled={!canManage || state.plan?.requiresFirmwareWorkflow || (pairingNeeded && (!consent || !code))} onClick={async () => {
-        await controller.repair({ wifi: wifiNeeded ? { ssid, password } : undefined, consentToRePair: consent, pairingCode: code || undefined });
-        setPassword(""); setCode("");
-      }}>Apply plan & verify recovery</Button>
-    </div>}
-    {state.report && <div className="space-y-2 rounded border p-3"><h3 className="font-semibold">Recovery report: {state.report.finalStatus}</h3>
-      <p>Session: {state.report.sessionId} · {state.report.sessionId === "local" ? "Local only — server could not record this session" : "Recorded on server"}</p>
-      <p>Original problems: {state.report.detectedProblems.join(", ") || "None confirmed"}</p>
-      <ul>{state.report.actions.map((action, i) => <li key={i}>{action.actionId}: {action.status} — {action.message}</li>)}</ul>
-      <h4 className="font-semibold">Final verification</h4>
-      <ul>{state.report.verification.checks.map((check) => <li key={check.id}>{check.label}: {check.status === "unknown" ? "Unknown / Unable to verify" : check.status} — {check.detail}</li>)}</ul>
-      <p>Unresolved: {state.report.unresolvedProblems.join(", ") || "None confirmed; review unknown checks"}</p>
-      <p>Wi-Fi: {String(state.report.finalTelemetry.connected ?? "Unknown")} · IP assigned: {String(state.report.finalTelemetry.ipAssigned ?? "Unknown")} · API: {String(state.report.finalTelemetry.apiReachable ?? "Unknown")}</p>
-      <p>Firmware: {state.report.finalTelemetry.firmwareVersion ?? "Unknown"} · MQTT: {String(state.report.finalTelemetry.mqttConnected ?? "Unknown")} · Last sync: {state.report.finalTelemetry.lastSyncAt ?? "Unknown"}</p>
-      <p>{state.report.nextAction}</p>
-    </div>}
-    <details><summary>Technical diagnostic details</summary><pre className="max-h-60 overflow-auto whitespace-pre-wrap text-xs">{state.technical.join("\n")}</pre></details>
+      <p className="text-[12px] leading-relaxed text-muted-foreground">{kind === "ble" ? "Keep your board nearby. We’ll identify it, find it in your account and check what needs repairing." : kind === "wifi" ? "Once connected, we’ll identify your board automatically and check its connection." : "We’ll identify the connected board automatically. This repairs your installed controller — no flashing or erasing."}</p>
+      {!support.supported && <StatusAlert tone="warning">{support.reason}</StatusAlert>}
+      {state.error && <StatusAlert tone="danger">{state.error.message}</StatusAlert>}
+      {state.phase === "identifying" && <p role="status" className="text-xs text-muted-foreground">{state.progress ?? "Looking for your board…"}</p>}
+      <div className="flex items-center justify-between gap-3 border-t pt-3">
+        <span className="text-[11.5px] text-muted-foreground">{kind === "usb" ? "Desktop Chrome / Edge · HTTPS" : kind === "ble" ? "Bluetooth enabled · Chrome / Edge" : "Local network access required"}</span>
+        <Button disabled={!canManage || busy || !support.supported} onClick={discover}>
+          {busy ? <RiLoader4Line className="size-4 animate-spin" /> : <RiArrowRightLine className="size-4" />}
+          {state.phase === "identifying" ? "Connecting…" : state.phase === "error" ? "Reconnect & retry" : kind === "ble" ? "Discover BLE Board" : kind === "usb" ? "Connect USB Board" : "Connect to Board"}
+        </Button>
+      </div>
+    </> : <>
+      {kind === "usb" && <UsbFlashIllustration active={busy} size="sm" />}
+      {matched && <div className="flex items-center gap-3 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"><RiCpuLine className="size-4" /></div>
+        <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{matched.name}</p><p className="text-xs text-muted-foreground">{state.board.firmwareVersion ? `Firmware ${state.board.firmwareVersion} · ` : ""}{method} · {state.board.hardwareUid}</p></div>
+        <Badge variant={verified ? "success-light" : "secondary"} radius="full">{complete ? verified ? "Verified" : "Needs attention" : "Identified"}</Badge>
+      </div>}
+      <div className="space-y-1"><h3 className="text-base font-semibold">{complete ? verified ? "Your board is ready!" : "Recovery needs attention" : ready ? wifiNeeded ? "Update your Wi-Fi connection" : pairingNeeded ? "Authorize account recovery" : "Recovery plan" : "Recovering your board"}</h3>
+        <p className="text-xs text-muted-foreground" role="status">{state.progress ?? (complete ? state.report?.nextAction ?? "Connection checked. Your board identity and assignments are preserved." : "We’ve checked your board. Only the necessary repairs will be applied.")}</p>
+      </div>
+      {!ready && <Frame spacing="sm"><FramePanel className="p-0"><ol aria-label="Recovery progress" className="divide-y">{state.steps.map((step) => <li key={step.id} className="flex items-center gap-3 px-3 py-2.5">
+        <span className={`flex size-5 shrink-0 items-center justify-center rounded-full ${step.state === "done" ? "bg-emerald-500/10 text-emerald-600" : step.state === "active" ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>
+          {step.state === "active" ? <RiLoader4Line className="size-3.5 animate-spin" /> : step.state === "done" ? <RiCheckLine className="size-3.5" /> : step.state === "error" || step.state === "warning" ? <RiErrorWarningLine className="size-3.5 text-amber-600" /> : <RiSubtractLine className="size-3" />}
+        </span><span className={`flex-1 text-[12.5px] ${step.state === "pending" ? "text-muted-foreground" : "font-medium"}`}>{step.label}</span><span className="text-[10.5px] capitalize text-muted-foreground">{step.state === "done" ? "Completed" : step.state === "active" ? "In progress" : step.state}</span>
+      </li>)}</ol></FramePanel></Frame>}
+      {ready && <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void recover(); }}>
+        {state.plan?.summary.length ? <div className="rounded-lg border bg-muted/30 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">{state.plan.summary.map((row, i) => <p key={i} className={i ? "mt-2" : ""}><strong className="font-medium text-foreground">{row.problem}</strong><br />{row.action}</p>)}</div> : null}
+        {wifiNeeded && <div className="space-y-3">
+          <FormField id="recovery-ssid" label="Wi-Fi Network Name (SSID)"><Input id="recovery-ssid" value={ssid} onChange={(event) => setSsid(event.target.value)} placeholder="Enter your 2.4 GHz Wi-Fi name" autoComplete="off" required /></FormField>
+          <FormField id="recovery-password" label="Wi-Fi Password"><Input id="recovery-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter Wi-Fi password" autoComplete="new-password" /></FormField>
+        </div>}
+        {pairingNeeded && <StatusAlert tone="warning">Account recovery replaces this board’s authentication credentials. Your devices and assignments stay in place. Choose Authorize & Recover only if you want to re-pair this board. A live server session and physical recovery mode are required.</StatusAlert>}
+        {(authorizationError || state.needs) && <StatusAlert tone="danger">{authorizationError || state.needs?.message}</StatusAlert>}
+        {state.plan?.requiresFirmwareWorkflow ? <><StatusAlert tone="warning">This firmware cannot support the required repair. Recovery will not write or erase firmware.</StatusAlert><Button type="button" onClick={onFlash}>Open separate Flash Board workflow</Button></> : <div className="flex justify-end border-t pt-3"><Button disabled={!canManage || busy || (wifiNeeded && !ssid.trim()) || (pairingNeeded && (!state.sessionId || state.boardStatus?.mode !== "recovery"))} type="submit">{authorizing && <RiLoader4Line className="size-4 animate-spin" />}{pairingNeeded ? "Authorize & Recover" : "Save & Recover"}<RiArrowRightLine className="size-4" /></Button></div>}
+      </form>}
+      {complete && <>
+        <StatusAlert tone={verified ? "success" : "warning"}>{state.report?.verification.summary}{state.report?.sessionId === "local" ? " This report is local only; the server could not record it." : ""}</StatusAlert>
+        <div className="flex justify-end"><Button variant="outline" onClick={discover} disabled={!canManage || busy}>Check again</Button></div>
+      </>}
+    </>}
+    {started && <details className="rounded-lg border text-xs"><summary className="cursor-pointer px-3 py-2.5 font-medium text-muted-foreground">Diagnostic details</summary><div className="space-y-4 border-t px-3 py-3">
+      {state.diagnostics && <ul className="space-y-2">{state.diagnostics.checks.map((check) => <li key={check.id}><div className="flex justify-between gap-3"><strong className="font-medium">{check.label}</strong><span className="text-muted-foreground">{check.status === "unknown" ? "Unable to verify" : check.status}</span></div><p className="mt-0.5 text-muted-foreground">{check.summary}</p></li>)}</ul>}
+      {state.report && <><h4 className="font-medium">Final verification</h4><ul className="space-y-2">{state.report.verification.checks.map((check) => <li key={check.id}>{check.label}: {check.status === "unknown" ? "Unable to verify" : check.status}<p className="text-muted-foreground">{check.detail}</p></li>)}</ul><p>Session: {state.report.sessionId}</p><p>Unresolved: {state.report.unresolvedProblems.join(", ") || "None confirmed"}</p></>}
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground">{state.technical.join("\n")}</pre>
+    </div></details>}
   </section>;
 }

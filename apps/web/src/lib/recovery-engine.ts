@@ -45,6 +45,7 @@ import {
   boardInfoFromHello,
   buildRecoveryCommand,
   telemetryFromDeviceStatus,
+  type RecoveryDeviceHello,
   type RecoveryDeviceStatus,
 } from "@homecoreos/shared";
 import {
@@ -219,6 +220,8 @@ export interface RecoveryControllerOptions {
   capabilityFor: (kind: RecoveryTransportKind) => ReturnType<typeof describeTransportCapability>;
   boardInstanceId: string;
   expectedHardwareUid?: string | null;
+  /** Resolve the discovered board against this account before any diagnosis. */
+  resolveBoard?: (hello: RecoveryDeviceHello) => { id: string; hardwareUid: string | null; model: string };
   /** Board Library facts used to identify the controller. */
   boardFallbacks?: Partial<RecoveryBoardInfo>;
   now?: () => number;
@@ -266,6 +269,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
   let state: RecoveryFlowState = { ...EMPTY_STATE, steps: EMPTY_STATE.steps.map((s) => ({ ...s })) };
   const listeners = new Set<(s: RecoveryFlowState) => void>();
   let transport: RecoveryTransport | null = null;
+  let boardInstanceId = options.boardInstanceId;
   let busy = false;
   let cancelled = false;
 
@@ -531,11 +535,13 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         });
 
         if (cancelled) { await candidate.release(); return; }
-        const expectedSuffix = options.expectedHardwareUid?.replace(/[^a-f0-9]/gi, "").slice(-4).toUpperCase();
+        const resolved = options.resolveBoard?.(hello);
+        if (resolved) boardInstanceId = resolved.id;
+        const expectedSuffix = (resolved?.hardwareUid ?? options.expectedHardwareUid)?.replace(/[^a-f0-9]/gi, "").slice(-4).toUpperCase();
         if (expectedSuffix && hello.uidSuffix?.toUpperCase() !== expectedSuffix) {
           throw new RecoveryTransportError("identity_mismatch", "The connected board does not match the selected controller. No repair was performed.", false);
         }
-        const board = boardInfoFromHello(hello, options.boardFallbacks ?? {});
+        const board = boardInfoFromHello(hello, { ...options.boardFallbacks, ...(resolved ? { model: resolved.model } : {}) });
         emit({ board, boardStatus: status });
         setStep("detect", "done", `${capability.label.split("·")[0]?.trim() ?? kind} connected.`);
         setStep("read", "done", `${board.model ?? board.boardSlug ?? "Controller"} · firmware v${board.firmwareVersion ?? "unknown"}`);
@@ -569,7 +575,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         let serverDiagnostics: DiagnosticsResult | null = null;
         try {
           const started = await options.api.startSession({
-            boardInstanceId: options.boardInstanceId,
+            boardInstanceId,
             transport: state.transport!,
             boardSlug: state.board.boardSlug,
             chipVariant: state.board.chip,
@@ -866,7 +872,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         if (!report) {
           report = buildRecoveryReport({
             sessionId: "local",
-            boardInstanceId: options.boardInstanceId,
+            boardInstanceId,
             boardName: null,
             board: state.board,
             transport: state.transport!,

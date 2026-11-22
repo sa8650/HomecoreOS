@@ -388,11 +388,12 @@ export class HomecoreBleClient {
   public async connectAndAuthenticate(params: {
     setupPin?: string;
     candidatePins?: string[];
+    setupPinForDevice?: (info: { mac_suffix?: string }) => string | undefined;
     onStage?: (stage: BleProvisioningStage) => void;
     onLog?: (msg: string) => void;
     onDisconnected?: () => void;
   } = {}): Promise<{ deviceInfo: BleDeviceInfoPayload }> {
-    const { setupPin, candidatePins, onStage, onLog, onDisconnected } = params;
+    const { setupPin, candidatePins, setupPinForDevice, onStage, onLog, onDisconnected } = params;
     const support = isWebBluetoothSupported();
     if (!support.supported) {
       throw new BleClientError(
@@ -444,9 +445,10 @@ export class HomecoreBleClient {
       throw classifyGattConnectError(err);
     }
 
+    const discoveredPin = setupPinForDevice?.(deviceInfo) ?? setupPin;
     const cleanPin =
-      setupPin && setupPin.trim().length >= 6
-        ? setupPin.trim()
+      discoveredPin && discoveredPin.trim().length >= 6
+        ? discoveredPin.trim()
         : deviceInfo.s1_mode === "auto"
           ? HOMECORE_BLE_DEFAULT_POP
           : candidatePins?.find((p) => p && p.trim().length >= 6)?.trim() ||

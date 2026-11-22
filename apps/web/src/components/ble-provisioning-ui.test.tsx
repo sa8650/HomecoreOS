@@ -400,7 +400,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
       onClose={() => {}} controllers={[existing]} homes={sampleHomes}
       catalogBoards={sampleCatalogBoards} customBoardProfiles={[]} />);
     expect(screen.getByText(/Prepare Board for Recovery/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Connect & identify controller/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Discover BLE Board/i })).toBeInTheDocument();
     expect(screen.queryByText(/Save & Recover/i)).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: /^Back$/i }));
@@ -705,7 +705,8 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     ).toBeInTheDocument();
     expect(screen.getAllByText(/192\.168\.4\.1/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/HomecoreOS-Setup-XXXX/i).length).toBeGreaterThan(0);
-    expect(screen.getByLabelText("Controller to repair")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Controller to repair" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect to Board" })).toBeInTheDocument();
 
     // Back returns to the repair choice, not all the way out of the flow.
     await user.click(screen.getByRole("button", { name: /^Back$/i }));
@@ -789,7 +790,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
       expect(screen.getByText(/Prepare Board for Recovery/i)).toBeInTheDocument();
     });
     expect(
-      screen.getByRole("button", { name: /Connect & identify controller/i })
+      screen.getByRole("button", { name: /Discover BLE Board/i })
     ).toBeEnabled();
   });
 });
