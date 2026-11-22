@@ -73,7 +73,8 @@ describe("Wi-Fi setup-portal transport", () => {
       },
     });
     const { hello, status } = await transport.connect();
-    expect(calls).toEqual(["http://192.168.4.1/api/recovery"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/^http:\/\/192\.168\.4\.1\/api\/recovery\?t=\d+$/);
     expect(hello.uidSuffix).toBe("EE12");
     expect(status.ssid).toBe("Home24G");
     expect(transport.connected).toBe(true);
@@ -125,6 +126,124 @@ describe("Wi-Fi setup-portal transport", () => {
     await transport.connect();
     await transport.release();
     expect(transport.connected).toBe(false);
+  });
+
+  it("never serves a cached read, so a post-repair status is the real one", async () => {
+    const calls: string[] = [];
+    const transport = createWifiRecoveryTransport({
+      fetchImpl: async (url) => {
+        calls.push(url);
+        return jsonResponse({ recovery: HELLO, status: STATUS });
+      },
+    });
+    await transport.connect();
+    await transport.connect();
+    expect(calls[0]).toMatch(/^http:\/\/192\.168\.4\.1\/api\/recovery\?t=\d+$/);
+    expect(calls[1]).toMatch(/^http:\/\/192\.168\.4\.1\/api\/recovery\?t=\d+$/);
+    // Any timestamp satisfies the cache-buster; the two reads must not be the
+    // identical URL, which is all a browser would cache.
+    expect(calls[0]?.replace(/t=\d+/, "t=*")).toBe(calls[1]?.replace(/t=\d+/, "t=*"));
+  });
+
+  it("submits SSID, password, website URL and the recovery code as the same protocol lines BLE and USB send", async () => {
+    const commands: unknown[] = [];
+    const urls: string[] = [];
+    const transport = createWifiRecoveryTransport({
+      codeState: { code: "123456", generated: true },
+      fetchImpl: async (fetchUrl, init) => {
+        if (init?.method === "POST") {
+          urls.push(fetchUrl);
+          commands.push(JSON.parse(String(init.body)).command);
+          return jsonResponse({ hc: "ack", action: "config", ok: true, detail: "saved" });
+        }
+        return jsonResponse({ recovery: HELLO, status: STATUS });
+      },
+    });
+    await transport.connect();
+
+    const result = await transport.submitForm!({
+      ssid: "Home24G",
+      password: "Secret123",
+      backendUrl: "https://app.homecoreos.test",
+      recoveryCode: "654321",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/recovery code/i);
+    expect(commands.map((command) => JSON.parse(String(command).replace(/^HC REPAIR /, "")))).toEqual([
+      { action: "wifi", ssid: "Home24G", password: "Secret123", backend_url: "https://app.homecoreos.test" },
+      { action: "pair", backend_url: "https://app.homecoreos.test", pair_code: "654321" },
+    ]);
+    // A write never carries the cache-busting query a read uses.
+    expect(urls).toEqual(["http://192.168.4.1/api/recovery", "http://192.168.4.1/api/recovery"]);
+  });
+
+  it("repairs only the website URL when the Wi-Fi network itself is still correct", async () => {
+    const commands: string[] = [];
+    const transport = createWifiRecoveryTransport({
+      fetchImpl: async (_fetchUrl, init) => {
+        if (init?.method === "POST") {
+          commands.push(JSON.parse(String(init.body)).command);
+          return jsonResponse({ hc: "ack", action: "config", ok: true, detail: "saved" });
+        }
+        return jsonResponse({ recovery: HELLO, status: STATUS });
+      },
+    });
+    await transport.connect();
+
+    const result = await transport.submitForm!({
+      ssid: "",
+      password: "",
+      backendUrl: "https://app.homecoreos.test",
+      recoveryCode: "",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(commands.map((command) => JSON.parse(command.replace(/^HC REPAIR /, "")))).toEqual([
+      { action: "config", backend_url: "https://app.homecoreos.test" },
+    ]);
+  });
+
+  it("refuses an empty local-page form and repeats the controller's refusal verbatim", async () => {
+    const transport = createWifiRecoveryTransport({
+      fetchImpl: async (_fetchUrl, init) => {
+        if (init?.method === "POST") {
+          return jsonResponse({ hc: "ack", action: "wifi", ok: false, detail: "wrong_password" });
+        }
+        return jsonResponse({ recovery: HELLO, status: STATUS });
+      },
+    });
+    await transport.connect();
+
+    expect(
+      await transport.submitForm!({ ssid: "", password: "", backendUrl: "", recoveryCode: "" })
+    ).toEqual({
+      ok: false,
+      message: expect.stringMatching(/Enter a Wi-Fi network, a server URL or a recovery code/i),
+    });
+    expect(
+      await transport.submitForm!({ ssid: "Home24G", password: "wrong", backendUrl: "", recoveryCode: "" })
+    ).toEqual({ ok: false, message: "wrong_password" });
+  });
+
+  it("says the address is not a HomecoreOS board instead of guessing", async () => {
+    const transport = createWifiRecoveryTransport({
+      fetchImpl: async () => ({ ok: true, status: 200, text: async () => "<html>router admin</html>" }),
+    });
+    await expect(transport.connect()).rejects.toThrow(/not a HomecoreOS controller/i);
+  });
+
+  it("keeps a custom recovery address and trims its trailing slash", async () => {
+    const urls: string[] = [];
+    const transport = createWifiRecoveryTransport({
+      origin: "http://10.0.0.1/",
+      fetchImpl: async (url) => {
+        urls.push(url);
+        return jsonResponse({ recovery: HELLO, status: STATUS });
+      },
+    });
+    await transport.connect();
+    expect(urls[0]).toMatch(/^http:\/\/10\.0\.0\.1\/api\/recovery\?t=\d+$/);
   });
 });
 

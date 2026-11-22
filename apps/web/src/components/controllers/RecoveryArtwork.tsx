@@ -59,7 +59,7 @@ export function WifiPortalArtwork({ recovery = false }: { recovery?: boolean }) 
         role="img"
         aria-label={recovery
           ? "Recovery steps: Power the board, enter recovery mode, join HomecoreOS-Setup-XXXX, then connect to identify the board and repair its Wi-Fi connection. Local portal: http://192.168.4.1."
-          : "Four steps: 1. Plug the board into power. 2. Join its HomecoreOS-Setup-XXXX Wi-Fi network from your phone or computer. 3. Open http://192.168.4.1 in your browser. 4. Enter the Wi-Fi SSID, password and pairing code, then press Save and Apply."}
+          : "Four steps: 1. Plug the board into power. 2. Join its HomecoreOS-Setup-XXXX Wi-Fi network from your phone or computer. 3. Open http://192.168.4.1 in your browser. 4. Enter the Wi-Fi SSID, password, website URL and pairing code, then press Save and Restart."}
       >
         {/* panel */}
         <rect x="6" y="6" width="1218" height="380" rx="18" fill="#fcfcfa" stroke="#e3e6ea" strokeWidth="2" />
@@ -156,12 +156,14 @@ export function WifiPortalArtwork({ recovery = false }: { recovery?: boolean }) 
           <path d="M796 196 L796 226 L803.5 219 L808.5 229 L813.5 227 L808.5 217 L817 217 Z" fill="#111111" stroke="#ffffff" strokeWidth="1.5" strokeLinejoin="round" />
         </g>
 
-        {/* ---------- step 4: portal form + Save & Apply ---------- */}
+        {/* ---------- step 4: portal form + Save and Restart ---------- */}
         <g fontFamily="ui-sans-serif, system-ui, sans-serif">
-          {/* labels */}
+          {/* labels — the local page asks for exactly these four things */}
           <text x="954" y="112" fill={ink} fontSize="12.5" fontWeight="650">Wi-Fi SSID</text>
           <text x="954" y="180" fill={ink} fontSize="12.5" fontWeight="650">Password</text>
-          <text x="954" y="248" fill={ink} fontSize="12.5" fontWeight="650">{recovery ? "Controller" : "Pairing Code"}</text>
+          <text x="954" y="248" fill={ink} fontSize="12.5" fontWeight="650">
+            {recovery ? "Recovery Code" : "Pairing Code"}
+          </text>
           {/* SSID field */}
           <rect x="954" y="118" width="152" height="23" rx="5" fill="#ffffff" stroke="#c9ced6" strokeWidth="1.5" />
           <text x="963" y="134" fill="#1f2937" fontSize="12.5">Home_Network</text>
@@ -175,12 +177,16 @@ export function WifiPortalArtwork({ recovery = false }: { recovery?: boolean }) 
           <text x="963" y="202" fill="#111111" fontSize="13.5" letterSpacing="3.5">•••••••</text>
           <rect x="1083" y="194" width="13" height="10" rx="2" fill="none" stroke="#5b636e" strokeWidth="1.6" />
           <path d="M1085.8 194 v-2.4 a3.7 3.7 0 0 1 7.4 0 V194" fill="none" stroke="#5b636e" strokeWidth="1.6" />
-          {/* Pairing code field */}
+          {/* code field */}
           <rect x="954" y="254" width="152" height="23" rx="5" fill="#ffffff" stroke="#c9ced6" strokeWidth="1.5" />
-          <text x="963" y="270" fill="#1f2937" fontSize="12.5" fontFamily="ui-monospace, monospace">{recovery ? "Identified" : "123456"}</text>
-          {/* Save & Apply button */}
-          <rect x="972" y="286" width="136" height="27" rx="6" fill={badge} />
-          <text x="1040" y="304" textAnchor="middle" fill="#ffffff" fontSize="13" fontWeight="700">{recovery ? "Save & Recover" : "Save & Apply"}</text>
+          <text x="963" y="270" fill="#1f2937" fontSize="12.5" fontFamily="ui-monospace, monospace">
+            {recovery ? "482913" : "123456"}
+          </text>
+          {/* Save and Restart button */}
+          <rect x="962" y="284" width="156" height="26" rx="6" fill={badge} />
+          <text x="1040" y="301" textAnchor="middle" fill="#ffffff" fontSize="12" fontWeight="700">
+            Save and Restart
+          </text>
         </g>
       </svg>
     </div>

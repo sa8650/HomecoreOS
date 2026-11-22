@@ -48,9 +48,13 @@ import type { DbClient } from "../lib/db";
 
 const transportSchema = z.enum(["wifi", "ble", "usb"]);
 
+const websiteUrlSchema = z.string().trim().max(300).optional();
+
 const startSchema = z.object({
   boardInstanceId: z.string().uuid(),
   transport: transportSchema,
+  /** This website's own origin, for comparing the controller's stored URL. */
+  websiteUrl: websiteUrlSchema,
   boardSlug: z.string().trim().max(120).optional(),
   chipVariant: z.string().trim().max(64).optional(),
   hardwareUidSuffix: z.string().trim().max(16).optional(),
@@ -64,6 +68,7 @@ const diagnosticsSchema = z.object({
     .optional(),
   wifiCredentialsProvided: z.boolean().optional(),
   allowRePair: z.boolean().optional(),
+  websiteUrl: websiteUrlSchema,
   /** Checks the transport observed (ids + statuses only; never payloads). */
   clientChecks: z
     .array(
@@ -94,6 +99,7 @@ const completeSchema = z.object({
     .optional(),
   transportReleased: z.boolean().optional(),
   failureReason: z.string().max(300).optional(),
+  websiteUrl: websiteUrlSchema,
 });
 
 const abandonSchema = z.object({
@@ -129,6 +135,18 @@ interface BoardRowForRecovery {
   board_role: string | null;
   reported_board_slug: string | null;
   installed_firmware_release_id: string | null;
+  /** Reported by the board's heartbeat; null on older firmware. */
+  reported_partition_scheme?: string | null;
+  uptime_sec?: number | null;
+  free_heap_bytes?: number | null;
+  backend_url?: string | null;
+  ota_supported?: boolean | null;
+  ota_pending?: boolean | null;
+  ota_error?: string | null;
+  espnow_supported?: boolean | null;
+  espnow_link_state?: string | null;
+  supports_wifi?: boolean | null;
+  supports_ble?: boolean | null;
 }
 
 async function loadBoard(
@@ -139,7 +157,7 @@ async function loadBoard(
   const { data } = await db
     .from("board_instances")
     .select(
-      "id,account_id,home_id,name,board_profile_id,custom_board_profile_id,board_model,chip_variant,hardware_uid,status,pairing_status,wifi_connected,wifi_ssid,wifi_rssi,local_ip,mqtt_connected,last_heartbeat_at,last_communication_at,last_config_synced_at,firmware_version,config_revision,last_synced_config_revision,pending_config_sync,last_error,last_error_at,board_role,reported_board_slug,installed_firmware_release_id"
+      "id,account_id,home_id,name,board_profile_id,custom_board_profile_id,board_model,chip_variant,hardware_uid,status,pairing_status,wifi_connected,wifi_ssid,wifi_rssi,local_ip,mqtt_connected,last_heartbeat_at,last_communication_at,last_config_synced_at,firmware_version,config_revision,last_synced_config_revision,pending_config_sync,last_error,last_error_at,board_role,reported_board_slug,installed_firmware_release_id,reported_partition_scheme,uptime_sec,free_heap_bytes,backend_url,ota_supported,ota_pending,ota_error,espnow_supported,espnow_link_state,supports_wifi,supports_ble"
     )
     .eq("id", boardInstanceId)
     .eq("account_id", accountId)
@@ -195,7 +213,7 @@ async function serverVerdict(
   db: DbClient,
   board: BoardRowForRecovery,
   transport: RecoveryTransportKind,
-  options: { allowRePair?: boolean; wifiCredentialsProvided?: boolean } = {}
+  options: { allowRePair?: boolean; wifiCredentialsProvided?: boolean; websiteUrl?: string | null } = {}
 ) {
   const compatBoard = await resolveControllerCompatBoard(db, {
     board_profile_id: board.board_profile_id,
@@ -224,7 +242,20 @@ async function serverVerdict(
       last_error: board.last_error,
       last_error_at: board.last_error_at,
       board_role: board.board_role,
+      board_slug: board.reported_board_slug,
+      partition_scheme: board.reported_partition_scheme,
+      uptime_sec: board.uptime_sec,
+      free_heap_bytes: board.free_heap_bytes,
+      backend_url: board.backend_url,
+      ota_supported: board.ota_supported,
+      ota_pending: board.ota_pending,
+      ota_error: board.ota_error,
+      espnow_supported: board.espnow_supported,
+      espnow_link_state: board.espnow_link_state,
+      supports_wifi: board.supports_wifi ?? (compatBoard ? compatBoard.supports_wifi !== false : null),
+      supports_ble: board.supports_ble ?? (compatBoard ? compatBoard.supports_ble !== false : null),
     },
+    websiteUrl: options.websiteUrl ?? null,
     firmwareCompatible: compatBoard ? true : null,
     probe: { backendAuthenticated: board.pairing_status === "paired" ? true : null },
   });
@@ -321,7 +352,9 @@ export function createRecoveryRoutes() {
       });
     }
 
-    const verdict = await serverVerdict(db, board, parsed.data.transport);
+    const verdict = await serverVerdict(db, board, parsed.data.transport, {
+      websiteUrl: parsed.data.websiteUrl ?? null,
+    });
 
     return c.json(
       {
@@ -399,6 +432,7 @@ export function createRecoveryRoutes() {
     const verdict = await serverVerdict(db, board, transport, {
       allowRePair: parsed.data.allowRePair,
       wifiCredentialsProvided: parsed.data.wifiCredentialsProvided,
+      websiteUrl: parsed.data.websiteUrl ?? null,
     });
 
     const stage = parsed.data.stage ?? "diagnostics";
@@ -478,7 +512,9 @@ export function createRecoveryRoutes() {
       : null;
     if (!board) return c.json({ error: "Controller not found in your account." }, 404);
 
-    const verdict = await serverVerdict(db, board, session.transport);
+    const verdict = await serverVerdict(db, board, session.transport, {
+      websiteUrl: parsed.data.websiteUrl ?? null,
+    });
     const outcomes: RepairOutcome[] = (parsed.data.outcomes ?? []).map((o) => ({
       actionId: o.actionId as RepairOutcome["actionId"],
       status: o.status,
@@ -639,8 +675,13 @@ function summarizeTelemetry(telemetry: Awaited<ReturnType<typeof buildServerTele
       lastSyncAt: telemetry.heartbeat.lastSyncAt,
     },
     firmware: telemetry.firmware,
+    ota: telemetry.ota,
+    portal: telemetry.portal,
+    espnow: telemetry.espnow,
+    backendUrl: telemetry.backendUrl,
     config: telemetry.config,
     entities: telemetry.entities,
+    nodes: telemetry.nodes,
   };
 }
 

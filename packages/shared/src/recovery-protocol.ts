@@ -42,6 +42,10 @@ export interface RecoveryDeviceHello {
   recoverySupported: boolean;
   /** Last 4 hex characters of the hardware UID. Never a secret. */
   uidSuffix: string | null;
+  /** Partition scheme the running image was built with ("" when unknown). */
+  partitionScheme?: string | null;
+  /** Hardware UID (MAC) the device exposes for setup identity. Never a secret. */
+  hardwareUid?: string | null;
 }
 
 /** `{"hc":"status",…}` — live diagnostics (`HC STATUS`). */
@@ -75,6 +79,24 @@ export interface RecoveryDeviceStatus {
   nodesTotal: number | null;
   nodesLinked: number | null;
   lastError: string | null;
+  /* --- Facts added for the full setup/repair contract ------------------ */
+  /** Board Library slug the running firmware was built for. */
+  boardSlug?: string | null;
+  chip?: string | null;
+  partitionScheme?: string | null;
+  uptimeSec?: number | null;
+  freeHeapBytes?: number | null;
+  /** Server URL the controller has stored (never a secret). */
+  backendUrl?: string | null;
+  /** False when the firmware reports OTA cannot run on this image. */
+  otaSupported?: boolean | null;
+  otaPendingVerify?: boolean | null;
+  otaError?: string | null;
+  /** Non-null once the device reports its provisioning-mode interfaces. */
+  wifiApSupported?: boolean | null;
+  bleSupported?: boolean | null;
+  espnowSupported?: boolean | null;
+  espnowLinkState?: string | null;
 }
 
 export interface RecoveryDeviceAck {
@@ -119,6 +141,25 @@ function bool(value: unknown): boolean | null {
   return null;
 }
 
+/**
+ * `undefined` means the firmware does not report this fact at all (an older
+ * image), which the engine shows as Unknown. An empty string is a reported
+ * empty value — a real problem. Keeping the two apart is what stops an older
+ * board from being reported as misconfigured.
+ */
+function presentStr(obj: Json, key: string): string | undefined {
+  if (!(key in obj)) return undefined;
+  return typeof obj[key] === "string" ? (obj[key] as string) : "";
+}
+
+function presentBool(obj: Json, key: string): boolean | undefined {
+  return key in obj ? bool(obj[key]) ?? false : undefined;
+}
+
+function presentNum(obj: Json, key: string): number | undefined {
+  return key in obj ? num(obj[key]) ?? undefined : undefined;
+}
+
 function mode(value: unknown): RecoveryBoardMode {
   return value === "unprovisioned" || value === "recovery" || value === "normal" || value === "unknown"
     ? value
@@ -159,6 +200,8 @@ export function parseRecoveryDeviceMessage(raw: string | null | undefined): Reco
         hasBle: bool(obj.ble) ?? true,
         recoverySupported: bool(obj.recovery_supported) ?? true,
         uidSuffix: str(obj.uid_suffix),
+        partitionScheme: str(obj.partition),
+        hardwareUid: str(obj.uid),
       },
     };
   }
@@ -199,6 +242,19 @@ export function parseRecoveryDeviceMessage(raw: string | null | undefined): Reco
         nodesTotal: num(obj.nodes_total),
         nodesLinked: num(obj.nodes_linked),
         lastError: str(obj.last_error),
+        boardSlug: str(obj.board),
+        chip: str(obj.chip),
+        partitionScheme: str(obj.partition),
+        uptimeSec: presentNum(obj, "uptime_sec"),
+        freeHeapBytes: presentNum(obj, "free_heap"),
+        backendUrl: presentStr(obj, "backend_url"),
+        otaSupported: presentBool(obj, "ota_supported"),
+        otaPendingVerify: presentBool(obj, "ota_pending"),
+        otaError: str(obj.ota_error),
+        wifiApSupported: presentBool(obj, "has_wifi"),
+        bleSupported: presentBool(obj, "has_ble"),
+        espnowSupported: presentBool(obj, "espnow_supported"),
+        espnowLinkState: presentStr(obj, "espnow_link"),
       },
     };
   }
@@ -272,10 +328,39 @@ export function boardInfoFromHello(
  * knows. A fact the device does not report stays `available:false` (unknown),
  * which the engine treats as "unable to verify", never as a failure.
  */
+/**
+ * Compares the server URL stored on the controller with the website that is
+ * running this flow. Trailing slashes and a different case in the host are not
+ * a different deployment, so they are normalised before comparing.
+ */
+export function matchesWebsite(
+  stored: string | null | undefined,
+  website: string | null | undefined
+): boolean | null {
+  const a = normalizeOrigin(stored);
+  const b = normalizeOrigin(website);
+  if (!a || !b) return null;
+  if (a === b) return true;
+  // An http portal host can legitimately carry the same deployment host.
+  return a.replace(/^https?:\/\//, "") === b.replace(/^https?:\/\//, "");
+}
+
+function normalizeOrigin(value: string | null | undefined): string | null {
+  const text = (value ?? "").trim().replace(/\/+$/, "");
+  if (!text) return null;
+  try {
+    const url = new URL(text);
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return text.toLowerCase();
+  }
+}
+
 export function telemetryFromDeviceStatus(
   status: RecoveryDeviceStatus,
   nowMs = Date.now(),
-  base: RecoveryTelemetry = emptyRecoveryTelemetry(nowMs)
+  base: RecoveryTelemetry = emptyRecoveryTelemetry(nowMs),
+  websiteUrl: string | null = null
 ): RecoveryTelemetry {
   const recent: Array<{ code?: string; message: string; at?: string | null }> = [];
   if (status.lastError) recent.push({ message: status.lastError });
@@ -333,9 +418,46 @@ export function telemetryFromDeviceStatus(
     firmware: {
       available: true,
       version: status.firmwareVersion ?? base.firmware.version,
+      boardSlug: status.boardSlug ?? base.firmware.boardSlug,
+      partitionScheme: status.partitionScheme ?? base.firmware.partitionScheme,
+      uptimeSec: status.uptimeSec ?? base.firmware.uptimeSec,
+      freeHeapBytes: status.freeHeapBytes ?? base.firmware.freeHeapBytes,
       compatible: base.firmware.compatible,
       updateAvailable: base.firmware.updateAvailable,
     },
+    ota:
+      status.otaSupported === undefined && status.otaPendingVerify === undefined
+        ? base.ota
+        : {
+            available: true,
+            supported: status.otaSupported ?? base.ota.supported,
+            pendingVerify: status.otaPendingVerify ?? base.ota.pendingVerify,
+            lastError: status.otaError ?? base.ota.lastError,
+          },
+    portal:
+      status.wifiApSupported === undefined && status.bleSupported === undefined
+        ? base.portal
+        : {
+            available: true,
+            wifiApSupported: status.wifiApSupported ?? base.portal.wifiApSupported,
+            bleSupported: status.bleSupported ?? base.portal.bleSupported,
+          },
+    espnow:
+      status.espnowSupported === undefined && status.espnowLinkState === undefined
+        ? base.espnow
+        : {
+            available: true,
+            supported: status.espnowSupported ?? base.espnow.supported,
+            linkState: status.espnowLinkState ?? base.espnow.linkState,
+          },
+    backendUrl:
+      status.backendUrl === undefined
+        ? base.backendUrl
+        : {
+            available: true,
+            value: status.backendUrl,
+            matchesWebsite: matchesWebsite(status.backendUrl, websiteUrl),
+          },
     config: {
       available: true,
       revision: status.configRevision,
@@ -362,7 +484,10 @@ export function telemetryFromDeviceStatus(
 }
 
 /** Problem codes the device itself already knows about (used for the plan preview). */
-export function problemsFromDeviceStatus(status: RecoveryDeviceStatus): ProblemCode[] {
+export function problemsFromDeviceStatus(
+  status: RecoveryDeviceStatus,
+  websiteUrl: string | null = null
+): ProblemCode[] {
   const problems: ProblemCode[] = [];
   if (!status.wifiConnected) {
     const classified = classifyWifiError(status.wifiError);
@@ -378,6 +503,17 @@ export function problemsFromDeviceStatus(status: RecoveryDeviceStatus): ProblemC
       problems.push("config_unsynced");
     }
   }
+  if (status.backendUrl !== undefined) {
+    if (!status.backendUrl) problems.push("backend_url_missing");
+    else if (websiteUrl && matchesWebsite(status.backendUrl, websiteUrl) === false) {
+      problems.push("backend_url_mismatch");
+    }
+  }
+  if (status.espnowSupported === false) problems.push("espnow_unavailable");
+  if (status.espnowLinkState === "controller_lost" || status.espnowLinkState === "reconnecting") {
+    problems.push("espnow_link_down");
+  }
+  if (status.otaSupported === false) problems.push("ota_unavailable");
   if (status.entitiesKnown) {
     const sensorsBehind =
       status.sensorsTotal !== null &&
@@ -398,8 +534,11 @@ export function problemsFromDeviceStatus(status: RecoveryDeviceStatus): ProblemC
 
 export type RecoveryDeviceAction =
   | "wifi"
-  | "mqtt"
+  /** Re-write the HomecoreOS server URL and re-fetch the configuration. */
   | "config"
+  | "mqtt"
+  /** Re-open the ESP-NOW radio and re-synchronize the role block. */
+  | "espnow"
   | "restart"
   | "pair"
   | "factory_reset";

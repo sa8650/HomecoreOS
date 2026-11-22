@@ -224,6 +224,20 @@ bool hc_io_is_safe_gpio(uint8_t pin);
 void hc_io_build_telemetry_json(char *out_buf, size_t out_len);
 bool hc_io_evaluate_local_rules(void);
 
+/** How many sensors/switches this board is actually driving right now. */
+typedef struct {
+    unsigned sensors_total;
+    unsigned sensors_reporting;
+    unsigned switches_total;
+    unsigned switches_reporting;
+} hc_io_entity_counts_t;
+
+/**
+ * Fills `out` from the live inventory. Returns false only when the IO manager
+ * is not initialised, so the caller can report "unknown" instead of zero.
+ */
+bool hc_io_get_entity_counts(hc_io_entity_counts_t *out);
+
 // OTA Updates
 typedef enum {
     HC_OTA_PEND_NONE = 0,

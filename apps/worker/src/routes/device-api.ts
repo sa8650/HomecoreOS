@@ -106,6 +106,31 @@ const heartbeatSchema = z
     otaPending: z.boolean().optional(),
     op: z.boolean().optional(),
     bp: z.boolean().optional(),
+    /** Whether this image can update itself in place (older firmware omits it). */
+    otaSupported: z.boolean().optional(),
+    os: z.boolean().optional(),
+    otaError: z.string().max(200).nullable().optional(),
+    oe: z.string().max(200).nullable().optional(),
+    /** Running image facts used by repair/recovery diagnostics. */
+    uptimeSec: z.number().int().min(0).max(4_000_000_000).optional(),
+    up: z.number().int().min(0).max(4_000_000_000).optional(),
+    freeHeapBytes: z.number().int().min(0).max(4_000_000_000).optional(),
+    heap: z.number().int().min(0).max(4_000_000_000).optional(),
+    /** The server URL the board has stored, so recovery can correct a stale one. */
+    backendUrl: z.string().trim().max(300).nullable().optional(),
+    bu: z.string().trim().max(300).nullable().optional(),
+    supportsWifi: z.boolean().optional(),
+    sw: z.boolean().optional(),
+    supportsBle: z.boolean().optional(),
+    sb: z.boolean().optional(),
+    espnowSupported: z.boolean().optional(),
+    es: z.boolean().optional(),
+    espnowLinkState: z
+      .enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned", "down"])
+      .optional(),
+    els: z
+      .enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned", "down"])
+      .optional(),
     configRevision: z.number().int().min(0).optional(),
     rev: z.number().int().min(0).optional(),
     driverManifestHash: z.string().trim().max(128).optional(),
@@ -148,6 +173,15 @@ const heartbeatSchema = z
     flashSizeMb: d.flashSizeMb,
     detectedChipName: d.detectedChipName,
     otaPendingVerify: d.otaPendingVerify ?? d.otaPending ?? d.op ?? false,
+    otaSupported: d.otaSupported ?? d.os,
+    otaError: d.otaError !== undefined ? d.otaError : d.oe,
+    uptimeSec: d.uptimeSec ?? d.up,
+    freeHeapBytes: d.freeHeapBytes ?? d.heap,
+    backendUrl: d.backendUrl !== undefined ? d.backendUrl : d.bu,
+    supportsWifi: d.supportsWifi ?? d.sw,
+    supportsBle: d.supportsBle ?? d.sb,
+    espnowSupported: d.espnowSupported ?? d.es,
+    espnowLinkState: d.espnowLinkState ?? d.els,
     configRevision: d.configRevision ?? d.rev,
     driverManifestHash: d.driverManifestHash ?? d.dmh,
     boardRole: d.boardRole ?? d.role,
@@ -486,6 +520,35 @@ export function createDeviceApiRoutes() {
     if (parsed.data.detectedChipName !== undefined) {
       updates.detected_chip_name = parsed.data.detectedChipName;
     }
+    if (parsed.data.partitionScheme !== undefined) {
+      updates.reported_partition_scheme = parsed.data.partitionScheme;
+    }
+
+    // Recovery health facts. Each one is written only when the board actually
+    // reported it, so an older image never blanks a value a newer one wrote.
+    const health: Record<string, unknown> = {
+      uptime_sec: parsed.data.uptimeSec,
+      free_heap_bytes: parsed.data.freeHeapBytes,
+      backend_url: parsed.data.backendUrl === undefined ? undefined : (parsed.data.backendUrl?.trim() || null),
+      ota_supported: parsed.data.otaSupported,
+      ota_pending: parsed.data.otaPendingVerify,
+      ota_error:
+        parsed.data.otaError === undefined ? undefined : (parsed.data.otaError?.trim() || null),
+      espnow_supported: parsed.data.espnowSupported,
+      // `espnowLinkState` is the ESP-NOW verdict even for a Controller, where
+      // `linkState`/`ls` already mean the Node uplink and must not be reused.
+      espnow_link_state: parsed.data.espnowLinkState,
+      supports_wifi: parsed.data.supportsWifi,
+      supports_ble: parsed.data.supportsBle,
+    };
+    let healthReported = false;
+    for (const [key, value] of Object.entries(health)) {
+      if (value !== undefined) {
+        updates[key] = value;
+        healthReported = true;
+      }
+    }
+    if (healthReported) updates.health_reported_at = now;
 
     // Unified role reporting. The role itself stays user-owned: a device may only
     // confirm what the console told it to run, never promote (or demote) itself.

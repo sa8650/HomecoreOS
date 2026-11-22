@@ -614,7 +614,7 @@ describe("HomecoreOS interactive UI workflows", () => {
 
     // Setup keeps both transports, one level down.
     await user.click(screen.getByRole("button", { name: /Setup Board/i }));
-    expect(screen.getByText(/Setup with Bluetooth/i)).toBeInTheDocument();
+    expect(screen.getByText(/Setup with BLE/i)).toBeInTheDocument();
     expect(screen.getByText(/Setup with Wi-Fi/i)).toBeInTheDocument();
     await user.keyboard("{Escape}");
 

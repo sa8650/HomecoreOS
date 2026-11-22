@@ -23,6 +23,7 @@ import {
   RECOVERY_STALE_SENSOR_SEC,
   checkRecoverySessionGuard,
   emptyRecoveryTelemetry,
+  matchesWebsite,
   redactRecoveryText,
   runDiagnostics,
   buildRepairPlan,
@@ -94,6 +95,23 @@ export interface BuildTelemetryInput {
     last_error: string | null;
     last_error_at: string | null;
     board_role: string | null;
+    /**
+     * Optional, additive facts the controller writes with its heartbeat. When
+     * the column (or value) is absent they stay null and the engine reports
+     * Unknown rather than inventing a fault.
+     */
+    board_slug?: string | null;
+    partition_scheme?: string | null;
+    uptime_sec?: number | null;
+    free_heap_bytes?: number | null;
+    backend_url?: string | null;
+    ota_supported?: boolean | null;
+    ota_pending?: boolean | null;
+    ota_error?: string | null;
+    espnow_supported?: boolean | null;
+    espnow_link_state?: string | null;
+    supports_wifi?: boolean | null;
+    supports_ble?: boolean | null;
   };
   firmwareCompatible?: boolean | null;
   firmwareUpdateAvailable?: string | null;
@@ -105,6 +123,8 @@ export interface BuildTelemetryInput {
     pairingValid?: boolean | null;
   };
   mqttCredentialStatus?: string | null;
+  /** This request's own origin, for comparing the board's stored server URL. */
+  websiteUrl?: string | null;
   nowMs?: number;
 }
 
@@ -210,8 +230,59 @@ export async function buildServerTelemetry(
   telemetry.firmware = {
     available: board.firmware_version !== null || input.firmwareCompatible !== undefined,
     version: board.firmware_version,
+    boardSlug: board.board_slug ?? null,
+    partitionScheme: board.partition_scheme ?? null,
+    uptimeSec: board.uptime_sec ?? null,
+    freeHeapBytes: board.free_heap_bytes ?? null,
     compatible: input.firmwareCompatible ?? null,
     updateAvailable: input.firmwareUpdateAvailable ?? null,
+  };
+
+  // OTA capability: the board is the only authority on whether its own image
+  // can be updated in place. Without its report this stays Unknown.
+  const otaReported =
+    board.ota_supported !== undefined && board.ota_supported !== null
+      ? true
+      : board.ota_pending !== undefined && board.ota_pending !== null;
+  telemetry.ota = {
+    available: otaReported,
+    supported: board.ota_supported ?? null,
+    pendingVerify: board.ota_pending ?? null,
+    lastError: board.ota_error ?? null,
+  };
+
+  // Temporary setup/recovery interfaces. A board that reports no radio support
+  // still owns a local webpage, so AP support follows the Wi-Fi radio.
+  const radiosReported =
+    board.supports_wifi !== undefined && board.supports_wifi !== null
+      ? true
+      : board.supports_ble !== undefined && board.supports_ble !== null;
+  telemetry.portal = {
+    available: radiosReported,
+    wifiApSupported: board.supports_wifi ?? null,
+    bleSupported: board.supports_ble ?? null,
+  };
+
+  const espnowReported =
+    board.espnow_supported !== undefined && board.espnow_supported !== null
+      ? true
+      : board.espnow_link_state !== undefined && board.espnow_link_state !== null;
+  telemetry.espnow = {
+    available: espnowReported,
+    supported: board.espnow_supported ?? null,
+    linkState: board.espnow_link_state ?? null,
+  };
+
+  // The server URL the controller stored. `matchesWebsite` needs this request's
+  // own origin, which the caller supplies; without it the comparison is Unknown.
+  const storedBackendUrl =
+    board.backend_url !== undefined && board.backend_url !== null && board.backend_url.trim()
+      ? board.backend_url.trim()
+      : null;
+  telemetry.backendUrl = {
+    available: board.backend_url !== undefined && board.backend_url !== null,
+    value: storedBackendUrl,
+    matchesWebsite: matchesWebsite(storedBackendUrl, input.websiteUrl ?? null),
   };
 
   const configAvailable =

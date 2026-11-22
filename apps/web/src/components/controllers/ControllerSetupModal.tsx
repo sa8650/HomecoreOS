@@ -1,4 +1,6 @@
-import { BleDiscoveryArtwork, WifiPortalArtwork } from "./RecoveryArtwork";
+import { BleDiscoveryArtwork } from "./RecoveryArtwork";
+import { WifiRecoveryFlow } from "./WifiRecoveryFlow";
+import { WifiSetupFlow } from "./WifiSetupFlow";
 import { RecoveryHistory } from "./RecoveryHistory";
 import { UnifiedRecoveryPanel } from "./UnifiedRecoveryPanel";
 import {
@@ -11,30 +13,25 @@ import {
   type ReactNode,
 } from "react";
 import {
-  RiAlertLine,
   RiArrowLeftLine,
   RiArrowRightLine,
   RiArrowRightSLine,
-  RiCheckLine,
   RiCheckboxCircleFill,
   RiCloseLine,
   RiCpuLine,
   RiErrorWarningLine,
   RiEyeLine,
   RiEyeOffLine,
-  RiFileCopyLine,
   RiLoader4Line,
   RiPauseCircleLine,
   RiUsbLine,
 } from "@remixicon/react";
-import {
-  supportsBleProvisioningForBoard,
-  type BleCommandPayload,
-  type BleDeviceInfoPayload,
-  type BleStatusPayload,
+import type {
+  BleCommandPayload,
+  BleDeviceInfoPayload,
+  BleStatusPayload,
 } from "@homecoreos/shared";
-import { apiFetch, ApiError } from "@/lib/api";
-import { getRealtimeClient } from "@/lib/realtime/sync-client";
+import { apiFetch } from "@/lib/api";
 import {
   BleClientError,
   HomecoreBleClient,
@@ -76,13 +73,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 export type ControllerSetupView =
   | "entry"
@@ -301,14 +291,6 @@ export function ControllerSetupModal({
   // Preserved Setup / Recover with Wi-Fi (192.168.4.1) state
   const [wifiPortalName, setWifiPortalName] = useState("HomecoreOS Board");
   const [wifiPortalBoardChoice, setWifiPortalBoardChoice] = useState("");
-  const [wifiPortalTargetId, setWifiPortalTargetId] = useState("");
-  const [wifiPortalRecoverDeleted, setWifiPortalRecoverDeleted] = useState(false);
-  const [wifiPortalCode, setWifiPortalCode] = useState<string | null>(null);
-  const [wifiPortalControllerId, setWifiPortalControllerId] = useState<string | null>(null);
-  const [wifiPortalBusy, setWifiPortalBusy] = useState(false);
-  const [wifiPortalError, setWifiPortalError] = useState<string | null>(null);
-  const [wifiPortalOnline, setWifiPortalOnline] = useState(false);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
 
   const clientRef = useRef<HomecoreBleClient | null>(null);
   const activeControllerIdRef = useRef<string | null>(null);
@@ -342,10 +324,6 @@ export function ControllerSetupModal({
     setProgressDone(false);
     setStepStates(Array.from({ length: 6 }, () => "pending"));
     setActiveStepIdx(0);
-    setWifiPortalCode(null);
-    setWifiPortalControllerId(null);
-    setWifiPortalError(null);
-    setWifiPortalOnline(false);
   }, [clearTimers]);
 
   // Reset cleanly on open/close and unmount
@@ -375,15 +353,6 @@ export function ControllerSetupModal({
       setBleScreen("discover");
       if (targetController?.wifi_ssid) {
         setWifiSsid(targetController.wifi_ssid);
-      }
-      if (targetController?.id) {
-        setWifiPortalTargetId(targetController.id);
-        setWifiPortalRecoverDeleted(false);
-      } else if (controllersRef.current.length > 0) {
-        setWifiPortalTargetId(controllersRef.current[0].id);
-        setWifiPortalRecoverDeleted(false);
-      } else {
-        setWifiPortalRecoverDeleted(true);
       }
     } else if (!open) {
       clearSensitiveState();
@@ -433,51 +402,6 @@ export function ControllerSetupModal({
       setWifiPortalBoardChoice(preferred.id);
     }
   }, [boardOptions, wifiPortalBoardChoice]);
-
-  // Live poll controller online status when waiting on Setup/Recover with Wi-Fi (192.168.4.1)
-  useEffect(() => {
-    if (
-      !open ||
-      !wifiPortalControllerId ||
-      view !== "setup_wifi"
-    ) {
-      return;
-    }
-    let active = true;
-    const poll = async () => {
-      try {
-        const res = await apiFetch<{ controller: ControllerItem }>(
-          "/api/board-instances/pairing-status",
-          { method: "POST", body: JSON.stringify({ pairingCode: wifiPortalCode }) }
-        );
-        if (
-          active &&
-          res.controller &&
-          res.controller.pairing_status === "paired" &&
-          res.controller.mqtt_connected
-        ) {
-          setWifiPortalOnline(true);
-        }
-      } catch {
-        // ignore transient poll failures
-      }
-    };
-    void poll();
-    // The board announces itself over the real-time channel as soon as it is
-    // paired; the interval is a ten-second fallback for an unreachable broker.
-    const unsubscribe = getRealtimeClient().subscribe((batch) => {
-      const touched = batch.events.some(
-        (event) => event.entity === "board" && event.id === wifiPortalControllerId
-      );
-      if (touched || batch.resync) void poll();
-    });
-    const timer = window.setInterval(() => void poll(), 10_000);
-    return () => {
-      active = false;
-      unsubscribe();
-      window.clearInterval(timer);
-    };
-  }, [open, wifiPortalControllerId, wifiPortalCode, view]);
 
   const bleSupport = isWebBluetoothSupported();
   const serverOrigin =
@@ -899,58 +823,6 @@ export function ControllerSetupModal({
     }
   }
 
-  async function handleGenerateWifiPortalCode(e: FormEvent) {
-    e.preventDefault();
-    setWifiPortalBusy(true);
-    setWifiPortalError(null);
-    setWifiPortalOnline(false);
-
-    try {
-      if (view === "setup_wifi") {
-        const [kind, id] = wifiPortalBoardChoice.split(":");
-        if (!id) {
-          throw new Error("Select a board model for this board.");
-        }
-        const res = await apiFetch<{ controller: ControllerItem; pairingCode: string }>(
-          "/api/board-instances",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              name: wifiPortalName.trim() || "HomecoreOS Board",
-              homeId: homes[0]?.id,
-              boardProfileId: kind === "catalog" ? id : undefined,
-              customBoardProfileId: kind === "custom" ? id : undefined,
-            }),
-          }
-        );
-        setWifiPortalControllerId(res.controller.id);
-        setWifiPortalCode(res.pairingCode);
-      }
-    } catch (err) {
-      setWifiPortalError(
-        err instanceof ApiError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : "Could not prepare pairing code."
-      );
-    } finally {
-      setWifiPortalBusy(false);
-    }
-  }
-
-  async function handleCopyText(key: string, value: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopiedField(key);
-      window.setTimeout(() => {
-        if (isMountedRef.current) setCopiedField(null);
-      }, 1600);
-    } catch {
-      // clipboard unsupported in test/non-secure context
-    }
-  }
-
   const wifiAlternativeView: ControllerSetupView =
     view === "recover_ble" ? "recover_wifi" : "setup_wifi";
 
@@ -961,13 +833,6 @@ export function ControllerSetupModal({
       targetController?.wifi_ssid
     ) {
       setWifiSsid(targetController.wifi_ssid);
-    }
-    if (targetController?.id) {
-      setWifiPortalTargetId(targetController.id);
-      setWifiPortalRecoverDeleted(false);
-    } else if (controllersRef.current.length > 0) {
-      setWifiPortalTargetId(controllersRef.current[0].id);
-      setWifiPortalRecoverDeleted(false);
     }
     setBleScreen("discover");
     setView(nextView);
@@ -985,7 +850,7 @@ export function ControllerSetupModal({
           : view === "recover"
             ? "Repair / Recover Board"
             : view === "setup_ble"
-              ? "Setup with Bluetooth"
+              ? "Setup with BLE"
               : view === "setup_wifi"
                 ? "Setup with Wi-Fi"
                 : view === "recover_ble"
@@ -1006,7 +871,7 @@ export function ControllerSetupModal({
           : view === "recover"
             ? "Repair / Recover Board"
             : view === "setup_ble"
-              ? "Setup with Bluetooth"
+              ? "Setup with BLE"
               : view === "setup_wifi"
                 ? "Setup with Wi-Fi"
                 : view === "recover_ble"
@@ -1022,9 +887,13 @@ export function ControllerSetupModal({
           ? "Bluetooth or Wi-Fi."
           : view === "recover"
             ? "Offline, deleted or re-pairing."
-            : view === "setup_wifi" || view === "recover_wifi"
-              ? "Join the board's temporary HomecoreOS network."
-              : "";
+            : view === "setup_wifi"
+              ? "Pairing code, then the board's local page."
+              : view === "recover_wifi"
+                ? "Recovery code, then the board's local page."
+                : view === "setup_ble"
+                  ? "Discover, pair and send Wi-Fi."
+                  : "";
   /** Lifted by the flasher for the header rail and the footer bar. */
   const [flashState, setFlashState] = useState<UsbFlashWizardState>({
     step: 0,
@@ -1159,14 +1028,14 @@ export function ControllerSetupModal({
                 <>
                   <ActionCard
                     kind="bluetooth"
-                    title="Setup with Bluetooth"
-                    description="Fastest: pair nearby and send Wi-Fi and home details."
+                    title="Setup with BLE"
+                    description="Fastest: discover, auto-pair and send Wi-Fi and the server URL."
                     onClick={() => openChildView("setup_ble")}
                   />
                   <ActionCard
                     kind="wifi"
                     title="Setup with Wi-Fi"
-                    description="Join HomecoreOS-Setup-XXXX and configure from 192.168.4.1."
+                    description="Generate a pairing code, join HomecoreOS-Setup-XXXX and save on its local page."
                     illustration={<WifiSignalAnimation className="size-9" />}
                     onClick={() => openChildView("setup_wifi")}
                   />
@@ -1207,10 +1076,30 @@ export function ControllerSetupModal({
           </>
         )}
 
-        {(view === "recover_usb" || view === "recover_ble" || view === "recover_wifi") && (
-          <UnifiedRecoveryPanel kind={view === "recover_usb" ? "usb" : view === "recover_ble" ? "ble" : "wifi"}
-            controllers={controllers} target={targetController} profiles={boardsForSlugLookup} canManage={canManage}
-            onFlash={() => openChildView("flash")} />
+        {(view === "recover_usb" || view === "recover_ble") && (
+          <UnifiedRecoveryPanel
+            kind={view === "recover_usb" ? "usb" : "ble"}
+            controllers={controllers}
+            target={targetController}
+            profiles={boardsForSlugLookup}
+            canManage={canManage}
+            onFlash={() => openChildView("flash")}
+          />
+        )}
+
+        {view === "recover_wifi" && (
+          <WifiRecoveryFlow
+            controllers={controllers}
+            boardOptions={boardOptions}
+            selectedBoardChoice={wifiPortalBoardChoice}
+            onBoardChoiceChange={setWifiPortalBoardChoice}
+            boardName={wifiPortalName}
+            onBoardNameChange={setWifiPortalName}
+            targetController={targetController}
+            websiteUrl={serverOrigin}
+            canManage={canManage}
+            onSuccess={onSuccess}
+          />
         )}
 
         {["setup_ble"].includes(view) && (
@@ -1500,243 +1389,19 @@ export function ControllerSetupModal({
           </>
         )}
 
-        {["setup_wifi"].includes(view) && (
-          <>
-            <div className="space-y-4">
-              <WifiPortalArtwork />
-
-              <Frame spacing="sm">
-                <FramePanel className="space-y-2 p-4 text-xs leading-relaxed text-muted-foreground">
-                  <p className="text-sm font-semibold text-foreground">
-                    {view === "recover_wifi"
-                      ? "Steps on your Board & browser"
-                      : "Steps to set up via Wi-Fi"}
-                  </p>
-                  <ol className="list-decimal space-y-1.5 pl-4">
-                    <li>
-                      {view === "recover_wifi"
-                        ? "Hold the BOOT / Recovery button on your board for 3 seconds."
-                        : "Power on your new HomecoreOS Board."}
-                    </li>
-                    <li>
-                      Connect your phone or computer to{" "}
-                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
-                        HomecoreOS-Setup-XXXX
-                      </code>
-                      .
-                    </li>
-                    <li>
-                      Open{" "}
-                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
-                        http://192.168.4.1
-                      </code>{" "}
-                      in your browser.
-                    </li>
-                    {view === "recover_wifi" ? (
-                      <li>
-                        If only your Wi-Fi network changed, choose{" "}
-                        <strong>Update Wi-Fi Credentials Only</strong> and click{" "}
-                        <strong>Save &amp; Apply</strong>. If re-pairing is needed, choose{" "}
-                        <strong>Recover / Re-pair Existing Board</strong> and enter your
-                        Wi-Fi details, server URL, and 6-digit recovery code below.
-                      </li>
-                    ) : (
-                      <li>
-                        Enter your Wi-Fi SSID, Wi-Fi password, 6-digit pairing code, and
-                        HomecoreOS server URL, then click <strong>Save &amp; Apply</strong>.
-                      </li>
-                    )}
-                  </ol>
-                </FramePanel>
-              </Frame>
-
-              {/* Server URL copy card */}
-              <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/35 px-3 py-2">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-medium text-muted-foreground">
-                    HomecoreOS Server URL
-                  </p>
-                  <p className="truncate font-mono text-xs text-foreground">
-                    {serverOrigin}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void handleCopyText("url", serverOrigin)}
-                >
-                  {copiedField === "url" ? (
-                    <RiCheckLine className="size-3.5" aria-hidden="true" />
-                  ) : (
-                    <RiFileCopyLine className="size-3.5" aria-hidden="true" />
-                  )}
-                  {copiedField === "url" ? "Copied" : "Copy"}
-                </Button>
-              </div>
-
-              {wifiPortalError && <StatusAlert tone="danger">{wifiPortalError}</StatusAlert>}
-
-              {!wifiPortalCode ? (
-                <form onSubmit={handleGenerateWifiPortalCode} className="space-y-3">
-                  {view === "recover_wifi" && controllers.length > 0 && (
-                    <div className="space-y-2">
-                      <FormField id="wifi-rec-target" label="Board to Re-Pair (if needed)">
-                        <Select
-                          value={wifiPortalRecoverDeleted ? "__deleted__" : wifiPortalTargetId}
-                          onValueChange={(val) => {
-                            if (val === "__deleted__") {
-                              setWifiPortalRecoverDeleted(true);
-                            } else {
-                              setWifiPortalRecoverDeleted(false);
-                              setWifiPortalTargetId(val);
-                            }
-                          }}
-                        >
-                          <SelectTrigger id="wifi-rec-target" className="w-full">
-                            <SelectValue placeholder="Select board..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {controllers.map((c) => (
-                              <SelectItem key={c.id} value={c.id}>
-                                {c.name} ({c.board_model})
-                              </SelectItem>
-                            ))}
-                            <SelectItem value="__deleted__">
-                              Deleted / Not Listed Board
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </FormField>
-                    </div>
-                  )}
-
-                  {(view === "setup_wifi" || wifiPortalRecoverDeleted || controllers.length === 0) && (
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <FormField id="wifi-portal-name" label="Board Name">
-                        <Input
-                          id="wifi-portal-name"
-                          required
-                          placeholder="e.g. Hallway Board"
-                          value={wifiPortalName}
-                          onChange={(e) => setWifiPortalName(e.target.value)}
-                        />
-                      </FormField>
-                      <FormField id="wifi-portal-board" label="Board Model">
-                        <Select
-                          value={wifiPortalBoardChoice}
-                          onValueChange={setWifiPortalBoardChoice}
-                        >
-                          <SelectTrigger id="wifi-portal-board" className="w-full">
-                            <SelectValue placeholder="Select board..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {boardOptions.map((o) => (
-                              <SelectItem key={o.id} value={o.id}>
-                                {o.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </FormField>
-                    </div>
-                  )}
-
-                  {(() => {
-                    const sel = boardOptions.find((o) => o.id === wifiPortalBoardChoice)?.board;
-                    if (sel && sel.supports_wifi === false) {
-                      return (
-                        <StatusAlert tone="warning" title="No Wi-Fi Radio on Selected Board">
-                          <span className="inline-flex items-center gap-1.5">
-                            <RiAlertLine className="size-4 shrink-0" aria-hidden="true" />
-                            ESP32-H2 does not have an integrated Wi-Fi radio and is unavailable as a standalone Wi-Fi/MQTT controller.
-                          </span>
-                        </StatusAlert>
-                      );
-                    }
-                    if (sel && supportsBleProvisioningForBoard(sel).supportsBle === false) {
-                      return (
-                        <StatusAlert tone="info">
-                          {sel.model} uses Wi-Fi Setup AP (no Bluetooth LE radio on this board).
-                        </StatusAlert>
-                      );
-                    }
-                    return null;
-                  })()}
-
-                  <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-                    <Button
-                      type="submit"
-                      disabled={
-                        wifiPortalBusy ||
-                        boardOptions.find((o) => o.id === wifiPortalBoardChoice)?.board
-                          .supports_wifi === false
-                      }
-                    >
-                      {wifiPortalBusy
-                        ? "Preparing..."
-                        : view === "recover_wifi"
-                          ? "Get Recovery Code"
-                          : "Get Pairing Code"}
-                    </Button>
-                  </div>
-                </form>
-              ) : (
-                <div className="space-y-3">
-                  <Frame spacing="sm">
-                    <FramePanel className="p-4 text-center space-y-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        {view === "recover_wifi"
-                          ? "6-Digit Recovery Code"
-                          : "6-Digit Pairing Code"}
-                      </p>
-                      <p className="font-mono text-3xl font-bold tracking-[0.25em] text-primary tabular-nums">
-                        {wifiPortalCode}
-                      </p>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => void handleCopyText("code", wifiPortalCode)}
-                      >
-                        {copiedField === "code" ? (
-                          <RiCheckLine className="size-3.5" aria-hidden="true" />
-                        ) : (
-                          <RiFileCopyLine className="size-3.5" aria-hidden="true" />
-                        )}
-                        {copiedField === "code" ? "Copied Code" : "Copy Code"}
-                      </Button>
-                    </FramePanel>
-                  </Frame>
-
-                  {wifiPortalOnline ? (
-                    <StatusAlert tone="success" title="Your board is ready!">
-                      Board paired and connected online over MQTT.
-                    </StatusAlert>
-                  ) : (
-                    <StatusAlert tone="info">
-                      Waiting for your board to apply settings from{" "}
-                      <code className="font-mono">http://192.168.4.1</code> and connect...
-                    </StatusAlert>
-                  )}
-
-                  <div className="flex items-center justify-end pt-1">
-                    <Button
-                      type="button"
-                      onClick={() => {
-                        if (wifiPortalOnline) {
-                          onSuccess?.("Board configured via Wi-Fi.");
-                        }
-                        handleCloseModal();
-                      }}
-                    >
-                      {wifiPortalOnline ? "Done" : "Close"}
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </>
+        {view === "setup_wifi" && (
+          <WifiSetupFlow
+            boardOptions={boardOptions}
+            selectedBoardChoice={wifiPortalBoardChoice}
+            onBoardChoiceChange={setWifiPortalBoardChoice}
+            boardName={wifiPortalName}
+            onBoardNameChange={setWifiPortalName}
+            homes={homes}
+            websiteUrl={serverOrigin}
+            canManage={canManage}
+            onSuccess={onSuccess}
+            onClose={handleCloseModal}
+          />
         )}
         </div>
 

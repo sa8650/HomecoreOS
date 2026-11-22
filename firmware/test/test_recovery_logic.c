@@ -227,11 +227,111 @@ static void test_action_names_round_trip(void) {
         HC_REC_ACTION_RESTART,
         HC_REC_ACTION_FACTORY_RESET,
         HC_REC_ACTION_PAIR,
+        HC_REC_ACTION_ESPNOW,
     };
     for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
         assert(hc_rec_action_from_name(hc_rec_action_name(all[i])) == all[i]);
     }
     assert(strcmp(hc_rec_action_name(HC_REC_ACTION_NONE), "none") == 0);
+}
+
+
+static void test_status_reports_image_and_capability_facts(void) {
+    hc_recovery_snapshot_t snap;
+    hc_rec_snapshot_init(&snap);
+    snprintf(snap.board_slug, sizeof(snap.board_slug), "esp32-s3-devkitc-1-n16r8");
+    snprintf(snap.chip, sizeof(snap.chip), "esp32s3");
+    snprintf(snap.fw_version, sizeof(snap.fw_version), "1.5.0");
+    snprintf(snap.mode, sizeof(snap.mode), "recovery");
+    snprintf(snap.partition, sizeof(snap.partition), "ota_1");
+    snprintf(snap.backend_url, sizeof(snap.backend_url), "https://homecore.local");
+    snprintf(snap.espnow_link, sizeof(snap.espnow_link), "linked");
+    snap.paired = true;
+    snap.wifi_connected = true;
+    snap.uptime_sec = 9;
+    snap.free_heap_bytes = 180000;
+    snap.ota_supported = true;
+    snap.ota_pending = false;
+    snap.has_wifi = true;
+    snap.has_ble = true;
+    snap.espnow_supported = true;
+
+    char out[HC_RECOVERY_RESPONSE_MAX];
+    int n = hc_rec_build_status(&snap, out, sizeof(out));
+    assert(n > 0);
+    // The console reads these exact keys; a rename here would silently make
+    // every repair report Unknown instead of a fact.
+    assert(strstr(out, "\"uptime_sec\":9") != NULL);
+    assert(strstr(out, "\"free_heap\":180000") != NULL);
+    assert(strstr(out, "\"partition\":\"ota_1\"") != NULL);
+    assert(strstr(out, "\"backend_url\":\"https://homecore.local\"") != NULL);
+    assert(strstr(out, "\"ota_supported\":true") != NULL);
+    assert(strstr(out, "\"ota_pending\":false") != NULL);
+    assert(strstr(out, "\"has_wifi\":true") != NULL);
+    assert(strstr(out, "\"has_ble\":true") != NULL);
+    assert(strstr(out, "\"espnow_supported\":true") != NULL);
+    assert(strstr(out, "\"espnow_link\":\"linked\"") != NULL);
+    // The pre-existing contract still holds.
+    assert(strstr(out, "\"hc\":\"status\"") != NULL);
+    assert(strstr(out, "\"wifi_connected\":true") != NULL);
+    assert(strstr(out, "\"last_error\":\"\"") != NULL);
+    // A password or pairing secret is never part of a status answer.
+    assert(strstr(out, "password") == NULL);
+}
+
+static void test_status_without_a_server_url_reports_empty_not_missing(void) {
+    hc_recovery_snapshot_t snap;
+    hc_rec_snapshot_init(&snap);
+    snprintf(snap.mode, sizeof(snap.mode), "unprovisioned");
+    snap.has_wifi = true;
+
+    char out[HC_RECOVERY_RESPONSE_MAX];
+    assert(hc_rec_build_status(&snap, out, sizeof(out)) > 0);
+    // Reported-empty is the signal the console needs to auto-configure it.
+    assert(strstr(out, "\"backend_url\":\"\"") != NULL);
+    assert(strstr(out, "\"uptime_sec\":0") != NULL);
+}
+
+static void test_hello_carries_the_running_partition(void) {
+    hc_recovery_snapshot_t snap;
+    hc_rec_snapshot_init(&snap);
+    snprintf(snap.board_slug, sizeof(snap.board_slug), "esp32-h2-devkitm-1");
+    snprintf(snap.chip, sizeof(snap.chip), "esp32h2");
+    snprintf(snap.fw_version, sizeof(snap.fw_version), "1.5.0");
+    snprintf(snap.mode, sizeof(snap.mode), "recovery");
+    snprintf(snap.partition, sizeof(snap.partition), "app0");
+    snprintf(snap.hardware_uid, sizeof(snap.hardware_uid), "AA:BB:CC:DD:EE:12");
+    snap.has_wifi = false;
+    snap.has_ble = true;
+
+    char out[HC_RECOVERY_RESPONSE_MAX];
+    assert(hc_rec_build_hello(&snap, out, sizeof(out)) > 0);
+    assert(strstr(out, "\"uid_suffix\":\"EE12\"") != NULL);
+    assert(strstr(out, "\"partition\":\"app0\"") != NULL);
+    assert(strstr(out, "\"wifi\":false") != NULL);
+    assert(strstr(out, "\"ble\":true") != NULL);
+}
+
+static void test_espnow_repair_is_a_non_destructive_action(void) {
+    hc_rec_command_t cmd;
+    assert(
+        hc_rec_parse_line("HC REPAIR {\"action\":\"espnow\"}", &cmd) == 0 &&
+        cmd.action == HC_REC_ACTION_ESPNOW
+    );
+    assert(strcmp(hc_rec_action_name(HC_REC_ACTION_ESPNOW), "espnow") == 0);
+    assert(strcmp(hc_rec_action_name(HC_REC_ACTION_WIFI), "wifi") == 0);
+
+    hc_recovery_snapshot_t snap;
+    hc_rec_snapshot_init(&snap);
+    // A relink is an ordinary repair: no BOOT press and no confirmation needed,
+    // even on a board sitting in normal mode.
+    snprintf(snap.mode, sizeof(snap.mode), "normal");
+    char reason[160];
+    assert(hc_rec_action_allowed(&snap, HC_REC_ACTION_ESPNOW, false, reason, sizeof(reason)) == true);
+    assert(hc_rec_action_allowed(&snap, HC_REC_ACTION_RESTART, false, reason, sizeof(reason)) == true);
+    // Re-pairing and factory reset still require physical recovery mode.
+    assert(hc_rec_action_allowed(&snap, HC_REC_ACTION_PAIR, false, reason, sizeof(reason)) == false);
+    assert(strstr(reason, "BOOT") != NULL);
 }
 
 int main(void) {
@@ -245,6 +345,10 @@ int main(void) {
     test_json_escaping();
     test_problem_classification();
     test_action_names_round_trip();
+    test_status_reports_image_and_capability_facts();
+    test_status_without_a_server_url_reports_empty_not_missing();
+    test_hello_carries_the_running_partition();
+    test_espnow_repair_is_a_non_destructive_action();
     printf("test_recovery_logic: all assertions passed\n");
     return 0;
 }

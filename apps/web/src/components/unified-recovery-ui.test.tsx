@@ -18,7 +18,7 @@ vi.mock("@/lib/recovery-api", () => ({ recoveryServerApi: {
 } }));
 const board = { id: "b1", name: "Hall controller", hardware_uid: "AA:BB:CC:DD:EE:12", board_model: "S3", wifi_ssid: "Home", ble_setup_pin: "111111" } as ControllerItem;
 const hello = { proto: 1, boardSlug: "esp32-s3-devkitc-1-n16r8", chip: "esp32s3", firmwareVersion: "1.5.0", mode: "recovery", paired: true, hasWifi: true, hasBle: true, recoverySupported: true, uidSuffix: "EE12" };
-const message = parseRecoveryDeviceMessage(JSON.stringify({ hc: "status", mode: "recovery", paired: true, wifi_connected: false, ip: null, mqtt_connected: false, backend_ok: false, wifi_error: "wrong_password" }));
+const message = parseRecoveryDeviceMessage(JSON.stringify({ hc: "status", mode: "recovery", fw: "1.5.0", ota_supported: true, paired: true, wifi_connected: false, ip: null, mqtt_connected: false, backend_ok: false, wifi_error: "wrong_password" }));
 if (message.kind !== "status") throw new Error("Invalid fixture");
 const status = message.status;
 
@@ -68,7 +68,7 @@ describe("unified recovery panel", () => {
   });
 
   it("automatically checks and verifies an already healthy board after discovery", async () => {
-    const healthyMessage = parseRecoveryDeviceMessage(JSON.stringify({ hc: "status", mode: "recovery", paired: true, wifi_connected: true, ssid: "Home", ip: "192.168.1.2", mqtt_connected: true, backend_ok: true }));
+    const healthyMessage = parseRecoveryDeviceMessage(JSON.stringify({ hc: "status", mode: "recovery", fw: "1.5.0", ota_supported: true, paired: true, wifi_connected: true, ssid: "Home", ip: "192.168.1.2", mqtt_connected: true, backend_ok: true, backend_url: window.location.origin, heartbeat_age_sec: 5 }));
     if (healthyMessage.kind !== "status") throw new Error("Invalid fixture");
     const transport = { kind: "wifi", connected: true, connect: vi.fn(async () => ({ hello, status: healthyMessage.status })), readStatus: vi.fn(async () => healthyMessage.status), request: vi.fn(), release: vi.fn(async () => {}) };
     vi.mocked(createWifiRecoveryTransport).mockReturnValue(transport as unknown as ReturnType<typeof createWifiRecoveryTransport>);

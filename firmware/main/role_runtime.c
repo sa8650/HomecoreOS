@@ -82,6 +82,11 @@ uint16_t hc_role_epoch(void) {
     return s_state.epoch;
 }
 
+uint8_t hc_role_node_count(void) {
+    if (!s_cfg || s_cfg->board_role != HC_ROLE_CONTROLLER) return 0;
+    return s_node_count;
+}
+
 uint8_t hc_role_linked_node_count(void) {
     if (!s_cfg || s_cfg->board_role != HC_ROLE_CONTROLLER) return 0;
     uint8_t count = 0;

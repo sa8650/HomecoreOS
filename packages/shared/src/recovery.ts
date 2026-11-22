@@ -117,16 +117,21 @@ export type CheckStatus = "pass" | "warning" | "fail" | "unknown";
 
 export type DiagnosticCheckId =
   | "board_identity"
+  | "recovery_access"
   | "wifi_config"
   | "wifi_connection"
   | "wifi_signal"
   | "dhcp"
   | "internet"
   | "backend"
+  | "backend_url"
   | "pairing"
   | "mqtt"
+  | "espnow"
+  | "local_portal"
   | "heartbeat"
   | "firmware"
+  | "ota"
   | "config"
   | "entities"
   | "nodes"
@@ -158,6 +163,12 @@ export type ProblemCode =
   | "sensors_not_reporting"
   | "switches_not_reporting"
   | "nodes_unlinked"
+  | "espnow_unavailable"
+  | "espnow_link_down"
+  | "portal_unavailable"
+  | "backend_url_missing"
+  | "backend_url_mismatch"
+  | "ota_unavailable"
   | "board_reported_error";
 
 export const PROBLEM_LABELS: Record<ProblemCode, string> = {
@@ -186,6 +197,12 @@ export const PROBLEM_LABELS: Record<ProblemCode, string> = {
   sensors_not_reporting: "Some sensors are not reporting",
   switches_not_reporting: "Some switches are not reporting",
   nodes_unlinked: "Attached Nodes lost their Controller link",
+  espnow_unavailable: "ESP-NOW cannot run on this board",
+  espnow_link_down: "ESP-NOW link to the Controller or Nodes is down",
+  portal_unavailable: "Temporary Wi-Fi setup/recovery network cannot start",
+  backend_url_missing: "No HomecoreOS server URL is saved on the controller",
+  backend_url_mismatch: "The controller points at a different HomecoreOS server",
+  ota_unavailable: "Over-the-air updates cannot run on this controller",
   board_reported_error: "Controller recorded an error",
 };
 
@@ -240,8 +257,39 @@ export interface RecoveryTelemetry {
   };
   firmware: TelemetryFact & {
     version: string | null;
+    /** Board Library slug the running firmware was built for ("" when unknown). */
+    boardSlug: string | null;
+    /** Partition scheme the image was built with ("" when unknown). */
+    partitionScheme: string | null;
+    /** Uptime in seconds; a fresh boot is what a verified restart looks like. */
+    uptimeSec: number | null;
+    /** Free heap in bytes (an "is the image healthy" fact, not a fault). */
+    freeHeapBytes: number | null;
     compatible: boolean | null;
     updateAvailable: string | null;
+  };
+  /** Over-the-air update capability as the controller itself reports it. */
+  ota: TelemetryFact & {
+    /** False when the controller reports that OTA cannot run on this image. */
+    supported: boolean | null;
+    pendingVerify: boolean | null;
+    lastError: string | null;
+  };
+  /** Temporary setup/recovery interfaces (AP + BLE) the firmware can open. */
+  portal: TelemetryFact & {
+    wifiApSupported: boolean | null;
+    bleSupported: boolean | null;
+  };
+  /** ESP-NOW availability and the Controller/Node link state. */
+  espnow: TelemetryFact & {
+    supported: boolean | null;
+    /** "linked" | "controller_lost" | "reconnecting" | "standalone" | "unassigned" | "down" */
+    linkState: string | null;
+  };
+  /** Server URL the controller has stored, compared with the website origin. */
+  backendUrl: TelemetryFact & {
+    value: string | null;
+    matchesWebsite: boolean | null;
   };
   config: TelemetryFact & {
     revision: number | null;
@@ -291,7 +339,20 @@ export const emptyRecoveryTelemetry = (nowMs = Date.now()): RecoveryTelemetry =>
     nowMs,
     staleAfterSeconds: RECOVERY_STALE_HEARTBEAT_SEC,
   },
-  firmware: { available: false, version: null, compatible: null, updateAvailable: null },
+  firmware: {
+    available: false,
+    version: null,
+    boardSlug: null,
+    partitionScheme: null,
+    uptimeSec: null,
+    freeHeapBytes: null,
+    compatible: null,
+    updateAvailable: null,
+  },
+  ota: { available: false, supported: null, pendingVerify: null, lastError: null },
+  portal: { available: false, wifiApSupported: null, bleSupported: null },
+  espnow: { available: false, supported: null, linkState: null },
+  backendUrl: { available: false, value: null, matchesWebsite: null },
   config: { available: false, revision: null, syncedRevision: null, pendingSync: null, hashValid: null },
   entities: {
     available: false,
@@ -326,6 +387,10 @@ export function mergeRecoveryTelemetry(
     mqtt: mergeFact(base.mqtt, patch.mqtt),
     heartbeat: mergeFact(base.heartbeat, patch.heartbeat),
     firmware: mergeFact(base.firmware, patch.firmware),
+    ota: mergeFact(base.ota, patch.ota),
+    portal: mergeFact(base.portal, patch.portal),
+    espnow: mergeFact(base.espnow, patch.espnow),
+    backendUrl: mergeFact(base.backendUrl, patch.backendUrl),
     config: mergeFact(base.config, patch.config),
     entities: mergeFact(base.entities, patch.entities),
     nodes: mergeFact(base.nodes, patch.nodes),
@@ -578,6 +643,118 @@ export function runDiagnostics(input: DiagnosticsInput): DiagnosticsResult {
     checks.push(check("backend", "HomecoreOS backend", "unknown", "Backend reachability is not reported."));
   }
 
+  // --- Managed server URL ---------------------------------------------------
+  // The website always knows which HomecoreOS deployment it belongs to, so a
+  // controller pointed at the wrong (or no) server URL is a repairable fault:
+  // the website re-configures the endpoint instead of asking the user to type it.
+  if (!t.backendUrl.available) {
+    checks.push(
+      check("backend_url", "HomecoreOS server URL", "unknown", "The controller did not report its saved server URL.")
+    );
+  } else if (!t.backendUrl.value) {
+    checks.push(
+      check(
+        "backend_url",
+        "HomecoreOS server URL",
+        "fail",
+        "No HomecoreOS server URL is saved on this controller.",
+        "backend_url_missing",
+        "backend_url is empty in the controller's stored configuration"
+      )
+    );
+  } else if (t.backendUrl.matchesWebsite === false) {
+    checks.push(
+      check(
+        "backend_url",
+        "HomecoreOS server URL",
+        "warning",
+        `The controller is configured for ${t.backendUrl.value}, not this HomecoreOS website. Repair points it here automatically.`,
+        "backend_url_mismatch",
+        `stored=${t.backendUrl.value}`
+      )
+    );
+  } else {
+    checks.push(
+      check("backend_url", "HomecoreOS server URL", "pass", "The controller points at this HomecoreOS website.")
+    );
+  }
+
+  // --- ESP-NOW --------------------------------------------------------------
+  if (t.espnow.supported === false) {
+    checks.push(
+      check(
+        "espnow",
+        "ESP-NOW link",
+        "warning",
+        "This board has no Wi-Fi radio, so ESP-NOW Controller/Node linking is unavailable.",
+        "espnow_unavailable"
+      )
+    );
+  } else if (!t.espnow.available) {
+    checks.push(check("espnow", "ESP-NOW link", "unknown", "ESP-NOW state is not reported."));
+  } else if (t.espnow.linkState === "linked" || t.espnow.linkState === "standalone") {
+    checks.push(
+      check(
+        "espnow",
+        "ESP-NOW link",
+        "pass",
+        t.espnow.linkState === "linked"
+          ? "ESP-NOW is linked."
+          : "ESP-NOW is ready; this Controller currently has no linked Node."
+      )
+    );
+  } else if (t.espnow.linkState === "unassigned") {
+    checks.push(
+      check(
+        "espnow",
+        "ESP-NOW link",
+        "pass",
+        "No Controller is assigned to this Node yet; ESP-NOW is idle by design."
+      )
+    );
+  } else {
+    checks.push(
+      check(
+        "espnow",
+        "ESP-NOW link",
+        "warning",
+        "The ESP-NOW link to the Controller is down; repair re-establishes it.",
+        "espnow_link_down",
+        `link_state=${t.espnow.linkState ?? "unknown"}`
+      )
+    );
+  }
+
+  // --- Temporary setup / recovery interfaces --------------------------------
+  if (!t.portal.available) {
+    checks.push(
+      check("local_portal", "Local setup webpage & temporary Wi-Fi", "unknown", "The controller did not report its temporary interfaces.")
+    );
+  } else if (t.portal.wifiApSupported === false && t.portal.bleSupported === false) {
+    checks.push(
+      check(
+        "local_portal",
+        "Local setup webpage & temporary Wi-Fi",
+        "warning",
+        "This board has neither a Wi-Fi radio nor Bluetooth LE, so it has no local setup interface.",
+        "portal_unavailable"
+      )
+    );
+  } else {
+    const interfaces = [
+      t.portal.wifiApSupported ? "temporary Wi-Fi + local webpage" : null,
+      t.portal.bleSupported ? "Bluetooth LE recovery" : null,
+    ].filter(Boolean);
+    checks.push(
+      check(
+        "local_portal",
+        "Local setup webpage & temporary Wi-Fi",
+        "pass",
+        `${interfaces.join(" and ")} available for setup and recovery.`
+      )
+    );
+  }
+
   // --- Pairing --------------------------------------------------------------
   if (!t.pairing.available) {
     checks.push(check("pairing", "Pairing & authentication", "unknown", "Pairing state is not reported."));
@@ -675,44 +852,101 @@ export function runDiagnostics(input: DiagnosticsInput): DiagnosticsResult {
     }
   }
 
-  // --- Firmware -------------------------------------------------------------
+  // --- Firmware validity & information --------------------------------------
+  const fwFacts = [
+    t.firmware.boardSlug ? `board ${t.firmware.boardSlug}` : null,
+    t.firmware.partitionScheme ? `partition ${t.firmware.partitionScheme}` : null,
+    t.firmware.uptimeSec !== null ? `up ${describeSeconds(t.firmware.uptimeSec)}` : null,
+    t.firmware.freeHeapBytes !== null ? `heap ${Math.round(t.firmware.freeHeapBytes / 1024)} KB` : null,
+  ].filter(Boolean);
+  const fwInfo = fwFacts.length ? ` (${fwFacts.join(", ")})` : "";
+
   if (!t.firmware.available) {
-    checks.push(check("firmware", "Firmware compatibility", "unknown", "Firmware version is not reported."));
+    checks.push(check("firmware", "Firmware validity & information", "unknown", "Firmware information is not reported."));
   } else if (!t.firmware.version) {
     checks.push(
       check(
         "firmware",
-        "Firmware compatibility",
+        "Firmware validity & information",
         "fail",
-        "The controller did not report a firmware version.",
-        "firmware_missing"
+        "The controller did not report a firmware version, so its image cannot be validated.",
+        "firmware_missing",
+        "This is a firmware problem: recovery never flashes firmware."
       )
     );
   } else if (t.firmware.compatible === false) {
     checks.push(
       check(
         "firmware",
-        "Firmware compatibility",
+        "Firmware validity & information",
         "fail",
         `Firmware v${t.firmware.version} is not compatible with this board.`,
         "firmware_incompatible",
-        "Recovery cannot fix a firmware/board mismatch; use the Flash Board workflow."
+        "Recovery cannot fix a firmware/board mismatch; the Flash Board workflow is required."
       )
     );
   } else if (t.firmware.updateAvailable) {
     checks.push(
       check(
         "firmware",
-        "Firmware compatibility",
+        "Firmware validity & information",
         "warning",
-        `A newer compatible firmware (v${t.firmware.updateAvailable}) is available.`,
+        `Firmware v${t.firmware.version}${fwInfo} runs, and v${t.firmware.updateAvailable} is available.`,
         "firmware_update_available",
         "Advisory only: recovery never installs firmware; use Firmware & Updates."
       )
     );
+  } else if (t.firmware.compatible === null) {
+    // The controller reported a coherent, running image. Whether the Board
+    // Library has published a compatibility verdict for it is a different
+    // question (and one only the server can answer), so validity passes.
+    checks.push(
+      check(
+        "firmware",
+        "Firmware validity & information",
+        "pass",
+        `Firmware v${t.firmware.version}${fwInfo} is running and reports a consistent board identity.`
+      )
+    );
   } else {
     checks.push(
-      check("firmware", "Firmware compatibility", "pass", `Firmware v${t.firmware.version} is compatible.`)
+      check(
+        "firmware",
+        "Firmware validity & information",
+        "pass",
+        `Firmware v${t.firmware.version}${fwInfo} is valid for this board.`
+      )
+    );
+  }
+
+  // --- OTA capability -------------------------------------------------------
+  if (!t.ota.available) {
+    checks.push(check("ota", "OTA update capability", "unknown", "The controller did not report its OTA capability."));
+  } else if (t.ota.supported === false) {
+    checks.push(
+      check(
+        "ota",
+        "OTA update capability",
+        "warning",
+        "This controller cannot receive over-the-air updates.",
+        "ota_unavailable",
+        t.ota.lastError ?? undefined
+      )
+    );
+  } else if (t.ota.pendingVerify === true) {
+    checks.push(
+      check(
+        "ota",
+        "OTA update capability",
+        "warning",
+        "An over-the-air update is awaiting its first health confirmation.",
+        null,
+        "The image is marked pending-verify until a heartbeat succeeds."
+      )
+    );
+  } else {
+    checks.push(
+      check("ota", "OTA update capability", "pass", "Over-the-air updates are functional on this controller.")
     );
   }
 
@@ -864,15 +1098,23 @@ export function runDiagnostics(input: DiagnosticsInput): DiagnosticsResult {
 
 export type RepairActionId =
   | "rewrite_wifi"
+  | "configure_endpoint"
   | "verify_network"
   | "reconnect_mqtt"
   | "repair_pairing"
   | "resync_config"
   | "restore_config"
   | "recheck_entities"
+  | "relink_espnow"
   | "none";
 
-export type RepairActionKind = "credentials" | "connection" | "pairing" | "config" | "diagnostic";
+export type RepairActionKind =
+  | "credentials"
+  | "connection"
+  | "pairing"
+  | "config"
+  | "diagnostic"
+  | "endpoint";
 
 export interface RepairAction {
   id: RepairActionId;
@@ -948,6 +1190,28 @@ const ACTION_LIBRARY: Record<RepairActionId, RepairAction> = {
     verification: "The controller authenticates with HomecoreOS and receives fresh MQTT credentials.",
     requiresSecret: "recovery_code",
     changesIdentity: true,
+  },
+  configure_endpoint: {
+    id: "configure_endpoint",
+    title: "Configure the HomecoreOS server URL",
+    description:
+      "Writes this website's HomecoreOS address onto the controller and re-fetches its configuration, so it talks to the right deployment. Wi-Fi, pairing and device assignments are kept.",
+    kind: "endpoint",
+    problem: "backend_url_missing",
+    verification: "The controller reaches this HomecoreOS website and synchronizes its configuration.",
+    requiresSecret: null,
+    changesIdentity: false,
+  },
+  relink_espnow: {
+    id: "relink_espnow",
+    title: "Re-establish the ESP-NOW link",
+    description:
+      "Re-opens the controller's ESP-NOW radio and re-synchronizes its role block, so a Controller/Node pair links again. No credentials change.",
+    kind: "connection",
+    problem: "espnow_link_down",
+    verification: "A Controller hosts its Nodes, and a Node re-links to its Controller.",
+    requiresSecret: null,
+    changesIdentity: false,
   },
   resync_config: {
     id: "resync_config",
@@ -1037,6 +1301,20 @@ export function buildRepairPlan(input: BuildPlanInput): RecoveryPlan {
   ) {
     if (input.allowRePair !== false) add("repair_pairing");
   }
+  if (
+    problems.has("backend_url_missing") ||
+    problems.has("backend_url_mismatch") ||
+    problems.has("backend_unreachable")
+  ) {
+    add(
+      "configure_endpoint",
+      problems.has("backend_url_missing")
+        ? "backend_url_missing"
+        : problems.has("backend_url_mismatch")
+          ? "backend_url_mismatch"
+          : "backend_unreachable"
+    );
+  }
   if (problems.has("mqtt_auth_failed") || problems.has("mqtt_disconnected")) {
     add("reconnect_mqtt");
   }
@@ -1045,6 +1323,7 @@ export function buildRepairPlan(input: BuildPlanInput): RecoveryPlan {
   if (problems.has("sensors_not_reporting") || problems.has("switches_not_reporting")) {
     add("recheck_entities");
   }
+  if (problems.has("espnow_link_down")) add("relink_espnow");
 
   // Re-pairing already rotates MQTT credentials and pulls the configuration
   // snapshot, so a separate MQTT reconnect or config resync would be a
@@ -1059,7 +1338,8 @@ export function buildRepairPlan(input: BuildPlanInput): RecoveryPlan {
   const requiresFirmwareWorkflow =
     problems.has("firmware_incompatible") ||
     problems.has("board_unsupported") ||
-    problems.has("firmware_diagnostics_unsupported");
+    problems.has("firmware_diagnostics_unsupported") ||
+    problems.has("firmware_missing");
 
   // Repairing identity (re-pairing) is a deliberate decision, never automatic.
   const identityAction = actions.find((a) => a.changesIdentity) ?? null;
@@ -1079,8 +1359,11 @@ export function buildRepairPlan(input: BuildPlanInput): RecoveryPlan {
       summary: requiresFirmwareWorkflow
         ? [
             {
-              problem: "Firmware does not match this board",
-              action: "Recovery cannot change firmware. Use Flash Board to install the compatible image.",
+              problem: problems.has("firmware_missing")
+                ? "The controller did not report a valid firmware image"
+                : "Firmware does not match this board",
+              action:
+                "Recovery never flashes or updates firmware. Use Firmware & Updates → Flash Board (USB) to install the compatible image for this board.",
               verification: "After flashing, run Recovery again to verify the environment.",
             },
           ]
@@ -1138,12 +1421,16 @@ export type VerificationCheckId =
   | "wifi_connected"
   | "ip_assigned"
   | "backend_api"
+  | "backend_url_verified"
   | "pairing_valid"
   | "mqtt_connected"
   | "subscribed"
+  | "espnow_verified"
   | "heartbeat_fresh"
   | "config_synced"
-  | "entities_reporting";
+  | "entities_reporting"
+  | "restart_verified"
+  | "temporary_interfaces_closed";
 
 export interface VerificationCheck {
   id: VerificationCheckId;
@@ -1181,8 +1468,11 @@ export function verifyRecovery(input: VerificationInput): VerificationResult {
   const needsWifi = actions.has("rewrite_wifi") || actions.has("verify_network");
   const needsPairing = actions.has("repair_pairing");
   const needsMqtt = actions.has("reconnect_mqtt") || needsPairing;
-  const needsConfig = actions.has("resync_config") || actions.has("restore_config") || needsPairing;
+  const needsConfig =
+    actions.has("resync_config") || actions.has("restore_config") || actions.has("configure_endpoint") || needsPairing;
   const needsEntities = actions.has("recheck_entities");
+  const needsEndpoint = actions.has("configure_endpoint");
+  const needsEspnow = actions.has("relink_espnow");
 
   const checks: VerificationCheck[] = [];
   const push = (
@@ -1245,6 +1535,24 @@ export function verifyRecovery(input: VerificationInput): VerificationResult {
     true
   );
 
+  push(
+    "backend_url_verified",
+    "HomecoreOS server URL correct",
+    after.backendUrl.available
+      ? after.backendUrl.value && after.backendUrl.matchesWebsite !== false
+        ? "pass"
+        : "fail"
+      : "unknown",
+    !after.backendUrl.available
+      ? "The controller did not report its server URL."
+      : !after.backendUrl.value
+        ? "No server URL is saved on the controller."
+        : after.backendUrl.matchesWebsite === false
+          ? `The controller points at ${after.backendUrl.value}, not this website.`
+          : "The controller points at this HomecoreOS website.",
+    needsEndpoint
+  );
+
   const pairing = after.pairing;
   push(
     "pairing_valid",
@@ -1289,6 +1597,28 @@ export function verifyRecovery(input: VerificationInput): VerificationResult {
       ? "The controller's subscription topics are active."
       : "Subscriptions can only be confirmed while MQTT is connected.",
     false
+  );
+
+  push(
+    "espnow_verified",
+    "ESP-NOW link healthy",
+    !after.espnow.available
+      ? "unknown"
+      : after.espnow.supported === false
+        ? "warning"
+        : after.espnow.linkState === "controller_lost" || after.espnow.linkState === "reconnecting"
+          ? "fail"
+          : "pass",
+    !after.espnow.available
+      ? "ESP-NOW state is not reported."
+      : after.espnow.supported === false
+        ? "This board has no ESP-NOW radio."
+        : after.espnow.linkState === "linked"
+          ? "ESP-NOW link is established."
+          : after.espnow.linkState
+            ? `ESP-NOW state: ${after.espnow.linkState}.`
+            : "ESP-NOW state is unknown.",
+    needsEspnow
   );
 
   const hb = after.heartbeat;
@@ -1340,6 +1670,42 @@ export function verifyRecovery(input: VerificationInput): VerificationResult {
     needsEntities
   );
 
+  // A restart is only verified when the controller comes back with a fresh
+  // uptime; "it stopped answering" is never a pass.
+  push(
+    "restart_verified",
+    "Controller restarted and came back",
+    after.firmware.uptimeSec === null
+      ? "unknown"
+      : after.firmware.uptimeSec <= 30
+        ? "pass"
+        : "fail",
+    after.firmware.uptimeSec === null
+      ? "The controller did not report its uptime."
+      : after.firmware.uptimeSec <= 30
+        ? `The controller rebooted and is answering again (up ${after.firmware.uptimeSec}s).`
+        : `The controller is still running the old process (up ${describeSeconds(after.firmware.uptimeSec)}).`,
+    false
+  );
+
+  push(
+    "temporary_interfaces_closed",
+    "Temporary setup interfaces closed",
+    after.portal.available
+      ? after.portal.wifiApSupported === false && after.portal.bleSupported === false
+        ? "pass"
+        : board.mode === "normal"
+          ? "pass"
+          : "unknown"
+      : "unknown",
+    !after.portal.available
+      ? "The controller did not report its temporary interfaces."
+      : board.mode === "normal" || (after.portal.wifiApSupported === false && after.portal.bleSupported === false)
+        ? "The controller returned to normal operation with its temporary setup interfaces closed."
+        : "The controller is still reporting an open setup mode.",
+    false
+  );
+
   const required = checks.filter((c) => c.required);
   const requiredFail = required.filter((c) => c.status === "fail");
   const requiredUnknown = required.filter((c) => c.status === "unknown");
@@ -1359,11 +1725,13 @@ export function verifyRecovery(input: VerificationInput): VerificationResult {
     if (requiredFail.some((c) => c.id === "backend_api")) unresolved.push("backend_unreachable");
     if (requiredFail.some((c) => c.id === "heartbeat_fresh")) unresolved.push("heartbeat_stale");
     if (requiredFail.some((c) => c.id === "config_synced")) unresolved.push("config_unsynced");
+    if (requiredFail.some((c) => c.id === "backend_url_verified")) unresolved.push("backend_url_missing");
+    if (requiredFail.some((c) => c.id === "espnow_verified")) unresolved.push("espnow_link_down");
   }
 
   const summary =
     status === "verified"
-      ? "Repair verified: the controller is online, authenticated and synchronized."
+      ? "Repair verified: the controller is back online, authenticated, synchronized and running normally."
       : status === "failed"
         ? "Repair could not be verified: the controller still reports a failure."
         : status === "partial"
@@ -1546,10 +1914,12 @@ export function describeTransportCapability(params: {
     return {
       transport,
       label: "Repair / Recover with Wi-Fi",
-      description: "Join the controller's temporary HomecoreOS-Setup network and repair it from its local page.",
+      description:
+        "Generate a recovery code here, join the controller's temporary HomecoreOS-Setup network, and save the repair form on its local page.",
       requirements: [
         "The controller is powered and within Wi-Fi range",
-        "Hold BOOT for 3 seconds to open HomecoreOS-Setup-XXXX",
+        "Hold the physical BOOT / Recovery button for 3 seconds to open temporary Wi-Fi",
+        "Join HomecoreOS-Setup-XXXX and open http://192.168.4.1 on this device",
         "Browser must permit local HTTP / private-network access to the portal",
       ],
       available: boardSupportsWifi,
@@ -1566,11 +1936,12 @@ export function describeTransportCapability(params: {
     return {
       transport,
       label: "Repair / Recover with BLE",
-      description: "Talk to the controller over an encrypted Bluetooth LE session and repair it in place.",
+      description:
+        "Discover the controller over Bluetooth LE, let it be identified and diagnosed automatically, then apply the repairs and restart it.",
       requirements: [
         "Chrome or Edge on desktop / Android",
         "Bluetooth enabled on this device",
-        "Hold BOOT for 3 seconds to open BLE recovery",
+        "Hold the physical BOOT / Recovery button for 3 seconds to open BLE recovery",
       ],
       available: boardSupportsBle && browserSupported,
       unavailableReason: !boardSupportsBle
@@ -1587,11 +1958,12 @@ export function describeTransportCapability(params: {
   return {
     transport: "usb",
     label: "Repair / Recover with USB",
-    description: "Repair the running controller over its USB serial console. Firmware is never written.",
+    description:
+      "Repair the running controller over its USB serial console. Nothing is flashed; firmware updates are only ever recommended.",
     requirements: [
-      "Desktop Chrome, Edge or Chromium",
+      "Desktop Chrome, Edge or Chromium over HTTPS",
       "A USB data cable (not charge-only)",
-      "Hold BOOT for 3 seconds so the controller is in recovery mode",
+      "BOOT / Recovery for 3 seconds is optional here — the running firmware answers over USB",
     ],
     available: browserSupported,
     unavailableReason: browserSupported
@@ -1609,19 +1981,43 @@ export interface RecoveryStepDefinition {
   stage: RecoveryStage;
 }
 
-/** The same ordered progress for every transport. */
+/**
+ * The same ordered progress for every transport. The diagnostic middle covers
+ * the full contract: Wi-Fi, ESP-NOW, MQTT, the local webpage/temporary Wi-Fi,
+ * pairing, firmware validity and OTA capability — then repair, restart,
+ * verification and the report.
+ */
 export function buildRecoverySteps(): RecoveryStepDefinition[] {
   return [
     { id: "detect", label: "Detect controller", stage: "discovery" },
     { id: "read", label: "Read board information", stage: "discovery" },
     { id: "wifi_check", label: "Check Wi-Fi connection", stage: "diagnostics" },
     { id: "backend_check", label: "Check backend connectivity", stage: "diagnostics" },
+    { id: "link_check", label: "Check ESP-NOW, MQTT & local services", stage: "diagnostics" },
+    { id: "system_check", label: "Check pairing, firmware & OTA", stage: "diagnostics" },
     { id: "plan", label: "Plan repairs", stage: "plan" },
     { id: "repair", label: "Apply repairs", stage: "repair" },
+    { id: "restart", label: "Restart & reconnect", stage: "verification" },
     { id: "verify", label: "Verify controller health", stage: "verification" },
     { id: "report", label: "Recovery report", stage: "report" },
   ];
 }
+
+export const RECOVERY_STEP_IDS = [
+  "detect",
+  "read",
+  "wifi_check",
+  "backend_check",
+  "link_check",
+  "system_check",
+  "plan",
+  "repair",
+  "restart",
+  "verify",
+  "report",
+] as const;
+
+export type RecoveryStepId = (typeof RECOVERY_STEP_IDS)[number];
 
 // ---------------------------------------------------------------------------
 // Session guards

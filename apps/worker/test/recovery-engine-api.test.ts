@@ -19,6 +19,7 @@ describe("Unified Repair & Recovery API", () => {
   let otherUserCookie = "";
   let boardId = "";
   let boardProfileId = "";
+  let deviceToken = "";
   let homeId = "";
 
   beforeAll(async () => {
@@ -104,6 +105,7 @@ describe("Unified Repair & Recovery API", () => {
       }),
     });
     expect([200, 201]).toContain(pairRes.status);
+    deviceToken = ((await pairRes.json()) as { device_api_token: string }).device_api_token;
   });
 
   afterAll(async () => {
@@ -323,6 +325,160 @@ describe("Unified Repair & Recovery API", () => {
     const syncedCheck = json.report.verification.checks.find((c) => c.id === "config_synced");
     expect(syncedCheck?.status).toBe("pass");
     expect(json.session.status).toBe("completed");
+  });
+
+  it("compares the controller's stored server URL with the website that opened the session", async () => {
+    const now = new Date().toISOString();
+    const patch = (body: Record<string, unknown>) =>
+      dbHarness.fetch(
+        new Request(`https://test.supabase.co/rest/v1/board_instances?id=eq.${boardId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify(body),
+        })
+      );
+
+    // A board pointing at an old deployment is a repair target, not a fault.
+    await patch({ backend_url: "https://old.homecoreos.example", status: "online", last_heartbeat_at: now });
+    const mismatch = await req("/api/recovery/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({
+        boardInstanceId: boardId,
+        transport: "usb",
+        websiteUrl: "https://homecore.local",
+      }),
+    });
+    expect([200, 201]).toContain(mismatch.status);
+    const mismatchJson = (await mismatch.json()) as {
+      session: { id: string };
+      server: { plan: { actions: Array<{ id: string }> }; diagnostics: { checks: Array<{ id: string; status: string }> } };
+    };
+    expect(mismatchJson.server.plan.actions.map((action) => action.id)).toContain("configure_endpoint");
+    expect(
+      mismatchJson.server.diagnostics.checks.find((check) => check.id === "backend_url")?.status
+    ).toBe("warning");
+    await req(`/api/recovery/sessions/${mismatchJson.session.id}/abandon`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ reason: "test" }),
+    });
+
+    // The same URL as the website is not a problem at all.
+    await patch({ backend_url: "https://homecore.local" });
+    const matching = await req("/api/recovery/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({
+        boardInstanceId: boardId,
+        transport: "usb",
+        websiteUrl: "https://homecore.local/",
+      }),
+    });
+    const matchingJson = (await matching.json()) as {
+      session: { id: string };
+      server: { plan: { actions: Array<{ id: string }> } };
+    };
+    expect(matchingJson.server.plan.actions.map((action) => action.id)).not.toContain("configure_endpoint");
+    await req(`/api/recovery/sessions/${matchingJson.session.id}/abandon`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ reason: "test" }),
+    });
+  });
+
+  it("records recovery health facts from the board's heartbeat and reads them back as diagnosis", async () => {
+    // The board writes these facts itself; the recovery engine must never have
+    // to infer them from the account's bookkeeping.
+    const beat = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${deviceToken}` },
+      body: JSON.stringify({
+        w: true,
+        m: true,
+        v: "1.5.0",
+        b: "esp32-s3-devkitc-1-n16r8",
+        ps: "dual_ota_16mb",
+        up: 12,
+        heap: 180_000,
+        bu: "https://homecore.local",
+        os: true,
+        op: false,
+        es: true,
+        els: "linked",
+        sw: true,
+        sb: true,
+      }),
+    });
+    expect(beat.status).toBe(200);
+
+    const start = await req("/api/recovery/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({
+        boardInstanceId: boardId,
+        transport: "usb",
+        websiteUrl: "https://homecore.local",
+      }),
+    });
+    expect([200, 201]).toContain(start.status);
+    const json = (await start.json()) as {
+      session: { id: string };
+      server: {
+        diagnostics: { checks: Array<{ id: string; status: string; summary: string }> };
+        plan: { actions: Array<{ id: string }> };
+      };
+    };
+    const check = (id: string) => json.server.diagnostics.checks.find((c) => c.id === id);
+    expect(check("firmware")?.summary).toMatch(/partition dual_ota_16mb/);
+    expect(check("firmware")?.summary).toMatch(/up 12s/);
+    expect(check("firmware")?.summary).toMatch(/heap 176 KB/);
+    expect(check("ota")?.status).toBe("pass");
+    expect(check("espnow")?.status).toBe("pass");
+    // The URL the board stored matches the website that opened the session.
+    expect(check("backend_url")?.status).toBe("pass");
+    expect(json.server.plan.actions.map((action) => action.id)).not.toContain("configure_endpoint");
+
+    // A board that never reported the facts stays Unknown, never "failed".
+    await dbHarness.fetch(
+      new Request(`https://test.supabase.co/rest/v1/board_instances?id=eq.${boardId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({
+          uptime_sec: null,
+          free_heap_bytes: null,
+          backend_url: null,
+          ota_supported: null,
+          espnow_supported: null,
+          espnow_link_state: null,
+          supports_wifi: null,
+          supports_ble: null,
+        }),
+      })
+    );
+    await req(`/api/recovery/sessions/${json.session.id}/abandon`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ reason: "test cleanup" }),
+    });
+    const unknown = await req("/api/recovery/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ boardInstanceId: boardId, transport: "usb" }),
+    });
+    const unknownJson = (await unknown.json()) as {
+      session: { id: string };
+      server: { diagnostics: { checks: Array<{ id: string; status: string }> } };
+    };
+    expect(
+      unknownJson.server.diagnostics.checks.find((c) => c.id === "backend_url")?.status
+    ).toBe("unknown");
+    expect(unknownJson.server.diagnostics.checks.find((c) => c.id === "espnow")?.status).toBe("unknown");
+    await req(`/api/recovery/sessions/${unknownJson.session.id}/abandon`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ reason: "test cleanup" }),
+    });
   });
 
   it("closes a session that has already been completed", async () => {

@@ -74,6 +74,8 @@ export interface RecoveryServerApi {
     chipVariant?: string | null;
     hardwareUidSuffix?: string | null;
     firmwareVersion?: string | null;
+    /** This website's origin, so the server can re-check the stored URL. */
+    websiteUrl?: string | null;
   }) => Promise<{
     session: RecoveryServerSessionSummary;
     resumed: boolean;
@@ -87,6 +89,7 @@ export interface RecoveryServerApi {
       wifiCredentialsProvided?: boolean;
       allowRePair?: boolean;
       transportError?: string;
+      websiteUrl?: string | null;
     }
   ) => Promise<{
     diagnostics: DiagnosticsResult;
@@ -98,6 +101,7 @@ export interface RecoveryServerApi {
       outcomes: Array<{ actionId: string; status: string; message: string; technical?: string }>;
       transportReleased: boolean;
       failureReason?: string;
+      websiteUrl?: string | null;
     }
   ) => Promise<{
     report: RecoveryReport;
@@ -230,6 +234,12 @@ export interface RecoveryControllerOptions {
   /** How long to wait for the board to come online after a repair. */
   verifyTimeoutMs?: number;
   verifyPollMs?: number;
+  /**
+   * How long a restarted board is given to come back before verification
+   * starts polling. Tests inject a shorter delay; the default covers a normal
+   * reboot plus Wi-Fi join plus MQTT connect.
+   */
+  restartWaitMs?: number;
 }
 
 export interface RecoveryController {
@@ -257,16 +267,20 @@ const STEP_INDEX: Record<string, number> = {
   read: 1,
   wifi_check: 2,
   backend_check: 3,
-  plan: 4,
-  repair: 5,
-  verify: 6,
-  report: 7,
+  link_check: 4,
+  system_check: 5,
+  plan: 6,
+  repair: 7,
+  restart: 8,
+  verify: 9,
+  report: 10,
 };
 
 export function createRecoveryController(options: RecoveryControllerOptions): RecoveryController {
   const now = options.now ?? (() => Date.now());
   const verifyTimeoutMs = options.verifyTimeoutMs ?? 60_000;
   const verifyPollMs = options.verifyPollMs ?? 3_000;
+  const restartWaitMs = options.restartWaitMs ?? 4_000;
 
   let state: RecoveryFlowState = { ...EMPTY_STATE, steps: EMPTY_STATE.steps.map((s) => ({ ...s })) };
   const listeners = new Set<(s: RecoveryFlowState) => void>();
@@ -323,6 +337,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         await options.api.postDiagnostics(state.sessionId, {
           clientChecks: [],
           transportError: message,
+          websiteUrl: options.backendUrl ?? null,
         });
       } catch {
         // The session will expire on its own.
@@ -397,7 +412,10 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         const status = await transport.readStatus();
-        return { status, telemetry: telemetryFromDeviceStatus(status, now(), base) };
+        return {
+          status,
+          telemetry: telemetryFromDeviceStatus(status, now(), base, options.backendUrl ?? null),
+        };
       } catch (err) {
         lastError = err;
         if (attempt < attempts) {
@@ -410,6 +428,43 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
     throw lastError instanceof Error
       ? lastError
       : new RecoveryTransportError("no_status", "The controller did not report its status.");
+  }
+
+  /**
+   * Asks the controller to restart with every stored setting preserved. This is
+   * not a plan action (nothing about it needs diagnosing): it is the last step of
+   * a repair, so the board comes back with the new configuration in effect and
+   * the browser can prove the reconnect with fresh telemetry.
+   */
+  async function sendRestart(backendUrl?: string): Promise<{ ok: boolean; message: string }> {
+    if (!transport) {
+      return { ok: false, message: "The connection closed before the controller could be restarted." };
+    }
+    try {
+      const request: Parameters<typeof buildRecoveryCommand>[1] = { action: "restart" };
+      if (backendUrl) request.backendUrl = backendUrl;
+      const raw = await transport.request(buildRecoveryCommand("REPAIR", request), {
+        timeoutMs: RECOVERY_OPERATION_TIMEOUT_MS,
+      });
+      const parsed = JSON.parse(raw) as { hc?: string; ok?: boolean; detail?: string };
+      if (parsed.hc === "ack" && parsed.ok !== false) {
+        return {
+          ok: true,
+          message: parsed.detail ?? "The controller restarted with all settings preserved.",
+        };
+      }
+      return { ok: false, message: parsed.detail ?? "The controller did not accept the restart." };
+    } catch (err) {
+      // A restart that drops the link before answering is still a restart: the
+      // verification step proves it from the controller's fresh uptime.
+      return {
+        ok: true,
+        message:
+          err instanceof Error
+            ? "The controller rebooted and dropped the local link as expected; verification reads it again."
+            : "The controller rebooted.",
+      };
+    }
   }
 
   async function executeAction(
@@ -458,10 +513,10 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         ? { action: "wifi", ssid: inputs.wifi?.ssid, password: inputs.wifi?.password }
         : actionId === "reconnect_mqtt"
           ? { action: "mqtt" }
-          : actionId === "repair_pairing"
-            ? { action: "pair", pairCode: inputs.pairingCode }
-            : actionId === "resync_config" || actionId === "restore_config"
-              ? { action: "config" }
+          : actionId === "relink_espnow"
+            ? { action: "espnow" }
+            : actionId === "repair_pairing"
+              ? { action: "pair", pairCode: inputs.pairingCode }
               : { action: "config" };
 
     if (request && options.backendUrl) request.backendUrl = options.backendUrl;
@@ -566,13 +621,15 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
     async diagnose() {
       if (busy || !transport) return;
       busy = true;
-      const base = state.boardStatus ? telemetryFromDeviceStatus(state.boardStatus, now()) : emptyRecoveryTelemetry(now());
+      const base = state.boardStatus
+        ? telemetryFromDeviceStatus(state.boardStatus, now(), emptyRecoveryTelemetry(now()), options.backendUrl ?? null)
+        : emptyRecoveryTelemetry(now());
       try {
         emit({ phase: "diagnostics", progress: "Reading the controller's diagnostics …", error: null });
 
         // --- discovery facts from the board (already read while connecting) --
         const deviceTelemetry = state.boardStatus
-          ? telemetryFromDeviceStatus(state.boardStatus, now())
+          ? telemetryFromDeviceStatus(state.boardStatus, now(), emptyRecoveryTelemetry(now()), options.backendUrl ?? null)
           : base;
 
         // --- the server's own view: internet path, entity counts, heartbeat --
@@ -585,6 +642,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
             chipVariant: state.board.chip,
             hardwareUidSuffix: state.board.hardwareUid,
             firmwareVersion: state.board.firmwareVersion,
+            websiteUrl: options.backendUrl ?? null,
           });
           if (cancelled) { await options.api.abandon(started.session.id, "Recovery cancelled during connection."); return; }
           serverDiagnostics = started.server.diagnostics;
@@ -624,6 +682,32 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
           clientDiagnostics.checks.find((c) => c.id === "backend")?.summary ?? null
         );
 
+        // Automatic fault fixing starts without another click wherever it is
+        // safe: only a missing secret (Wi-Fi password) or an identity change
+        // (account re-pair) waits for the user.
+        const stepFor = (problemPrefixes: string[], ids: string[]) => {
+          const problems = clientDiagnostics.problems;
+          const relevant = problems.filter((p) => problemPrefixes.some((prefix) => p.startsWith(prefix)));
+          const summaries = ids
+            .map((id) => clientDiagnostics.checks.find((c) => c.id === id))
+            .filter(Boolean)
+            .map((c) => `${c!.label}: ${c!.summary}`);
+          return {
+            state: relevant.length > 0 ? ("warning" as const) : ("done" as const),
+            detail: (relevant.length > 0 ? summaries[0] : summaries.join(" · ")) ?? null,
+          };
+        };
+
+        setStepStage(4, "active");
+        const link = stepFor(["espnow", "mqtt", "portal"], ["espnow", "mqtt", "local_portal", "heartbeat"]);
+        setStep("link_check", link.state, link.detail);
+
+        setStepStage(5, "active");
+        const system = stepFor(["firmware", "pairing", "ota"], ["pairing", "firmware", "ota", "config"]);
+        // OTA/firmware findings never block a repair; they are reported and the
+        // user is told why a firmware action is needed.
+        setStep("system_check", system.state, system.detail);
+
         // Server checks win where they know something the device does not
         // (internet reachability, entity counts); unknowns stay unknown.
         const diagnostics: DiagnosticsResult = serverDiagnostics
@@ -645,7 +729,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
           allowRePair: true,
         });
 
-        setStepStage(4, "active");
+        setStepStage(6, "active");
         setStep("plan", "done", planSummary(plan));
         emit({
           diagnostics,
@@ -664,6 +748,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
                 problem: c.problem,
                 summary: c.summary,
               })),
+              websiteUrl: options.backendUrl ?? null,
             });
           } catch (err) {
             logTechnical(
@@ -702,7 +787,12 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
 
       busy = true;
       const beforeTelemetry = state.boardStatus
-        ? telemetryFromDeviceStatus(state.boardStatus, now())
+        ? telemetryFromDeviceStatus(
+            state.boardStatus,
+            now(),
+            emptyRecoveryTelemetry(now()),
+            options.backendUrl ?? null
+          )
         : emptyRecoveryTelemetry(now());
       const outcomes: RepairOutcome[] = [];
       emit({
@@ -717,7 +807,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
       });
 
       try {
-        setStepStage(5, "active");
+        setStepStage(7, "active");
         for (const action of plan.actions) {
           if (cancelled) return;
           if (action.id === "none") continue;
@@ -762,9 +852,28 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
           repairOk ? "All planned repairs were applied." : "Some repairs were not applied."
         );
 
+        // --- restart: the board must come back on its own -------------------
+        // Only a repair that changed stored configuration is restarted; a pure
+        // diagnostic pass must not reboot a healthy controller.
+        if (repairOk && plan.actions.length > 0) {
+          setStepStage(8, "active");
+          emit({ phase: "verifying", progress: "Restarting the controller and waiting for it to reconnect …" });
+          const restarted = await sendRestart(options.backendUrl);
+          logTechnical(`restart: ${restarted.message}`);
+          // The board drops the local link while it reboots. The reconnect is
+          // proved by the next telemetry read, so a transport error here is
+          // expected and must not be reported as a failed repair.
+          if (restartWaitMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, restartWaitMs));
+          }
+          setStep("restart", restarted.ok ? "done" : "warning", restarted.message);
+        } else {
+          setStep("restart", "done", "No restart was needed; nothing was changed on the controller.");
+        }
+
         // --- verification: only fresh telemetry counts ----------------------
         emit({ phase: "verifying", progress: "Waiting for the controller to report back …" });
-        setStepStage(6, "active");
+        setStepStage(9, "active");
         const deadline = now() + verifyTimeoutMs;
         let after = emptyRecoveryTelemetry(now());
         let verification: VerificationResult | null = null;
@@ -831,6 +940,7 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
                 technical: o.technical,
               })),
               transportReleased,
+              websiteUrl: options.backendUrl ?? null,
             });
             // The server's verification is authoritative: a browser cannot
             // declare a recovery successful on its own.
