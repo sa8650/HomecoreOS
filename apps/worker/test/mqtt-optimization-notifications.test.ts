@@ -415,7 +415,38 @@ describe("MQTT Optimization, Consolidated Config Sync, Multi-Board Firmware, and
     });
     expect(ackRes.status).toBe(200);
 
-    // 6. Compact Heartbeat payload updates status & MQTT disconnect emits notification
+    // 6. Pairing provisions credentials, but only device telemetry proves MQTT
+    // connectivity. Establish a real connected -> disconnected transition.
+    const mqttStateAfterPair = await dbHarness.pg.query<{ mqtt_connected: boolean }>(
+      "SELECT mqtt_connected FROM board_instances WHERE id = $1",
+      [controller.id]
+    );
+    expect(mqttStateAfterPair.rows[0]?.mqtt_connected).toBe(false);
+
+    const connectedHeartbeat = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${pairBody.device_api_token}`,
+      },
+      body: JSON.stringify({
+        r: -55,
+        s: "HomeWiFi",
+        ip: "192.168.1.22",
+        v: "1.2.0",
+        w: true,
+        m: true,
+        rev: snapshotPayload.revision,
+      }),
+    });
+    expect(connectedHeartbeat.status).toBe(200);
+    const mqttStateAfterHeartbeat = await dbHarness.pg.query<{ mqtt_connected: boolean }>(
+      "SELECT mqtt_connected FROM board_instances WHERE id = $1",
+      [controller.id]
+    );
+    expect(mqttStateAfterHeartbeat.rows[0]?.mqtt_connected).toBe(true);
+
+    // A subsequent compact heartbeat reporting MQTT loss emits a notification.
     const hbRes = await req("/api/device/heartbeat", {
       method: "POST",
       headers: {
