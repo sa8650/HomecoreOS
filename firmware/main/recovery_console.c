@@ -148,6 +148,12 @@ static int execute_repair(hc_rec_command_t *cmd, char *out, size_t out_cap) {
                 );
                 break;
             }
+            // The website supplies its canonical endpoint, without prompting
+            // for Wi-Fi credentials or rotating pairing identity.
+            if (cmd->backend_url[0]) {
+                hc_copy_str(s_cfg->backend_url, sizeof(s_cfg->backend_url), cmd->backend_url);
+                hc_nvs_save_config(s_cfg);
+            }
             if (hc_http_fetch_config(s_cfg) == ESP_OK) {
                 written = hc_rec_build_ack(
                     HC_REC_ACTION_CONFIG,

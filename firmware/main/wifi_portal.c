@@ -40,6 +40,7 @@ void hc_wifi_get_mac_uid(char *out_buf, size_t out_len) {
 bool hc_wifi_is_connected(void) {
     return false;
 }
+bool hc_wifi_take_portal_saved(void) { return false; }
 
 const char *hc_wifi_get_last_error(void) {
     return "No integrated Wi-Fi radio on this board target";
@@ -79,6 +80,12 @@ static EventGroupHandle_t s_wifi_event_group = NULL;
 static bool s_stack_inited = false;
 static bool s_connected = false;
 static bool s_ap_active = false;
+static volatile bool s_portal_saved = false;
+bool hc_wifi_take_portal_saved(void) {
+    bool saved = s_portal_saved;
+    s_portal_saved = false;
+    return saved;
+}
 static bool s_sta_started = false;
 static int s_retry_num = 0;
 static char s_last_wifi_error[96] = {0};
@@ -87,7 +94,6 @@ static httpd_handle_t s_httpd = NULL;
 static esp_netif_t *s_sta_netif = NULL;
 static esp_netif_t *s_ap_netif = NULL;
 static esp_timer_handle_t s_retry_timer = NULL;
-static esp_timer_handle_t s_portal_close_timer = NULL;
 
 void hc_wifi_get_mac_uid(char *out_buf, size_t out_len) {
     uint8_t mac[6] = {0};
@@ -152,15 +158,7 @@ static void extract_form_field(const char *body, const char *key, char *out, siz
     }
 }
 
-static void stop_portal_ap_cb(void *arg) {
-    (void)arg;
-    hc_wifi_stop_portal_ap();
-}
-
 void hc_wifi_stop_portal_ap(void) {
-    if (s_portal_close_timer) {
-        esp_timer_stop(s_portal_close_timer);
-    }
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
@@ -271,10 +269,18 @@ static esp_err_t portal_get_handler(httpd_req_t *req) {
 
 static esp_err_t portal_post_handler(httpd_req_t *req) {
     char buf[1024];
-    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (received <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
+    if (req->content_len <= 0 || req->content_len >= sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid form size");
         return ESP_FAIL;
+    }
+    size_t received = 0;
+    while (received < req->content_len) {
+        int count = httpd_req_recv(req, buf + received, req->content_len - received);
+        if (count <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Incomplete form");
+            return ESP_FAIL;
+        }
+        received += (size_t)count;
     }
     buf[received] = '\0';
 
@@ -335,6 +341,7 @@ static esp_err_t portal_post_handler(httpd_req_t *req) {
 
         hc_nvs_save_config(s_cfg_ref);
         apply_sta_config_and_connect(s_cfg_ref);
+        s_portal_saved = true;
     }
 
     httpd_resp_set_type(req, "text/html");
@@ -346,10 +353,7 @@ static esp_err_t portal_post_handler(httpd_req_t *req) {
         "</body></html>"
     );
 
-    if (s_portal_close_timer && s_cfg_ref && strlen(s_cfg_ref->wifi_ssid) > 0) {
-        esp_timer_stop(s_portal_close_timer);
-        esp_timer_start_once(s_portal_close_timer, 1800 * 1000);
-    }
+    // The supervisor closes temporary interfaces only after cloud verification.
     return ESP_OK;
 }
 
@@ -537,12 +541,6 @@ static void ensure_wifi_stack_initialized(void) {
         .name = "hc_wifi_retry",
     };
     ESP_ERROR_CHECK(esp_timer_create(&retry_args, &s_retry_timer));
-
-    esp_timer_create_args_t close_args = {
-        .callback = &stop_portal_ap_cb,
-        .name = "hc_portal_close",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&close_args, &s_portal_close_timer));
 
     s_stack_inited = true;
 }

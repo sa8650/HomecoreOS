@@ -102,3 +102,49 @@ All customer routes require an authenticated owner/administrator session and enf
 The BLE relay strips the lowercase `hc ` envelope before passing `HC ...` to the console parser. The browser installs its encrypted status listener only after authentication. Repairs on the controller acquire a cross-task critical-section guard to reject concurrent local transport mutations. Snapshots, logs and task scheduling still need on-device stress testing. No hardware or ESP-IDF test results should be inferred from mocked browser tests or host C tests.
 
 Sensitive console operations require the **current** provisioning mode to be recovery. A persisted `physical_confirmed` setup flag is not sufficient to authorize a later re-pair or factory reset.
+
+## Setup reliability changes (migration 0007)
+
+Apply `database/migrations/0007_pairing_identity_reuse.sql` before deploying the
+updated Worker. No migration is applied to a hosted database by the code change.
+
+- Pairing can resolve a never-paired provisional setup slot to an installed board
+  with the same hardware UID or identity in the **same account**. Resolution is
+  serialized per account. The installed record remains in place, preserving its
+  name, home/room, IO configuration, devices and linked Nodes. Slots with existing
+  identity, inventory or assignments are not silently merged. Cross-account
+  identities and ambiguous matches are rejected; no ownership-transfer step was
+  added.
+- `POST /api/board-instances/pairing-status` accepts `{pairingCode}` in the request
+  body and returns the resolved controller only for the signed-in account. Setup
+  polls this endpoint so merging a provisional slot does not break completion.
+  Codes are not placed in URLs. Broker credential provisioning now leaves
+  `mqtt_connected` false until actual telemetry arrives; setup no longer accepts
+  the generic `online` status as MQTT proof.
+- The shared recovery controller receives the website origin and supplies it in
+  Wi-Fi, pairing and config repair commands. Backend-unreachable plans include
+  config re-sync; the firmware saves that supplied endpoint before fetching
+  config. No extra Wi-Fi prompt or firmware update is needed for this repair.
+- Local form POSTs read the complete bounded request body rather than assuming one
+  TCP read contains the form. The unconditional 1.8-second portal shutdown timer
+  is removed. After a form save or pairing claim, the supervisor waits for backend
+  health and MQTT (unless the linked Node role intentionally does not use MQTT)
+  before scheduling AP/BLE teardown. Merely entering recovery on a healthy board
+  does not authorize immediate teardown. The existing recovery timeout remains.
+
+### Remaining work and validation limits
+
+This is a reliability increment, **not completion of the full expanded setup and
+repair specification**. The local form still uses Save & Apply, not a verified
+Save & Restart sequence. The website Wi-Fi recovery path still uses direct local
+API access; a dedicated website-generated recovery-code handoff to the local form
+is not implemented. Expanded ESP-NOW/AP/portal/firmware-validity/OTA-functionality
+checks and a restart-and-reconnect stage across all transports remain work to do.
+Do not infer OTA functionality from a reported firmware version. Recovery does not
+flash or update firmware automatically. Flash with USB has not been modified.
+
+Validation for this increment: 249 shared tests, 44 targeted browser recovery/UI
+and transport tests, 12 targeted Worker integration tests, strict host C recovery
+and provisioning tests, TypeScript checks, lint and schema snapshot verification.
+These tests are simulated/host-side. ESP-IDF target compilation, real EMQX, USB,
+BLE, AP behavior and the physical BOOT gesture have **not** been tested on boards.

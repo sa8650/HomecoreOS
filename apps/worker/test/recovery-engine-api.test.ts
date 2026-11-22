@@ -357,4 +357,37 @@ describe("Unified Repair & Recovery API", () => {
     const foreignJson = (await foreign.json()) as { sessions: unknown[] };
     expect(foreignJson.sessions).toEqual([]);
   });
+  it("reuses an installed same-account identity and resolves the website code to it", async () => {
+    const before = await dbHarness.pg.query("SELECT name, home_id, config_revision FROM board_instances WHERE id = $1", [boardId]);
+    const created = await req("/api/board-instances", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ name: "Temporary setup slot", homeId, boardProfileId }),
+    });
+    expect(created.status).toBe(201);
+    const setup = await created.json() as { controller: { id: string }; pairingCode: string };
+    const paired = await req("/api/device/pair", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pairingCode: setup.pairingCode,
+        macAddress: "AA:BB:CC:DD:EE:01", identityKey: "identity-key-for-recovery-tests-0123456789",
+        firmwareVersion: "1.5.0", boardSlug: "esp32-s3-devkitc-1-n16r8" }),
+    });
+    expect(paired.status).toBe(200);
+    const after = await dbHarness.pg.query("SELECT name, home_id, config_revision FROM board_instances WHERE id = $1", [boardId]);
+    expect(after.rows).toEqual(before.rows);
+    expect((await dbHarness.pg.query("SELECT id FROM board_instances WHERE id = $1", [setup.controller.id])).rows).toEqual([]);
+    const status = await req("/api/board-instances/pairing-status", {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ pairingCode: setup.pairingCode }),
+    });
+    expect(status.status).toBe(200);
+    expect((await status.json() as { controller: { id: string; mqtt_connected: boolean } }).controller)
+      .toMatchObject({ id: boardId, mqtt_connected: false });
+    const foreign = await req("/api/board-instances/pairing-status", {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: otherUserCookie },
+      body: JSON.stringify({ pairingCode: setup.pairingCode }),
+    });
+    expect(foreign.status).toBe(404);
+  });
+
 });

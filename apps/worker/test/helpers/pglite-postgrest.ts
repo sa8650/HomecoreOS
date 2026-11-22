@@ -62,6 +62,10 @@ export async function createPglitePostgrest(): Promise<PgliteHarness> {
         const values = entries.map(([, v]) => v);
         const sql = `SELECT * FROM public.${quoteIdent(fnName)}(${placeholders.join(", ")})`;
         const res = await pg.query(sql, values);
+        // PostgREST returns scalar SQL functions as a JSON scalar.
+        if (fnName === "resolve_pairing_board") {
+          return jsonResponse(200, (res.rows[0] as Record<string, unknown>)?.[fnName] ?? null);
+        }
         return jsonResponse(200, res.rows);
       }
 

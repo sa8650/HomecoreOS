@@ -213,6 +213,8 @@ const EMPTY_STATE: RecoveryFlowState = {
 };
 
 export interface RecoveryControllerOptions {
+  /** Trusted application endpoint, supplied by the website rather than the user. */
+  backendUrl?: string;
   api: RecoveryServerApi;
   /** Builds a transport for the chosen method (already availability-checked). */
   createTransport: (kind: RecoveryTransportKind) => RecoveryTransport;
@@ -461,6 +463,8 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
             : actionId === "resync_config" || actionId === "restore_config"
               ? { action: "config" }
               : { action: "config" };
+
+    if (request && options.backendUrl) request.backendUrl = options.backendUrl;
 
     // A command is sent exactly once: a lost acknowledgement is not proof
     // that a mutation failed to execute. Retrying requires a fresh diagnosis.

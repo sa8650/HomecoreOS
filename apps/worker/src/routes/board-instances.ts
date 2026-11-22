@@ -157,6 +157,22 @@ export function createBoardInstanceRoutes() {
   const app = new Hono<AppEnv>();
   app.use("*", requireUserSession());
 
+  // The provisional setup slot may resolve to an installed board at claim.
+  // Code stays in the POST body, never the URL or a query/access log.
+  app.post("/pairing-status", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const parsed = z.object({ pairingCode: z.string().regex(/^\d{6}$/) }).safeParse(body);
+    if (!parsed.success) return c.json({ error: "Invalid pairing code." }, 400);
+    const auth = c.get("userAuth")!;
+    const db = c.get("db");
+    const { data: code } = await db.from("pairing_codes").select("board_instance_id,used_at")
+      .eq("account_id", auth.accountId).eq("code_hash", await sha256Hex(parsed.data.pairingCode)).maybeSingle();
+    if (!code) return c.json({ error: "Pairing session not found." }, 404);
+    const { data: controller } = await db.from("board_instances").select("id,pairing_status,mqtt_connected,last_heartbeat_at,status")
+      .eq("id", (code as { board_instance_id: string }).board_instance_id).eq("account_id", auth.accountId).is("deleted_at", null).maybeSingle();
+    return c.json({ controller });
+  });
+
   app.get("/", async (c) => {
     const auth = c.get("userAuth")!;
     const db = c.get("db");

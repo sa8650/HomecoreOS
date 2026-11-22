@@ -218,7 +218,19 @@ static void test_ble_auth_guard_rate_limit_and_expiry(void) {
     assert(hc_ble_guard_is_session_valid(&g, 210) == false);
 }
 
+static void test_cloud_verification_before_teardown(void) {
+    // BOOT on a healthy installed board must not immediately hide recovery.
+    assert(!hc_prov_cloud_repair_verified(false, true, true, true, true));
+    assert(!hc_prov_cloud_repair_verified(true, false, true, true, true));
+    assert(!hc_prov_cloud_repair_verified(true, true, false, true, true));
+    assert(!hc_prov_cloud_repair_verified(true, true, true, true, false));
+    assert(hc_prov_cloud_repair_verified(true, true, true, true, true));
+    // Linked Nodes intentionally do not need their own MQTT session.
+    assert(hc_prov_cloud_repair_verified(true, true, true, false, false));
+}
+
 int main(void) {
+    test_cloud_verification_before_teardown();
     test_initial_boot_modes();
     test_recovery_timeout_and_transitions();
     test_wifi_exponential_backoff();

@@ -49,6 +49,7 @@ export function UnifiedRecoveryPanel({ kind, controllers, target, profiles = EMP
   const [authorizationError, setAuthorizationError] = useState("");
   const controller = useMemo(() => createRecoveryController({
     boardInstanceId: "",
+    backendUrl: window.location.origin,
     resolveBoard: (hello) => {
       const { controllers, target } = accountInputs.current;
       const board = matchRecoveryBoard(controllers, hello.uidSuffix, target);

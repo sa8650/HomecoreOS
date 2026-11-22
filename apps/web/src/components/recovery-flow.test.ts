@@ -230,12 +230,14 @@ function build(overrides: {
   verifyTimeoutMs?: number;
   verifyPollMs?: number;
   expectedHardwareUid?: string;
+  backendUrl?: string;
 } = {}) {
   const transport = overrides.transport ?? fakeTransport();
   const { api, calls } = fakeApi();
   const controller = createRecoveryController({
     api: overrides.api ?? api,
     boardInstanceId: "board-1",
+    backendUrl: overrides.backendUrl,
     expectedHardwareUid: overrides.expectedHardwareUid,
     createTransport: () => transport,
     capabilityFor: (kind) => (overrides.capabilityFor ?? (() => capability(kind)))(kind as never),
@@ -251,6 +253,18 @@ afterEach(() => {
 });
 
 describe("recovery flow (one engine, three transports)", () => {
+  it("repairs the website endpoint without requesting new Wi-Fi credentials", async () => {
+    const transport = fakeTransport({ status: { ...STATUS, backendReachable: false, backendOk: false } });
+    const { controller } = build({ transport, backendUrl: "https://homecore.example" });
+    await controller.connect("usb");
+    await controller.diagnose();
+    expect(controller.getState().plan?.actions.some((a) => a.id === "rewrite_wifi")).toBe(false);
+    expect(controller.getState().plan?.actions.some((a) => a.id === "resync_config")).toBe(true);
+    await controller.repair({});
+    expect(transport.sent).toContain('HC REPAIR {"action":"config","backend_url":"https://homecore.example"}');
+    expect(transport.sent.some((line) => line.includes('"action":"factory_reset"'))).toBe(false);
+  });
+
   it("identifies the board through the transport and reports what it read", async () => {
     const { controller } = build();
     await controller.connect("usb");

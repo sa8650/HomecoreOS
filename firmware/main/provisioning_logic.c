@@ -206,3 +206,8 @@ uint8_t hc_ble_guard_attempts_remaining(const hc_ble_auth_guard_t *g) {
     if (g->failed_attempts >= HC_PROV_BLE_MAX_AUTH_ATTEMPTS) return 0;
     return (uint8_t)(HC_PROV_BLE_MAX_AUTH_ATTEMPTS - g->failed_attempts);
 }
+
+bool hc_prov_cloud_repair_verified(bool repair_pending, bool paired, bool backend_ok,
+                                   bool mqtt_required, bool mqtt_connected) {
+    return repair_pending && paired && backend_ok && (!mqtt_required || mqtt_connected);
+}

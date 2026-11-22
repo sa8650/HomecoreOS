@@ -447,13 +447,14 @@ export function ControllerSetupModal({
     const poll = async () => {
       try {
         const res = await apiFetch<{ controller: ControllerItem }>(
-          `/api/board-instances/${wifiPortalControllerId}`
+          "/api/board-instances/pairing-status",
+          { method: "POST", body: JSON.stringify({ pairingCode: wifiPortalCode }) }
         );
         if (
           active &&
           res.controller &&
           res.controller.pairing_status === "paired" &&
-          (res.controller.mqtt_connected || res.controller.status === "online")
+          res.controller.mqtt_connected
         ) {
           setWifiPortalOnline(true);
         }
@@ -476,7 +477,7 @@ export function ControllerSetupModal({
       unsubscribe();
       window.clearInterval(timer);
     };
-  }, [open, wifiPortalControllerId, view]);
+  }, [open, wifiPortalControllerId, wifiPortalCode, view]);
 
   const bleSupport = isWebBluetoothSupported();
   const serverOrigin =
@@ -683,13 +684,14 @@ export function ControllerSetupModal({
     return { boardInstanceId: res.controller.id, pairingCode: res.pairingCode };
   }
 
-  async function waitForControllerOnlineOnBackend(boardInstanceId: string): Promise<boolean> {
+  async function waitForControllerOnlineOnBackend(boardInstanceId: string, pairingCode?: string): Promise<boolean> {
     const deadline = Date.now() + 18_000;
     while (Date.now() < deadline) {
       if (!isMountedRef.current) return false;
       try {
         const res = await apiFetch<{ controller: ControllerItem }>(
-          `/api/board-instances/${boardInstanceId}`
+          pairingCode ? "/api/board-instances/pairing-status" : `/api/board-instances/${boardInstanceId}`,
+          pairingCode ? { method: "POST", body: JSON.stringify({ pairingCode }) } : undefined
         );
         const ctrl = res.controller;
         if (ctrl && ctrl.pairing_status === "paired" && ctrl.mqtt_connected) {
@@ -860,7 +862,7 @@ export function ControllerSetupModal({
         currentErrorStep = 4;
         setStepProgress(5, 5);
         const backendVerified =
-          status.mqtt_connected && (await waitForControllerOnlineOnBackend(boardInstanceId));
+          status.mqtt_connected && (await waitForControllerOnlineOnBackend(boardInstanceId, pairingCode));
         if (!backendVerified) {
           const err = new Error(
             "Board did not complete MQTT verification. Please check your network and retry."

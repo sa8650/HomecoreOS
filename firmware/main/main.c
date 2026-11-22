@@ -22,6 +22,7 @@ static uint32_t s_ble_close_grace_ms = 0;
 static uint32_t s_ble_mqtt_verify_ms = 0;
 static bool s_waiting_wifi_only_confirm = false;
 static bool s_waiting_pair_mqtt_confirm = false;
+static bool s_waiting_cloud_confirm = false;
 /** True once the last heartbeat HTTP round-trip succeeded (drives diagnostics). */
 static bool s_backend_ok = false;
 
@@ -243,6 +244,11 @@ static void controller_supervision_task(void *pvParam) {
             }
         }
 
+        if (hc_wifi_take_portal_saved()) {
+            s_waiting_cloud_confirm = true;
+            s_backend_ok = false;
+        }
+
         // 3. Enforce 15-minute Recovery Mode timeout without erasing saved config
         bool rec_timed_out = false;
         if (hc_prov_tick(&s_prov_state, 500U, &rec_timed_out) && rec_timed_out) {
@@ -368,7 +374,7 @@ static void controller_supervision_task(void *pvParam) {
                 hc_ble_prov_update_status("pairing", true, false, false, ip_str, NULL);
             }
             if (hc_pairing_claim_if_needed(&s_config) == ESP_OK) {
-                hc_prov_on_pairing_completed(&s_prov_state);
+                s_waiting_cloud_confirm = true;
                 hc_mqtt_start(&s_config);
                 sync_cloud_and_report_state(telem_buf, telem_cap, false);
                 hb_elapsed_ms = 0;
@@ -383,8 +389,6 @@ static void controller_supervision_task(void *pvParam) {
                         s_ble_mqtt_verify_ms = 0;
                         hc_ble_prov_update_status("pairing", true, true, false, ip_str, NULL);
                     }
-                } else {
-                    hc_wifi_stop_portal_ap();
                 }
             } else if (hc_ble_prov_is_active()) {
                 hc_ble_prov_update_status("error", true, false, false, ip_str, "Backend pairing rejected or unreachable");
@@ -408,6 +412,19 @@ static void controller_supervision_task(void *pvParam) {
                     hc_ble_prov_update_status("error", true, true, false, ip_str, "MQTT authentication or broker connection failed");
                 }
             }
+        }
+
+        // Applies equally to portal and BLE setup, including claims made at boot.
+        // Provisioned credentials are not proof that the broker accepted them.
+        if (s_prov_state.mode != HC_PROV_MODE_NORMAL &&
+            hc_prov_cloud_repair_verified(s_waiting_cloud_confirm, s_config.paired,
+                                         s_backend_ok, hc_role_wants_mqtt(), hc_mqtt_is_connected())) {
+            s_waiting_cloud_confirm = false;
+            hc_prov_on_pairing_completed(&s_prov_state);
+            if (hc_ble_prov_is_active()) {
+                hc_ble_prov_update_status("paired", true, true, hc_mqtt_is_connected(), ip_str, NULL);
+            }
+            s_ble_close_grace_ms = 2500U;
         }
 
         // 8. Wi-Fi recovered from outage OR MQTT requested explicit config sync
@@ -544,9 +561,8 @@ void app_main(void) {
     if (wifi_res == ESP_OK) {
         if (!s_config.paired && strlen(s_config.pending_pair_code) == 6) {
             if (hc_pairing_claim_if_needed(&s_config) == ESP_OK) {
-                hc_prov_on_pairing_completed(&s_prov_state);
-                if (!hc_prov_should_ap_be_active(&s_prov_state)) hc_wifi_stop_portal_ap();
-                if (!hc_prov_should_ble_be_active(&s_prov_state)) hc_ble_prov_stop_and_reclaim();
+                s_waiting_cloud_confirm = true;
+                // Keep AP/BLE available until the supervisor verifies cloud health.
             }
         }
         if (s_config.paired) {

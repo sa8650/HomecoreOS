@@ -1040,7 +1040,7 @@ export function buildRepairPlan(input: BuildPlanInput): RecoveryPlan {
   if (problems.has("mqtt_auth_failed") || problems.has("mqtt_disconnected")) {
     add("reconnect_mqtt");
   }
-  if (problems.has("config_unsynced")) add("resync_config");
+  if (problems.has("config_unsynced") || problems.has("backend_unreachable")) add("resync_config");
   if (problems.has("config_corrupt")) add("restore_config");
   if (problems.has("sensors_not_reporting") || problems.has("switches_not_reporting")) {
     add("recheck_entities");

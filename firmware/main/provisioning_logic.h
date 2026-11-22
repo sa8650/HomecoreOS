@@ -87,3 +87,8 @@ void hc_ble_guard_record_success(hc_ble_auth_guard_t *g, uint64_t now_sec);
 void hc_ble_guard_reset_session(hc_ble_auth_guard_t *g);
 bool hc_ble_guard_is_session_valid(const hc_ble_auth_guard_t *g, uint64_t now_sec);
 uint8_t hc_ble_guard_attempts_remaining(const hc_ble_auth_guard_t *g);
+
+/** A healthy board entering BOOT recovery must remain discoverable until a
+ * requested setup/repair has actually completed its cloud checks. */
+bool hc_prov_cloud_repair_verified(bool repair_pending, bool paired, bool backend_ok,
+                                   bool mqtt_required, bool mqtt_connected);

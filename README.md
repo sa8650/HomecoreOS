@@ -76,4 +76,4 @@ See `DEPLOYMENT.md` for full setup instructions across GitHub, Supabase, Cloudfl
 
 ## Board repair and recovery
 
-Add Board → Repair / Recover Board offers **Wi-Fi, BLE and USB** through one diagnostic and recovery engine. USB repairs running HomecoreOS firmware; firmware flashing remains a separate action. See [Board Recovery](docs/BOARD_RECOVERY.md) for operator steps, API routes, safety, compatibility limits and troubleshooting. Real-device/ESP-IDF validation remains required before hardware rollout.
+Add Board → Repair / Recover Board offers **Wi-Fi, BLE and USB** through one diagnostic and recovery engine. USB repairs running HomecoreOS firmware; firmware flashing remains a separate action. See [Board Recovery](docs/BOARD_RECOVERY.md) for operator steps, API routes, safety, compatibility limits and troubleshooting. Real-device/ESP-IDF validation remains required before hardware rollout. Setup identity reuse requires migration `0007_pairing_identity_reuse.sql`; setup completion waits for MQTT telemetry instead of broker credential creation. See the recovery guide’s “Remaining work and validation limits” for the unfinished expanded workflow requirements.

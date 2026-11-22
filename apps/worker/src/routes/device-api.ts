@@ -1723,7 +1723,7 @@ async function handlePairOrRecover(
 
   const {
     account_id: accountId,
-    board_instance_id: boardInstanceId,
+    board_instance_id: provisionalBoardId,
     purpose = "initial_pair",
     requires_physical_confirmation: requiresPhysical = false,
   } = claimed;
@@ -1752,10 +1752,21 @@ async function handlePairOrRecover(
     }
   }
 
+  const identityHash = input.identityKey ? await sha256Hex(input.identityKey) : null;
+  const { data: resolvedId, error: resolveError } = await db.rpc("resolve_pairing_board", {
+    p_code_id: claimed.pairing_code_id,
+    p_hardware_uid: input.macAddress ?? null,
+    p_identity_hash: identityHash,
+  });
+  if (resolveError || typeof resolvedId !== "string") {
+    return c.json({ error: resolveError?.message ?? "Could not resolve installed board identity." }, 409);
+  }
+  const boardInstanceId = resolvedId || provisionalBoardId;
+
   const { data: ctrlData } = await db
     .from("board_instances")
     .select(
-      "id,name,connection_history,pairing_status,board_instance_identity_secret_hash,board_role"
+      "id,name,connection_history,pairing_status,board_instance_identity_secret_hash,board_role,board_profile_id,custom_board_profile_id"
     )
     .eq("id", boardInstanceId)
     .eq("account_id", accountId)
@@ -1767,7 +1778,6 @@ async function handlePairOrRecover(
     return c.json({ error: "Target controller no longer exists." }, 404);
   }
 
-  const identityHash = input.identityKey ? await sha256Hex(input.identityKey) : null;
 
   // Prevent duplicate controller pairing / hijacking another active paired controller's hardware identity or MAC
   if (identityHash) {
@@ -1925,7 +1935,7 @@ async function handlePairOrRecover(
       status: "online",
       pairing_status: "paired",
       wifi_connected: true,
-      mqtt_connected: emqxSynced,
+      mqtt_connected: false, // Broker credentials exist; only telemetry proves a connection.
       hardware_uid: input.macAddress ?? null,
       board_instance_identity_secret_hash:
         identityHash ??
@@ -1947,7 +1957,7 @@ async function handlePairOrRecover(
       last_error_at: null,
       paired_at: now,
       wifi_last_connected_at: now,
-      mqtt_last_connected_at: emqxSynced ? now : null,
+      mqtt_last_connected_at: null,
       last_heartbeat_at: now,
       last_communication_at: now,
       connection_history: [
