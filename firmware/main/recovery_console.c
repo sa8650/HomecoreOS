@@ -17,6 +17,21 @@ static const char *TAG = "hc_recovery";
 static homecore_config_t *s_cfg = NULL;
 static hc_recovery_snapshot_t s_snap;
 static volatile bool s_console_busy = false;
+static portMUX_TYPE s_repair_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static bool try_lock_repair(void) {
+    portENTER_CRITICAL(&s_repair_mux);
+    bool available = !s_console_busy;
+    if (available) s_console_busy = true;
+    portEXIT_CRITICAL(&s_repair_mux);
+    return available;
+}
+
+static void unlock_repair(void) {
+    portENTER_CRITICAL(&s_repair_mux);
+    s_console_busy = false;
+    portEXIT_CRITICAL(&s_repair_mux);
+}
 /** Set by a restart repair so the UART task reboots after the ack is written. */
 static volatile bool s_restart_pending = false;
 static bool s_console_started = false;
@@ -67,7 +82,9 @@ static int execute_repair(hc_rec_command_t *cmd, char *out, size_t out_cap) {
         return hc_rec_build_error("not_ready", "The controller is still starting.", out, out_cap);
     }
 
-    s_console_busy = true;
+    if (!try_lock_repair()) {
+        return hc_rec_build_error("recovery_busy", "Another repair is in progress. Wait for it to finish.", out, out_cap);
+    }
     int written = -1;
     ESP_LOGW(TAG, "Recovery action requested over local console: %s", hc_rec_action_name(cmd->action));
 
@@ -157,7 +174,7 @@ static int execute_repair(hc_rec_command_t *cmd, char *out, size_t out_cap) {
                 out_cap
             );
             s_restart_pending = true;
-            s_console_busy = false;
+            unlock_repair();
             return written;
         }
 
@@ -219,7 +236,7 @@ static int execute_repair(hc_rec_command_t *cmd, char *out, size_t out_cap) {
             break;
     }
 
-    s_console_busy = false;
+    unlock_repair();
     return written;
 }
 

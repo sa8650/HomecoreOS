@@ -229,12 +229,14 @@ function build(overrides: {
   capabilityFor?: (kind: "usb" | "ble" | "wifi") => ReturnType<typeof capability>;
   verifyTimeoutMs?: number;
   verifyPollMs?: number;
+  expectedHardwareUid?: string;
 } = {}) {
   const transport = overrides.transport ?? fakeTransport();
   const { api, calls } = fakeApi();
   const controller = createRecoveryController({
     api: overrides.api ?? api,
     boardInstanceId: "board-1",
+    expectedHardwareUid: overrides.expectedHardwareUid,
     createTransport: () => transport,
     capabilityFor: (kind) => (overrides.capabilityFor ?? (() => capability(kind)))(kind as never),
     verifyTimeoutMs: overrides.verifyTimeoutMs ?? 50,
@@ -254,13 +256,32 @@ describe("recovery flow (one engine, three transports)", () => {
     await controller.connect("usb");
     const state = controller.getState();
 
-    expect(state.phase).toBe("identifying");
+    expect(state.phase).toBe("identified");
     expect(state.board.boardSlug).toBe(HELLO.boardSlug);
     expect(state.board.hardwareUid).toBe("EE12");
     expect(state.board.firmwareVersion).toBe("1.5.0");
     expect(state.steps[0]?.state).toBe("done");
     expect(state.steps[1]?.state).toBe("done");
     expect(state.error).toBeNull();
+  });
+
+  it("refuses a connected controller with the wrong identity", async () => {
+    const { controller, transport } = build({ expectedHardwareUid: "AA:BB:CC:DD:FF:FF" });
+    await controller.connect("usb");
+    expect(controller.getState().error?.code).toBe("identity_mismatch");
+    expect(transport.sent).toEqual([]);
+    expect(transport.released).toBe(1);
+  });
+
+  it.each([401, 403, 404, 409, 410])("does not fall back to local repair after server refusal %s", async (status) => {
+    const { api } = fakeApi({ startSession: async () => { throw Object.assign(new Error("Recovery refused"), { status }); } });
+    const { controller, transport } = build({ api });
+    await controller.connect("usb");
+    await controller.diagnose();
+    expect(controller.getState().phase).toBe("error");
+    expect(controller.getState().plan).toBeNull();
+    await controller.repair({});
+    expect(transport.sent.filter((line) => line.startsWith("HC REPAIR"))).toEqual([]);
   });
 
   it("refuses a transport the browser cannot support, and says why", async () => {
@@ -398,6 +419,7 @@ describe("recovery flow (one engine, three transports)", () => {
       true
     );
     expect(state.steps[6]?.state).toBe("error");
+    expect(transport.sent.filter((line) => line.startsWith("HC REPAIR") && !line.includes('"action":"wifi"'))).toEqual([]);
   });
 
   it("does not repeat a refused repair and surfaces the controller's reason", async () => {

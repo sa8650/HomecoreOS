@@ -135,11 +135,13 @@ describe("Bluetooth transport", () => {
     onStatus?: (cb: (payload: unknown) => void) => void;
   }) {
     let statusCb: ((payload: unknown) => void) | null = null;
+    let authenticated = false;
     const session: RecoveryBleSession & { sent: string[]; disconnected: boolean } = {
       sent: [],
       disconnected: false,
       isConnected: true,
       async connectAndAuthenticate() {
+        authenticated = true;
         return { deviceInfo: { mac_suffix: "EE12", chip: "esp32s3", fw: "1.5.0" } };
       },
       async sendEncryptedCommand(payload) {
@@ -166,6 +168,8 @@ describe("Bluetooth transport", () => {
         }
       },
       onStatusUpdate(cb) {
+        // Real client ignores registrations before it has a session key.
+        if (!authenticated) return;
         statusCb = cb;
         options.onStatus?.(cb);
       },

@@ -2217,7 +2217,7 @@ describe("HomecoreOS interactive UI workflows", () => {
     expect(
       await screen.findByRole("dialog", { name: /Repair \/ Recover Board/i })
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Recover with Bluetooth/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with BLE/i })).toBeInTheDocument();
     await user.keyboard("{Escape}");
 
     // Click card -> opens Controller Details modal with full recovery guidance

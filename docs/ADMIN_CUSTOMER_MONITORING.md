@@ -150,3 +150,7 @@ Retry, and explicit empty states ("No boards registered", empty entity tabs).
 * `apps/web/src/features/admin/AdminCustomerDetailsPage.test.tsx` — overview and
   inventory rendering, read-only board dialog, empty/error states, Details-button
   navigation, and Details visibility for read-only support admins.
+
+## Recovery history
+
+Customer Monitoring includes an on-demand, read-only recovery summary loaded from `GET /api/admin/accounts/:id/recovery-history`. It is protected by the existing admin session guard and scopes the query by the route's account ID. It shows the latest 20 session statuses, transport, firmware, detected/unresolved problems and next actions. It does not expose credentials, initiate repairs or poll hardware. See [Board Recovery](BOARD_RECOVERY.md).

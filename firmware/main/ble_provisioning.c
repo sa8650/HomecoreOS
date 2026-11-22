@@ -547,7 +547,8 @@ static int handle_command_write(const uint8_t *buf, uint16_t len) {
     if (cJSON_IsString(act_j) && act_j->valuestring &&
         strncmp(act_j->valuestring, "hc ", 3) == 0) {
         char line[HC_RECOVERY_LINE_MAX + 8];
-        hc_copy_str(line, sizeof(line), act_j->valuestring);
+        /* Strip the encrypted relay envelope; console parser expects HC ... */
+        hc_copy_str(line, sizeof(line), act_j->valuestring + 3);
         cJSON_Delete(root);
         char response[HC_RECOVERY_RESPONSE_MAX];
         int written = hc_recovery_handle_line(line, response, sizeof(response));

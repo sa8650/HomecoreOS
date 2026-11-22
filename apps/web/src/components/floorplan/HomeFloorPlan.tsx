@@ -574,12 +574,13 @@ export const HomeFloorPlan = memo(function HomeFloorPlan({
     const startPan = panRef.current;
     const nextZoom = clampFloorZoom(target.zoom);
     const duration = 190;
-    // RAF timestamps use the window clock (which can differ from the host
-    // performance clock in embedded/test environments).
-    const startedAt = window.performance.now();
+    // Measure entirely in RAF's time domain; mixing host/window performance
+    // clocks can leave the animation stuck when their origins differ.
+    let startedAt: number | null = null;
 
     const step = (now: number) => {
-      const t = Math.min(1, (now - startedAt) / duration);
+      startedAt ??= now;
+      const t = Math.min(1, Math.max(0, (now - startedAt) / duration));
       const eased = 1 - Math.pow(1 - t, 3);
       setZoom(clampFloorZoom(startZoom + (nextZoom - startZoom) * eased));
       setPan({

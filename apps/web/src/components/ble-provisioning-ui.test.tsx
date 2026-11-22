@@ -138,10 +138,11 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     expect(screen.getByRole("button", { name: /Setup with Wi-Fi/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^Back$/i }));
 
-    // Level 2: repair offers the same two transports.
+    // Level 2: repair offers all three transports.
     await user.click(screen.getByRole("button", { name: /Repair \/ Recover Board/i }));
-    expect(screen.getByRole("button", { name: /Recover with Bluetooth/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with BLE/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Recover with Wi-Fi/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with USB/i })).toBeInTheDocument();
     expect(screen.getByText(/offline, disconnected, deleted and re-paired/i)).toBeInTheDocument();
 
     expect(screen.queryByLabelText(/Setup PIN/i)).not.toBeInTheDocument();
@@ -390,161 +391,20 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     expect(onSuccess).toHaveBeenCalledWith("HomecoreOS-A1B2 is connected and ready.");
   });
 
-  it("escalates Recover with BLE from Case A (wifi_only) to Case B (recover) when MQTT fails after Wi-Fi connects", async () => {
+  it("opens BLE recovery without silently escalating to account re-pairing", async () => {
     const user = userEvent.setup();
-    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
-    Object.defineProperty(navigator, "bluetooth", {
-      value: { requestDevice: vi.fn() },
-      configurable: true,
-    });
-
-    const existingCtrl = makeController({
-      id: "ctrl-rec-1",
-      name: "Hallway S3",
-      hardware_uid: "AA:BB:CC:DD:55:66",
-      pairing_status: "paired",
-      paired_at: "2026-11-01T00:00:00.000Z",
-      wifi_ssid: "OldWiFi",
-    });
-
-    let statusCb: ((st: BleStatusPayload) => void) | null = null;
-    let connected = false;
-    const actionsSent: string[] = [];
-
-    vi.spyOn(HomecoreBleClient.prototype, "deviceName", "get").mockImplementation(
-      () => "HomecoreOS-5566"
-    );
-    vi.spyOn(HomecoreBleClient.prototype, "isConnected", "get").mockImplementation(
-      () => connected
-    );
-    vi.spyOn(HomecoreBleClient.prototype, "connectAndAuthenticate").mockImplementation(
-      async () => {
-        connected = true;
-        return {
-          deviceInfo: {
-            board: "esp32-s3-devkitc-1-n16r8",
-            chip: "esp32s3",
-            fw: "1.5.0",
-            mode: "recovery",
-            wifi: true,
-            ble_wifi: true,
-            paired: true,
-            mac_suffix: "5566",
-            proto: 1,
-            s1_mode: "auto",
-          },
-        };
-      }
-    );
-    vi.spyOn(HomecoreBleClient.prototype, "onStatusUpdate").mockImplementation((cb) => {
-      statusCb = cb;
-    });
-    vi.spyOn(HomecoreBleClient.prototype, "sendEncryptedCommand").mockImplementation(
-      async (cmd) => {
-        actionsSent.push(cmd.action);
-        queueMicrotask(() => {
-          if (cmd.action === "wifi_only") {
-            // Wi-Fi succeeds, but MQTT credentials were revoked -> emits error with wifi_connected: true
-            statusCb?.({
-              state: "wifi_connected",
-              wifi_connected: true,
-              paired: true,
-              mqtt_connected: false,
-              ip: "192.168.1.90",
-            });
-            statusCb?.({
-              state: "error",
-              wifi_connected: true,
-              paired: true,
-              mqtt_connected: false,
-              ip: "192.168.1.90",
-              error: "MQTT authentication or broker connection failed",
-            });
-          } else if (cmd.action === "recover") {
-            statusCb?.({
-              state: "pairing",
-              wifi_connected: true,
-              paired: false,
-              mqtt_connected: false,
-              ip: "192.168.1.90",
-            });
-            statusCb?.({
-              state: "paired",
-              wifi_connected: true,
-              paired: true,
-              mqtt_connected: true,
-              ip: "192.168.1.90",
-            });
-          }
-        });
-      }
-    );
-    vi.spyOn(HomecoreBleClient.prototype, "disconnect").mockImplementation(() => {
-      connected = false;
-    });
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/board-instances/recover" && init?.method === "POST") {
-        return new Response(
-          JSON.stringify({ controller: existingCtrl, pairingCode: "334455" }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        );
-      }
-      if (url === "/api/board-instances/ctrl-rec-1") {
-        return new Response(
-          JSON.stringify({
-            controller: makeController({
-              id: "ctrl-rec-1",
-              status: "online",
-              pairing_status: "paired",
-              mqtt_connected: true,
-            }),
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        );
-      }
-      return new Response(JSON.stringify({}), { status: 200 });
-    });
-    globalThis.fetch = fetchMock as typeof fetch;
-
-    render(
-      <ControllerSetupModal
-        open={true}
-        initialView="recover_ble"
-        targetController={existingCtrl}
-        onClose={() => {}}
-        controllers={[existingCtrl]}
-        homes={sampleHomes}
-        catalogBoards={sampleCatalogBoards}
-        customBoardProfiles={[]}
-      />
-    );
-
+    const existing = makeController();
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+    render(<ControllerSetupModal open initialView="recover_ble" targetController={existing}
+      onClose={() => {}} controllers={[existing]} homes={sampleHomes}
+      catalogBoards={sampleCatalogBoards} customBoardProfiles={[]} />);
     expect(screen.getByText(/Prepare Board for Recovery/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Hold the BOOT \/ Recovery button on your board for 3 seconds/i)
-    ).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /Discover BLE Board/i }));
-    await waitFor(() => {
-      expect(screen.getByLabelText(/Wi-Fi Network Name \(SSID\)/i)).toHaveValue("OldWiFi");
-    });
-
-    await user.clear(screen.getByLabelText(/Wi-Fi Network Name \(SSID\)/i));
-    await user.type(screen.getByLabelText(/Wi-Fi Network Name \(SSID\)/i), "NewHomeWiFi");
-    await user.type(screen.getByLabelText("Wi-Fi Password"), "NewPass999");
-    await user.click(screen.getByRole("button", { name: /Save & Recover/i }));
-
-    await waitFor(() => {
-      expect(screen.getAllByText(/Your board is ready!/i).length).toBeGreaterThan(0);
-    });
-
-    expect(actionsSent).toEqual(["wifi_only", "recover"]);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/board-instances/recover",
-      expect.objectContaining({ method: "POST" })
-    );
+    expect(screen.getByRole("button", { name: /Connect & identify controller/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Save & Recover/i)).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /^Back$/i }));
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with USB/i })).toBeInTheDocument();
   });
 
   it("handles ESP32-H2 rejection, Web Bluetooth permission fallback, MQTT failure at Step 5, and Wi-Fi portal setup", async () => {
@@ -836,6 +696,7 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
 
     await user.click(screen.getByRole("button", { name: /Repair \/ Recover Board/i }));
     // Deleted controllers stay recoverable, so the repair screen says so.
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with USB/i })).toBeInTheDocument();
     expect(screen.getByText(/offline, disconnected, deleted and re-paired/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Recover with Wi-Fi/i }));
 
@@ -844,11 +705,11 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     ).toBeInTheDocument();
     expect(screen.getAllByText(/192\.168\.4\.1/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/HomecoreOS-Setup-XXXX/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Steps on your Board & browser/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Controller to repair")).toBeInTheDocument();
 
     // Back returns to the repair choice, not all the way out of the flow.
     await user.click(screen.getByRole("button", { name: /^Back$/i }));
-    expect(screen.getByRole("button", { name: /Recover with Bluetooth/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Repair \/ Recover with BLE/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Recover with Wi-Fi/i })).toBeInTheDocument();
 
     // And back again returns to the three top-level actions.
@@ -922,13 +783,13 @@ describe("Unified controller action modal & BLE provisioning UI", () => {
     // Details -> the same modal, opened straight on the repair chooser for this controller.
     await user.click(screen.getByRole("button", { name: /Repair \/ Recover/i }));
     await user.click(
-      await screen.findByRole("button", { name: /Recover with Bluetooth/i })
+      await screen.findByRole("button", { name: /Repair \/ Recover with BLE/i })
     );
     await waitFor(() => {
       expect(screen.getByText(/Prepare Board for Recovery/i)).toBeInTheDocument();
     });
     expect(
-      screen.getByRole("button", { name: /Discover BLE Board/i })
+      screen.getByRole("button", { name: /Connect & identify controller/i })
     ).toBeEnabled();
   });
 });
