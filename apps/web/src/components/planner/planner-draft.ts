@@ -11,6 +11,7 @@ import {
   PLANNER_INPUT_LIMITS,
   PLANNER_LOAD_CATEGORIES,
   PLANNER_SENSOR_WIRING_OPTIONS,
+  emptyDeviceCounts,
   normalizePlannerRequirements,
   type PlannerDeviceCategory,
   type PlannerEnvironment,
@@ -19,6 +20,8 @@ import {
   type PlannerSensorWiring,
   type PlannerWifiAvailability,
 } from "@homecoreos/shared";
+
+export { emptyDeviceCounts };
 
 export interface PlannerDraftDeviceCount {
   /** Physical devices. */
@@ -74,14 +77,6 @@ export const PLANNER_ROOM_SUGGESTIONS = [
 
 function isLoadCategory(category: PlannerDeviceCategory): boolean {
   return (PLANNER_LOAD_CATEGORIES as readonly string[]).includes(category);
-}
-
-export function emptyDeviceCounts(): Record<PlannerDeviceCategory, PlannerDraftDeviceCount> {
-  const counts = {} as Record<PlannerDeviceCategory, PlannerDraftDeviceCount>;
-  for (const category of PLANNER_DEVICE_CATEGORIES) {
-    counts[category] = { quantity: 0, independent: 0 };
-  }
-  return counts;
 }
 
 export function createEmptyDraft(): PlannerDraft {

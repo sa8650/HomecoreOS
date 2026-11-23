@@ -483,4 +483,28 @@ describe("useLiveSync", () => {
 
     await waitFor(() => expect(reload.mock.calls.length).toBeGreaterThan(0), { timeout: 3_000 });
   });
+
+  it("shares live leader status immediately when a newly opened follower tab probes", async () => {
+    const channelHub = createChannelHub();
+    const leader = createHarness({ channelHub });
+    leader.client.start("acct-1");
+    await waitFor(() => expect(leader.client.getStatus().state).toBe("live"), { timeout: 3_000 });
+
+    // A second tab starts after the leader is already live and probes the channel.
+    const follower = createHarness({ channelHub });
+    follower.client.start("acct-1");
+
+    await waitFor(
+      () => {
+        const st = follower.client.getStatus();
+        expect(st.isLeader).toBe(false);
+        expect(st.state).toBe("live");
+        expect(st.synced).toBe(true);
+      },
+      { timeout: 3_000 }
+    );
+
+    follower.client.stop();
+    leader.client.stop();
+  });
 });

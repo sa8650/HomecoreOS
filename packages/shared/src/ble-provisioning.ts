@@ -193,7 +193,7 @@ export function validateBleProvisioningInputs(params: {
   if (params.action.startsWith("hc ")) {
     const command = params.action.slice(3);
     return /^HC (?:PING|HELLO|STATUS|REPAIR \{[^\r\n]*\})$/.test(command) &&
-      new TextEncoder().encode(command).length < 224
+      new TextEncoder().encode(command).length <= 512
       ? { valid: true }
       : { valid: false, error: "Invalid recovery console command." };
   }

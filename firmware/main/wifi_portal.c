@@ -463,17 +463,24 @@ static esp_err_t portal_recovery_get_handler(httpd_req_t *req) {
 }
 
 static esp_err_t portal_recovery_post_handler(httpd_req_t *req) {
-    char buf[320];
-    if (req->content_len >= sizeof(buf)) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Recovery request too large");
+    char buf[HC_RECOVERY_LINE_MAX + 64];
+    if (req->content_len <= 0 || req->content_len >= sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid recovery request size");
         return ESP_FAIL;
     }
-    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (received <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty recovery request");
-        return ESP_FAIL;
+    int total = 0;
+    while (total < req->content_len) {
+        int received = httpd_req_recv(req, buf + total, (size_t)(req->content_len - total));
+        if (received <= 0) {
+            if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Incomplete recovery request");
+            return ESP_FAIL;
+        }
+        total += received;
     }
-    buf[received] = '\0';
+    buf[total] = '\0';
 
     /* The browser posts {"command":"HC REPAIR {…}"} so the exact same line
      * parser (and its guards) handles every transport. */

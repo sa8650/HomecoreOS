@@ -9,8 +9,8 @@ HomecoreOS is a multi-user smart-home automation platform and ESP32 device fleet
 - **Firmware Storage**: Private Cloudflare R2 (`FIRMWARE_BUCKET`)
 - **Device Messaging**: EMQX Serverless (MQTT over TLS 8883 for devices, MQTT over WebSocket for the browser console, EMQX v5 REST API)
 - **Real-Time Sync**: one subscribe-only MQTT-over-WebSocket session per browser session drives every live component through a shared frontend store; row-version events, batched publishes, snapshot reconciliation and instant credential revocation are specified in `docs/REALTIME_SYNC.md`
-- **ESP32 & ESP8266 Firmware**: Native ESP-IDF v5.4/v5.5.2 C firmware with board-aware sensor drivers (`firmware/`, 21 ESP-IDF board overlays) plus an isolated PlatformIO ESP8266 path for `nodemcu-esp8266` (`firmware/esp8266/`)
-- **Browser USB Flashing**: Espressif `esptool-js` + Web Serial API with real multi-stage verification
+- **ESP32 & ESP8266 Firmware**: Native ESP-IDF v5.4/v5.5.2 C firmware with board-aware sensor drivers (`firmware/`, 21 ESP-IDF board overlays covering Wi-Fi, BLE Security 1, ESP-NOW, EMQX MQTT, dual-OTA rollback, and unified Wi-Fi/BLE/USB recovery) plus an isolated PlatformIO ESP8266 starter profile for `nodemcu-esp8266` (`firmware/esp8266/`, Wi-Fi STA + I2C/ADC only — does not include BLE, ESP-NOW, MQTT, OTA, or the recovery console)
+- **Browser USB Flashing**: Espressif `esptool-js` + Web Serial API with SHA-256 download check, board/chip/flash verification, flash MD5 readback, and post-flash serial boot inspection (detecting invalid headers, panics, watchdog boot loops, and `[HC_SETUP]` boot banners without logging secrets)
 - **Firmware CI Pipeline**: GitHub Actions (`.github/workflows/build-firmware.yml`) with host C tests, board overlay & ESP8266 isolation checks, 21-board ESP-IDF build matrix, and SHA-256 driver manifest verification
 
 ## Board ecosystem terminology
@@ -49,9 +49,7 @@ packages/
   shared/           Shared TypeScript types, verified Board Library & pinouts, flow-graph compiler/validator, timezone & version helpers
 firmware/           ESP-IDF C firmware (21 board overlays, Kconfig sensor drivers, host C tests, verifier) & isolated firmware/esp8266/
 database/
-  migrations/       PostgreSQL schema: 0001_init.sql baseline, then 0002_board_roles.sql,
-                    0003_user_onboarding.sql, 0004_password_reset_otp.sql and
-                    0005_realtime_sync.sql
+  migrations/       PostgreSQL schema: 0001_init.sql baseline through 0008_board_recovery_health.sql
   verify/           Schema snapshot + `npm run db:verify` drift check
   seeds/            Development-only seed data
 .github/workflows/  CI checks & automated ESP-IDF firmware build pipeline
@@ -59,6 +57,7 @@ DESIGN_SYSTEM.md    HomecoreOS Geist design tokens, ReUI/Radix primitives & arch
 DEPLOYMENT.md       Browser dashboard deployment guide
 docs/REALTIME_SYNC.md  Real-time channel: topics, ACLs, event flow, reconnect and quota rules
 docs/ADMIN_CUSTOMER_MONITORING.md  Read-only admin customer board/device monitoring: routes, health rules, query strategy
+docs/TEST_REPORT.md  End-to-end validation report (automated, firmware host-C, simulated hardware, and hardware-required checklists)
 ```
 
 ## Quick Commands
@@ -90,11 +89,14 @@ Add Board offers three workflows, all built on one engine:
   stay at the 23-byte default (Chrome on Windows).
 - **Repair / Recover Board** → **BLE, Wi-Fi or USB**: hold BOOT for 3 seconds to
   open the temporary Wi-Fi and BLE interfaces, then let the board diagnose
-  Wi-Fi, the stored server URL, ESP-NOW, MQTT, the local webpage/temporary Wi-Fi,
-  pairing, firmware validity and OTA. Only the necessary repairs are applied, the
-  board restarts, and verification runs against fresh telemetry before a short
-  report is shown. On Wi-Fi the website hands out a single-use **recovery code**
-  for the board's local page.
+  Wi-Fi (including live STA RSSI), the stored server URL, ESP-NOW, MQTT, the
+  local webpage/temporary Wi-Fi, pairing, firmware validity and OTA. Only the
+  necessary repairs are applied (supporting up to 512-byte command lines for
+  long SSIDs/passphrases/URLs across USB, Wi-Fi, and BLE), the board restarts
+  cleanly across all three transports, and verification runs against fresh
+  telemetry (handling expected post-restart BLE/USB link drops via authoritative
+  server verification) before a short report is shown. On Wi-Fi the website
+  hands out a single-use **recovery code** for the board's local page.
 
 Existing boards are updated in place — the same board ID keeps its devices,
 Nodes, rooms and configuration instead of creating a duplicate. Recovery

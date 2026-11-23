@@ -211,6 +211,9 @@ esp_err_t hc_pairing_claim_if_needed(homecore_config_t *cfg) {
         if (cfg_str) {
             bool changed = false;
             hc_io_apply_config_json(cfg_str, &changed);
+            /* Apply unified Controller/Node role from pairing snapshot too so a
+             * re-paired Node immediately restores its persisted role. */
+            hc_role_apply_snapshot(cfg, cfg_str);
             cJSON_free(cfg_str);
             cfg->config_revision = hc_io_get_config_revision();
             hc_copy_str(cfg->config_hash, sizeof(cfg->config_hash), hc_io_get_config_hash());

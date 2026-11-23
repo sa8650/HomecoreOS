@@ -6,6 +6,7 @@
  * answers are still missing. It never throws on bad input: a planner that
  * rejects half-finished answers cannot tell the customer what is missing.
  */
+import { plural } from "../text";
 import {
   requiredPinCapabilityForDevice,
   requiredPinCapabilityForSensor,
@@ -99,7 +100,7 @@ function isRoomType(value: unknown): value is RoomType {
   return typeof value === "string" && (ROOM_TYPES as readonly string[]).includes(value);
 }
 
-function emptyDeviceCounts(): Record<PlannerDeviceCategory, PlannerNormalizedDeviceCount> {
+export function emptyDeviceCounts(): Record<PlannerDeviceCategory, PlannerNormalizedDeviceCount> {
   const out = {} as Record<PlannerDeviceCategory, PlannerNormalizedDeviceCount>;
   for (const category of PLANNER_DEVICE_CATEGORIES) {
     out[category] = { quantity: 0, independent: 0 };
@@ -109,10 +110,6 @@ function emptyDeviceCounts(): Record<PlannerDeviceCategory, PlannerNormalizedDev
 
 function isSensorCategory(category: PlannerDeviceCategory): boolean {
   return (PLANNER_SENSOR_CATEGORIES as readonly string[]).includes(category);
-}
-
-function plural(count: number, singular: string, pluralForm: string): string {
-  return `${count} ${count === 1 ? singular : pluralForm}`;
 }
 
 function capitalize(text: string): string {

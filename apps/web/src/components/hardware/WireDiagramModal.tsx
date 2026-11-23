@@ -47,6 +47,7 @@ import { DeviceIllustration } from "@/components/hardware/DeviceIllustration";
 import {
   connectionStatus,
   pinCapabilityList,
+  readSensorI2cAddress,
   wireColor,
   wireDash,
   circuitWireColor,
@@ -70,14 +71,6 @@ export type WireDiagramTarget =
   | { kind: "switch"; data: SwitchItem }
   | { kind: "device"; data: DeviceItem }
   | { kind: "sensor"; data: SensorItem };
-
-function readSensorI2cAddress(sensor: SensorItem): string | null {
-  if (typeof sensor.i2c_address === "string" && sensor.i2c_address.trim()) {
-    return sensor.i2c_address.trim();
-  }
-  const raw = sensor.last_raw_payload?.i2c_address;
-  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
-}
 
 /** BoardLibrary seeds use `undefined` for missing optional strings while the UI caches use `null`. */
 function toWireBoardInput(board: BoardProfileItem): WireDiagramBoardInput {

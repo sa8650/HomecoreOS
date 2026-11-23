@@ -257,6 +257,59 @@ function parseHexOffset(raw: string | null): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+export interface PostFlashBootObservation {
+  setupInfo: ParsedSerialSetupInfo | null;
+  bootVerified: boolean;
+  bootError: string | null;
+}
+
+const FATAL_BOOT_PATTERNS: Array<{ re: RegExp; reason: string }> = [
+  {
+    re: /invalid header:\s*0x[0-9a-f]+/i,
+    reason: "Bootloader reported an invalid flash header (wrong flash offset, flash mode, or image).",
+  },
+  {
+    re: /Failed to verify app|esp_image:\s*Check sum failed|flash read err/i,
+    reason: "Bootloader failed to verify the flashed firmware image.",
+  },
+  {
+    re: /Guru Meditation Error|Backtrace:\s*0x|abort\(\) was called|assert failed:/i,
+    reason: "Firmware panicked during first boot on the serial console.",
+  },
+  {
+    re: /TG0WDT_SYS_RESET|TG1WDT_SYS_RESET|RTCWDT_SYS_RESET|INT_WDT|TASK_WDT/i,
+    reason: "Watchdog reset detected during first boot (possible boot loop).",
+  },
+];
+
+const HEALTHY_BOOT_PATTERN =
+  /\[HC_SETUP\]|homecore_main:|Unified recovery console ready|HomecoreOS\s+v?\d/i;
+
+/** Classifies one post-flash serial output line without logging any secrets. */
+export function inspectPostFlashBootLine(line: string): {
+  setupInfo: ParsedSerialSetupInfo | null;
+  healthyBoot: boolean;
+  fatalError: string | null;
+} {
+  const trimmed = line.trim();
+  if (!trimmed) return { setupInfo: null, healthyBoot: false, fatalError: null };
+  for (const pattern of FATAL_BOOT_PATTERNS) {
+    if (pattern.re.test(trimmed)) {
+      return { setupInfo: null, healthyBoot: false, fatalError: pattern.reason };
+    }
+  }
+  const setupInfo = parseSetupSerialLine(trimmed);
+  const hasSetupIdentity = Boolean(
+    setupInfo && (setupInfo.bleName || setupInfo.apSsid || setupInfo.setupPin)
+  );
+  const healthyBoot = hasSetupIdentity || HEALTHY_BOOT_PATTERN.test(trimmed);
+  return {
+    setupInfo: hasSetupIdentity ? setupInfo : null,
+    healthyBoot,
+    fatalError: null,
+  };
+}
+
 interface ReadableSerialPortLike {
   readable?: ReadableStream<Uint8Array> | null;
   open?: (opts: { baudRate: number }) => Promise<void>;
@@ -267,9 +320,11 @@ async function listenForSetupBannerOnPort(
   port: WebSerialPort,
   timeoutMs: number,
   onLog?: (line: string) => void
-): Promise<ParsedSerialSetupInfo | null> {
+): Promise<PostFlashBootObservation> {
   const serialPort = port as unknown as ReadableSerialPortLike;
-  if (typeof serialPort.open !== "function") return null;
+  if (typeof serialPort.open !== "function") {
+    return { setupInfo: null, bootVerified: false, bootError: null };
+  }
 
   let opened = false;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -281,12 +336,16 @@ async function listenForSetupBannerOnPort(
       await new Promise((r) => setTimeout(r, 350));
     }
   }
-  if (!opened || !serialPort.readable) return null;
+  if (!opened || !serialPort.readable) {
+    return { setupInfo: null, bootVerified: false, bootError: null };
+  }
 
   const reader = serialPort.readable.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   let captured: ParsedSerialSetupInfo | null = null;
+  let bootVerified = false;
+  let bootError: string | null = null;
   const deadline = Date.now() + timeoutMs;
 
   try {
@@ -303,15 +362,24 @@ async function listenForSetupBannerOnPort(
       const lines = buf.split(/\r?\n/);
       buf = lines.pop() ?? "";
       for (const line of lines) {
-        const parsed = parseSetupSerialLine(line);
-        if (parsed?.setupPin) {
-          captured = parsed;
+        const obs = inspectPostFlashBootLine(line);
+        if (obs.fatalError) {
+          bootError = obs.fatalError;
+          onLog?.(`Boot check failed: ${obs.fatalError}`);
+          return { setupInfo: captured, bootVerified: false, bootError };
+        }
+        if (obs.healthyBoot) {
+          bootVerified = true;
+        }
+        if (obs.setupInfo) {
+          captured = obs.setupInfo;
+          // Never echo setupPin or other credentials into flash logs.
           onLog?.(
-            `Captured device Setup PIN (${parsed.setupPin})${
-              parsed.bleName ? ` · BLE ${parsed.bleName}` : ""
-            }${parsed.apSsid ? ` · AP ${parsed.apSsid}` : ""}`
+            `Boot verified: HomecoreOS setup ready${
+              captured.bleName ? ` · BLE ${captured.bleName}` : ""
+            }${captured.apSsid ? ` · AP ${captured.apSsid}` : ""}`
           );
-          return captured;
+          return { setupInfo: captured, bootVerified: true, bootError: null };
         }
       }
     }
@@ -326,7 +394,7 @@ async function listenForSetupBannerOnPort(
     }
     await serialPort.close?.().catch(() => {});
   }
-  return captured;
+  return { setupInfo: captured, bootVerified, bootError };
 }
 
 /** USB vendor and product ID of the serial port, when the browser reports them. */
@@ -388,6 +456,7 @@ export async function flashFreshControllerViaUsb(params: {
   detectedFlashSize?: string;
   setupInfo?: ParsedSerialSetupInfo | null;
   boardCheck: UsbFlashBoardCheckSummary | null;
+  bootVerified: boolean;
 }> {
   const {
     release,
@@ -646,16 +715,28 @@ export async function flashFreshControllerViaUsb(params: {
       transportDisconnected = true;
       await transport.disconnect().catch(() => {});
     }
-    callbacks.onPhase("Listening briefly for device Setup PIN...");
-    const setupInfo = await listenForSetupBannerOnPort(port, 4200, callbacks.onLog);
-    if (setupInfo?.setupPin) {
+    callbacks.onPhase("Verifying controller boot on serial console...");
+    const bootObservation = await listenForSetupBannerOnPort(port, 4200, callbacks.onLog);
+    if (bootObservation.bootError) {
+      throw new Error(`Post-flash boot verification failed: ${bootObservation.bootError}`);
+    }
+    const setupInfo = bootObservation.setupInfo;
+    if (setupInfo && (setupInfo.bleName || setupInfo.apSsid || setupInfo.setupPin)) {
       callbacks.onSetupCaptured?.(setupInfo);
     }
 
     callbacks.onProgress(100);
     callbacks.onStage?.("completed");
-    callbacks.onPhase("Flash complete!");
-    callbacks.onLog("Controller reset cleanly. Ready for Bluetooth LE / Wi-Fi provisioning & 6-digit pairing.");
+    callbacks.onPhase(
+      bootObservation.bootVerified
+        ? "Flash & boot verified!"
+        : "Flash verified — controller reset!"
+    );
+    callbacks.onLog(
+      bootObservation.bootVerified
+        ? "Controller booted HomecoreOS cleanly. Ready for Bluetooth LE / Wi-Fi provisioning & 6-digit pairing."
+        : "Flash checksum verified and controller reset. Serial boot banner was not observed (normal if native USB CDC re-enumerated); proceed to Bluetooth LE / Wi-Fi provisioning."
+    );
 
     await apiFetch("/api/firmware/usb-flash-events", {
       method: "POST",
@@ -673,7 +754,13 @@ export async function flashFreshControllerViaUsb(params: {
       }),
     }).catch(() => {});
 
-    return { chipDetected, detectedFlashSize, setupInfo, boardCheck };
+    return {
+      chipDetected,
+      detectedFlashSize,
+      setupInfo,
+      boardCheck,
+      bootVerified: bootObservation.bootVerified,
+    };
   } catch (err) {
     callbacks.onStage?.("error");
     const message = err instanceof Error ? err.message : "USB flashing failed.";

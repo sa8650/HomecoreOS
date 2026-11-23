@@ -130,3 +130,18 @@ export function circuitWireDash(wire: CircuitWire): string | undefined {
   if (wire.warnings && wire.warnings.length > 0) return "7 5";
   return undefined;
 }
+
+/** Reads a sensor's configured I2C address from its row or raw payload metadata. */
+export function readSensorI2cAddress(
+  sensor:
+    | { i2c_address?: string | null; last_raw_payload?: Record<string, unknown> | null }
+    | null
+    | undefined
+): string | null {
+  if (!sensor) return null;
+  if (typeof sensor.i2c_address === "string" && sensor.i2c_address.trim()) {
+    return sensor.i2c_address.trim();
+  }
+  const raw = sensor.last_raw_payload?.i2c_address;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}

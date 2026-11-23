@@ -7,6 +7,7 @@
  * part in any hardware, safety or firmware decision; the clock is only used to
  * time stages for the progress display.
  */
+import { plural } from "../text";
 import { allocatePlannerChannels } from "./allocation";
 import { evaluatePlannerAvailability } from "./availability";
 import { evaluatePlannerBoardCapability } from "./board-capability";
@@ -152,10 +153,6 @@ interface Candidate {
   fit: FitVerdict;
   readiness: PlannerReadiness;
   facts: PlannerRankFacts;
-}
-
-function plural(count: number, singular: string, pluralForm: string): string {
-  return `${count} ${count === 1 ? singular : pluralForm}`;
 }
 
 function boardName(board: PlannerBoardRecord): string {

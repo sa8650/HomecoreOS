@@ -660,4 +660,136 @@ describe("recovery flow (one engine, three transports)", () => {
       await controller.dispose();
     }
   });
+
+  it("handles expected BLE/USB link drop during restart and trusts authoritative server verification", async () => {
+    let fireDisconnect: ((err: RecoveryTransportError) => void) | null = null;
+    let wifiSaved = false;
+    let restarted = false;
+    const sent: string[] = [];
+    const bleTransport: RecoveryTransport & { sent: string[]; released: number } = {
+      kind: "ble",
+      sent,
+      released: 0,
+      get connected() {
+        return !restarted;
+      },
+      async connect(opts) {
+        fireDisconnect = opts?.onDisconnected ?? null;
+        return {
+          hello: HELLO,
+          status: {
+            ...STATUS,
+            mode: "recovery",
+            wifiConnected: false,
+            mqttConnected: false,
+            ip: null,
+            wifiError: "Wi-Fi authentication failed",
+          },
+        };
+      },
+      async request(line) {
+        sent.push(line);
+        if (line.includes('"action":"restart"')) {
+          restarted = true;
+          // Simulate BLE GATT disconnecting immediately when the board reboots into NORMAL mode.
+          fireDisconnect?.(
+            new RecoveryTransportError("disconnected", "GATT disconnected on reboot", true)
+          );
+          throw new RecoveryTransportError("disconnected", "GATT disconnected on reboot", true);
+        }
+        if (line.includes('"action":"wifi"')) {
+          wifiSaved = true;
+          return JSON.stringify({ hc: "ack", ok: true, detail: "Wi-Fi saved" });
+        }
+        if (line.startsWith("HC REPAIR")) {
+          return JSON.stringify({ hc: "ack", ok: true, detail: "Applied" });
+        }
+        throw new RecoveryTransportError("disconnected", "Board exited BLE recovery mode", true);
+      },
+      async readStatus() {
+        if (wifiSaved && !restarted) {
+          return {
+            ...STATUS,
+            mode: "recovery",
+            wifiConnected: true,
+            ssid: "Home24G",
+            ip: "192.168.1.44",
+            wifiError: null,
+            mqttConnected: false,
+          };
+        }
+        throw new RecoveryTransportError("disconnected", "Board exited BLE recovery mode", true);
+      },
+      async release() {
+        bleTransport.released += 1;
+      },
+    };
+
+    let completeCount = 0;
+    const { api } = fakeApi({
+      complete: async () => {
+        completeCount += 1;
+        return {
+          session: {
+            id: "sess-1",
+            status: "completed",
+            stage: "report",
+            startedAt: new Date(Date.now() - 1200).toISOString(),
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+          report: {
+            sessionId: "sess-1",
+            transport: "ble",
+            board: {
+              boardInstanceId: "board-1",
+              name: "Hub",
+              boardSlug: HELLO.boardSlug,
+              hardwareUid: "EE12",
+              firmwareVersion: "1.5.0",
+            },
+            startedAt: new Date(Date.now() - 1200).toISOString(),
+            completedAt: new Date().toISOString(),
+            durationMs: 1200,
+            detectedProblems: ["wifi_auth_failed"],
+            unresolvedProblems: [],
+            diagnostics: [],
+            actions: [],
+            verification: {
+              status: "verified",
+              summary: "Controller rejoined Wi-Fi and MQTT cleanly.",
+              checks: [{ id: "wifi_connected", label: "Wi-Fi", status: "pass", detail: "Online", required: true }],
+              unresolved: [],
+            },
+            finalTelemetry: {
+              connected: true,
+              wifiSsid: "Home24G",
+              wifiRssi: -55,
+              ipAssigned: true,
+              mqttConnected: true,
+              apiReachable: true,
+              lastSyncAt: null,
+              lastHeartbeatAt: new Date().toISOString(),
+              firmwareVersion: "1.5.0",
+            },
+            finalStatus: "completed",
+            nextAction: null,
+          },
+        };
+      },
+    });
+
+    const { controller } = build({ transport: bleTransport, api });
+    await controller.connect("ble");
+    await controller.diagnose();
+    await controller.repair({ wifi: { ssid: "Home24G", password: "correct-password" } });
+
+    const state = controller.getState();
+    // Reboot link drop must NOT abort recovery into error or downgrade authoritative server verification.
+    expect(state.phase).toBe("report");
+    expect(state.error).toBeNull();
+    expect(completeCount).toBe(1);
+    expect(state.report?.finalStatus).toBe("completed");
+    expect(state.report?.verification.status).toBe("verified");
+    expect(sent.some((l) => l.includes('"action":"restart"'))).toBe(true);
+  });
 });

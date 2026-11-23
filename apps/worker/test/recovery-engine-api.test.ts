@@ -540,4 +540,71 @@ describe("Unified Repair & Recovery API", () => {
     expect(foreign.status).toBe(404);
   });
 
+  it("rejects /complete on an expired recovery session with 410 and marks it expired", async () => {
+    const start = await startSession("usb");
+    expect([200, 201]).toContain(start.status);
+    const { session } = (await start.json()) as { session: { id: string } };
+
+    // Backdate expiry in DB so the session is expired.
+    await dbHarness.pg.query(
+      "update recovery_sessions set expires_at = now() - interval '2 minutes' where id = $1",
+      [session.id]
+    );
+
+    const complete = await req(`/api/recovery/sessions/${session.id}/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ outcomes: [] }),
+    });
+    expect(complete.status).toBe(410);
+
+    const row = await dbHarness.pg.query<{ status: string }>(
+      "select status from recovery_sessions where id = $1",
+      [session.id]
+    );
+    expect(row.rows[0]?.status).toBe("expired");
+  });
+
+  it("preserves pairing_status_before and accepts firmware recovery_console / usb_console re-pair", async () => {
+    // Generate a recovery code on the existing controller.
+    const regen = await req(`/api/board-instances/${boardId}/regenerate-pairing-code`, {
+      method: "POST",
+      headers: { Cookie: userCookie },
+    });
+    expect(regen.status).toBe(200);
+    const { pairingCode } = (await regen.json()) as { pairingCode: string };
+
+    // Firmware recovery_console.c sends physicalConfirmationMethod: "recovery_console"
+    // and provisioningTransport: "usb_console" or "recovery_console".
+    const rePair = await req("/api/device/recover-pair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pairingCode,
+        macAddress: "AA:BB:CC:DD:EE:01",
+        identityKey: "identity-key-for-recovery-tests-0123456789",
+        physicalConfirmed: true,
+        physicalConfirmationMethod: "recovery_console",
+        provisioningTransport: "usb_console",
+        firmwareVersion: "1.5.0",
+        boardSlug: "esp32-s3-devkitc-1-n16r8",
+      }),
+    });
+    expect(rePair.status).toBe(200);
+    const rePairBody = (await rePair.json()) as {
+      board_instance_id: string;
+      recovered: boolean;
+      device_api_token: string;
+    };
+    expect(rePairBody.board_instance_id).toBe(boardId);
+    expect(rePairBody.recovered).toBe(true);
+    deviceToken = rePairBody.device_api_token;
+
+    const stored = await dbHarness.pg.query<{ provisioning_transport: string }>(
+      "select provisioning_transport from board_instances where id = $1",
+      [boardId]
+    );
+    expect(stored.rows[0]?.provisioning_transport).toBe("usb");
+  });
+
 });

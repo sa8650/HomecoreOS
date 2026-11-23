@@ -34,8 +34,9 @@ static void unlock_repair(void) {
     s_console_busy = false;
     portEXIT_CRITICAL(&s_repair_mux);
 }
-/** Set by a restart repair so the UART task reboots after the ack is written. */
+/** Set by a restart/factory-reset repair so the transport reboots after the ack is written. */
 static volatile bool s_restart_pending = false;
+static volatile bool s_factory_reset_pending = false;
 static bool s_console_started = false;
 
 #define HC_RECOVERY_UART_PORT UART_NUM_0
@@ -61,10 +62,14 @@ bool hc_recovery_restart_pending(void) {
 
 void hc_recovery_apply_pending_restart(void) {
     if (!s_restart_pending) return;
-    /* The response is already on the wire (UART line or HTTP body), so the
-     * reboot cannot swallow it. Destructive resets are handled here too. */
+    /* The response is already on the wire (UART line, HTTP body, or BLE notify),
+     * so the reboot cannot swallow it. Destructive resets are handled here too. */
+    const bool do_factory_reset = s_factory_reset_pending;
     s_restart_pending = false;
-    if (s_cfg) {
+    s_factory_reset_pending = false;
+    if (do_factory_reset) {
+        hc_nvs_factory_reset();
+    } else if (s_cfg) {
         hc_nvs_save_config(s_cfg);
     }
     vTaskDelay(pdMS_TO_TICKS(250));
@@ -265,6 +270,8 @@ static int execute_repair(hc_rec_command_t *cmd, char *out, size_t out_cap) {
             break;
 
         case HC_REC_ACTION_FACTORY_RESET:
+            s_factory_reset_pending = true;
+            s_restart_pending = true;
             written = hc_rec_build_ack(
                 HC_REC_ACTION_FACTORY_RESET,
                 "Factory reset accepted; pairing, credentials and role will be erased.",
@@ -381,14 +388,9 @@ static void recovery_console_task(void *arg) {
                 if (n > 0) {
                     console_write(response, (size_t)n);
                     console_write("\n", 1);
-                    if (s_restart_pending ||
-                        strstr(response, "\"action\":\"restart\"") != NULL ||
-                        strstr(response, "\"action\":\"factory_reset\"") != NULL) {
-                        vTaskDelay(pdMS_TO_TICKS(400));
-                        if (strstr(response, "factory_reset") != NULL) {
-                            hc_nvs_factory_reset();
-                        }
-                        esp_restart();
+                    if (hc_recovery_restart_pending()) {
+                        vTaskDelay(pdMS_TO_TICKS(150));
+                        hc_recovery_apply_pending_restart();
                     }
                 }
             }
