@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetApiCache } from "@/lib/api";
 import { ActionButtonSettingsCard } from "./ActionButtonSettings";
 import type { ActionButtonConfigItem } from "@/features/types";
+import { jsonResponse } from "@/test/http";
 
 const originalFetch = globalThis.fetch;
 
@@ -51,13 +52,6 @@ const configs: ActionButtonConfigItem[] = [
     states: { on: 0, off: 5 },
   },
 ];
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 function mockFetch() {
   const calls: Array<{ url: string; method: string; body?: unknown }> = [];

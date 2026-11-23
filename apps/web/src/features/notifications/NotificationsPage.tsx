@@ -21,7 +21,7 @@ import {
   subscribeNotificationSync,
 } from "@/lib/api";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { getNotificationTargetUrl } from "@/components/notifications/NotificationBellPopover";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";

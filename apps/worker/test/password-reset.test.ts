@@ -3,18 +3,12 @@ import { createWorkerApp } from "../src/index";
 import type { WorkerBindings } from "../src/config/env";
 import { createMockEmqxFetch, createMockR2Bucket } from "./helpers/mock-emqx-r2";
 import { createPglitePostgrest, type PgliteHarness } from "./helpers/pglite-postgrest";
+import { extractCookie } from "./helpers/http";
 
 const OLD_PASSWORD = "ForgottenPassw0rd!";
 const NEW_PASSWORD = "BrandNewPassw0rd!";
 const BREVO_KEY = "xkeysib-test-brevo-key";
 const FROM_EMAIL = "no-reply@homecoreos.test";
-
-function extractCookie(res: Response, cookieName: string): string {
-  const header = res.headers.get("set-cookie") ?? "";
-  const match = header.match(new RegExp(`${cookieName}=([^;]+)`));
-  if (!match) throw new Error(`Missing cookie ${cookieName} in ${header}`);
-  return `${cookieName}=${match[1]}`;
-}
 
 /** Captures the recovery code out of the Brevo payload the Worker really built. */
 function createMockMail() {

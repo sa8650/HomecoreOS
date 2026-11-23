@@ -3,15 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserSessionData } from "@/features/types";
 import { UserOnboardingPage } from "./UserOnboardingPage";
+import { jsonResponse } from "@/test/http";
 
 const originalFetch = globalThis.fetch;
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 function session(overrides?: Partial<UserSessionData["onboarding"]>): UserSessionData {
   return {

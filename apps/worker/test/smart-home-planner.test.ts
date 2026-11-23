@@ -12,15 +12,9 @@ import { createWorkerApp } from "../src/index";
 import { MAX_SAVED_PLANS_PER_ACCOUNT } from "../src/routes/planner";
 import { createMockEmqxFetch, createMockR2Bucket } from "./helpers/mock-emqx-r2";
 import { createPglitePostgrest, type PgliteHarness } from "./helpers/pglite-postgrest";
+import { extractCookie } from "./helpers/http";
 
 const S3_N16R8 = "esp32-s3-devkitc-1-n16r8";
-
-function extractCookie(res: Response, cookieName: string): string {
-  const header = res.headers.get("set-cookie") ?? "";
-  const match = header.match(new RegExp(`${cookieName}=([^;]+)`));
-  if (!match) throw new Error(`Missing cookie ${cookieName} in ${header}`);
-  return `${cookieName}=${match[1]}`;
-}
 
 function makeFakeEspIdfImage(byteLength = 512): Uint8Array {
   const buf = new Uint8Array(byteLength);

@@ -5,6 +5,7 @@ import { zipSync, strToU8 } from "fflate";
 import { sha256Hex } from "../src/lib/crypto";
 import { createMockEmqxFetch, createMockR2Bucket } from "./helpers/mock-emqx-r2";
 import { createPglitePostgrest, type PgliteHarness } from "./helpers/pglite-postgrest";
+import { extractCookie } from "./helpers/http";
 
 
 function makeFakeEspIdfImage(byteLength = 512): Uint8Array {
@@ -12,13 +13,6 @@ function makeFakeEspIdfImage(byteLength = 512): Uint8Array {
   buf[0] = 0xe9;
   buf[1] = 0x04;
   return buf;
-}
-
-function extractCookie(res: Response, cookieName: string): string {
-  const header = res.headers.get("set-cookie") ?? "";
-  const match = header.match(new RegExp(`${cookieName}=([^;]+)`));
-  if (!match) throw new Error(`Missing cookie ${cookieName}`);
-  return `${cookieName}=${match[1]}`;
 }
 
 /**

@@ -4,7 +4,7 @@ import { RiCloseLine, RiEditLine } from "@remixicon/react";
 import { isDeviceStateActive, type RoomType } from "@homecoreos/shared";
 import { isEntityOnline } from "@/lib/board-pin-helpers";
 import { formatShortTime } from "@/lib/timezone";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import {
   Select,

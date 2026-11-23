@@ -21,7 +21,7 @@ import {
 } from "@homecoreos/shared";
 import { toast } from "sonner";
 import { cachedGet, invalidateApiCache } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { isWebSerialSupported, UsbBoardMismatchError, type UsbFlashTargetBoardSpec } from "@/lib/usb-flasher";
 import { useUsbFlashSession } from "@/lib/use-usb-flash";
 import {

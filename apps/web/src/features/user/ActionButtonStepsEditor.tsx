@@ -27,7 +27,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type { ActionButtonInventory } from "./action-button-inventory";
 import { nextStepId, summarizeStep } from "./action-button-summary";
 

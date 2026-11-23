@@ -29,7 +29,7 @@ import { toast } from "sonner";
 import { apiFetch, ApiError, cachedGet } from "@/lib/api";
 import { useLiveSync } from "@/lib/realtime/RealtimeProvider";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { VisualAutomationBuilder } from "@/components/automations/VisualAutomationBuilder";
 import { Badge } from "@/components/reui/badge";
 import { ConfirmDeleteDialog, FormField } from "@/components/shared/AppUi";

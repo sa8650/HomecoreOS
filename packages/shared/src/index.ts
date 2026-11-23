@@ -581,6 +581,7 @@ export function isNewerFirmwareVersion(
   return compareFirmwareVersions(candidate, current) > 0;
 }
 
+export * from "./text";
 export * from "./board-validation";
 export * from "./board-catalog-data";
 export * from "./wire-diagram";

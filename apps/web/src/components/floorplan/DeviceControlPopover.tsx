@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { RiCloseLine, RiPulseLine } from "@remixicon/react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Badge } from "@/components/reui/badge";
 import { DeviceGlyph, deviceKindLabel } from "./floor-visuals";
 import type { FloorDeviceKind } from "./house-layout";

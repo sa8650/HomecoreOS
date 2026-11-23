@@ -72,7 +72,7 @@ import {
   RiWifiOffLine,
 } from "@remixicon/react";
 import { toast } from "sonner";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useIsDarkTheme } from "@/lib/theme";
 import { Badge } from "@/components/reui/badge";

@@ -1,4 +1,5 @@
 import { isEmqxConfigured, EmqxClient } from "./emqx";
+import { toBase64Url } from "./crypto";
 import type { WorkerBindings } from "../config/env";
 import type { CustomFetch, DbClient } from "./db";
 
@@ -100,12 +101,6 @@ export function buildRealtimeSubscription(accountId: string): string {
 
 export function buildRealtimeWebUsername(accountId: string, sessionId: string): string {
   return `hcweb-${accountId.replace(/-/g, "")}-${sessionId.replace(/-/g, "")}`;
-}
-
-function toBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /**

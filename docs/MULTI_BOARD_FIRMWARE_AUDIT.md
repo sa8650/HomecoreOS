@@ -41,7 +41,7 @@ This document captures the Step 1 & Step 2 audit of HomecoreOS's existing firmwa
 ## 2. Identified Missing Components & Hardware Compatibility Risks
 
 ### 2.1 Firmware & Build Matrix Gaps
-1. **Single-target partition table**: `firmware/partitions.csv` allocates two 3MB OTA slots (`0x20000` and `0x320000`), which exceeds 4MB flash (`0x400000`) and leaves tight margin on 8MB. Dedicated `partitions_4mb.csv`, `partitions_8mb.csv`, and `partitions_16mb.csv` are needed while keeping `nvs` (`0x9000` `0x6000`), `otadata` (`0xf000` `0x2000`), `phy_init` (`0x11000` `0x1000`), and `ota_0` (`0x20000`) aligned across all tables so NVS identity/Wi-Fi/MQTT persist safely.
+1. **Single-target partition table** *(resolved)*: the original single `firmware/partitions.csv` allocated two 3MB OTA slots (`0x20000` and `0x320000`), which exceeded 4MB flash (`0x400000`) and left tight margin on 8MB. It has been replaced by per-flash-size tables in `firmware/partitions/` (`partitions_4mb.csv`, `partitions_8mb.csv`, `partitions_16mb.csv`), selected by each board overlay, with `nvs` (`0x9000` `0x6000`), `otadata` (`0xf000` `0x2000`), `phy_init` (`0x11000` `0x1000`), and `ota_0` (`0x20000`) aligned across all three so NVS identity/Wi-Fi/MQTT persist safely.
 2. **Hardcoded S3 GPIO & BOOT button assumptions**:
    - `HOMECORE_BOOT_BUTTON_GPIO` is hardcoded to `0`, whereas RISC-V targets (`esp32c2`, `esp32c3`, `esp32c5`, `esp32c6`, `esp32c61`, `esp32h2`) use `GPIO 9` as the BOOT/strapping button.
    - `hc_io_is_safe_gpio()` in `io_manager.c` applies ESP32-S3 SPI flash/PSRAM pin exclusions (`22-37`) uniformly to all chips, blocking valid GPIOs on ESP32/S2/C3/C6 and permitting invalid high GPIOs (`> max_gpio`) on smaller pin-count chips.

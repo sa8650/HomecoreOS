@@ -5,7 +5,7 @@ import {
   RiMenuLine,
   RiSidebarFoldLine,
 } from "@remixicon/react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { HomecoreWordmark } from "@/components/graphics/HomecoreGraphics";
 import { Badge } from "@/components/reui/badge";
 import { ThemeToggleButton } from "@/components/shared/AppUi";

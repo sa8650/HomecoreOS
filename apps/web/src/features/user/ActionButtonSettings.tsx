@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/reui/badge";
 import { Switch } from "@/components/ui/switch";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type { ActionButtonConfigItem } from "@/features/types";
 import { useActionButtonInventory } from "./action-button-inventory";
 import { ActionButtonEditorModal } from "./ActionButtonEditorModal";

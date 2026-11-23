@@ -4,13 +4,7 @@ import { createWorkerApp } from "../src/index";
 import { createMockEmqxFetch, createMockR2Bucket } from "./helpers/mock-emqx-r2";
 import { createPglitePostgrest, type PgliteHarness } from "./helpers/pglite-postgrest";
 import { seedInstalledFirmwareWithDrivers } from "./helpers/firmware-fixture";
-
-function extractCookie(res: Response, cookieName: string): string {
-  const header = res.headers.get("set-cookie") ?? "";
-  const match = header.match(new RegExp(`${cookieName}=([^;]+)`));
-  if (!match) throw new Error(`Missing cookie ${cookieName} in ${header}`);
-  return `${cookieName}=${match[1]}`;
-}
+import { extractCookie } from "./helpers/http";
 
 async function registerUser(
   req: (path: string, init?: RequestInit) => Promise<Response>,

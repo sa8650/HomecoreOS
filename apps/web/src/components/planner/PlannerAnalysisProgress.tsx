@@ -10,7 +10,7 @@ import {
   RiLoader4Line,
   RiSubtractLine,
 } from "@remixicon/react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Progress } from "@/components/ui/progress";
 
 /** Every stage starts as "pending" and only changes when the Worker reports it. */

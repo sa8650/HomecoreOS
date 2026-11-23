@@ -12,7 +12,7 @@ import {
 import { apiFetch, cachedGet, emitNotificationSync, subscribeNotificationSync } from "@/lib/api";
 import { useRealtimeStatus } from "@/lib/realtime/RealtimeProvider";
 import { formatShortTime, useEffectiveTimezone } from "@/lib/timezone";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Badge } from "@/components/reui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";

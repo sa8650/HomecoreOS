@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 interface PerspectiveGridProps {
   /** Additional CSS classes for the grid container */

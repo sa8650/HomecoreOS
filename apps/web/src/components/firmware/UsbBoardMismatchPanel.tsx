@@ -14,7 +14,7 @@ import {
   type UsbBoardMismatchImpact,
 } from "@homecoreos/shared";
 import type { UsbFlashBoardReport, UsbFlashTargetBoardSpec } from "@/lib/usb-flasher";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Badge } from "@/components/reui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";

@@ -29,7 +29,7 @@ import {
   getBoardVectorVerticalLayout,
 } from "@/components/boards/BoardVectorSvg";
 import type { BoardProfileItem } from "@/features/types";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import {
   pinCapabilityList,
   wireColor,

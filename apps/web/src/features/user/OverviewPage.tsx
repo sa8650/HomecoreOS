@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import { ApiError, cachedGet, getCachedSnapshot } from "@/lib/api";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
 import { useLiveSync } from "@/lib/realtime/RealtimeProvider";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { ControllerWiringPreview } from "@/components/controllers/ControllerWiringPreview";
 import { HomeFloorPlan } from "@/components/floorplan/HomeFloorPlan";
 import { Badge } from "@/components/reui/badge";

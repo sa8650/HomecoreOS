@@ -5,7 +5,7 @@ import {
   type GpioPinDefinition,
 } from "@homecoreos/shared";
 import type { BoardProfileItem } from "@/features/types";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 export type SvgPinTone =
   | "safe"

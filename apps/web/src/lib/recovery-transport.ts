@@ -798,9 +798,3 @@ export function createUsbRecoveryTransport(options: {
   };
 }
 
-/** Technical lines the controller printed (ESP-IDF log), for the details panel. */
-export function describeRecoveryTransport(kind: RecoveryTransportMode): string {
-  if (kind === "wifi") return "Wi-Fi setup page at http://192.168.4.1";
-  if (kind === "ble") return "Bluetooth LE encrypted session";
-  return "USB serial console at 115200 baud";
-}

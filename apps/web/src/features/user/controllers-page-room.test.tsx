@@ -5,15 +5,9 @@ import { resetApiCache } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
 import { MyBoardsPage } from "./MyBoardsPage";
 import type { ControllerItem } from "@/features/types";
+import { jsonResponse } from "@/test/http";
 
 const originalFetch = globalThis.fetch;
-
-function jsonResponse(payload: unknown, status = 200) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 const controller: ControllerItem = {
   id: "c1",

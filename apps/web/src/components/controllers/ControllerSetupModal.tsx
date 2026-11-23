@@ -37,7 +37,7 @@ import {
   HomecoreBleClient,
   isWebBluetoothSupported,
 } from "@/lib/ble-provisioning";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type {
   BoardProfileItem,
   ControllerItem,

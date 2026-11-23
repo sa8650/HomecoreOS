@@ -19,7 +19,7 @@ import {
   RiWindyLine,
 } from "@remixicon/react";
 import { isEntityOnline } from "@/lib/board-pin-helpers";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Badge } from "@/components/reui/badge";
 import { IconTile } from "@/components/reui/icon-tile";
 import { EmptyStatePanel } from "@/components/shared/AppUi";
