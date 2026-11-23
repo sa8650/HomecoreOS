@@ -324,7 +324,9 @@ export async function refreshStaleControllerStates(
 ): Promise<number> {
   let onlineQuery = db
     .from("board_instances")
-    .select("id,account_id,name,board_role,last_heartbeat_at,connection_history")
+    .select(
+      "id,account_id,name,board_role,last_heartbeat_at,last_communication_at,connection_history"
+    )
     .eq("status", "online")
     .is("deleted_at", null)
     .is("permanently_deleted_at", null);
@@ -353,10 +355,21 @@ export async function refreshStaleControllerStates(
     name: string;
     board_role?: string | null;
     last_heartbeat_at: string | null;
+    last_communication_at?: string | null;
     connection_history: unknown[];
   }>).filter((ctrl) => {
-    if (!ctrl.last_heartbeat_at) return false;
-    return new Date(ctrl.last_heartbeat_at).getTime() < cutoffMs;
+    const hbMs = ctrl.last_heartbeat_at ? Date.parse(ctrl.last_heartbeat_at) : NaN;
+    const commMs = ctrl.last_communication_at ? Date.parse(ctrl.last_communication_at) : NaN;
+    const latestMs =
+      Number.isFinite(hbMs) && Number.isFinite(commMs)
+        ? Math.max(hbMs, commMs)
+        : Number.isFinite(hbMs)
+          ? hbMs
+          : Number.isFinite(commMs)
+            ? commMs
+            : NaN;
+    if (!Number.isFinite(latestMs)) return false;
+    return latestMs < cutoffMs;
   });
 
   if (list.length === 0) return 0;

@@ -182,6 +182,7 @@ const heartbeatSchema = z
     flashSizeMb: d.flashSizeMb,
     detectedChipName: d.detectedChipName,
     otaPendingVerify: d.otaPendingVerify ?? d.otaPending ?? d.op ?? false,
+    otaPendingReported: d.otaPendingVerify ?? d.otaPending ?? d.op,
     otaSupported: d.otaSupported ?? d.os,
     otaError: d.otaError !== undefined ? d.otaError : d.oe,
     uptimeSec: d.uptimeSec ?? d.up,
@@ -534,13 +535,14 @@ export function createDeviceApiRoutes() {
     }
 
     // Recovery health facts. Each one is written only when the board actually
-    // reported it, so an older image never blanks a value a newer one wrote.
+    // reported it, so an older image never blanks a value a newer one wrote or
+    // stamps health_reported_at when no health facts were sent.
     const health: Record<string, unknown> = {
       uptime_sec: parsed.data.uptimeSec,
       free_heap_bytes: parsed.data.freeHeapBytes,
       backend_url: parsed.data.backendUrl === undefined ? undefined : (parsed.data.backendUrl?.trim() || null),
       ota_supported: parsed.data.otaSupported,
-      ota_pending: parsed.data.otaPendingVerify,
+      ota_pending: parsed.data.otaPendingReported,
       ota_error:
         parsed.data.otaError === undefined ? undefined : (parsed.data.otaError?.trim() || null),
       espnow_supported: parsed.data.espnowSupported,
@@ -588,11 +590,56 @@ export function createDeviceApiRoutes() {
       }
     }
 
-    await db
+    const { error: hbUpdateError } = await db
       .from("board_instances")
       .update(updates)
       .eq("id", dev.boardInstanceId)
       .eq("account_id", dev.accountId);
+
+    if (hbUpdateError) {
+      const errMsg = hbUpdateError.message ?? "";
+      const errCode = hbUpdateError.code ?? "";
+      const isMissingOptionalCol =
+        errCode === "PGRST204" ||
+        errCode === "42703" ||
+        /could not find the ['"][^'"]+['"] column/i.test(errMsg) ||
+        /column .* does not exist/i.test(errMsg);
+
+      if (isMissingOptionalCol) {
+        const coreUpdates: Record<string, unknown> = { ...updates };
+        for (const col of [
+          "reported_partition_scheme",
+          "uptime_sec",
+          "free_heap_bytes",
+          "backend_url",
+          "ota_supported",
+          "ota_pending",
+          "ota_error",
+          "espnow_supported",
+          "espnow_link_state",
+          "supports_wifi",
+          "supports_ble",
+          "health_reported_at",
+        ]) {
+          delete coreUpdates[col];
+        }
+        console.warn(
+          `[device-api] heartbeat update hit missing optional column (${errCode || errMsg}); retrying core heartbeat fields. Apply database/migrations/0008_board_recovery_health.sql.`
+        );
+        const { error: retryError } = await db
+          .from("board_instances")
+          .update(coreUpdates)
+          .eq("id", dev.boardInstanceId)
+          .eq("account_id", dev.accountId);
+        if (retryError) {
+          console.error("[device-api] core heartbeat update failed:", retryError.message);
+          return c.json({ error: "Failed to persist device heartbeat." }, 500);
+        }
+      } else {
+        console.error("[device-api] heartbeat update failed:", hbUpdateError.message);
+        return c.json({ error: "Failed to persist device heartbeat." }, 500);
+      }
+    }
 
     // Only genuine ONLINE/OFFLINE, uplink or firmware transitions are pushed.
     // A steady heartbeat is written to Postgres but never broadcast, so a

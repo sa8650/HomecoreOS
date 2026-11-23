@@ -495,4 +495,82 @@ describe("End-to-End Platform User & Admin Workflows (12 Scenarios)", () => {
     expect(monJson.summary.controllers).toBe(1);
     expect(monJson.summary.nodes).toBe(1);
   });
+
+  it("Workflow 13 (Regression): preserves online status with recent telemetry, omits unsolicited health columns, and reconciles live EMQX connectivity", async () => {
+    // 1. Clear health fields and send a legacy-style heartbeat (without otaPendingVerify/health fields)
+    await dbHarness.pg.query(
+      `update board_instances set ota_pending = null, health_reported_at = null where id = $1`,
+      [controllerId]
+    );
+    const legacyHb = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${controllerToken}` },
+      body: JSON.stringify({ w: true, m: true, r: -48, v: "1.2.43" }),
+    });
+    expect(legacyHb.status).toBe(200);
+    const afterLegacy = await dbHarness.pg.query<{
+      status: string;
+      mqtt_connected: boolean;
+      ota_pending: boolean | null;
+      health_reported_at: string | null;
+    }>(
+      `select status, mqtt_connected, ota_pending, health_reported_at from board_instances where id = $1`,
+      [controllerId]
+    );
+    expect(afterLegacy.rows[0]?.status).toBe("online");
+    expect(afterLegacy.rows[0]?.mqtt_connected).toBe(true);
+    expect(afterLegacy.rows[0]?.ota_pending).toBeNull();
+    expect(afterLegacy.rows[0]?.health_reported_at).toBeNull();
+
+    // 2. Stale last_heartbeat_at (>10m ago) + fresh last_communication_at (telemetry just arrived)
+    //    must NOT be marked offline by refreshStaleControllerStates() on GET /api/board-instances
+    const staleIso = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const freshIso = new Date().toISOString();
+    await dbHarness.pg.query(
+      `update board_instances set status = 'online', last_heartbeat_at = $1, last_communication_at = $2 where id = $3`,
+      [staleIso, freshIso, controllerId]
+    );
+    const listFreshComm = await req("/api/board-instances", {
+      headers: { Cookie: userCookie },
+    });
+    expect(listFreshComm.status).toBe(200);
+    const freshListJson = (await listFreshComm.json()) as {
+      controllers: Array<{ id: string; status: string }>;
+    };
+    expect(freshListJson.controllers.find((c) => c.id === controllerId)?.status).toBe("online");
+
+    // 3. If both timestamps are stale and DB drifted to offline, but live EMQX reports an active
+    //    broker session for the paired board, GET /api/board-instances must reconcile status -> online
+    const credRow = await dbHarness.pg.query<{ mqtt_client_id: string }>(
+      `select mqtt_client_id from mqtt_credentials_metadata where board_instance_id = $1`,
+      [controllerId]
+    );
+    const clientId = credRow.rows[0]!.mqtt_client_id;
+    await dbHarness.pg.query(
+      `update board_instances set status = 'offline', mqtt_connected = false, last_heartbeat_at = $1, last_communication_at = $1 where id = $2`,
+      [staleIso, controllerId]
+    );
+    emqxMock.state.connectedClients.add(clientId);
+
+    const listLiveEmqx = await req("/api/board-instances", {
+      headers: { Cookie: userCookie },
+    });
+    expect(listLiveEmqx.status).toBe(200);
+    const reconciledJson = (await listLiveEmqx.json()) as {
+      controllers: Array<{ id: string; status: string; mqtt_connected: boolean; wifi_connected: boolean }>;
+    };
+    const reconciled = reconciledJson.controllers.find((c) => c.id === controllerId);
+    expect(reconciled?.status).toBe("online");
+    expect(reconciled?.mqtt_connected).toBe(true);
+    expect(reconciled?.wifi_connected).toBe(true);
+
+    const dbReconciled = await dbHarness.pg.query<{ status: string; mqtt_connected: boolean }>(
+      `select status, mqtt_connected from board_instances where id = $1`,
+      [controllerId]
+    );
+    expect(dbReconciled.rows[0]?.status).toBe("online");
+    expect(dbReconciled.rows[0]?.mqtt_connected).toBe(true);
+
+    emqxMock.state.connectedClients.delete(clientId);
+  });
 });
