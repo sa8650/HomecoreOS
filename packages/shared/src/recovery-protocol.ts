@@ -650,6 +650,224 @@ export function createBleStatusReassembler(maxBytes = 8192): BleStatusReassemble
   };
 }
 
+// ---------------------------------------------------------------------------
+// GATT MTU framing (firmware/main/ble_protocol_logic.c is the other half)
+//
+// A GATT write carries at most ATT_MTU - 3 bytes. The Security 1 handshake
+// (66-byte Client Hello, 130-byte Device Hello), the encrypted command payloads
+// and the encrypted status notifications are all larger than that, and the
+// negotiated MTU is not something the page can raise: Chrome on Windows and
+// several Android builds stay at the 23-byte default. Attempting the long
+// write/read instead is what produces the opaque
+// "GATT operation failed for unknown reason".
+//
+// So the page frames everything itself with the same tiny headers the firmware
+// parses, and never issues a GATT operation larger than the negotiated budget.
+// ---------------------------------------------------------------------------
+
+/** Marker introducing a fragmented write (handshake/command characteristics). */
+export const HOMECORE_BLE_FRAG_WRITE_TAG = 0x10;
+/** Marker introducing a read-response fragment. */
+export const HOMECORE_BLE_FRAG_READ_TAG = 0x20;
+/** Marker introducing a status-notification fragment. */
+export const HOMECORE_BLE_NOTE_FRAG_TAG = 0x30;
+/** `[tag][len:2][offset:2]` */
+export const HOMECORE_BLE_FRAG_HEADER = 5;
+/** `[tag][index][total:2]` */
+export const HOMECORE_BLE_NOTE_FRAG_HEADER = 4;
+/** ATT_MTU default: the value every stack must support. */
+export const HOMECORE_BLE_DEFAULT_ATT_MTU = 23;
+/** Value bytes that fit in one GATT operation for a negotiated MTU. */
+export function bleFragmentBudget(mtu: number | null | undefined): number {
+  if (!mtu || !Number.isFinite(mtu) || mtu < HOMECORE_BLE_DEFAULT_ATT_MTU) return 20;
+  return Math.floor(mtu) - 3;
+}
+
+/** One framed write of `value` at `offset`, or null when nothing fits. */
+export function buildBleFragmentedWrite(
+  value: Uint8Array,
+  offset: number,
+  maxFragment: number
+): Uint8Array | null {
+  if (!value || value.byteLength === 0 || offset < 0 || offset >= value.byteLength) return null;
+  if (!Number.isFinite(maxFragment) || maxFragment <= HOMECORE_BLE_FRAG_HEADER) return null;
+  const budget = Math.floor(maxFragment) - HOMECORE_BLE_FRAG_HEADER;
+  const slice = Math.min(budget, value.byteLength - offset);
+  const out = new Uint8Array(HOMECORE_BLE_FRAG_HEADER + slice);
+  out[0] = HOMECORE_BLE_FRAG_WRITE_TAG;
+  out[1] = value.byteLength & 0xff;
+  out[2] = (value.byteLength >> 8) & 0xff;
+  out[3] = offset & 0xff;
+  out[4] = (offset >> 8) & 0xff;
+  out.set(value.subarray(offset, offset + slice), HOMECORE_BLE_FRAG_HEADER);
+  return out;
+}
+
+/**
+ * Accumulates the read-response windows of one characteristic value.
+ *
+ * Window headers carry `total` and `offset`, so a window is addressed rather
+ * than sequenced. That matters because the firmware tracks the read cursor and
+ * a platform that repeats or reorders a read would otherwise shift every later
+ * window by one: each window is copied to its announced offset and the value is
+ * complete as soon as every byte has arrived, no matter what order that was in.
+ */
+export interface BleReadWindowReader {
+  /**
+   * Adds one window. Returns the whole value once every byte arrived, `null`
+   * while more windows are needed, and `undefined` when the frame was rejected
+   * (a new value starting at offset 0 always begins a fresh read).
+   */
+  push: (frame: Uint8Array) => Uint8Array | null | undefined;
+  /** True once every byte of the announced length is present. */
+  complete: () => boolean;
+  /** Length announced by the first window, or null before one arrived. */
+  total: () => number | null;
+  reset: () => void;
+}
+
+export function createBleReadWindowReader(maxBytes = 4096): BleReadWindowReader {
+  let announced: number | null = null;
+  let buffer: Uint8Array | null = null;
+  let seen: boolean[] = [];
+  let filled = 0;
+
+  const reset = () => {
+    announced = null;
+    buffer = null;
+    seen = [];
+    filled = 0;
+  };
+
+  return {
+    push(frame: Uint8Array) {
+      if (!frame || frame.byteLength === 0) return undefined;
+
+      // A value that fits in one read is returned unchanged.
+      if (frame[0] !== HOMECORE_BLE_FRAG_READ_TAG || frame.byteLength < HOMECORE_BLE_FRAG_HEADER) {
+        reset();
+        return new Uint8Array(frame);
+      }
+
+      const total = frame[1] | (frame[2] << 8);
+      const offset = frame[3] | (frame[4] << 8);
+      const slice = frame.subarray(HOMECORE_BLE_FRAG_HEADER);
+      if (total === 0 || total > maxBytes || slice.byteLength === 0) {
+        reset();
+        return undefined;
+      }
+      if (offset + slice.byteLength > total) {
+        reset();
+        return undefined;
+      }
+
+      if (announced !== total) {
+        reset();
+        announced = total;
+        buffer = new Uint8Array(total);
+        seen = new Array<boolean>(total).fill(false);
+      }
+
+      const out = buffer!;
+      for (let i = 0; i < slice.byteLength; i++) {
+        const index = offset + i;
+        if (!seen[index]) {
+          seen[index] = true;
+          filled++;
+        }
+        out[index] = slice[i];
+      }
+
+      if (filled < announced!) return null;
+      const completed = out;
+      reset();
+      return completed;
+    },
+    complete: () => announced !== null && filled === announced,
+    total: () => announced,
+    reset,
+  };
+}
+
+/**
+ * Joins the `{0x30, index, total}` fragments of one encrypted notification.
+ * Returns the complete ciphertext once every piece arrived.
+ */
+export interface BleNoteReassembler {
+  push: (frame: Uint8Array) => Uint8Array | null;
+  reset: () => void;
+  inProgress: () => boolean;
+}
+
+export function createBleNoteReassembler(maxBytes = 2048): BleNoteReassembler {
+  let expected = 0;
+  let parts = new Map<number, Uint8Array>();
+
+  const reset = () => {
+    expected = 0;
+    parts = new Map();
+  };
+
+  return {
+    push(frame: Uint8Array) {
+      if (!frame || frame.byteLength === 0) return null;
+      // Not framed: one whole ciphertext in a single notification.
+      if (
+        frame[0] !== HOMECORE_BLE_NOTE_FRAG_TAG ||
+        frame.byteLength < HOMECORE_BLE_NOTE_FRAG_HEADER
+      ) {
+        reset();
+        return frame;
+      }
+
+      const index = frame[1];
+      const total = frame[2] | (frame[3] << 8);
+      if (total < 1 || total > 255 || index >= total) {
+        reset();
+        return null;
+      }
+      if (expected !== total) {
+        reset();
+        expected = total;
+      }
+      // Index 0 always starts a message, and a fragment that arrives after a
+      // gap cannot be trusted: drop the partial rather than join a message with
+      // a hole in it (the flow re-asks with HC STATUS).
+      if (index === 0) {
+        reset();
+        expected = total;
+      } else if (parts.size !== index) {
+        reset();
+        return null;
+      }
+      parts.set(index, new Uint8Array(frame.subarray(HOMECORE_BLE_NOTE_FRAG_HEADER)));
+      if (parts.size < expected) return null;
+
+      let length = 0;
+      for (const part of parts.values()) length += part.byteLength;
+      if (length === 0 || length > maxBytes) {
+        reset();
+        return null;
+      }
+      const out = new Uint8Array(length);
+      let cursor = 0;
+      for (let i = 0; i < expected; i++) {
+        const part = parts.get(i);
+        if (!part) {
+          reset();
+          return null;
+        }
+        out.set(part, cursor);
+        cursor += part.byteLength;
+      }
+      reset();
+      return out;
+    },
+    reset,
+    inProgress: () => parts.size > 0,
+  };
+}
+
 export interface SerialLineBuffer {
   /** Feed a decoded chunk; returns the complete lines it contained. */
   push: (chunk: string) => string[];

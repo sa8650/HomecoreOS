@@ -3,6 +3,11 @@ import {
   boardInfoFromHello,
   bleRecoveryCommandPayload,
   buildRecoveryCommand,
+  HOMECORE_BLE_DEFAULT_ATT_MTU,
+  bleFragmentBudget,
+  buildBleFragmentedWrite,
+  createBleNoteReassembler,
+  createBleReadWindowReader,
   createBleStatusReassembler,
   createSerialLineBuffer,
   parseBleStatusChunk,
@@ -299,5 +304,171 @@ describe("device recovery protocol (shared by Wi-Fi, BLE and USB)", () => {
       kind: "ack",
       ack: { action: "wifi", ok: false, detail: "nope" },
     });
+  });
+});
+
+/**
+ * GATT MTU framing — the fix for "GATT operation failed for unknown reason".
+ *
+ * The page cannot raise the ATT MTU and must never issue an operation larger
+ * than the negotiated budget, so it frames writes and joins framed reads and
+ * notifications. firmware/main/ble_protocol_logic.c is the other half of this
+ * contract; these tests pin the byte layout both sides agree on.
+ */
+describe("BLE GATT MTU framing", () => {
+  it("sizes the write budget from the negotiated MTU", () => {
+    expect(bleFragmentBudget(23)).toBe(20);
+    expect(bleFragmentBudget(247)).toBe(244);
+    expect(bleFragmentBudget(517)).toBe(514);
+    // Missing or nonsense values fall back to the default every stack supports.
+    expect(bleFragmentBudget(undefined)).toBe(20);
+    expect(bleFragmentBudget(null)).toBe(20);
+    expect(bleFragmentBudget(0)).toBe(20);
+    expect(HOMECORE_BLE_DEFAULT_ATT_MTU).toBe(23);
+  });
+
+  it("fragments a Client Hello so no write exceeds one ATT packet", () => {
+    const value = new Uint8Array(66);
+    value[0] = 0x01;
+    for (let i = 1; i < value.length; i++) value[i] = i;
+
+    const frames: Uint8Array[] = [];
+    let offset = 0;
+    while (offset < value.length) {
+      const frame = buildBleFragmentedWrite(value, offset, 20);
+      expect(frame).not.toBeNull();
+      expect(frame!.byteLength).toBeLessThanOrEqual(20);
+      frames.push(frame!);
+      offset += frame!.byteLength - 5;
+    }
+
+    // Four writes at 15 bytes of payload each.
+    expect(frames).toHaveLength(5);
+    expect(frames[0][0]).toBe(0x10);
+    expect(frames[0][1] | (frames[0][2] << 8)).toBe(66);
+    expect(frames[0][3] | (frames[0][4] << 8)).toBe(0);
+    expect(frames[4][3] | (frames[4][4] << 8)).toBe(60);
+  });
+
+  it("refuses to build a write that cannot be framed", () => {
+    const value = new Uint8Array(10);
+    expect(buildBleFragmentedWrite(value, 0, 4)).toBeNull();
+    expect(buildBleFragmentedWrite(value, 10, 20)).toBeNull();
+    expect(buildBleFragmentedWrite(new Uint8Array(0), 0, 20)).toBeNull();
+  });
+
+  it("joins read windows regardless of the order they arrive in", () => {
+    const value = new Uint8Array(130);
+    for (let i = 0; i < value.length; i++) value[i] = i % 251;
+
+    const reader = createBleReadWindowReader();
+    const window = (offset: number, size: number) => {
+      const slice = value.subarray(offset, Math.min(offset + size, value.length));
+      const frame = new Uint8Array(5 + slice.byteLength);
+      frame[0] = 0x20;
+      frame[1] = value.length & 0xff;
+      frame[2] = (value.length >> 8) & 0xff;
+      frame[3] = offset & 0xff;
+      frame[4] = (offset >> 8) & 0xff;
+      frame.set(slice, 5);
+      return frame;
+    };
+
+    expect(reader.total()).toBeNull();
+    expect(reader.push(window(0, 18))).toBeNull();
+    expect(reader.total()).toBe(130);
+    expect(reader.complete()).toBe(false);
+
+    // A repeated window is idempotent: it does not shift the rest of the value.
+    expect(reader.push(window(0, 18))).toBeNull();
+    expect(reader.push(window(18, 18))).toBeNull();
+
+    let done: Uint8Array | null | undefined = null;
+    let offset = 36;
+    while (!done) {
+      done = reader.push(window(offset, 18));
+      offset += 18;
+    }
+    expect(done!.byteLength).toBe(130);
+    expect(Array.from(done!)).toEqual(Array.from(value));
+    expect(reader.total()).toBeNull();
+
+    // Out-of-order windows still assemble: the header carries the offset.
+    const shuffled = createBleReadWindowReader();
+    expect(shuffled.push(window(36, 18))).toBeNull();
+    expect(shuffled.push(window(0, 18))).toBeNull();
+    expect(shuffled.complete()).toBe(false);
+    // Covering 54..125 leaves only 18..35 and 126..129 missing.
+    for (let at = 54; at < 130; at += 18) expect(shuffled.push(window(at, 18))).toBeNull();
+    expect(shuffled.complete()).toBe(false);
+    const last = shuffled.push(window(18, 18));
+    expect(last).not.toBeNull();
+    expect(Array.from(last!)).toEqual(Array.from(value));
+  });
+
+  it("returns a whole value unchanged and rejects malformed windows", () => {
+    const small = new Uint8Array([1, 2, 3, 4]);
+    expect(createBleReadWindowReader().push(small)).toEqual(small);
+
+    const reader = createBleReadWindowReader();
+    const frame = (offset: number, total: number, byte: number) => {
+      const out = new Uint8Array(6);
+      out[0] = 0x20;
+      out[1] = total & 0xff;
+      out[2] = (total >> 8) & 0xff;
+      out[3] = offset & 0xff;
+      out[4] = 0;
+      out[5] = byte;
+      return out;
+    };
+
+    // A window that overruns the announced length is rejected outright rather
+    // than written past the end of the buffer.
+    expect(reader.push(frame(8, 8, 1))).toBeUndefined();
+    expect(reader.total()).toBeNull();
+
+    // A declared length larger than the caller allows is rejected too.
+    const huge = frame(0, 0xff, 1);
+    huge[2] = 0xff;
+    expect(createBleReadWindowReader(256).push(huge)).toBeUndefined();
+  });
+
+  it("joins notification fragments before decryption", () => {
+    const ciphertext = new Uint8Array(400);
+    for (let i = 0; i < ciphertext.length; i++) ciphertext[i] = i % 256;
+
+    const payload = 16; // 20-byte notification budget minus the 4-byte header
+    const total = Math.ceil(ciphertext.length / payload);
+    const reassembler = createBleNoteReassembler();
+    expect(reassembler.inProgress()).toBe(false);
+    let completed: Uint8Array | null = null;
+    for (let i = 0; i < total; i++) {
+      const slice = ciphertext.subarray(i * payload, Math.min((i + 1) * payload, ciphertext.length));
+      const frame = new Uint8Array(4 + slice.byteLength);
+      frame[0] = 0x30;
+      frame[1] = i;
+      frame[2] = total & 0xff;
+      frame[3] = (total >> 8) & 0xff;
+      frame.set(slice, 4);
+      completed = reassembler.push(frame);
+      if (i < total - 1) {
+        expect(completed).toBeNull();
+        expect(reassembler.inProgress()).toBe(true);
+      }
+    }
+    expect(completed).not.toBeNull();
+    expect(Array.from(completed!)).toEqual(Array.from(ciphertext));
+    expect(reassembler.inProgress()).toBe(false);
+
+    // An unfragmented notification (a link that negotiated a large MTU) passes
+    // straight through.
+    const whole = new Uint8Array([9, 9, 9]);
+    expect(createBleNoteReassembler().push(whole)).toEqual(whole);
+
+    // A missing piece is never guessed at.
+    const broken = createBleNoteReassembler();
+    expect(broken.push(new Uint8Array([0x30, 0, 3, 0, 1]))).toBeNull();
+    expect(broken.push(new Uint8Array([0x30, 2, 3, 0, 3]))).toBeNull();
+    expect(broken.inProgress()).toBe(false);
   });
 });

@@ -32,6 +32,7 @@ idf_component_register(
         "nvs_store.c"
         "wifi_portal.c"
         "ble_provisioning.c"
+        "ble_protocol_logic.c"
         "provisioning_logic.c"
         "pairing_client.c"
         "io_manager.c"

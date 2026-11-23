@@ -1,4 +1,5 @@
 #include "ble_provisioning.h"
+#include "ble_protocol_logic.h"
 #include "homecore_config.h"
 #include "recovery_console.h"
 #include "recovery_logic.h"
@@ -127,6 +128,95 @@ static size_t s_hs_resp_len = 0;
 static bool s_hs_awaiting_cli_proof = false;
 static uint64_t s_hs_started_sec = 0;
 
+/* Fragmented GATT writes are reassembled here before the payload is decrypted
+ * or the handshake is run. A browser whose negotiated ATT_MTU is 23 (the
+ * default on Windows and on many Android builds) cannot send a 66-byte Client
+ * Hello or a ~300-byte encrypted command in one write, and its long-write
+ * attempt fails with "GATT operation failed for unknown reason". */
+static hc_ble_frag_rx_t s_cmd_rx;
+static hc_ble_frag_rx_t s_hs_rx;
+/* Cached ciphertext of s_status_json. A read can only return ATT_MTU - 1 bytes,
+ * so a long status is served as several windows; they must all describe the
+ * *same* ciphertext or the AES-GCM tag would not authenticate. The cache is
+ * invalidated whenever the plaintext changes. */
+static uint8_t s_status_enc[512];
+static size_t s_status_enc_len = 0;
+static bool s_status_enc_valid = false;
+/* Read cursor for the windowed responses of the INFO / HANDSHAKE / STATUS
+ * characteristics. NimBLE truncates a read response to ATT_MTU - 1, so a long
+ * value silently loses its tail; the browser instead reads windows and stops
+ * when it has the announced length. */
+static size_t s_info_rd_off = 0;
+static size_t s_hs_rd_off = 0;
+static size_t s_status_rd_off = 0;
+
+static void invalidate_status_ciphertext(void);
+
+static size_t conn_fragment_budget(void) {
+    unsigned mtu = 23;
+    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        mtu = ble_att_mtu(s_conn_handle);
+    }
+    return hc_ble_fragment_budget(mtu);
+}
+
+/**
+ * Appends `value` to a read response, windowed when it does not fit in one
+ * ATT packet. Each window is self-describing (`[0x20][total][offset][slice]`)
+ * so the browser can concatenate windows without guessing the total length,
+ * and a value that fits is returned byte-for-byte unchanged.
+ */
+static int append_read_window(
+    struct ble_gatt_access_ctxt *ctxt,
+    const uint8_t *value,
+    size_t len,
+    size_t *cursor
+) {
+    unsigned mtu = 23;
+    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) mtu = ble_att_mtu(s_conn_handle);
+    const size_t budget = hc_ble_read_window_size(mtu);
+    if (*cursor == 0 && len <= budget) {
+        *cursor = 0;
+        return os_mbuf_append(ctxt->om, value, (uint16_t)len) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+    if (budget <= HC_BLE_FRAG_HEADER) return BLE_ATT_ERR_UNLIKELY;
+
+    /* The window is capped well below the packet size so the buffer stays on
+     * the stack: a very large negotiated MTU simply gets several windows
+     * instead of one enormous one. */
+#define HC_BLE_READ_WINDOW_MAX 260
+    uint8_t frame[HC_BLE_FRAG_HEADER + HC_BLE_READ_WINDOW_MAX];
+    size_t window = budget - HC_BLE_FRAG_HEADER;
+    if (window > HC_BLE_READ_WINDOW_MAX) window = HC_BLE_READ_WINDOW_MAX;
+    if (*cursor >= len) *cursor = 0;
+
+    const size_t slice = hc_ble_frag_read_window(
+        value, len, *cursor, window, frame + HC_BLE_FRAG_HEADER, HC_BLE_READ_WINDOW_MAX
+    );
+    if (slice <= 0) return BLE_ATT_ERR_UNLIKELY;
+
+    frame[0] = HC_BLE_FRAG_READ_TAG;
+    frame[1] = (uint8_t)(len & 0xFF);
+    frame[2] = (uint8_t)((len >> 8) & 0xFF);
+    frame[3] = (uint8_t)(*cursor & 0xFF);
+    frame[4] = (uint8_t)((*cursor >> 8) & 0xFF);
+
+    const size_t total = HC_BLE_FRAG_HEADER + (size_t)slice;
+    *cursor = (*cursor + (size_t)slice) % (len ? len : 1);
+    return os_mbuf_append(ctxt->om, frame, (uint16_t)total) == 0
+        ? 0
+        : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+
+/** Resets every per-connection framing cursor (called on connect/disconnect). */
+static void reset_gatt_framing(void) {
+    hc_ble_frag_reset(&s_cmd_rx);
+    hc_ble_frag_reset(&s_hs_rx);
+    invalidate_status_ciphertext();
+    s_info_rd_off = 0;
+    s_hs_rd_off = 0;
+}
+
 static volatile hc_ble_apply_kind_t s_pending_apply = HC_BLE_APPLY_NONE;
 /* Sized for the enriched status payload (states, IP, error text plus the
  * running-image and capability mirrors); a truncation here would produce an
@@ -162,6 +252,7 @@ static void reset_ephemeral_crypto(void) {
     s_hs_resp_len = 0;
     s_hs_awaiting_cli_proof = false;
     s_hs_started_sec = 0;
+    invalidate_status_ciphertext();
     hc_ble_guard_reset_session(&s_auth_guard);
 }
 
@@ -221,19 +312,83 @@ static int encrypt_status_payload(uint8_t *out_buf, size_t out_cap, size_t *out_
     return 0;
 }
 
+/**
+ * Sends one already-encrypted payload as a status notification.
+ *
+ * A notification can carry only ATT_MTU - 3 bytes and NimBLE truncates the
+ * rest *silently*, so anything longer than the negotiated budget is split into
+ * `{0x30, index, total}` fragments. The browser joins them before decrypting
+ * (see `createBleNoteReassembler`), which means the AES-GCM tag still
+ * authenticates the whole message even though it arrived in pieces.
+ */
+static void send_encrypted_notification(const uint8_t *payload, size_t len) {
+    if (!s_ble_active || s_conn_handle == BLE_HS_CONN_HANDLE_NONE || !s_status_notify_enabled) {
+        return;
+    }
+    if (!payload || len == 0) return;
+
+    /* A fragment never has to be larger than one packet, and the frame buffer
+     * is what bounds the stack usage: cap the budget to it so a very large
+     * negotiated MTU still produces several small fragments instead of a
+     * notification that is silently dropped for not fitting the buffer. */
+    uint8_t frame[HC_BLE_NOTE_FRAG_HEADER + 256];
+    size_t budget = conn_fragment_budget();
+    if (budget > sizeof(frame)) budget = sizeof(frame);
+
+    const size_t total = hc_ble_note_count(len, budget);
+
+    if (total <= 1) {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(payload, (uint16_t)len);
+        if (om) {
+            ble_gatts_notify_custom(s_conn_handle, s_status_val_handle, om);
+        }
+        return;
+    }
+    for (size_t i = 0; i < total; i++) {
+        size_t n = hc_ble_note_build(frame, sizeof(frame), payload, len, i, budget);
+        if (n == 0) return;
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(frame, (uint16_t)n);
+        if (!om) return;
+        if (ble_gatts_notify_custom(s_conn_handle, s_status_val_handle, om) != 0) return;
+        /* One notification per connection event: the browser only has to join
+         * a handful of frames and this keeps NimBLE's mbuf pool intact on the
+         * boards with the least RAM. */
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+/** Encrypts the current status once and keeps it for reads and notifications. */
+static bool ensure_status_ciphertext(void) {
+    if (s_status_enc_valid && s_status_enc_len > 0) return true;
+    size_t enc_len = 0;
+    if (encrypt_status_payload(s_status_enc, sizeof(s_status_enc), &enc_len) != 0 || enc_len == 0) {
+        invalidate_status_ciphertext();
+        return false;
+    }
+    s_status_enc_len = enc_len;
+    s_status_enc_valid = true;
+    /* A new ciphertext means new offsets: the next read starts at window 0. */
+    s_status_rd_off = 0;
+    return true;
+}
+
+/** Drops the cached ciphertext and restarts the read window at offset 0. */
+static void invalidate_status_ciphertext(void) {
+    s_status_enc_len = 0;
+    s_status_enc_valid = false;
+    s_status_rd_off = 0;
+}
+
 static void push_status_notification(void) {
     if (!s_ble_active || s_conn_handle == BLE_HS_CONN_HANDLE_NONE || !s_status_notify_enabled) {
         return;
     }
-    uint8_t enc_buf[320];
-    size_t enc_len = 0;
-    if (encrypt_status_payload(enc_buf, sizeof(enc_buf), &enc_len) != 0 || enc_len == 0) {
-        return;
-    }
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(enc_buf, (uint16_t)enc_len);
-    if (om) {
-        ble_gatts_notify_custom(s_conn_handle, s_status_val_handle, om);
-    }
+    /* Must match the read path: the enriched status JSON plus the 28-byte
+     * IV/tag overhead overflows a 320-byte buffer, and a notification that
+     * silently fails to build leaves the browser waiting for a status that
+     * never arrives. */
+    if (!ensure_status_ciphertext()) return;
+    send_encrypted_notification(s_status_enc, s_status_enc_len);
 }
 
 /**
@@ -243,6 +398,7 @@ static void push_status_notification(void) {
 void hc_ble_prov_push_raw_status(const char *json, size_t len) {
     if (!json || len == 0 || len + 28 > sizeof(s_status_json)) return;
     hc_copy_str(s_status_json, sizeof(s_status_json), json);
+    invalidate_status_ciphertext();
     push_status_notification();
 }
 
@@ -353,6 +509,7 @@ void hc_ble_prov_update_status(
     if (printed) {
         hc_copy_str(s_status_json, sizeof(s_status_json), printed);
         cJSON_free(printed);
+        invalidate_status_ciphertext();
         push_status_notification();
     }
 }
@@ -686,23 +843,46 @@ static int gatt_chr_access_cb(
         cJSON_AddStringToObject(info, "mac_suffix", s_mac_suffix);
         cJSON_AddNumberToObject(info, "proto", 1);
         cJSON_AddStringToObject(info, "s1_mode", "auto");
+        /* Advisory: the browser cannot raise the ATT MTU, but it can size its
+         * GATT writes for a link that negotiated more than the 23-byte
+         * default. The firmware never assumes the value it sees here. */
+        cJSON_AddNumberToObject(info, "att_mtu", ble_att_mtu(s_conn_handle));
         char *str = cJSON_PrintUnformatted(info);
         cJSON_Delete(info);
         if (!str) return BLE_ATT_ERR_INSUFFICIENT_RES;
-        int rc = os_mbuf_append(ctxt->om, str, (uint16_t)strlen(str));
+        /* The info payload grows with every capability we report, so it is
+         * windowed too: a truncated read is a JSON parse error in the browser. */
+        int rc = append_read_window(
+            ctxt, (const uint8_t *)str, strlen(str), &s_info_rd_off
+        );
         cJSON_free(str);
-        return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        return rc;
     }
 
     if (ble_uuid_cmp(ctxt->chr->uuid, &s_chr_hs_uuid.u) == 0) {
         if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
             uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-            if (len > 128) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-            uint8_t buf[128];
+            if (len > 256) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            uint8_t buf[256];
             uint16_t out_len = 0;
             if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len) != 0) {
                 return BLE_ATT_ERR_UNLIKELY;
             }
+
+            /* Small MTU: the browser sends [0x10][total][offset][slice] pieces of
+             * the 66-byte Client Hello / 33-byte Client Proof. */
+            if (hc_ble_frag_is_fragment(buf, out_len)) {
+                const uint8_t *whole = NULL;
+                size_t whole_len = 0;
+                int rc = hc_ble_frag_accept(&s_hs_rx, buf, out_len, &whole, &whole_len);
+                if (rc < 0) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+                if (rc == 0) return 0; /* more fragments needed: a silent success */
+                s_hs_rd_off = 0;
+                return handle_handshake_write(whole, (uint16_t)whole_len);
+            }
+
+            hc_ble_frag_reset(&s_hs_rx);
+            s_hs_rd_off = 0;
             return handle_handshake_write(buf, out_len);
         }
         if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
@@ -710,9 +890,10 @@ static int gatt_chr_access_cb(
                 uint8_t idle[3] = {0x00, 0x00, hc_ble_guard_attempts_remaining(&s_auth_guard)};
                 return os_mbuf_append(ctxt->om, idle, sizeof(idle)) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
             }
-            return os_mbuf_append(ctxt->om, s_hs_resp, (uint16_t)s_hs_resp_len) == 0
-                ? 0
-                : BLE_ATT_ERR_INSUFFICIENT_RES;
+            /* The Device Hello is 130 bytes. At MTU 23 a single read returns 22
+             * of them and the browser would derive the session key from a
+             * truncated packet, so the value is served in windows. */
+            return append_read_window(ctxt, s_hs_resp, s_hs_resp_len, &s_hs_rd_off);
         }
         return BLE_ATT_ERR_UNLIKELY;
     }
@@ -720,12 +901,35 @@ static int gatt_chr_access_cb(
     if (ble_uuid_cmp(ctxt->chr->uuid, &s_chr_cmd_uuid.u) == 0) {
         if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return BLE_ATT_ERR_READ_NOT_PERMITTED;
         uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-        if (len > 512) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        if (len > 256) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         uint8_t *buf = calloc(1, len + 1);
         if (!buf) return BLE_ATT_ERR_INSUFFICIENT_RES;
         uint16_t out_len = 0;
         int flat_rc = ble_hs_mbuf_to_flat(ctxt->om, buf, len, &out_len);
-        int rc = (flat_rc == 0) ? handle_command_write(buf, out_len) : BLE_ATT_ERR_UNLIKELY;
+        int rc = BLE_ATT_ERR_UNLIKELY;
+        if (flat_rc == 0) {
+            if (hc_ble_frag_is_fragment(buf, out_len)) {
+                /* An encrypted command is 28 + JSON bytes; at MTU 23 that is a
+                 * dozen writes that the browser would otherwise have to send as
+                 * a long write, which Chrome on Windows refuses. */
+                const uint8_t *whole = NULL;
+                size_t whole_len = 0;
+                int frag_rc = hc_ble_frag_accept(&s_cmd_rx, buf, out_len, &whole, &whole_len);
+                if (frag_rc < 0) {
+                    rc = BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+                } else if (frag_rc == 0) {
+                    rc = 0;
+                } else {
+                    rc = handle_command_write(whole, (uint16_t)whole_len);
+                    /* The plaintext is wiped inside handle_command_write; the
+                     * reassembled ciphertext is not needed any more either. */
+                    mbedtls_platform_zeroize(s_cmd_rx.buf, sizeof(s_cmd_rx.buf));
+                }
+            } else {
+                hc_ble_frag_reset(&s_cmd_rx);
+                rc = handle_command_write(buf, out_len);
+            }
+        }
         mbedtls_platform_zeroize(buf, len + 1);
         free(buf);
         return rc;
@@ -733,14 +937,8 @@ static int gatt_chr_access_cb(
 
     if (ble_uuid_cmp(ctxt->chr->uuid, &s_chr_status_uuid.u) == 0) {
         if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
-        uint8_t enc_buf[320];
-        size_t enc_len = 0;
-        if (encrypt_status_payload(enc_buf, sizeof(enc_buf), &enc_len) != 0) {
-            return BLE_ATT_ERR_UNLIKELY;
-        }
-        return os_mbuf_append(ctxt->om, enc_buf, (uint16_t)enc_len) == 0
-            ? 0
-            : BLE_ATT_ERR_INSUFFICIENT_RES;
+        if (!ensure_status_ciphertext()) return BLE_ATT_ERR_UNLIKELY;
+        return append_read_window(ctxt, s_status_enc, s_status_enc_len, &s_status_rd_off);
     }
 
     return BLE_ATT_ERR_UNLIKELY;
@@ -788,6 +986,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
                 s_conn_handle = event->connect.conn_handle;
                 s_status_notify_enabled = false;
                 reset_ephemeral_crypto();
+                reset_gatt_framing();
                 ESP_LOGI(TAG, "BLE client connected (handle=%u)", s_conn_handle);
             } else if (s_ble_active) {
                 ble_prov_advertise();
@@ -799,6 +998,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             s_status_notify_enabled = false;
             reset_ephemeral_crypto();
+            reset_gatt_framing();
             if (s_ble_active) {
                 ble_prov_advertise();
             }
@@ -808,6 +1008,20 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
             if (event->subscribe.attr_handle == s_status_val_handle) {
                 s_status_notify_enabled = event->subscribe.cur_notify != 0;
             }
+            return 0;
+
+        case BLE_GAP_EVENT_MTU:
+            /* The write/read window is sized from this value, and the browser
+             * needs to know it to pick its own fragment size. */
+            s_info_rd_off = 0;
+            s_hs_rd_off = 0;
+            s_status_rd_off = 0;
+            ESP_LOGI(
+                TAG,
+                "BLE ATT MTU negotiated: %u (fragment budget=%u)",
+                (unsigned)event->mtu.value,
+                (unsigned)hc_ble_fragment_budget(event->mtu.value)
+            );
             return 0;
 
         case BLE_GAP_EVENT_ADV_COMPLETE:
