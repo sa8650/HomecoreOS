@@ -402,10 +402,11 @@ describe("Global real-time synchronization channel", () => {
       .filter((event) => event.entity === "board" && event.id === controllerId);
     expect(steadyEvents.some((event) => event.action === "state")).toBe(false);
 
-    // Heartbeat timeout -> one offline transition pushed to the console.
+    // Heartbeat + communication timeout -> one offline transition pushed to the console.
     await dbHarness.pg.query(
       `UPDATE public.board_instances
-         SET last_heartbeat_at = now() - interval '10 minutes'
+         SET last_heartbeat_at = now() - interval '10 minutes',
+             last_communication_at = now() - interval '10 minutes'
        WHERE id = $1`,
       [controllerId]
     );

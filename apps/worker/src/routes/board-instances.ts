@@ -314,16 +314,38 @@ export function createBoardInstanceRoutes() {
       attachedNodeCount.set(parentId, (attachedNodeCount.get(parentId) ?? 0) + 1);
     }
 
+    const reconcileOnlineIds: string[] = [];
+
     const controllers = ctrlRows.map((ctrl) => {
       const id = String(ctrl.id);
       const cred = credByController.get(id) ?? null;
       let emqxConnected = Boolean(ctrl.mqtt_connected);
+      let liveEmqxConnected = false;
       if (emqxListRes && cred && cred.status === "active") {
         const listedState = liveEmqxByClientId.get(cred.mqtt_client_id);
         if (listedState !== undefined) {
           emqxConnected = listedState;
+          liveEmqxConnected = listedState;
         }
       }
+      const pairingStatus =
+        (ctrl.pairing_status as string | undefined) ??
+        (ctrl.paired_at ? "paired" : "pending");
+      const rawStatus = String(ctrl.status ?? "offline");
+      // If EMQX confirms an active broker session right now for a paired board
+      // whose DB status drifted to offline/disconnected (e.g. a dropped HTTP
+      // heartbeat while MQTT stayed alive), reconcile status to online so the
+      // UI never displays Status: Offline alongside MQTT Connected.
+      const effectiveStatus =
+        liveEmqxConnected &&
+        pairingStatus === "paired" &&
+        (rawStatus === "offline" || rawStatus === "disconnected")
+          ? "online"
+          : rawStatus;
+      if (effectiveStatus === "online" && rawStatus !== "online") {
+        reconcileOnlineIds.push(id);
+      }
+
       const board = ctrl.board_profile_id
         ? (boardMap.get(`catalog:${String(ctrl.board_profile_id)}`) ?? null)
         : ctrl.custom_board_profile_id
@@ -334,7 +356,7 @@ export function createBoardInstanceRoutes() {
         role === "node" && ctrl.assigned_controller_id
           ? String(ctrl.assigned_controller_id)
           : null;
-      const online = ctrl.status === "online";
+      const online = effectiveStatus === "online";
       const nodeCommMode =
         role === "node"
           ? (normalizeNodeCommMode(ctrl.comm_mode) ??
@@ -349,16 +371,17 @@ export function createBoardInstanceRoutes() {
 
       return {
         ...ctrl,
+        status: effectiveStatus,
         mqtt_connected: emqxConnected,
-        wifi_connected: Boolean(ctrl.wifi_connected ?? ctrl.status === "online"),
-        pairing_status:
-          (ctrl.pairing_status as string | undefined) ??
-          (ctrl.paired_at ? "paired" : "pending"),
+        wifi_connected: Boolean(
+          liveEmqxConnected || (ctrl.wifi_connected ?? effectiveStatus === "online")
+        ),
+        pairing_status: pairingStatus,
         mqtt: cred,
         board_compat: summarizeBoardCompat(board),
         sensor_compatibility: sensorCompatByCtrl.get(id) ?? null,
         offline_recovery_instructions:
-          ctrl.status === "online"
+          effectiveStatus === "online"
             ? undefined
             : buildOfflineRecoveryInstructions(board),
         // Unified Controller / Node fields
@@ -375,6 +398,21 @@ export function createBoardInstanceRoutes() {
         node_last_linked_at: ctrl.node_last_linked_at ?? null,
       };
     });
+
+    if (reconcileOnlineIds.length > 0) {
+      const nowIso = new Date().toISOString();
+      await db
+        .from("board_instances")
+        .update({
+          status: "online",
+          mqtt_connected: true,
+          wifi_connected: true,
+          last_communication_at: nowIso,
+          mqtt_last_connected_at: nowIso,
+        })
+        .eq("account_id", auth.accountId)
+        .in("id", reconcileOnlineIds);
+    }
 
     return c.json({ controllers });
   });
