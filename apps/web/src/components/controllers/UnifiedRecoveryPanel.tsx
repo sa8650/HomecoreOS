@@ -152,7 +152,7 @@ export function UnifiedRecoveryPanel({ kind, controllers, target, profiles = EMP
         <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-3 py-2.5 text-xs"><span className="text-muted-foreground">Board’s local portal</span><code className="font-medium">http://192.168.4.1</code></div>
       </> : <>
         <UsbFlashIllustration />
-        <div className="space-y-1"><h3 className="text-[15px] font-semibold">Recover your board over USB</h3><p className="text-[12.5px] leading-relaxed text-muted-foreground">Connect a USB data cable and close any serial monitor. Keep HomecoreOS running, then hold BOOT / Recovery for 3 seconds.</p></div>
+        <div className="space-y-1"><h3 className="text-[15px] font-semibold">Recover your board over USB</h3><p className="text-[12.5px] leading-relaxed text-muted-foreground">Connect a USB data cable and close any serial monitor. Leave the board powered on with HomecoreOS running — no button press is needed, because the installed firmware answers over USB.</p></div>
       </>}
       <p className="text-[12px] leading-relaxed text-muted-foreground">{kind === "ble" ? "Keep your board nearby. We’ll identify it, find it in your account and check what needs repairing." : kind === "wifi" ? "Once connected, we’ll identify your board automatically and check its connection." : "We’ll identify the connected board automatically. This repairs your installed controller — no flashing or erasing."}</p>
       {!support.supported && <StatusAlert tone="warning">{support.reason}</StatusAlert>}

@@ -724,9 +724,12 @@ export function createUsbRecoveryTransport(options: {
           helloRaw = await this.request("HC HELLO", { timeoutMs: 5_000 });
         } catch {
           if (attempt === 2) {
+            /* The running firmware answers over USB without any button press,
+             * so the useful advice is about the cable/port/serial ownership —
+             * telling the user to hold BOOT sends them to the wrong fix. */
             throw new RecoveryTransportError(
               "usb_no_answer",
-              "The controller did not answer on USB. Hold BOOT for 3 seconds so it opens recovery mode, then retry."
+              "The controller did not answer on USB. Check it is powered and running HomecoreOS, use a data (not charge-only) cable, close any serial monitor, and pick the board's USB serial port."
             );
           }
         }

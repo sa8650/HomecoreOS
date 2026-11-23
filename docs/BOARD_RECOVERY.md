@@ -107,11 +107,36 @@ rows, so a browser cannot declare success on its own.
    MQTT and closes the temporary Wi-Fi automatically. The website reports
    success only once that has actually happened.
 
+### Leaving recovery mode (all three transports)
+
+Exactly one place owns the temporary interfaces (`apply_interface_plan` in
+`firmware/main/main.c`): it compares the provisioning mode against what is
+actually running and opens or closes the AP and BLE to match. Every exit — a
+completed pairing, a Wi-Fi-only repair, a local-page save, a USB/BLE `restart`
+repair, the 15-minute timeout and an unpair — reaches it, so no path can leave
+the AP or BLE advertising behind. On the way out the board also restores the
+cloud transport its role uses: MQTT for a Controller (or a standalone/unassigned
+Node), and an ESP-NOW re-link for a linked Node, which deliberately runs no EMQX
+session of its own.
+
+Two consequences worth knowing:
+
+- A board that is still **unprovisioned** when recovery times out keeps BLE and
+  the setup AP up — they are how setup gets finished — but the recovery session
+  itself ends and its 15-minute window restarts from zero.
+- Opening BLE on a NORMAL board needs the BLE controller memory, which NORMAL
+  operation releases to save RAM. NimBLE cannot be re-initialised in place, so
+  the board persists the recovery request and restarts once instead of reporting
+  a recovery mode whose BLE never came up.
+
 ### Repair with USB
 
 Same steps over Web Serial (115200 baud, running HomecoreOS firmware — not the
-ROM bootloader). Holding BOOT for 3 seconds is available but not required for a
-board whose firmware already answers on UART0. Flashing is never part of repair.
+ROM bootloader). **No button press is needed**: the installed firmware answers
+`HC PING`/`HC HELLO` on whichever USB port carries its console (UART0 on a
+USB-UART bridge board, USB-Serial-JTAG on a native-USB board). A BOOT press is
+only useful if the console is silent *and* the board is otherwise stuck. Flashing
+is never part of repair.
 
 ## What recovery never does
 
@@ -217,9 +242,14 @@ it is local-only.
   failing on a long GATT operation. See **Bluetooth: "GATT operation failed for
   unknown reason"** below.
 - **USB** needs Web Serial in a secure desktop Chromium browser and the running
-  firmware's UART0 console. Native USB-CDC/JTAG-only paths are **not verified**
-  by this implementation; a visible port is not proof it carries UART0. ESP8266
-  and ROM download mode do not implement this protocol.
+  firmware's console. The console task follows the board's configured transport:
+  `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` boards are read and answered over
+  USB-Serial-JTAG, everything else over UART0 at 115200 baud. Classic ESP32 and
+  ESP32-S2 boards only expose a USB port through an on-board USB-UART bridge, so
+  they need that bridge to be present and its driver installed. A visible port is
+  not proof it carries the console — if `HC PING` stays silent, try the other port
+  the board exposes. ESP8266 and ROM download mode do not implement this
+  protocol.
 
 ### Bluetooth: "GATT operation failed for unknown reason"
 
@@ -283,6 +313,15 @@ simulated/host-side.
   confirms the board, and the 3-minute fallback (180 s) leaving it open otherwise.
 - The restart stage over each transport (USB line drop, BLE disconnect, portal
   connection loss) and `uptime_sec` resetting.
+- Every exit from Recovery Mode closing **both** the setup AP and BLE, and the
+  station re-joining its saved network afterwards: a completed pairing, a
+  Wi-Fi-only repair, a local-page save, a `restart` repair over USB/BLE, the
+  15-minute timeout and an unpair.
+- A NORMAL board with BT memory reclaimed re-entering Recovery Mode: it should
+  restart once, come back with BLE advertising, and keep its pairing.
+- USB repair on a native-USB board reading and answering on USB-Serial-JTAG
+  (and on a USB-UART bridge board over UART0), including a browser that has to
+  release the port before `idf.py monitor` can use it again.
 - Real Wi-Fi password rejection, weak-signal and DHCP-failure classification;
   ESP-NOW relink between a Controller and its Nodes; OTA pending-verify state.
 - Web Bluetooth handshake/chunking on the board's real NimBLE stack at the

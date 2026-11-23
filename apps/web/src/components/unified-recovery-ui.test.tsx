@@ -60,6 +60,25 @@ describe("unified recovery panel", () => {
     expect(screen.getByRole("button", { name: "Connect USB Board" })).toBeInTheDocument();
   });
 
+  it("tells the user USB repair needs no BOOT press", () => {
+    // The running firmware answers over USB; only a stuck board needs a press,
+    // and asking for one here sent users after the wrong problem.
+    render(<UnifiedRecoveryPanel kind="usb" controllers={[board]} canManage onFlash={vi.fn()} />);
+    const copy = screen.getByText(/no button press is needed/i);
+    expect(copy).toBeInTheDocument();
+    expect(screen.queryByText(/then hold BOOT \/ Recovery for 3 seconds/i)).not.toBeInTheDocument();
+  });
+
+  it("still asks for the physical BOOT press on BLE and Wi-Fi recovery", () => {
+    for (const kind of ["ble", "wifi"] as const) {
+      const { unmount } = render(
+        <UnifiedRecoveryPanel kind={kind} controllers={[board]} canManage onFlash={vi.fn()} />
+      );
+      expect(screen.getAllByText(/3 seconds/i).length).toBeGreaterThan(0);
+      unmount();
+    }
+  });
+
   it("never guesses when an identity is unknown or ambiguous", () => {
     expect(() => matchRecoveryBoard([board], "FFFF")).toThrow(/could not be matched/);
     expect(() => matchRecoveryBoard([board, { ...board, id: "b2" }], "EE12")).toThrow(/More than one/);

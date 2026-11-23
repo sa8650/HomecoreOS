@@ -31,10 +31,24 @@ static bool s_portal_save_pending = false;
 static uint32_t s_portal_confirm_ms = 0;
 /** True once the last heartbeat HTTP round-trip succeeded (drives diagnostics). */
 static bool s_backend_ok = false;
+/** Wall-clock age of the last *successful* heartbeat (0 = never succeeded). */
+static uint32_t s_last_hb_ok_ms = 0;
+/** True between a failed and a successful heartbeat, so reachability is provable. */
+static bool s_hb_attempted = false;
+/** Set while the supervisor is re-entering NORMAL after leaving Recovery Mode. */
+static bool s_pending_relink = false;
+/** Throttles retries of a BLE interface that failed to open (0 = retry now). */
+static uint32_t s_ble_open_backoff_ms = 0;
+/** Consecutive BLE open failures; after a few the interface is reported once. */
+static uint8_t s_ble_open_failures = 0;
 
 /** Records the outcome of the most recent heartbeat, for recovery diagnostics. */
 static void note_backend_result(esp_err_t err) {
     s_backend_ok = (err == ESP_OK);
+    s_hb_attempted = true;
+    if (s_backend_ok) {
+        s_last_hb_ok_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+    }
 }
 
 static void init_recovery_button(void) {
@@ -73,11 +87,189 @@ static hc_prov_boot_btn_action_t check_boot_button_at_startup(void) {
 
     hc_prov_boot_btn_action_t act = hc_prov_evaluate_startup_button(held_ms);
     if (act == HC_BOOT_BTN_RECOVERY) {
+        /* The press at startup is the same proof-of-possession as a press while
+         * running: persist it before any interface opens so a board that has to
+         * restart to re-initialise BLE still comes back into Recovery Mode. */
         s_config.physical_confirmed = true;
+        s_config.recovery_mode = true;
         hc_copy_str(s_config.confirm_method, sizeof(s_config.confirm_method), "button_press");
         hc_nvs_save_config(&s_config);
     }
     return act;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Recovery Mode supervisor: one owner for the temporary interfaces           */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Marks the persisted recovery session as finished.
+ *
+ * `recovery_mode` tells `hc_pairing_claim_if_needed` to use the recovery pairing
+ * endpoint, so a session that already ended must clear it — otherwise the next
+ * ordinary setup claim would be sent as a recovery claim. The physical proof is
+ * kept: a later BOOT press is what grants it, not this flag.
+ */
+static void clear_persisted_recovery_session(void) {
+    if (!s_config.recovery_mode) return;
+    s_config.recovery_mode = false;
+    hc_nvs_save_config(&s_config);
+}
+
+/**
+ * Restarts late enough for a transport to finish writing its reply.
+ *
+ * Recovery Mode is entered on boards whose BLE controller memory may already
+ * have been released for NORMAL operation; NimBLE cannot be re-initialised in
+ * place, so the only honest way to honour "open BLE recovery" is to persist the
+ * request and reboot into it. Every restart that carries state in NVS goes
+ * through here so the persisted request and the config land in the same commit.
+ */
+static void restart_into_recovery(void) {
+    s_config.recovery_boot_req = true;
+    hc_nvs_save_config(&s_config);
+    ESP_LOGW(TAG, "Restarting to re-initialise BLE for Recovery Mode (config preserved)");
+    vTaskDelay(pdMS_TO_TICKS(400));
+    esp_restart();
+}
+
+/**
+ * Applies the difference between the provisioning mode and what is actually
+ * running. Both entering Recovery Mode and *every* exit go through here, which
+ * is what makes the teardown unskippable: a path can no longer leave the setup
+ * AP or BLE advertising behind by forgetting to close them itself.
+ *
+ * Called once per supervision tick, so an interface that failed to open is
+ * retried and one that was closed behind our back is re-opened.
+ *
+ * Returns true when a restart was scheduled (it does not return in that case).
+ */
+static bool apply_interface_plan(void) {
+    const hc_prov_iface_plan_t plan = hc_prov_plan_interfaces(
+        &s_prov_state,
+        hc_ble_prov_is_active(),
+        hc_ble_prov_is_mem_released(),
+        hc_wifi_is_portal_ap_active()
+    );
+
+    if (plan.restart_required) {
+        restart_into_recovery();
+        return true;
+    }
+    if (plan.open_ble && s_ble_open_backoff_ms == 0) {
+        esp_err_t err = hc_ble_prov_start(&s_config, s_prov_state.mode);
+        if (err == ESP_OK) {
+            s_ble_open_failures = 0;
+        } else {
+            /* A NimBLE bring-up that fails is usually persistent; retrying it
+             * every tick would spam the log and hammer the controller. Back off,
+             * then say plainly that this transport is unavailable instead of
+             * leaving the user waiting for an interface that never arrives. */
+            if (s_ble_open_failures < 3) s_ble_open_failures++;
+            s_ble_open_backoff_ms = 5000U;
+            if (s_ble_open_failures == 3) {
+                ESP_LOGE(
+                    TAG,
+                    "BLE recovery interface could not be started (%s); use the setup AP or USB, then restart the board",
+                    esp_err_to_name(err)
+                );
+            } else {
+                ESP_LOGW(TAG, "BLE recovery interface unavailable (%s); retrying", esp_err_to_name(err));
+            }
+        }
+    } else if (plan.open_ble && s_ble_open_backoff_ms > 0) {
+        s_ble_open_backoff_ms -= (s_ble_open_backoff_ms > 500U) ? 500U : s_ble_open_backoff_ms;
+    } else if (!plan.open_ble) {
+        s_ble_open_failures = 0;
+        s_ble_open_backoff_ms = 0;
+    }
+    /* A transport that is still writing its last reply keeps the radio for the
+     * grace window; the supervisor re-applies this plan when it expires, so the
+     * BLE interface is delayed, never skipped. */
+    if (plan.close_ble && s_ble_close_grace_ms == 0) {
+        hc_ble_prov_stop_and_reclaim();
+    }
+    if (plan.open_ap) {
+        hc_wifi_start_portal_ap(&s_config);
+    }
+    if (plan.close_ap) {
+        hc_wifi_stop_portal_ap();
+    }
+    return false;
+}
+
+/**
+ * Enters Recovery Mode. Idempotent: pressing BOOT while already in recovery
+ * keeps the interfaces exactly as they are instead of re-opening them.
+ */
+static void enter_recovery_mode(void) {
+    const bool was_recovery = (s_prov_state.mode == HC_PROV_MODE_RECOVERY);
+    hc_prov_enter_recovery(&s_prov_state);
+    hc_ble_prov_set_mode(HC_PROV_MODE_RECOVERY);
+    s_ble_close_grace_ms = 0;
+    s_waiting_wifi_only_confirm = false;
+    s_waiting_pair_mqtt_confirm = false;
+    s_portal_save_pending = false;
+    s_waiting_cloud_confirm = false;
+    if (!was_recovery) {
+        ESP_LOGW(TAG, "Recovery Mode open for %u minutes (BLE + setup AP)", HC_PROV_RECOVERY_TIMEOUT_MS / 60000U);
+    }
+    apply_interface_plan();
+}
+
+/**
+ * Leaves Recovery Mode and restores the board to normal operation.
+ *
+ * Closing the temporary interfaces is not enough to be healthy again: the board
+ * must also return to the cloud transport its role uses. A Controller (or a
+ * standalone/unassigned Node) gets MQTT back; a Node whose ESP-NOW link is
+ * healthy deliberately keeps no independent EMQX session and asks the role
+ * runtime to re-link instead.
+ */
+static void exit_recovery_mode(bool keep_grace_for_ble_reply) {
+    const bool leaving = (s_prov_state.mode == HC_PROV_MODE_RECOVERY);
+    hc_prov_exit_recovery(&s_prov_state);
+    hc_ble_prov_set_mode(s_prov_state.mode);
+
+    /* A transport that is mid-reply still needs its socket for a few hundred
+     * milliseconds; `apply_interface_plan` honours the grace for BLE only, so
+     * the setup AP closes right away and BLE follows when the grace expires. */
+    s_ble_close_grace_ms = keep_grace_for_ble_reply ? 1000U : 0;
+    s_waiting_wifi_only_confirm = false;
+    s_waiting_pair_mqtt_confirm = false;
+    s_waiting_cloud_confirm = false;
+    s_portal_save_pending = false;
+    s_portal_confirm_ms = 0;
+    clear_persisted_recovery_session();
+    apply_interface_plan();
+
+    if (leaving) {
+        ESP_LOGI(
+            TAG,
+            "Recovery Mode closed; mode=%s",
+            s_prov_state.mode == HC_PROV_MODE_NORMAL ? "normal" : "unprovisioned"
+        );
+    }
+    s_pending_relink = true;
+}
+
+/** Restores the cloud transport that this board's role actually uses. */
+static void resume_cloud_after_recovery(void) {
+    if (!s_pending_relink) return;
+    s_pending_relink = false;
+    if (!s_config.paired) return;
+
+    if (hc_role_wants_mqtt()) {
+        if (!hc_mqtt_is_started()) {
+            hc_mqtt_start(&s_config);
+        } else if (!hc_mqtt_is_connected()) {
+            hc_mqtt_trigger_reconnect();
+        }
+    } else {
+        /* A Node with a healthy ESP-NOW link must not open its own EMQX
+         * session; re-link to its Controller instead. */
+        hc_role_request_relink(&s_config);
+    }
 }
 
 /**
@@ -126,15 +318,39 @@ static void publish_recovery_snapshot(
     snap.mqtt_connected = hc_mqtt_is_connected();
     hc_copy_str(snap.mqtt_last_error, sizeof(snap.mqtt_last_error), hc_mqtt_get_last_error());
     if (cfg) {
-        snap.backend_reachable = wifi_connected;
+        /* Reachability is a *measured* HTTPS fact, not a proxy for "Wi-Fi is
+         * up": a board that joined an SSID but cannot reach the Worker is
+         * exactly the fault recovery exists for, and it used to be reported as
+         * healthy because the link was. Only a heartbeat that actually
+         * completed (or one that has not been attempted since boot) is
+         * inconclusive rather than unreachable. */
         snap.backend_ok = backend_ok;
+        snap.backend_reachable = cfg->paired
+            ? (backend_ok || (!s_hb_attempted && wifi_connected))
+            : wifi_connected;
         snap.backend_authenticated = backend_ok && cfg->paired;
+        /* `hc_io_get_config_revision()` is the revision this image *applied*;
+         * `cfg->config_revision` is what it last persisted from the server. A
+         * gap between them means the applied configuration was never saved,
+         * and an unsaved configuration is a sync fault worth reporting. */
         snap.config_revision = (unsigned)hc_io_get_config_revision();
-        snap.synced_config_revision = (unsigned)hc_io_get_config_revision();
-        snap.config_pending_sync = false;
+        snap.synced_config_revision = (unsigned)cfg->config_revision;
+        snap.config_pending_sync =
+            snap.config_revision > snap.synced_config_revision ||
+            (cfg->paired && snap.config_revision == 0);
         snap.heartbeat_interval_sec = hc_io_get_heartbeat_interval_sec();
     }
-    snap.heartbeat_age_sec = heartbeat_age_ms / 1000U;
+    /* Age of the last *successful* heartbeat, not of the last attempt: after a
+     * failed round-trip the previous success is still the last time the Worker
+     * actually answered, and the retry loop resets the elapsed counter. */
+    if (backend_ok) {
+        snap.heartbeat_age_sec = heartbeat_age_ms / 1000U;
+    } else if (s_last_hb_ok_ms > 0) {
+        const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        snap.heartbeat_age_sec = now_ms > s_last_hb_ok_ms ? (now_ms - s_last_hb_ok_ms) / 1000U : 0U;
+    } else {
+        snap.heartbeat_age_sec = 0U; /* never succeeded -> "never", not "just now" */
+    }
 
     /* --- Running image & capabilities -------------------------------------
      * Everything here is measured by this image, so the recovery console can
@@ -255,6 +471,15 @@ static void controller_supervision_task(void *pvParam) {
             pair_retry_cooldown_ms = 0;
         }
 
+        // 0. Keep the provisioning state's view of the stored config current, so
+        //    entering/leaving Recovery Mode is judged against what NVS holds
+        //    now (a BLE/portal setup can add the SSID or server URL at runtime).
+        hc_prov_note_stored_config(
+            &s_prov_state,
+            strlen(s_config.wifi_ssid) > 0,
+            strlen(s_config.backend_url) > 0
+        );
+
         // 1. Physical BOOT button handling (3s..10s release = Recovery, >=10s = Factory Reset)
         bool btn_pressed = (gpio_get_level((gpio_num_t)HOMECORE_BOOT_BUTTON_GPIO) == 0);
         bool just_armed_rec = false;
@@ -270,26 +495,15 @@ static void controller_supervision_task(void *pvParam) {
             vTaskDelay(pdMS_TO_TICKS(300));
             esp_restart();
         } else if (btn_act == HC_BOOT_BTN_RECOVERY) {
+            /* The physical press is the proof-of-possession for Recovery Mode.
+             * It is persisted before any interface opens, so a board that has to
+             * reboot to re-initialise BLE still comes back into recovery rather
+             * than into NORMAL (where the button press would be lost). */
             s_config.physical_confirmed = true;
+            s_config.recovery_mode = true;
             hc_copy_str(s_config.confirm_method, sizeof(s_config.confirm_method), "button_press");
-            if (HOMECORE_HAS_BLE && hc_ble_prov_is_mem_released()) {
-                ESP_LOGW(TAG, "Entering explicit Recovery Mode via clean restart (preserving saved config)...");
-                s_config.recovery_boot_req = true;
-                hc_nvs_save_config(&s_config);
-                vTaskDelay(pdMS_TO_TICKS(200));
-                esp_restart();
-            } else {
-                ESP_LOGW(TAG, "Entering explicit Recovery Mode (preserving saved config)");
-                hc_nvs_save_config(&s_config);
-                hc_prov_enter_recovery(&s_prov_state);
-                s_ble_close_grace_ms = 0;
-                if (hc_prov_should_ble_be_active(&s_prov_state)) {
-                    hc_ble_prov_start(&s_config, HC_PROV_MODE_RECOVERY);
-                }
-                if (hc_prov_should_ap_be_active(&s_prov_state)) {
-                    hc_wifi_start_portal_ap(&s_config);
-                }
-            }
+            hc_nvs_save_config(&s_config);
+            enter_recovery_mode();
         }
 
         // 2. Process queued BLE GATT provisioning commands safely in task context
@@ -319,31 +533,48 @@ static void controller_supervision_task(void *pvParam) {
             s_backend_ok = false;
         }
 
-        // 3. Enforce 15-minute Recovery Mode timeout without erasing saved config
+        // 3. Enforce 15-minute Recovery Mode timeout without erasing saved config.
+        //    The mode has already moved on (`hc_prov_exit_recovery`), so the same
+        //    plan-based teardown every other exit uses closes BLE *and* the AP —
+        //    including on a board that times out while still unprovisioned and
+        //    therefore legitimately keeps them open.
         bool rec_timed_out = false;
         if (hc_prov_tick(&s_prov_state, 500U, &rec_timed_out) && rec_timed_out) {
             ESP_LOGW(TAG, "Recovery mode 15-minute window expired; returning cleanly without erasing config");
-            s_waiting_wifi_only_confirm = false;
-            if (!hc_prov_should_ap_be_active(&s_prov_state)) {
-                hc_wifi_stop_portal_ap();
-            }
-            if (!hc_prov_should_ble_be_active(&s_prov_state)) {
-                hc_ble_prov_stop_and_reclaim();
+            const bool still_needs_setup = (s_prov_state.mode != HC_PROV_MODE_NORMAL);
+            if (still_needs_setup) {
+                /* Unprovisioned: BLE and the setup AP are how the user finishes
+                 * setup, so they stay up — but the *recovery* session is over. */
+                s_waiting_wifi_only_confirm = false;
+                s_waiting_pair_mqtt_confirm = false;
+                s_waiting_cloud_confirm = false;
+                s_portal_save_pending = false;
+                clear_persisted_recovery_session();
+                hc_ble_prov_set_mode(s_prov_state.mode);
+                apply_interface_plan();
+            } else {
+                exit_recovery_mode(false);
+                resume_cloud_after_recovery();
             }
         }
 
-        // 4. Delayed BLE/AP teardown after delivering final status notification to client
+        // 4. Delayed BLE interface release after a transport delivered its final
+        //    status notification. Re-applying the plan is what actually closes
+        //    BLE, so the grace window can delay the teardown but never skip it.
         if (s_ble_close_grace_ms > 0) {
             if (s_ble_close_grace_ms <= 500U) {
                 s_ble_close_grace_ms = 0;
-                if (s_prov_state.mode == HC_PROV_MODE_NORMAL) {
-                    hc_wifi_stop_portal_ap();
-                    hc_ble_prov_stop_and_reclaim();
-                }
             } else {
                 s_ble_close_grace_ms -= 500U;
             }
         }
+
+        // 4a. Converge the temporary interfaces on the current mode every tick.
+        //     This is the single owner of "open both, close both": a BLE start
+        //     that failed, an AP that was closed by a transport, or a mode that
+        //     changed in a branch above is corrected here instead of being left
+        //     for whichever exit path happens to run.
+        apply_interface_plan();
 
         // 4b. Unified Controller / Node role supervision (ESP-NOW link, standalone
         //     fallback, automatic return to ESP-NOW).
@@ -409,7 +640,8 @@ static void controller_supervision_task(void *pvParam) {
                     strlen(s_config.backend_url) > 0
                 );
                 hc_ble_prov_update_status("wifi_connected", true, true, false, ip_str, NULL);
-                s_ble_close_grace_ms = 2500U;
+                exit_recovery_mode(true);
+                resume_cloud_after_recovery();
             } else {
                 hc_ble_prov_update_status(
                     "error",
@@ -440,7 +672,8 @@ static void controller_supervision_task(void *pvParam) {
                     strlen(s_config.backend_url) > 0
                 );
                 hc_ble_prov_update_status("wifi_connected", true, true, true, ip_str, NULL);
-                s_ble_close_grace_ms = 2500U;
+                exit_recovery_mode(true);
+                resume_cloud_after_recovery();
             } else if (s_ble_mqtt_verify_ms >= 8000U) {
                 s_waiting_wifi_only_confirm = false;
                 s_ble_mqtt_verify_ms = 0;
@@ -474,12 +707,13 @@ static void controller_supervision_task(void *pvParam) {
                     // The local page is answered already; closing the AP now
                     // is what "the temporary network closes itself" means. BLE
                     // gets a short grace so its final status notification is
-                    // delivered before the radio is reclaimed.
-                    hc_wifi_stop_portal_ap();
+                    // delivered before the radio is reclaimed — the shared exit
+                    // closes both, so neither can be left behind here.
                     if (hc_ble_prov_is_active()) {
                         hc_ble_prov_update_status("paired", true, s_config.paired, mqtt_ok, ip_str, NULL);
-                        s_ble_close_grace_ms = 1000U;
                     }
+                    exit_recovery_mode(hc_ble_prov_is_active());
+                    resume_cloud_after_recovery();
                 }
             }
             if (s_portal_confirm_ms >= 180000U) {
@@ -503,13 +737,24 @@ static void controller_supervision_task(void *pvParam) {
                 hb_elapsed_ms = 0;
                 prev_wifi_connected = true;
 
-                if (hc_ble_prov_is_active()) {
-                    if (hc_mqtt_is_connected()) {
+                if (s_prov_state.mode != HC_PROV_MODE_NORMAL && hc_mqtt_is_connected()) {
+                    /* The claim succeeded and the broker already accepted the
+                     * board: nothing is left waiting on, so the temporary
+                     * interfaces close now instead of after a verify timer. */
+                    if (hc_ble_prov_is_active()) {
                         hc_ble_prov_update_status("paired", true, true, true, ip_str, NULL);
-                        s_ble_close_grace_ms = 2500U;
-                    } else {
-                        s_waiting_pair_mqtt_confirm = true;
-                        s_ble_mqtt_verify_ms = 0;
+                    }
+                    s_waiting_cloud_confirm = false;
+                    hc_prov_on_pairing_completed(&s_prov_state);
+                    exit_recovery_mode(hc_ble_prov_is_active());
+                    resume_cloud_after_recovery();
+                } else if (s_prov_state.mode != HC_PROV_MODE_NORMAL) {
+                    /* Claimed, but not yet proven against the broker: keep the
+                     * temporary interfaces open until `s_waiting_pair_mqtt_confirm`
+                     * sees MQTT come up (or gives up). */
+                    s_waiting_pair_mqtt_confirm = true;
+                    s_ble_mqtt_verify_ms = 0;
+                    if (hc_ble_prov_is_active()) {
                         hc_ble_prov_update_status("pairing", true, true, false, ip_str, NULL);
                     }
                 }
@@ -526,7 +771,11 @@ static void controller_supervision_task(void *pvParam) {
                 hc_http_post_heartbeat(&s_config);
                 if (hc_ble_prov_is_active()) {
                     hc_ble_prov_update_status("paired", true, true, true, ip_str, NULL);
-                    s_ble_close_grace_ms = 2500U;
+                }
+                if (s_prov_state.mode != HC_PROV_MODE_NORMAL) {
+                    hc_prov_on_pairing_completed(&s_prov_state);
+                    exit_recovery_mode(hc_ble_prov_is_active());
+                    resume_cloud_after_recovery();
                 }
             } else if (s_ble_mqtt_verify_ms >= 8000U) {
                 s_waiting_pair_mqtt_confirm = false;
@@ -547,7 +796,8 @@ static void controller_supervision_task(void *pvParam) {
             if (hc_ble_prov_is_active()) {
                 hc_ble_prov_update_status("paired", true, true, hc_mqtt_is_connected(), ip_str, NULL);
             }
-            s_ble_close_grace_ms = 2500U;
+            exit_recovery_mode(hc_ble_prov_is_active());
+            resume_cloud_after_recovery();
         }
 
         // 8. Wi-Fi recovered from outage OR MQTT requested explicit config sync
@@ -664,6 +914,16 @@ void app_main(void) {
         .recovery_requested = persisted_rec_req || (startup_btn == HC_BOOT_BTN_RECOVERY),
     };
     hc_prov_init_state(&s_prov_state, &boot_in);
+    hc_ble_prov_set_mode(s_prov_state.mode);
+
+    /* A boot that is *not* in Recovery Mode must not carry the recovery flag
+     * forward: `hc_rec_action_allowed` gates destructive repairs on it, so a
+     * stale flag would let the next BOOT press-less session accept a factory
+     * reset the user never asked for on this boot. */
+    if (s_prov_state.mode == HC_PROV_MODE_NORMAL && s_config.recovery_mode) {
+        s_config.recovery_mode = false;
+        hc_nvs_save_config(&s_config);
+    }
 
     if (s_prov_state.mode == HC_PROV_MODE_NORMAL) {
         hc_ble_prov_release_unused_at_boot();
@@ -698,7 +958,11 @@ void app_main(void) {
             if (s_config.config_revision == 0) {
                 hc_http_fetch_config(&s_config);
             }
-            if (hc_http_post_heartbeat(&s_config) == ESP_OK) {
+            /* Recorded like any other heartbeat so diagnostics never claim the
+             * Worker is reachable before the board has actually reached it (or
+             * claim the opposite after it just did). */
+            note_backend_result(hc_http_post_heartbeat(&s_config));
+            if (s_backend_ok) {
                 hc_ota_notify_heartbeat_ok();
             }
         }

@@ -239,6 +239,51 @@ describe("device recovery protocol (shared by Wi-Fi, BLE and USB)", () => {
     expect(telemetry.heartbeat.lastHeartbeatAt).toBeNull();
   });
 
+  it("surfaces an unsynchronized or unreachable board instead of a clean bill of health", () => {
+    // These used to be hardcoded healthy in the firmware snapshot, so a board
+    // whose stored config never reached the server looked perfect locally.
+    const board = boardInfoFromHello({
+      proto: 1,
+      boardSlug: "esp32-s3-devkitc-1-n16r8",
+      chip: "esp32s3",
+      firmwareVersion: "1.5.0",
+      mode: "normal",
+      paired: true,
+      hasWifi: true,
+      hasBle: true,
+      recoverySupported: true,
+      uidSuffix: "EE12",
+    });
+    const base = (parseRecoveryDeviceMessage(STATUS_JSON) as { status: RecoveryDeviceStatus }).status;
+
+    // A configuration that was applied but never persisted to the server is a
+    // real fault, both in the device-reported problem list and in diagnostics.
+    const unsyncedStatus = { ...base, configRevision: 7, syncedConfigRevision: 3, pendingConfig: true };
+    expect(problemsFromDeviceStatus(unsyncedStatus)).toContain("config_unsynced");
+    const unsynced = telemetryFromDeviceStatus(unsyncedStatus, NOW);
+    expect(unsynced.config.pendingSync).toBe(true);
+    expect(
+      runDiagnostics({ board, telemetry: unsynced, nowMs: NOW, transport: "usb" }).checks.find(
+        (c) => c.id === "config"
+      )?.problem
+    ).toBe("config_unsynced");
+
+    // A board that cannot reach the Worker must fail reachability, not pass.
+    const unreachableStatus = {
+      ...base,
+      backendReachable: false,
+      backendAuthenticated: false,
+      backendOk: false,
+    };
+    const unreachable = telemetryFromDeviceStatus(unreachableStatus, NOW);
+    expect(unreachable.backend.reachable).toBe(false);
+    expect(
+      runDiagnostics({ board, telemetry: unreachable, nowMs: NOW, transport: "usb" }).checks.find(
+        (c) => c.id === "backend"
+      )?.status
+    ).toBe("fail");
+  });
+
   it("builds one command line for every transport", () => {
     expect(buildRecoveryCommand("STATUS")).toBe("HC STATUS");
     expect(

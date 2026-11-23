@@ -9,10 +9,18 @@ profile and is not supported by this console.
 
 ## Transports
 
-- UART0, 115200 baud, newline-terminated commands and JSON responses. USB-UART
-  bridge boards are the initial target. Native USB CDC/JTAG-only boards need
-  explicit port-routing validation; selecting a serial port does not prove it
-  carries UART0.
+- The board console, 115200 baud, newline-terminated commands and JSON
+  responses. Which port carries it follows the build:
+  `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` boards are read and answered over
+  USB-Serial-JTAG (native USB-C), everything else over UART0 (USB-UART bridge, or
+  the IDF log UART on a board without native USB). Boards whose USB port is a
+  separate bridge still work, but selecting a serial port does not prove it is
+  the one the console uses — try the other port if `HC PING` stays silent.
+- The setup/recovery interfaces (temporary AP + BLE) have exactly one owner:
+  `apply_interface_plan` in `main/main.c`, run every supervision tick and on
+  every mode change. Entering and leaving Recovery Mode both go through it, so
+  no exit path can leave the AP or BLE advertising behind, and an interface that
+  failed to open is retried on the next tick.
 - Temporary Wi-Fi AP at `http://192.168.4.1`:
   - `/` — the local setup & recovery page. SSID, password, website URL and the
     6-digit pairing/recovery code, then **Save and Restart**. Submitting stores
@@ -91,7 +99,15 @@ the wire.
 - radios: Wi-Fi, BLE, ESP-NOW availability and the ESP-NOW link state
   (`linked` / `controller_lost` / `reconnecting` / `standalone` / `unassigned`);
 - entities: real sensor and switch counts from the IO manager, and Node counts
-  from the role runtime, or `*_known: false` when they cannot be counted.
+  from the role runtime, or `*_known: false` when they cannot be counted;
+- sync: `config_revision` is the revision this image applied and
+  `synced_config_revision` the one it persisted from the server, so
+  `pending_config` reports an applied-but-not-saved configuration;
+- reachability: `backend_reachable` is only true once an HTTPS heartbeat has
+  actually completed. Wi-Fi being up is not used as a proxy, because "joined the
+  network but cannot reach the Worker" is exactly the fault recovery exists for.
+  A refused device token is reported as `backend_authenticated: false`, and only
+  when the Worker answered at all.
 
 A field the image does not fill in is omitted, and the console reports *unable
 to verify* rather than inventing a failure. There is no path by which a

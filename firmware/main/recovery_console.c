@@ -6,6 +6,7 @@
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -197,6 +198,16 @@ static int execute_repair(hc_rec_command_t *cmd, char *out, size_t out_cap) {
             break;
 
         case HC_REC_ACTION_RESTART: {
+            /* A repair over a local transport ends with a clean restart. Leave
+             * Recovery Mode on the way out: the reboot must come back as the
+             * healthy controller the user just repaired, not re-open BLE and the
+             * setup AP because a stale recovery flag was still persisted. */
+            if (s_cfg->recovery_mode || s_cfg->physical_confirmed) {
+                s_cfg->recovery_mode = false;
+                s_cfg->physical_confirmed = false;
+                s_cfg->confirm_method[0] = '\0';
+                hc_nvs_save_config(s_cfg);
+            }
             /* Ack first: the response must reach the browser before the reboot. */
             written = hc_rec_build_ack(
                 HC_REC_ACTION_RESTART,
@@ -325,6 +336,32 @@ int hc_recovery_handle_json(const char *line, char *out, size_t out_cap) {
 /* USB / UART console task                                                   */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * Reads one byte from whichever USB port carries this board's console.
+ *
+ * Boards with native USB route the console over USB-Serial-JTAG, and boards with
+ * a USB-UART bridge route it over UART0. Using UART0 unconditionally made the
+ * console silently unreachable on every native-USB board (the browser opened
+ * the USB-CDC port the chip exposes and nothing ever answered), and it also put
+ * a driver on the bootloader's UART pins on boards whose USB port is elsewhere.
+ */
+static int console_read_byte(uint8_t *ch) {
+#if defined(CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG)
+    return (int)usb_serial_jtag_read_bytes(ch, 1, pdMS_TO_TICKS(100));
+#else
+    return uart_read_bytes(HC_RECOVERY_UART_PORT, ch, 1, pdMS_TO_TICKS(100));
+#endif
+}
+
+/** Writes a response back on the same port it was read from. */
+static void console_write(const char *data, size_t len) {
+#if defined(CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG)
+    usb_serial_jtag_write_bytes(data, len, pdMS_TO_TICKS(200));
+#else
+    uart_write_bytes(HC_RECOVERY_UART_PORT, data, len);
+#endif
+}
+
 static void recovery_console_task(void *arg) {
     (void)arg;
     char line[HC_RECOVERY_LINE_MAX + 8];
@@ -334,7 +371,7 @@ static void recovery_console_task(void *arg) {
 
     while (1) {
         uint8_t ch = 0;
-        int read = uart_read_bytes(HC_RECOVERY_UART_PORT, &ch, 1, pdMS_TO_TICKS(100));
+        int read = console_read_byte(&ch);
         if (read <= 0) continue;
 
         if (ch == '\r' || ch == '\n') {
@@ -342,8 +379,8 @@ static void recovery_console_task(void *arg) {
                 line[len] = '\0';
                 int n = hc_recovery_handle_line(line, response, sizeof(response));
                 if (n > 0) {
-                    uart_write_bytes(HC_RECOVERY_UART_PORT, response, (size_t)n);
-                    uart_write_bytes(HC_RECOVERY_UART_PORT, "\n", 1);
+                    console_write(response, (size_t)n);
+                    console_write("\n", 1);
                     if (s_restart_pending ||
                         strstr(response, "\"action\":\"restart\"") != NULL ||
                         strstr(response, "\"action\":\"factory_reset\"") != NULL) {
@@ -383,8 +420,8 @@ static void recovery_console_task(void *arg) {
             line[len] = '\0';
             int n = hc_rec_build_error("line_too_long", "Command line is too long.", response, sizeof(response));
             if (n > 0) {
-                uart_write_bytes(HC_RECOVERY_UART_PORT, response, (size_t)n);
-                uart_write_bytes(HC_RECOVERY_UART_PORT, "\n", 1);
+                console_write(response, (size_t)n);
+                console_write("\n", 1);
             }
             len = 0;
             capturing = false;
@@ -399,6 +436,11 @@ void hc_recovery_console_start(homecore_config_t *cfg) {
     }
     if (s_console_started) return;
 
+#if defined(CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG)
+    /* USB-Serial-JTAG needs no driver install: the IDF console already owns the
+     * port this image logs to, which is the same port the browser opens. */
+    ESP_LOGI(TAG, "Unified recovery console reading USB-Serial-JTAG (protocol %d)", HC_RECOVERY_PROTO_VERSION);
+#else
     /* UART0 is already installed by the IDF console; only install the driver
      * when the build does not own the port, so we never fight the log output. */
     esp_err_t err = uart_driver_install(HC_RECOVERY_UART_PORT, 1024, 1024, 0, NULL, 0);
@@ -407,6 +449,7 @@ void hc_recovery_console_start(homecore_config_t *cfg) {
         return;
     }
     uart_set_baudrate(HC_RECOVERY_UART_PORT, HC_RECOVERY_UART_BAUD);
+#endif
 
     if (xTaskCreate(recovery_console_task, "hc_recovery", 4096, NULL, 2, NULL) != pdPASS) {
         ESP_LOGW(TAG, "USB recovery console task could not start");

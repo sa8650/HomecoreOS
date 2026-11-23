@@ -41,6 +41,10 @@ typedef struct {
     bool has_ble;
     bool has_saved_config;
     bool paired;
+    /** Stored-configuration facts, so leaving Recovery Mode can apply exactly
+     * the same "is this board actually set up?" rule as boot does. */
+    bool has_wifi_ssid;
+    bool has_backend_url;
     uint32_t recovery_elapsed_ms;
 } hc_prov_state_t;
 
@@ -58,13 +62,65 @@ typedef struct {
     bool session_authenticated;
 } hc_ble_auth_guard_t;
 
+/**
+ * Difference between the temporary interfaces the current mode requires and the
+ * ones that are actually running.
+ *
+ * The supervisor owns "open both, close both": every path in and out of
+ * Recovery Mode is reduced to publishing a mode, then applying this plan. That
+ * is what makes the teardown unskippable — a path that forgets to call
+ * `hc_wifi_stop_portal_ap()` cannot leave an AP behind, because the AP's fate is
+ * derived from the mode rather than from each exit branch remembering it.
+ */
+typedef struct {
+    /** BLE should be advertising, is not, and memory is still available. */
+    bool open_ble;
+    /** The temporary setup AP should be running and is not. */
+    bool open_ap;
+    /** BLE is running but the current mode does not need it. */
+    bool close_ble;
+    /** The setup AP is running but the current mode does not need it. */
+    bool close_ap;
+    /**
+     * BLE is required but its controller memory was already reclaimed for
+     * NORMAL operation. NimBLE cannot be re-initialised in place, so the only
+     * way to honour the request is a clean restart with the recovery request
+     * persisted first.
+     */
+    bool restart_required;
+} hc_prov_iface_plan_t;
+
+hc_prov_iface_plan_t hc_prov_plan_interfaces(
+    const hc_prov_state_t *st,
+    bool ble_active,
+    bool ble_mem_released,
+    bool ap_active
+);
+
 hc_prov_mode_t hc_prov_determine_initial_mode(const hc_prov_boot_input_t *in);
 void hc_prov_init_state(hc_prov_state_t *st, const hc_prov_boot_input_t *in);
 
 bool hc_prov_should_ble_be_active(const hc_prov_state_t *st);
 bool hc_prov_should_ap_be_active(const hc_prov_state_t *st);
 
+/**
+ * Refreshes the stored-configuration facts the mode decisions depend on.
+ *
+ * The supervisor calls this every tick with what NVS actually holds, so a
+ * Wi-Fi/URL setup that arrives over BLE or the portal is reflected before the
+ * board decides whether it is still unprovisioned.
+ */
+void hc_prov_note_stored_config(hc_prov_state_t *st, bool has_wifi_ssid, bool has_backend_url);
+
 void hc_prov_enter_recovery(hc_prov_state_t *st);
+/**
+ * Leaves Recovery Mode for the mode the board's *stored* state actually
+ * justifies: NORMAL only when this board is paired with a complete config
+ * (the same rule `hc_prov_determine_initial_mode` applies at boot), otherwise
+ * UNPROVISIONED — a board that still needs setup must stay discoverable over
+ * BLE and the temporary AP instead of pretending to be a healthy controller.
+ */
+void hc_prov_exit_recovery(hc_prov_state_t *st);
 void hc_prov_on_pairing_completed(hc_prov_state_t *st);
 void hc_prov_on_wifi_reconfigured(hc_prov_state_t *st, bool has_wifi_ssid, bool has_backend_url);
 bool hc_prov_tick(hc_prov_state_t *st, uint32_t dt_ms, bool *out_timed_out);

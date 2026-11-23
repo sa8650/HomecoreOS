@@ -132,6 +132,32 @@ describe("Recovery engine — discovery & capability", () => {
     expect(wifi.supportsRePair).toBe(true);
   });
 
+  it("never asks for a BOOT press on the transport that does not need one", () => {
+    // The installed firmware answers over USB while it runs, so requiring a
+    // BOOT press there sends the user to a fix that is not the problem. Wi-Fi
+    // and BLE genuinely open only in recovery mode and must still ask.
+    const usb = describeTransportCapability({
+      transport: "usb",
+      browserSupported: true,
+      boardSupportsWifi: true,
+      boardSupportsBle: true,
+      boardFirmwareSupportsDiagnostics: true,
+    });
+    expect(usb.requirements.join(" ")).toMatch(/optional/i);
+    expect(usb.requirements.join(" ")).not.toMatch(/hold the physical BOOT/i);
+
+    for (const transport of ["wifi", "ble"] as const) {
+      const capability = describeTransportCapability({
+        transport,
+        browserSupported: true,
+        boardSupportsWifi: true,
+        boardSupportsBle: true,
+        boardFirmwareSupportsDiagnostics: true,
+      });
+      expect(capability.requirements.join(" ")).toMatch(/3 seconds/);
+    }
+  });
+
   it("is one engine for all three transports: the same ordered steps exist for each", () => {
     const ids = buildRecoverySteps().map((s) => s.id);
     expect(ids).toEqual([
