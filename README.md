@@ -85,7 +85,9 @@ Add Board offers three workflows, all built on one engine:
   closes the temporary network by itself.
 - **Setup Board** → **Setup with BLE**: animated discovery, automatic pairing,
   then only Wi-Fi SSID and password. The board saves them with the website URL
-  and MQTT credentials, restarts, verifies MQTT and turns BLE off.
+  and MQTT credentials, restarts, verifies MQTT and turns BLE off. The Bluetooth
+  link is framed to the negotiated MTU, so setup also works on platforms that
+  stay at the 23-byte default (Chrome on Windows).
 - **Repair / Recover Board** → **BLE, Wi-Fi or USB**: hold BOOT for 3 seconds to
   open the temporary Wi-Fi and BLE interfaces, then let the board diagnose
   Wi-Fi, the stored server URL, ESP-NOW, MQTT, the local webpage/temporary Wi-Fi,

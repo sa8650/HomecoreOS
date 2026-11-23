@@ -1144,7 +1144,10 @@ export function ControllerSetupModal({
                     action={
                       (bleErrorCode === "PERMISSION_DENIED" ||
                         bleErrorCode === "NO_BLE_SERVICE" ||
-                        bleErrorCode === "UNSUPPORTED") && (
+                        bleErrorCode === "UNSUPPORTED" ||
+                        // A GATT failure is often the link, not the board: offer
+                        // the local-page path rather than leaving a dead end.
+                        bleErrorCode === "GATT_FAILED") && (
                         <Button
                           type="button"
                           size="sm"

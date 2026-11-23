@@ -13,6 +13,10 @@ import {
   HOMECORE_BLE_S1_DEV_PROOF_LABEL,
   HOMECORE_BLE_S1_KDF_LABEL,
   HOMECORE_BLE_SERVICE_UUID,
+  bleFragmentBudget,
+  buildBleFragmentedWrite,
+  createBleNoteReassembler,
+  createBleReadWindowReader,
   validateBleProvisioningInputs,
   type BleCommandPayload,
   type BleDeviceInfoPayload,
@@ -23,8 +27,15 @@ interface WebBluetoothCharacteristic {
   value?: DataView;
   readValue(): Promise<DataView>;
   writeValueWithResponse(value: BufferSource): Promise<void>;
+  writeValueWithoutResponse?(value: BufferSource): Promise<void>;
   startNotifications(): Promise<WebBluetoothCharacteristic>;
   stopNotifications(): Promise<WebBluetoothCharacteristic>;
+  /**
+   * Chrome exposes these on desktop/Android; Firefox and Safari do not, which
+   * is why every GATT operation is framed against the *reported* budget and
+   * falls back to the 20-byte default when it is missing.
+   */
+  getDescriptor?(uuid: string): Promise<{ readValue(): Promise<DataView> }>;
   addEventListener(type: "characteristicvaluechanged", listener: (ev: Event) => void): void;
   removeEventListener(type: "characteristicvaluechanged", listener: (ev: Event) => void): void;
 }
@@ -77,6 +88,7 @@ export type BleClientErrorCode =
   | "DISCONNECTED"
   | "NO_BLE_SERVICE"
   | "AUTH_FAILED"
+  | "GATT_FAILED"
   | "TIMEOUT"
   | "UNKNOWN";
 
@@ -343,6 +355,17 @@ function classifyBluetoothSelectError(err: unknown): BleClientError {
   );
 }
 
+/** True for the opaque failures Web Bluetooth raises on a busy/long GATT op. */
+function isTransientGattError(domName: string, msg: string): boolean {
+  return (
+    /gatt operation failed for unknown reason/i.test(msg) ||
+    /gatt error unknown/i.test(msg) ||
+    /gatt operation already in progress/i.test(msg) ||
+    /operation in progress/i.test(msg) ||
+    domName === "NotSupportedError"
+  );
+}
+
 function classifyGattConnectError(err: unknown): BleClientError {
   if (err instanceof BleClientError) return err;
   const domName =
@@ -355,15 +378,109 @@ function classifyGattConnectError(err: unknown): BleClientError {
       "This controller does not expose HomecoreOS BLE provisioning. It may need Wi-Fi setup or a firmware update."
     );
   }
-  if (domName === "NetworkError" || /disconnect|connection failed|gatt/i.test(msg)) {
+  if (domName === "NetworkError" || /disconnect|connection failed/i.test(msg)) {
     return new BleClientError(
       "DISCONNECTED",
       "Lost Bluetooth connection to the controller. Keep it nearby and try again."
     );
   }
+  if (isTransientGattError(domName, msg)) {
+    return new BleClientError(
+      "GATT_FAILED",
+      "The Bluetooth link could not complete that operation. Move closer to the board, then click Discover BLE Board again. Wi-Fi setup works too."
+    );
+  }
   return new BleClientError(
     "UNKNOWN",
     msg || "Could not connect to the controller over Bluetooth."
+  );
+}
+
+/**
+ * A write that never exceeds the negotiated ATT payload budget.
+ *
+ * Chrome on Windows and several Android builds stay at the 23-byte default
+ * MTU, where a bare `writeValue()` of the 66-byte Client Hello fails with
+ * "GATT operation failed for unknown reason" and a transfer the browser turns
+ * into a long write can fail the same way. Sending explicit fragments of at
+ * most `budget - header` bytes keeps every write inside one ATT packet.
+ *
+ * A single retry absorbs the intermittent failures Chrome reports on a link
+ * that is otherwise up; anything else is classified for the caller.
+ */
+async function writeFramed(
+  characteristic: WebBluetoothCharacteristic,
+  value: Uint8Array,
+  budget: number,
+  onProgress?: (sent: number, total: number) => void
+): Promise<void> {
+  const attempt = async (offset: number): Promise<void> => {
+    const frame = buildBleFragmentedWrite(value, offset, budget);
+    if (!frame) throw new BleClientError("GATT_FAILED", "Invalid Bluetooth write size.");
+    await characteristic.writeValueWithResponse(toArrayBufferCopy(frame));
+    const next = offset + (frame.byteLength - 5);
+    onProgress?.(next, value.byteLength);
+    if (next < value.byteLength) {
+      // Yield between fragments so the phone's GATT queue can drain.
+      await new Promise((resolve) => setTimeout(resolve, 12));
+      await attempt(next);
+    }
+  };
+
+  try {
+    await attempt(0);
+  } catch (err) {
+    const first = classifyGattConnectError(err);
+    // Only a transient failure is worth repeating; a lost link is not.
+    if (first.code !== "GATT_FAILED") throw first;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    try {
+      await attempt(0);
+    } catch (retryErr) {
+      throw classifyGattConnectError(retryErr);
+    }
+  }
+}
+
+/**
+ * Reads a whole characteristic value even when the platform cannot return it
+ * in one ATT packet.
+ *
+ * The firmware serves a long value as `[0x20][len:2][offset:2][slice]` windows.
+ * A first read that fits returns the value unchanged; otherwise the header
+ * carries the total length and this loop keeps reading until every byte has
+ * been seen. Windows are addressed by their announced offset, so a platform
+ * that repeats a read (Chrome does this now and then on a busy link) simply
+ * delivers a window we already have instead of shifting the rest of the value.
+ */
+async function readFramed(
+  characteristic: WebBluetoothCharacteristic,
+  maxBytes = 4096
+): Promise<Uint8Array<ArrayBuffer>> {
+  const reader = createBleReadWindowReader(maxBytes);
+  // A 1 KB value needs ~50 windows at the 23-byte default MTU; the bound is
+  // generous enough for a small MTU and still finite if the board misbehaves.
+  const maxReads = Math.max(32, Math.ceil(maxBytes / 4) + 16);
+  let reads = 0;
+
+  for (;;) {
+    const frame = dataViewToBytes(await characteristic.readValue());
+    const completed = reader.push(frame);
+    if (completed) return toArrayBufferCopy(completed);
+
+    reads++;
+    if (reads >= maxReads) break;
+
+    const total = reader.total();
+    // One whole value (no window header) has already been returned above, so a
+    // null here always means more windows are waiting.
+    if (total === null) break;
+    await new Promise((resolve) => setTimeout(resolve, 6));
+  }
+
+  throw new BleClientError(
+    "GATT_FAILED",
+    "The board's Bluetooth response arrived incomplete. Move closer to the board and retry."
   );
 }
 
@@ -376,6 +493,13 @@ export class HomecoreBleClient {
   private sessionKey: Uint8Array<ArrayBuffer> | null = null;
   private statusListener: ((ev: Event) => void) | null = null;
   private disconnectListener: (() => void) | null = null;
+  /**
+   * Payload bytes per GATT write. Web Bluetooth has no MTU API, so this starts
+   * at the 20 bytes the 23-byte default allows and is raised only if the board
+   * reports a larger negotiated MTU in its device info.
+   */
+  private writeBudget = 20;
+  private noteReassembler = createBleNoteReassembler();
 
   public get deviceName(): string | undefined {
     return this.device?.name;
@@ -435,8 +559,13 @@ export class HomecoreBleClient {
       this.commandChar = await service.getCharacteristic(HOMECORE_BLE_CHAR_COMMAND_UUID);
       this.statusChar = await service.getCharacteristic(HOMECORE_BLE_CHAR_STATUS_UUID);
 
-      const rawInfo = dataViewToBytes(await infoChar.readValue());
+      // The info payload is small, but reading it through the same windowed
+      // path means a board that reports more capability cannot break the read.
+      const rawInfo = await readFramed(infoChar, 2048);
       deviceInfo = JSON.parse(new TextDecoder().decode(rawInfo)) as BleDeviceInfoPayload;
+      if (typeof deviceInfo.att_mtu === "number") {
+        this.writeBudget = bleFragmentBudget(deviceInfo.att_mtu);
+      }
 
       // Only STATUS characteristic carries BLE_GATT_CHR_F_NOTIFY (HANDSHAKE uses write+read)
       await this.statusChar.startNotifications();
@@ -465,10 +594,27 @@ export class HomecoreBleClient {
     const clientPub = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
 
     // Step 1: Write Client Hello [0x01, clientPub(65)] and read Device Hello [0x02, ...]
-    await this.handshakeChar.writeValueWithResponse(
-      concatBytes(new Uint8Array([HOMECORE_BLE_HS_CLIENT_HELLO]), clientPub)
-    );
-    const srvMsg = dataViewToBytes(await this.handshakeChar.readValue());
+    // Both directions are framed: 66 bytes out and 130 bytes in do not fit a
+    // 23-byte ATT MTU, which is exactly where "GATT operation failed for
+    // unknown reason" used to come from.
+    try {
+      await writeFramed(
+        this.handshakeChar,
+        concatBytes(new Uint8Array([HOMECORE_BLE_HS_CLIENT_HELLO]), clientPub),
+        this.writeBudget
+      );
+    } catch (err) {
+      this.disconnect();
+      throw classifyGattConnectError(err);
+    }
+
+    let srvMsg: Uint8Array<ArrayBuffer>;
+    try {
+      srvMsg = await readFramed(this.handshakeChar, 1024);
+    } catch (err) {
+      this.disconnect();
+      throw classifyGattConnectError(err);
+    }
 
     if (srvMsg[0] === HOMECORE_BLE_HS_AUTH_RESULT && srvMsg[1] === 0x02) {
       throw new BleClientError(
@@ -525,10 +671,17 @@ export class HomecoreBleClient {
       clientPub,
       devChallenge
     );
-    await this.handshakeChar.writeValueWithResponse(
-      concatBytes(new Uint8Array([HOMECORE_BLE_HS_CLIENT_PROOF]), clientProof)
-    );
-    const authResMsg = dataViewToBytes(await this.handshakeChar.readValue());
+    let authResMsg: Uint8Array<ArrayBuffer>;
+    try {
+      await writeFramed(
+        this.handshakeChar,
+        concatBytes(new Uint8Array([HOMECORE_BLE_HS_CLIENT_PROOF]), clientProof),
+        this.writeBudget
+      );
+      authResMsg = await readFramed(this.handshakeChar, 64);
+    } catch (err) {
+      throw classifyGattConnectError(err);
+    }
 
     if (authResMsg[0] !== HOMECORE_BLE_HS_AUTH_RESULT) {
       throw new BleClientError(
@@ -565,10 +718,17 @@ export class HomecoreBleClient {
       this.statusChar.removeEventListener("characteristicvaluechanged", this.statusListener);
     }
     const key = this.sessionKey;
+    const reassembler = this.noteReassembler;
+    reassembler.reset();
     this.statusListener = (ev: Event) => {
       const target = ev.target as unknown as WebBluetoothCharacteristic | undefined;
       if (!target?.value) return;
-      const bytes = dataViewToBytes(target.value);
+      // A notification carries at most ATT_MTU - 3 bytes, so a status much
+      // larger than that arrives as `{0x30, index, total}` fragments which must
+      // be joined *before* AES-GCM sees them.
+      const joined = reassembler.push(dataViewToBytes(target.value));
+      if (!joined) return;
+      const bytes = joined;
       void decryptBlePayload(key, bytes)
         .then((text) => {
           const parsed = JSON.parse(text) as BleStatusPayload;
@@ -583,7 +743,7 @@ export class HomecoreBleClient {
 
   public async readStatus(): Promise<BleStatusPayload | null> {
     if (!this.statusChar || !this.sessionKey) return null;
-    const raw = dataViewToBytes(await this.statusChar.readValue());
+    const raw = await readFramed(this.statusChar, 2048);
     if (raw.byteLength < 28) return null;
     const text = await decryptBlePayload(this.sessionKey, raw);
     return JSON.parse(text) as BleStatusPayload;
@@ -612,11 +772,9 @@ export class HomecoreBleClient {
     }
 
     const encrypted = await encryptBlePayload(this.sessionKey, JSON.stringify(payload));
-    try {
-      await this.commandChar.writeValueWithResponse(encrypted);
-    } catch (err) {
-      throw classifyGattConnectError(err);
-    }
+    // A command is 28 bytes of IV/tag plus JSON: never one ATT packet at the
+    // default MTU, so every write goes through the fragmenter.
+    await writeFramed(this.commandChar, encrypted, this.writeBudget);
   }
 
   public disconnect(): void {
@@ -643,6 +801,8 @@ export class HomecoreBleClient {
     } catch {
       // ignore disconnect errors
     }
+    this.noteReassembler.reset();
+    this.writeBudget = 20;
     this.device = null;
     this.gatt = null;
     this.handshakeChar = null;

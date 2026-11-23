@@ -30,6 +30,108 @@ function freshBytes(src: Uint8Array): Uint8Array<ArrayBuffer> {
   return out;
 }
 
+/*
+ * The simulated peripheral speaks the same GATT framing as
+ * firmware/main/ble_protocol_logic.c, because that framing is what makes the
+ * handshake work on a 23-byte ATT MTU. Modeling it here means the tests fail
+ * if the page ever goes back to one oversized writeValue()/readValue().
+ */
+const FAKE_MTU_BUDGET = 20; // MTU 23 minus the 3-byte ATT header
+const FAKE_READ_BUDGET = 21;
+
+function toBytes(buf: BufferSource): Uint8Array {
+  return buf instanceof ArrayBuffer
+    ? new Uint8Array(buf)
+    : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+
+/** Accumulates `[0x10][len:2][off:2]` fragments; calls `onValue` when whole. */
+function makeFragmentSink(onValue: (value: Uint8Array) => Promise<void> | void) {
+  let expected = 0;
+  let received = 0;
+  const parts: Uint8Array[] = [];
+  return async (buf: BufferSource) => {
+    const frame = toBytes(buf);
+    if (frame[0] !== 0x10 || frame.byteLength < 5) {
+      expected = 0;
+      received = 0;
+      parts.length = 0;
+      await onValue(frame);
+      return;
+    }
+    const total = frame[1] | (frame[2] << 8);
+    const offset = frame[3] | (frame[4] << 8);
+    if (offset === 0) {
+      expected = total;
+      received = 0;
+      parts.length = 0;
+    }
+    expect(offset).toBe(received);
+    parts.push(new Uint8Array(frame.subarray(5)));
+    received += frame.byteLength - 5;
+    if (received < expected) return;
+    const whole = new Uint8Array(expected);
+    let cursor = 0;
+    for (const part of parts) {
+      whole.set(part, cursor);
+      cursor += part.byteLength;
+    }
+    expected = 0;
+    received = 0;
+    parts.length = 0;
+    await onValue(whole);
+  };
+}
+
+/** Serves a long value as `[0x20][len:2][off:2]` windows, like the firmware. */
+function makeWindowedReader(getValue: () => Uint8Array) {
+  let cursor = 0;
+  return async () => {
+    const value = getValue();
+    if (value.byteLength <= FAKE_READ_BUDGET) {
+      cursor = 0;
+      return toDataView(value);
+    }
+    if (cursor >= value.byteLength) cursor = 0;
+    const slice = value.subarray(
+      cursor,
+      Math.min(cursor + FAKE_READ_BUDGET - 5, value.byteLength)
+    );
+    const frame = new Uint8Array(5 + slice.byteLength);
+    frame[0] = 0x20;
+    frame[1] = value.byteLength & 0xff;
+    frame[2] = (value.byteLength >> 8) & 0xff;
+    frame[3] = cursor & 0xff;
+    frame[4] = (cursor >> 8) & 0xff;
+    frame.set(slice, 5);
+    cursor += slice.byteLength;
+    return toDataView(frame);
+  };
+}
+
+/** Serves an encrypted notification as `[0x30][i][total:2]` fragments. */
+function makeNotificationFragments(ciphertext: Uint8Array): Uint8Array[] {
+  if (ciphertext.byteLength <= FAKE_MTU_BUDGET) return [ciphertext];
+  const payload = FAKE_MTU_BUDGET - 4;
+  const total = Math.ceil(ciphertext.byteLength / payload);
+  const frames: Uint8Array[] = [];
+  for (let i = 0; i < total; i++) {
+    const slice = ciphertext.subarray(i * payload, Math.min((i + 1) * payload, ciphertext.byteLength));
+    const frame = new Uint8Array(4 + slice.byteLength);
+    frame[0] = 0x30;
+    frame[1] = i;
+    frame[2] = total & 0xff;
+    frame[3] = (total >> 8) & 0xff;
+    frame.set(slice, 4);
+    frames.push(frame);
+  }
+  return frames;
+}
+
+function toDataView(bytes: Uint8Array): DataView {
+  return new DataView(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+}
+
 describe("Security 1 BLE Provisioning Client & Crypto Protocol", () => {
   const originalBluetooth = (navigator as unknown as { bluetooth?: unknown }).bluetooth;
 
@@ -161,8 +263,11 @@ describe("Security 1 BLE Provisioning Client & Crypto Protocol", () => {
 
     const emitEncryptedStatus = async (payload: Record<string, unknown>) => {
       const enc = await encryptBlePayload(devSessionKey!, JSON.stringify(payload));
-      const evt = { target: { value: toDataView(enc) } } as unknown as Event;
-      for (const fn of statusListeners) fn(evt);
+      // Serve it exactly as the firmware does: fragmented to the MTU budget.
+      for (const frame of makeNotificationFragments(enc)) {
+        const evt = { target: { value: toDataView(frame) } } as unknown as Event;
+        for (const fn of statusListeners) fn(evt);
+      }
     };
 
     const infoChar = {
@@ -184,12 +289,7 @@ describe("Security 1 BLE Provisioning Client & Crypto Protocol", () => {
         ),
     };
 
-    const handshakeChar = {
-      writeValueWithResponse: async (buf: BufferSource) => {
-        const bytes =
-          buf instanceof ArrayBuffer
-            ? new Uint8Array(buf)
-            : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const handshakeWrite = makeFragmentSink(async (bytes) => {
         if (bytes[0] === HOMECORE_BLE_HS_CLIENT_HELLO) {
           const clientPub = freshBytes(bytes.subarray(1, 66));
           const impCliPub = await crypto.subtle.importKey(
@@ -220,25 +320,34 @@ describe("Security 1 BLE Provisioning Client & Crypto Protocol", () => {
           lastHsResp = new Uint8Array(new ArrayBuffer(3));
           lastHsResp.set([HOMECORE_BLE_HS_AUTH_RESULT, 0x01, 5]);
         }
+    });
+
+    const handshakeChar = {
+      writeValueWithResponse: async (buf: BufferSource) => {
+        // Each GATT write must fit one ATT packet; a bigger one is what Chrome
+        // rejects with "GATT operation failed for unknown reason".
+        expect(toBytes(buf).byteLength).toBeLessThanOrEqual(FAKE_MTU_BUDGET);
+        await handshakeWrite(buf);
       },
-      readValue: async () => toDataView(lastHsResp),
+      readValue: makeWindowedReader(() => lastHsResp),
     };
+
+    const commandWrite = makeFragmentSink(async (bytes) => {
+      const text = await decryptBlePayload(devSessionKey!, bytes);
+      receivedCommandJson = JSON.parse(text) as Record<string, unknown>;
+      await emitEncryptedStatus({
+        state: "paired",
+        wifi_connected: true,
+        paired: true,
+        mqtt_connected: true,
+        ip: "192.168.1.44",
+      });
+    });
 
     const commandChar = {
       writeValueWithResponse: async (buf: BufferSource) => {
-        const bytes =
-          buf instanceof ArrayBuffer
-            ? new Uint8Array(buf)
-            : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-        const text = await decryptBlePayload(devSessionKey!, bytes);
-        receivedCommandJson = JSON.parse(text) as Record<string, unknown>;
-        await emitEncryptedStatus({
-          state: "paired",
-          wifi_connected: true,
-          paired: true,
-          mqtt_connected: true,
-          ip: "192.168.1.44",
-        });
+        expect(toBytes(buf).byteLength).toBeLessThanOrEqual(FAKE_MTU_BUDGET);
+        await commandWrite(buf);
       },
     };
 
@@ -362,12 +471,7 @@ describe("Security 1 BLE Provisioning Client & Crypto Protocol", () => {
             };
           }
           if (charUuid === HOMECORE_BLE_CHAR_HANDSHAKE_UUID) {
-            return {
-              writeValueWithResponse: async (buf: BufferSource) => {
-                const bytes =
-                  buf instanceof ArrayBuffer
-                    ? new Uint8Array(buf)
-                    : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+            const sink = makeFragmentSink(async (bytes) => {
                 if (bytes[0] === HOMECORE_BLE_HS_CLIENT_HELLO) {
                   const clientPub = freshBytes(bytes.subarray(1, 66));
                   const impCliPub = await crypto.subtle.importKey(
@@ -405,8 +509,13 @@ describe("Security 1 BLE Provisioning Client & Crypto Protocol", () => {
                   lastHsResp = new Uint8Array(new ArrayBuffer(3));
                   lastHsResp.set([HOMECORE_BLE_HS_AUTH_RESULT, 0x01, 5]);
                 }
+            });
+            return {
+              writeValueWithResponse: async (buf: BufferSource) => {
+                expect(toBytes(buf).byteLength).toBeLessThanOrEqual(FAKE_MTU_BUDGET);
+                await sink(buf);
               },
-              readValue: async () => toDataView(lastHsResp),
+              readValue: makeWindowedReader(() => lastHsResp),
             };
           }
           if (charUuid === HOMECORE_BLE_CHAR_COMMAND_UUID) {
@@ -481,5 +590,314 @@ describe("Security 1 BLE Provisioning Client & Crypto Protocol", () => {
     await expect(new HomecoreBleClient().connectAndAuthenticate()).rejects.toMatchObject({
       code: "PERMISSION_DENIED",
     });
+  });
+});
+
+/*
+ * Regression: "Bluetooth Connection Issue — GATT operation failed for unknown
+ * reason" during Setup with BLE.
+ *
+ * The handshake used to write the 66-byte Client Hello and read the 130-byte
+ * Device Hello as single GATT operations. At the default ATT MTU of 23 (what
+ * Chrome on Windows and many Android builds negotiate) neither fits in one
+ * ATT packet, the platform refuses the long write/read, and Chrome surfaces it
+ * as that opaque message. These tests run the whole handshake against a
+ * peripheral that *rejects any oversized operation exactly like the platform
+ * does*, so a regression to big writes fails here instead of on a user's desk.
+ */
+describe("BLE GATT MTU-23 framing", () => {
+  const originalBluetooth = (navigator as unknown as { bluetooth?: unknown }).bluetooth;
+
+  afterEach(() => {
+    Object.defineProperty(navigator, "bluetooth", {
+      value: originalBluetooth,
+      configurable: true,
+    });
+    vi.restoreAllMocks();
+  });
+
+  /** A peripheral that enforces a 23-byte MTU the way Web Bluetooth does. */
+  async function makeStrictPeripheral(options: { mtu?: number } = {}) {
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    const perWrite = (options.mtu ?? 23) - 3;
+
+    const devKp = await crypto.subtle.generateKey(
+      { name: "ECDH", namedCurve: "P-256" },
+      true,
+      ["deriveBits"]
+    );
+    const devPub = new Uint8Array(await crypto.subtle.exportKey("raw", devKp.publicKey));
+    const sessionNonce = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(16)));
+    const devChallenge = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(16)));
+
+    let devSessionKey: Uint8Array | null = null;
+    let hsResp = new Uint8Array(new ArrayBuffer(0));
+    let hsCursor = 0;
+    const notifications: Array<(ev: Event) => void> = [];
+    const commandWrites: number[] = [];
+
+    // Rejects an operation the way the platform does at this MTU.
+    const enforce = (size: number, kind: "write" | "read") => {
+      if (size > perWrite) {
+        const err = new Error("GATT operation failed for unknown reason.");
+        err.name = "NotSupportedError";
+        throw err;
+      }
+      void kind;
+    };
+
+    const handshakeSink = makeFragmentSink(async (value) => {
+      if (value[0] === HOMECORE_BLE_HS_CLIENT_HELLO) {
+        const clientPub = freshBytes(value.subarray(1, 66));
+        const impCliPub = await crypto.subtle.importKey(
+          "raw",
+          clientPub,
+          { name: "ECDH", namedCurve: "P-256" },
+          false,
+          []
+        );
+        const shared = new Uint8Array(
+          await crypto.subtle.deriveBits({ name: "ECDH", public: impCliPub }, devKp.privateKey, 256)
+        );
+        devSessionKey = await deriveSecurity1SessionKey(shared, sessionNonce, HOMECORE_BLE_DEFAULT_POP);
+        const devProof = await computeDeviceProof(devSessionKey, clientPub, devPub, sessionNonce);
+        hsResp = new Uint8Array(new ArrayBuffer(1 + 65 + 16 + 16 + 32));
+        hsResp[0] = HOMECORE_BLE_HS_DEVICE_HELLO;
+        hsResp.set(devPub, 1);
+        hsResp.set(sessionNonce, 66);
+        hsResp.set(devChallenge, 82);
+        hsResp.set(devProof, 98);
+        hsCursor = 0;
+      } else if (value[0] === HOMECORE_BLE_HS_CLIENT_PROOF) {
+        hsResp = new Uint8Array(new ArrayBuffer(3));
+        hsResp.set([HOMECORE_BLE_HS_AUTH_RESULT, 0x01, 5]);
+        hsCursor = 0;
+      }
+    });
+
+    const handshakeChar = {
+      writeValueWithResponse: async (buf: BufferSource) => {
+        enforce(toBytes(buf).byteLength, "write");
+        await handshakeSink(buf);
+      },
+      readValue: async () => {
+        // The firmware serves a value that does not fit as `[0x20][len][off]`
+        // windows, which is what makes a 130-byte Device Hello readable at all.
+        const slice = hsResp.subarray(hsCursor, Math.min(hsCursor + perWrite, hsResp.byteLength));
+        hsCursor += slice.byteLength;
+        const frame = new Uint8Array(5 + slice.byteLength);
+        frame[0] = 0x20;
+        frame[1] = hsResp.byteLength & 0xff;
+        frame[2] = (hsResp.byteLength >> 8) & 0xff;
+        frame[3] = (hsCursor - slice.byteLength) & 0xff;
+        frame[4] = ((hsCursor - slice.byteLength) >> 8) & 0xff;
+        frame.set(slice, 5);
+        return toDataView(frame);
+      },
+    };
+
+    const commandChar = {
+      writeValueWithResponse: async (buf: BufferSource) => {
+        enforce(toBytes(buf).byteLength, "write");
+        commandWrites.push(toBytes(buf).byteLength);
+      },
+    };
+
+    const infoChar = {
+      readValue: async () =>
+        toDataView(
+          new TextEncoder().encode(
+            JSON.stringify({
+              board: "esp32-s3-devkitc-1-n16r8",
+              chip: "esp32s3",
+              fw: "1.5.0",
+              mode: "unprovisioned",
+              wifi: true,
+              ble_wifi: true,
+              paired: false,
+              mac_suffix: "7C1D",
+              proto: 1,
+              s1_mode: "auto",
+              att_mtu: options.mtu ?? 23,
+            })
+          )
+        ),
+    };
+
+    const statusChar = {
+      startNotifications: vi.fn(async () => statusChar),
+      addEventListener: (_t: string, fn: (ev: Event) => void) => notifications.push(fn),
+      removeEventListener: vi.fn(),
+      readValue: async () => toDataView(new Uint8Array(new ArrayBuffer(0))),
+    };
+
+    const gatt = {
+      connected: true,
+      connect: async () => gatt,
+      disconnect: vi.fn(() => {
+        gatt.connected = false;
+      }),
+      getPrimaryService: async () => ({
+        getCharacteristic: async (uuid: string) => {
+          if (uuid === HOMECORE_BLE_CHAR_DEVICE_INFO_UUID) return infoChar;
+          if (uuid === HOMECORE_BLE_CHAR_HANDSHAKE_UUID) return handshakeChar;
+          if (uuid === HOMECORE_BLE_CHAR_COMMAND_UUID) return commandChar;
+          if (uuid === HOMECORE_BLE_CHAR_STATUS_UUID) return statusChar;
+          throw new Error(`Unexpected characteristic ${uuid}`);
+        },
+      }),
+    };
+
+    Object.defineProperty(navigator, "bluetooth", {
+      value: {
+        requestDevice: vi.fn(async () => ({
+          id: "strict-ble",
+          name: "HomecoreOS-7C1D",
+          gatt,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        })),
+      },
+      configurable: true,
+    });
+
+    return { notifications, commandWrites, devSessionKey: () => devSessionKey };
+  }
+
+  it("completes the Security 1 handshake at the default 23-byte MTU", async () => {
+    await makeStrictPeripheral({ mtu: 23 });
+    const client = new HomecoreBleClient();
+    const { deviceInfo } = await client.connectAndAuthenticate();
+
+    expect(deviceInfo.mac_suffix).toBe("7C1D");
+    expect(deviceInfo.att_mtu).toBe(23);
+    expect(client.isConnected).toBe(true);
+    client.disconnect();
+  });
+
+  it("sends an encrypted command without ever exceeding the MTU budget", async () => {
+    const peripheral = await makeStrictPeripheral({ mtu: 23 });
+    const client = new HomecoreBleClient();
+    await client.connectAndAuthenticate();
+
+    await client.sendEncryptedCommand({
+      action: "provision_wifi",
+      ssid: "Home 24G",
+      password: "correct horse battery",
+      pair_code: "482913",
+      backend_url: "https://homecore.example",
+    });
+
+    expect(peripheral.commandWrites.length).toBeGreaterThan(1);
+    for (const size of peripheral.commandWrites) {
+      expect(size).toBeLessThanOrEqual(20);
+    }
+    client.disconnect();
+  });
+
+  it("joins fragmented status notifications before decrypting them", async () => {
+    const peripheral = await makeStrictPeripheral({ mtu: 23 });
+    const client = new HomecoreBleClient();
+    await client.connectAndAuthenticate();
+
+    // A status far larger than one notification: the firmware fragments it.
+    const payload = {
+      state: "wifi_connected" as const,
+      wifi_connected: true,
+      paired: true,
+      mqtt_connected: false,
+      ip: "192.168.1.44",
+      partition: "ota_0",
+      board: "esp32-s3-devkitc-1-n16r8",
+      chip: "esp32s3",
+      fw: "1.5.0",
+      backend_url: "https://homecoreos.example.com",
+      error: "x".repeat(180),
+    };
+    const seen: string[] = [];
+    client.onStatusUpdate((status) => seen.push(status.state));
+
+    // Encrypt with the device-side copy of the session key, then fragment it the
+    // way the firmware does for a notification that exceeds the MTU.
+    const frames = makeNotificationFragments(
+      await encryptBlePayload(peripheral.devSessionKey()!, JSON.stringify(payload))
+    );
+    expect(frames.length).toBeGreaterThan(1);
+    for (const frame of frames) {
+      const evt = { target: { value: toDataView(frame) } } as unknown as Event;
+      for (const fn of peripheral.notifications) fn(evt);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(seen).toEqual(["wifi_connected"]);
+    client.disconnect();
+  });
+
+  it("classifies a refused GATT operation instead of leaking Chrome's message", async () => {
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    const gatt = {
+      connected: true,
+      connect: async () => gatt,
+      disconnect: vi.fn(),
+      getPrimaryService: async () => ({
+        getCharacteristic: async (uuid: string) => {
+          if (uuid === HOMECORE_BLE_CHAR_DEVICE_INFO_UUID) {
+            return {
+              readValue: async () =>
+                toDataView(
+                  new TextEncoder().encode(
+                    JSON.stringify({
+                      chip: "esp32s3",
+                      fw: "1.5.0",
+                      mode: "unprovisioned",
+                      wifi: true,
+                      ble_wifi: true,
+                      paired: false,
+                      mac_suffix: "7C1D",
+                      proto: 1,
+                    })
+                  )
+                ),
+            };
+          }
+          if (uuid === HOMECORE_BLE_CHAR_HANDSHAKE_UUID) {
+            return {
+              writeValueWithResponse: async () => {
+                const err = new Error("GATT operation failed for unknown reason.");
+                err.name = "NotSupportedError";
+                throw err;
+              },
+              readValue: async () => toDataView(new Uint8Array(new ArrayBuffer(0))),
+            };
+          }
+          return {
+            startNotifications: vi.fn(async () => undefined),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+          };
+        },
+      }),
+    };
+    Object.defineProperty(navigator, "bluetooth", {
+      value: {
+        requestDevice: vi.fn(async () => ({
+          id: "refusing",
+          name: "HomecoreOS-7C1D",
+          gatt,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        })),
+      },
+      configurable: true,
+    });
+
+    await expect(new HomecoreBleClient().connectAndAuthenticate()).rejects.toMatchObject({
+      name: "BleClientError",
+      code: "GATT_FAILED",
+    });
+    // The raw platform string never reaches the operator.
+    await expect(new HomecoreBleClient().connectAndAuthenticate()).rejects.not.toThrow(
+      /GATT operation failed for unknown reason/
+    );
   });
 });

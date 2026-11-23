@@ -211,11 +211,47 @@ it is local-only.
   mixed-content/private-network policy; permit local network access, or use
   BLE/USB.
 - **BLE** needs the board's BLE radio, a secure context and Web Bluetooth
-  (Chrome/Edge desktop or Android; not Safari/iOS).
+  (Chrome/Edge desktop or Android; not Safari/iOS). The link is framed by both
+  sides against the *negotiated* ATT MTU, so it works on platforms that stay at
+  the 23-byte default (Chrome on Windows and many Android builds) instead of
+  failing on a long GATT operation. See **Bluetooth: "GATT operation failed for
+  unknown reason"** below.
 - **USB** needs Web Serial in a secure desktop Chromium browser and the running
   firmware's UART0 console. Native USB-CDC/JTAG-only paths are **not verified**
   by this implementation; a visible port is not proof it carries UART0. ESP8266
   and ROM download mode do not implement this protocol.
+
+### Bluetooth: "GATT operation failed for unknown reason"
+
+This was a real defect in earlier local builds, not a board fault: the security
+handshake wrote a 66-byte Client Hello and read a 130-byte Device Hello as single
+GATT operations. A BLE operation carries at most `ATT_MTU - 3` bytes, the default
+MTU is 23, and Chrome turns the refused long write/read into exactly that
+message. The banner title came from the UI, so the underlying failure was
+invisible.
+
+Both sides now frame every value and never exceed the budget
+(`firmware/main/ble_protocol_logic.c`, `apps/web/src/lib/ble-provisioning.ts`):
+
+- writes use `[0x10][len:2][offset:2][slice…]`, reads are served as
+  `[0x20][len:2][offset:2][slice…]`, notifications as
+  `[0x30][index][total:2][slice…]`;
+- a value that fits one packet is still sent unframed, so a link that did
+  negotiate a large MTU is unaffected;
+- fragments always contain ciphertext, never plaintext — AES-GCM still
+  authenticates the whole message after the page joins the pieces;
+- the board reports its negotiated MTU as `att_mtu` in the device-info JSON, and
+  the page sizes its writes from it (falling back to 20 bytes without it).
+
+If the symptom persists on a board flashed **before** this change, the firmware
+is the old one: re-flash from **Flash Board**. The message the page shows is now
+classified — a transient link failure suggests moving closer and retrying, and
+the panel always offers **Setup with Wi-Fi** so a Bluetooth problem is never a
+dead end.
+
+Related, not fixable in software: a reconnect within a few seconds of
+disconnecting can land on the OS's still-dying link and fail. Waiting a moment
+and pressing **Discover BLE Board** again connects normally.
 
 ## Validation performed
 
@@ -223,6 +259,8 @@ it is local-only.
 npm --workspace=packages/shared run test      # engine + protocol + plan/verify
 npm --workspace=apps/worker run test          # sessions, heartbeat facts, URL compare
 npm --workspace=apps/web run test             # UI flows, engine, transports
+gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_ble_protocol_logic.c \
+    firmware/main/ble_protocol_logic.c -o /tmp/ble-test && /tmp/ble-test
 npm run typecheck
 
 gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_recovery_logic.c firmware/main/recovery_logic.c -o /tmp/t && /tmp/t
@@ -247,7 +285,10 @@ simulated/host-side.
   connection loss) and `uptime_sec` resetting.
 - Real Wi-Fi password rejection, weak-signal and DHCP-failure classification;
   ESP-NOW relink between a Controller and its Nodes; OTA pending-verify state.
-- Web Bluetooth handshake/chunking on the board's real NimBLE stack, and USB
-  serial ownership after the browser releases it.
+- Web Bluetooth handshake/chunking on the board's real NimBLE stack at the
+  default 23-byte MTU (the framing above is host-tested, but notification
+  ordering, retries on a busy GATT queue and reconnect-after-disconnect can only
+  be observed on a real link), and USB serial ownership after the browser
+  releases it.
 - EMQX credential rotation during re-pairing, and Supabase migration `0008`
   applied to a real database.

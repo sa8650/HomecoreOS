@@ -27,6 +27,38 @@ profile and is not supported by this console.
   console handler. Responses may use up to ten 150-byte chunks (the status
   payload now also carries running-image and capability facts).
 
+### GATT MTU framing (`main/ble_protocol_logic.c`)
+
+A GATT operation carries at most `ATT_MTU - 3` bytes, and the default MTU is
+23. The Security 1 Client Hello is 66 bytes, the Device Hello is 130, an
+encrypted command is 28 + JSON, and an encrypted status is several hundred, so
+none of them fit — and neither the page nor the firmware can rely on a larger
+MTU being negotiated (Chrome on Windows routinely stays at 23). A browser that
+tries the long write/read instead gets the opaque
+`GATT operation failed for unknown reason`.
+
+Both sides therefore frame every value themselves and never issue an oversized
+operation:
+
+| Direction | Wire form | Marker |
+| --- | --- | --- |
+| handshake / command write | `[0x10][len:2][offset:2][slice…]` | `0x10` |
+| characteristic read | `[0x20][len:2][offset:2][slice…]` | `0x20` |
+| status notification | `[0x30][index][total:2][slice…]` | `0x30` |
+
+A value that fits one packet is sent and returned **unframed**, byte-for-byte
+as before, so a link that did negotiate a large MTU pays no extra cost. Reads
+are addressed by the offset in their header, so repeated or reordered windows
+still assemble correctly, and the board reports its negotiated MTU as
+`att_mtu` in the device-info JSON so the page can size its writes. Fragments
+carry the ciphertext, never the plaintext: AES-GCM still authenticates the
+whole message after the page has joined the pieces.
+
+Host tests: `firmware/test/test_ble_protocol_logic.c` (built by
+`build-firmware.yml` with the rest of the C logic tests). Platform behaviour
+that only a real link can show — notification ordering, retries on a busy
+GATT queue — is listed under *Requires physical-board testing*.
+
 ## Commands
 
 `HC PING`, `HC HELLO`, `HC STATUS`, `HC REPAIR {json}`. Repair actions are
@@ -80,8 +112,11 @@ before opening browser USB recovery.
 ## Host validation
 
 ```sh
-gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_recovery_logic.c firmware/main/recovery_logic.c -o /tmp/recovery-test && /tmp/recovery-test
-gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_provisioning_logic.c firmware/main/provisioning_logic.c -o /tmp/prov-test && /tmp/prov-test
+for t in io_state ota_boot provisioning sensor_driver role recovery ble_protocol; do
+  extra=""; [ "$t" = "sensor_driver" ] && extra="-lm"   # <math.h> helpers
+  gcc -Wall -Wextra -Werror -std=c11 "firmware/test/test_${t}_logic.c" \
+      "firmware/main/${t}_logic.c" $extra -o "/tmp/${t}-test" && "/tmp/${t}-test"
+done
 ```
 
 Host tests validate parsing, action gating (including that a 3-second press
@@ -99,7 +134,13 @@ required. Confirm:
 - the AP and BLE both close after "Save and Restart" once the cloud confirms the
   board, and stay open if it never does;
 - interrupting a repair releases browser serial/GATT resources, and a repeat
-  attempt starts with diagnosis rather than replaying a mutation.
+  attempt starts with diagnosis rather than replaying a mutation;
+- Setup with BLE completes against a board whose browser link carries the
+  default 23-byte MTU (Chrome on Windows, older Android). The framing above
+  makes this the expected path rather than an edge case, but notification
+  ordering and retries on a busy GATT queue can only be observed on a real
+  link, and a reconnect within a few seconds of disconnecting can land on the
+  OS's dying link until it clears.
 
 Operator steps, API contracts, architecture, migrations, browser/hardware
 compatibility and troubleshooting: [Board Setup, Repair and

@@ -33,6 +33,12 @@ export interface BleDeviceInfoPayload {
   mac_suffix: string;
   proto: number;
   s1_mode?: "auto" | "pin";
+  /**
+   * ATT MTU the board has negotiated, when it knows it. The page cannot raise
+   * the MTU itself, so this is advisory: it lets the client size GATT writes
+   * for a link that really did negotiate more than the 23-byte default.
+   */
+  att_mtu?: number;
 }
 
 export type BleProvisioningAction =
