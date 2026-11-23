@@ -28,7 +28,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@/components/reui/select";
 import type { RoomItem } from "@/features/types";
 
 const WALLS: WallSide[] = ["top", "right", "bottom", "left"];

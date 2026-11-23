@@ -40,7 +40,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@/components/reui/select";
 import { Switch } from "@/components/ui/switch";
 import type { BoardProfileItem, FirmwareReleaseItem } from "@/features/types";
 
@@ -462,14 +462,10 @@ export const UsbFlashWizard = forwardRef<
             onValueChange={(v) => setUsbBoardSlug(v === "__none__" ? "" : v)}
             disabled={usbBoards.length === 0 || flashing}
           >
-            <SelectTrigger id="usb-board" className="flow-trigger">
+            <SelectTrigger id="usb-board" size="lg" className="flow-trigger">
               <SelectValue placeholder="Select a board from your Board Library" />
             </SelectTrigger>
-            <SelectContent
-              position="popper"
-              align="start"
-              className="min-w-[var(--radix-select-trigger-width)]"
-            >
+            <SelectContent position="popper" align="start">
               {usbBoards.length === 0 && (
                 <SelectItem value="__none__">No boards in your Board Library</SelectItem>
               )}
@@ -492,32 +488,25 @@ export const UsbFlashWizard = forwardRef<
             onValueChange={(v) => setUsbReleaseId(v === "__none__" ? "" : v)}
             disabled={!usbTargetBoard || releasesForBoard.length === 0 || flashing}
           >
-            <SelectTrigger id="usb-rel" className="flow-trigger">
-              {selectedUsbRelease ? (
-                <span className="flex min-w-0 flex-col items-start leading-tight">
-                  <span className="w-full truncate text-[13.5px] font-medium text-foreground">
-                    {selectedUsbRelease.name} v{selectedUsbRelease.version}
-                  </span>
-                  <span className="w-full truncate text-[12px] text-muted-foreground">
-                    {chipFamilyLabel(selectedUsbRelease.chip_family)} · {selectedUsbRelease.channel}
-                  </span>
-                </span>
-              ) : (
-                <SelectValue
-                  placeholder={
-                    usbTargetBoard ? "No matching factory firmware" : "Choose a board first"
-                  }
-                />
-              )}
+            <SelectTrigger id="usb-rel" size="lg" className="flow-trigger">
+              <SelectValue
+                placeholder={
+                  usbTargetBoard ? "No matching factory firmware" : "Choose a board first"
+                }
+              >
+                {selectedUsbRelease
+                  ? `${selectedUsbRelease.name} v${selectedUsbRelease.version} · ${chipFamilyLabel(selectedUsbRelease.chip_family)} · ${selectedUsbRelease.channel}`
+                  : undefined}
+              </SelectValue>
             </SelectTrigger>
-            <SelectContent className="min-w-[var(--radix-select-trigger-width)]">
+            <SelectContent position="popper" align="start">
               {releasesForBoard.length === 0 && (
                 <SelectItem value="__none__">No matching factory firmware</SelectItem>
               )}
               {releasesForBoard.map((r) => (
                 <SelectItem key={r.id} value={r.id} className="py-2">
-                  <span className="flex min-w-0 flex-col items-start gap-0.5">
-                    <span className="w-full truncate text-[13px] font-medium">
+                  <span className="flex min-w-0 flex-col items-start gap-0.5 leading-snug">
+                    <span className="w-full truncate text-[13px] font-medium text-foreground">
                       {r.name} v{r.version}
                     </span>
                     <span className="w-full truncate text-[11.5px] text-muted-foreground">

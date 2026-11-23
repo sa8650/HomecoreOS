@@ -988,5 +988,82 @@ describe("Controller Trash/Restore, Secure Recovery Re-Pairing, Config Sync, and
       history: Array<{ id: string; status: string }>;
     };
     expect(finalUpdatesJson.history.find((h) => h.id === histIdC)?.status).toBe("rolled_back");
+
+    // Case D (Streaming Range download progress): Range chunks advance OTA history
+    // smoothly through downloading -> flashing without waiting on MQTT or extra polls.
+    const pkg138 = await publishFirmwarePackage(adminCookie, "1.3.8");
+    const startD = await req("/api/firmware/ota/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: userCookie },
+      body: JSON.stringify({ boardInstanceId: controller.id, releaseId: pkg138.release.id }),
+    });
+    expect(startD.status).toBe(201);
+    const histIdD = ((await startD.json()) as { update: { id: string } }).update.id;
+
+    // Fetch first partial chunk (~15% -> downloading) and final chunk (100% -> flashing 90%)
+    const firstChunk = await req(`/api/device/firmware/ota/${pkg138.release.id}`, {
+      headers: {
+        Authorization: `Bearer ${devToken}`,
+        Range: "bytes=0-1",
+      },
+    });
+    expect(firstChunk.status).toBe(206);
+
+    const lastChunk = await req(`/api/device/firmware/ota/${pkg138.release.id}`, {
+      headers: {
+        Authorization: `Bearer ${devToken}`,
+        Range: "bytes=2-1048576",
+      },
+    });
+    expect(lastChunk.status).toBe(206);
+
+    const afterRangeUpdates = (await (
+      await req("/api/firmware/updates", { headers: { Cookie: userCookie } })
+    ).json()) as {
+      history: Array<{ id: string; status: string; progress_percent: number }>;
+    };
+    const rowD = afterRangeUpdates.history.find((h) => h.id === histIdD);
+    expect(rowD?.status).toBe("flashing");
+    expect(rowD?.progress_percent).toBe(90);
+
+    // Case E (Legacy pre-reboot race self-heal): Older firmware (<= 1.3.7) could report
+    // the exact pre-reboot race message right before esp_restart() and then immediately boot
+    // cleanly into target_version. Heartbeat verifies & heals that record to "succeeded".
+    const bogusRaceRollback = await req("/api/device/ota/progress", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${devToken}` },
+      body: JSON.stringify({
+        historyId: histIdD,
+        releaseId: pkg138.release.id,
+        status: "rolled_back",
+        progressPercent: 0,
+        firmwareVersion: "1.2.0",
+        errorMessage:
+          "Controller rolled back to previous firmware partition after first-boot failure",
+      }),
+    });
+    expect(bogusRaceRollback.status).toBe(200);
+
+    const verifiedBootHb = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${devToken}` },
+      body: JSON.stringify({
+        wifiConnected: true,
+        mqttConnected: true,
+        firmwareVersion: "1.3.8",
+        otaPendingVerify: false,
+      }),
+    });
+    expect(verifiedBootHb.status).toBe(200);
+
+    const healedUpdates = (await (
+      await req("/api/firmware/updates", { headers: { Cookie: userCookie } })
+    ).json()) as {
+      history: Array<{ id: string; status: string; progress_percent: number; error_message: string | null }>;
+    };
+    const healedRowD = healedUpdates.history.find((h) => h.id === histIdD);
+    expect(healedRowD?.status).toBe("succeeded");
+    expect(healedRowD?.progress_percent).toBe(100);
+    expect(healedRowD?.error_message).toBeNull();
   });
 });

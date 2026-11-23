@@ -16,7 +16,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@/components/reui/select";
 import type { ControllerItem } from "@/features/types";
 import { WifiPortalArtwork } from "./RecoveryArtwork";
 import {

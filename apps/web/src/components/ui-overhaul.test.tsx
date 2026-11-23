@@ -427,7 +427,7 @@ describe("4-Part UI Overhaul: Heroes, Board Library Layout, Sonner Toasts & Magi
     );
     expect(await screen.findByRole("region", { name: "My Boards Header" })).toHaveAttribute("data-hero-tone", "blue");
     expect(ctView.container.querySelector(".hc-hero-blue")).not.toBeNull();
-    await user.type(screen.getByRole("textbox", { name: /Search controllers/i }), "Garage");
+    await user.type(screen.getByRole("textbox", { name: /Search boards/i }), "Garage");
     expect(screen.queryByText("Living Room Hub")).not.toBeInTheDocument();
     expect(screen.getByText("Garage Node")).toBeInTheDocument();
     ctView.unmount();

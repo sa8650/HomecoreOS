@@ -14,6 +14,7 @@ import {
 } from "../lib/firmware-compatibility";
 import { emitNotification } from "../lib/notifications";
 import { getFirmwareObject } from "../lib/r2";
+import { makeRealtimeEvent, publishRealtimeEvents } from "../lib/realtime";
 import { requireStaffRole, requireUserSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
 
@@ -701,6 +702,25 @@ export function createFirmwareRoutes() {
         summary: `Started OTA update to v${release.version} for ${isNode ? "Node" : "Controller"} "${ctrlRow.name}"`,
       });
 
+      await publishRealtimeEvents(c.env ?? {}, c.get("deps") ?? {}, auth.accountId, [
+        makeRealtimeEvent(
+          "board",
+          "updated",
+          ctrlRow.id,
+          {
+            ota: {
+              historyId: (historyRow as { id: string }).id,
+              status: "pending",
+              progressPercent: 5,
+              errorMessage: null,
+              targetVersion: release.version,
+              terminal: false,
+            },
+          },
+          "accepted"
+        ),
+      ]);
+
       return c.json({ update: historyRow }, 201);
     }
   );
@@ -754,6 +774,25 @@ export function createFirmwareRoutes() {
         action: "firmware.ota_cancelled",
         summary: `Cancelled pending OTA update to v${h.target_version}`,
       });
+
+      await publishRealtimeEvents(c.env ?? {}, c.get("deps") ?? {}, auth.accountId, [
+        makeRealtimeEvent(
+          "board",
+          "updated",
+          h.board_instance_id,
+          {
+            ota: {
+              historyId: h.id,
+              status: "cancelled",
+              progressPercent: 0,
+              errorMessage: null,
+              targetVersion: h.target_version,
+              terminal: true,
+            },
+          },
+          "confirmed"
+        ),
+      ]);
 
       return c.json({ update: updated });
     }

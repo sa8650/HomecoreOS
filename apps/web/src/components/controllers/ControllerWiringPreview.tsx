@@ -23,6 +23,7 @@ import { cn } from "cn";
 import { Badge } from "@/components/reui/badge";
 import { IconTile } from "@/components/reui/icon-tile";
 import { EmptyStatePanel } from "@/components/shared/AppUi";
+import { BlueprintWiringMap } from "@/components/controllers/BlueprintWiringMap";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import type {
@@ -108,6 +109,7 @@ function wireTone(controllerStatus: ControllerItem["status"], entityOnline: bool
 const ControllerStation = memo(function ControllerStation({
   controller,
   roomName,
+  parentControllerName,
   switches,
   devices,
   sensors,
@@ -117,6 +119,7 @@ const ControllerStation = memo(function ControllerStation({
 }: {
   controller: ControllerItem;
   roomName: string | null;
+  parentControllerName: string | null;
   switches: SwitchItem[];
   devices: DeviceItem[];
   sensors: SensorItem[];
@@ -125,6 +128,7 @@ const ControllerStation = memo(function ControllerStation({
   onToggleSelect: (id: string) => void;
 }) {
   const status = controllerStatusMeta(controller.status);
+  const isNode = controller.board_role === "node";
 
   const entities = useMemo<WireEntity[]>(() => {
     const list: WireEntity[] = [];
@@ -215,6 +219,23 @@ const ControllerStation = memo(function ControllerStation({
             ) : (
               <span className="truncate opacity-80">No room assigned</span>
             )}
+            <span className="opacity-45">·</span>
+            <span
+              className={cn(
+                "shrink-0 font-semibold uppercase tracking-wide",
+                isNode ? "text-violet-600 dark:text-violet-400" : "text-sky-600 dark:text-sky-400"
+              )}
+            >
+              {isNode ? "Node" : "Controller"}
+            </span>
+            {isNode && parentControllerName && (
+              <>
+                <span className="opacity-45">→</span>
+                <span className="truncate text-violet-600/90 dark:text-violet-300/90">
+                  {parentControllerName}
+                </span>
+              </>
+            )}
           </p>
         </div>
         <span
@@ -237,14 +258,14 @@ const ControllerStation = memo(function ControllerStation({
         </div>
       ) : (
         <div className="flex w-full items-stretch gap-0 px-3 py-3">
-          {/* Controller bus node */}
+          {/* Controller / Node bus block */}
           <div
             className="flex w-[92px] shrink-0 flex-col items-center justify-center gap-1 rounded-lg border bg-muted/40 px-1.5 py-2 text-center"
             aria-hidden="true"
           >
-            <RiCpuLine className="size-5 text-primary" />
+            <RiCpuLine className={cn("size-5", isNode ? "text-violet-500" : "text-primary")} />
             <p className="text-[9px] font-bold uppercase leading-tight tracking-wider text-foreground/80">
-              Controller
+              {isNode ? "Node" : "Controller"}
             </p>
             <p className="w-full truncate font-mono text-[9px] text-muted-foreground" title={controller.board_model}>
               {controller.board_model}
@@ -380,6 +401,10 @@ export const ControllerWiringPreview = memo(function ControllerWiringPreview({
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const roomById = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms]);
+  const boardNameById = useMemo(
+    () => new Map(controllers.map((c) => [c.id, c.name])),
+    [controllers]
+  );
   const grouped = useMemo(() => {
     const switchMap = new Map<string, SwitchItem[]>();
     const deviceMap = new Map<string, DeviceItem[]>();
@@ -448,7 +473,7 @@ export const ControllerWiringPreview = memo(function ControllerWiringPreview({
         </div>
       </div>
 
-      <CardContent className="p-3 sm:p-4">
+      <CardContent className="space-y-4 p-3 sm:p-4">
         {controllers.length === 0 ? (
           <EmptyStatePanel
             icon={<RiCpuLine className="size-6" />}
@@ -463,25 +488,52 @@ export const ControllerWiringPreview = memo(function ControllerWiringPreview({
             }
           />
         ) : (
-          <div
-            className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2 2xl:grid-cols-3"
-            role="group"
-            aria-label="Controller wiring blueprints"
-          >
-            {controllers.map((ctrl) => (
-              <ControllerStation
-                key={ctrl.id}
-                controller={ctrl}
-                roomName={ctrl.room_id ? roomById.get(ctrl.room_id)?.name ?? null : null}
-                switches={grouped.switchMap.get(ctrl.id) ?? []}
-                devices={grouped.deviceMap.get(ctrl.id) ?? []}
-                sensors={grouped.sensorMap.get(ctrl.id) ?? []}
-                selected={selectedId === ctrl.id}
-                dimmed={selectedId !== null && selectedId !== ctrl.id}
-                onToggleSelect={toggleSelect}
-              />
-            ))}
-          </div>
+          <>
+            <BlueprintWiringMap
+              rooms={rooms}
+              controllers={controllers}
+              switches={switches}
+              devices={devices}
+              sensors={sensors}
+              selectedBoardId={selectedId}
+              onSelectBoard={setSelectedId}
+            />
+
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Hardware Pin &amp; Wiring Schedule
+                </p>
+                <span className="text-[11px] text-muted-foreground">
+                  Select a board below or on the blueprint to isolate its circuit
+                </span>
+              </div>
+              <div
+                className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2 2xl:grid-cols-3"
+                role="group"
+                aria-label="Controller wiring blueprints"
+              >
+                {controllers.map((ctrl) => (
+                  <ControllerStation
+                    key={ctrl.id}
+                    controller={ctrl}
+                    roomName={ctrl.room_id ? roomById.get(ctrl.room_id)?.name ?? null : null}
+                    parentControllerName={
+                      ctrl.assigned_controller_id
+                        ? boardNameById.get(ctrl.assigned_controller_id) ?? null
+                        : null
+                    }
+                    switches={grouped.switchMap.get(ctrl.id) ?? []}
+                    devices={grouped.deviceMap.get(ctrl.id) ?? []}
+                    sensors={grouped.sensorMap.get(ctrl.id) ?? []}
+                    selected={selectedId === ctrl.id}
+                    dimmed={selectedId !== null && selectedId !== ctrl.id}
+                    onToggleSelect={toggleSelect}
+                  />
+                ))}
+              </div>
+            </div>
+          </>
         )}
       </CardContent>
     </Card>

@@ -111,15 +111,80 @@ describe("ControllerWiringPreview", () => {
       />
     );
 
-    expect(screen.getByText("Living Hub")).toBeInTheDocument();
+    expect(screen.getAllByText("Living Hub").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/ESP32-S3-N16R8/).length).toBeGreaterThan(0);
-    expect(screen.getByText("Porch Light")).toBeInTheDocument();
-    expect(screen.getByText("GPIO 12")).toBeInTheDocument();
-    expect(screen.getByText("GPIO 14")).toBeInTheDocument();
+    expect(screen.getAllByText("Porch Light").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("GPIO 12").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("GPIO 14").length).toBeGreaterThan(0);
     // I²C address from the stored relationship — never invented
-    expect(screen.getByText("I2C · 0x76")).toBeInTheDocument();
+    expect(screen.getAllByText("I2C · 0x76").length).toBeGreaterThan(0);
     expect(screen.getByText("Living Room")).toBeInTheDocument();
     expect(screen.getByText("1 switch · 1 device · 1 sensor")).toBeInTheDocument();
+    expect(screen.getByTestId("blueprint-wiring-map")).toBeInTheDocument();
+  });
+
+  it("renders the blueprint floor map with controllers, ESP-NOW nodes, and room wiring", async () => {
+    const user = userEvent.setup();
+    render(
+      <ControllerWiringPreview
+        controllers={[
+          makeController({ id: "c1", name: "Main Controller", board_role: "controller", room_id: "r1" }),
+          makeController({
+            id: "n1",
+            name: "Kitchen Node",
+            board_role: "node",
+            assigned_controller_id: "c1",
+            node_link_state: "linked",
+            espnow_channel: 6,
+            room_id: "r2",
+          }),
+        ]}
+        switches={[makeSwitch({ id: "sw-k", board_instance_id: "n1", room_id: "r2", name: "Sink Light", gpio_pin: 5 })]}
+        devices={[makeDevice({ id: "d-l", board_instance_id: "c1", room_id: "r1", name: "Main Fan", gpio_pin: 14 })]}
+        sensors={[makeSensor({ id: "s-k", board_instance_id: "n1", room_id: "r2", name: "Air Temp" })]}
+        rooms={[
+          {
+            id: "r1",
+            account_id: "a1",
+            home_id: "h1",
+            name: "Living Room",
+            icon: "RiHomeLine",
+            floor_order: 0,
+            grid_col_span: 1,
+            floor_x: 0,
+            floor_y: 0,
+            floor_w: 320,
+            floor_h: 240,
+          },
+          {
+            id: "r2",
+            account_id: "a1",
+            home_id: "h1",
+            name: "Kitchen",
+            icon: "RiHomeLine",
+            floor_order: 1,
+            grid_col_span: 1,
+            floor_x: 320,
+            floor_y: 0,
+            floor_w: 280,
+            floor_h: 240,
+          },
+        ]}
+      />
+    );
+
+    const blueprint = screen.getByTestId("blueprint-wiring-map");
+    expect(blueprint).toBeInTheDocument();
+    expect(screen.getByTestId("blueprint-board-c1")).toBeInTheDocument();
+    expect(screen.getByTestId("blueprint-board-n1")).toBeInTheDocument();
+    expect(screen.getByText("ESP-NOW CH6")).toBeInTheDocument();
+    expect(screen.getByText("LIVING ROOM")).toBeInTheDocument();
+    expect(screen.getByText("KITCHEN")).toBeInTheDocument();
+
+    // Clicking the Node on the blueprint isolates it in the station grid too
+    await user.click(screen.getByTestId("blueprint-board-n1"));
+    expect(screen.getByTestId("controller-station-n1")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("controller-station-c1").className).toContain("opacity-45");
   });
 
   it("selecting a controller highlights it and dims the other stations", async () => {

@@ -164,6 +164,8 @@ export interface ControllerItem {
   // Unified Controller / Node role (see packages/shared/src/board-role.ts)
   board_role?: "controller" | "node";
   node_comm_mode?: "espnow" | "wifi_mqtt" | "offline" | null;
+  comm_mode?: "espnow" | "wifi_mqtt" | "offline" | null;
+  espnow_channel?: number | null;
   node_link_state?:
     | "linked"
     | "controller_lost"

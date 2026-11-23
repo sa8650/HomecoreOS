@@ -434,7 +434,7 @@ export function createDeviceApiRoutes() {
         .maybeSingle(),
       db
         .from("firmware_update_history")
-        .select("id,release_id,update_type,target_version,status,started_at,completed_at")
+        .select("id,release_id,update_type,target_version,status,error_message,started_at,completed_at")
         .eq("board_instance_id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
         .order("started_at", { ascending: false })
@@ -465,6 +465,7 @@ export function createDeviceApiRoutes() {
       update_type: string;
       target_version: string;
       status: string;
+      error_message?: string | null;
       started_at: string;
       completed_at: string | null;
     } | null;
@@ -785,10 +786,77 @@ export function createDeviceApiRoutes() {
       }
     }
 
-    // Reconcile ONLY non-terminal OTA history against the true firmware version reported in heartbeat.
-    // Never rewrite an already-terminal OTA history row (single terminal result per historyId).
+    // Reconcile non-terminal OTA history against the true firmware version reported in heartbeat.
+    // Also self-heal a known pre-reboot race from older firmware (<= 1.3.7) that emitted a
+    // spurious "Controller rolled back to previous firmware partition after first-boot failure"
+    // right before esp_restart(), whenever the board immediately boots onto the exact target version.
     const reportedFw = parsed.data.firmwareVersion?.trim();
-    if (
+    const isLinkedEspNowNode =
+      storedRole === "node" &&
+      (parsed.data.linkState === "linked" || parsed.data.commMode === "espnow");
+    const mqttStillPending = !isLinkedEspNowNode && parsed.data.mqttConnected === false;
+
+    const completedAgeMs = latestHist?.completed_at
+      ? Date.now() - Date.parse(latestHist.completed_at)
+      : Number.POSITIVE_INFINITY;
+    const isLegacyPreRebootRaceRollback =
+      Boolean(reportedFw && latestHist) &&
+      latestHist!.update_type === "ota" &&
+      latestHist!.status === "rolled_back" &&
+      latestHist!.error_message ===
+        "Controller rolled back to previous firmware partition after first-boot failure" &&
+      Number.isFinite(completedAgeMs) &&
+      completedAgeMs >= 0 &&
+      completedAgeMs <= 180_000 &&
+      versionsExactMatch(reportedFw!, latestHist!.target_version) &&
+      !parsed.data.otaPendingVerify &&
+      !mqttStillPending;
+
+    if (isLegacyPreRebootRaceRollback && latestHist && reportedFw) {
+      const ctrlName = prev?.name ?? "Controller";
+      const { data: healed } = await db
+        .from("firmware_update_history")
+        .update({
+          status: "succeeded",
+          progress_percent: 100,
+          error_message: null,
+          completed_at: now,
+        })
+        .eq("id", latestHist.id)
+        .eq("board_instance_id", dev.boardInstanceId)
+        .eq("status", "rolled_back")
+        .select("id")
+        .maybeSingle();
+      if (healed) {
+        await recordActivity(db, {
+          accountId: dev.accountId,
+          boardInstanceId: dev.boardInstanceId,
+          category: "firmware",
+          action: "firmware.ota_succeeded",
+          summary: `Firmware update verified after reboot: ${ctrlName} is running v${reportedFw}`,
+        });
+        await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
+          makeRealtimeEvent(
+            "board",
+            "updated",
+            dev.boardInstanceId,
+            {
+              firmwareVersion: reportedFw,
+              ota: {
+                historyId: latestHist.id,
+                status: "succeeded",
+                progressPercent: 100,
+                errorMessage: null,
+                targetVersion: latestHist.target_version,
+                firmwareVersion: reportedFw,
+                terminal: true,
+              },
+            },
+            "confirmed"
+          ),
+        ]);
+      }
+    } else if (
       reportedFw &&
       latestHist &&
       latestHist.update_type === "ota" &&
@@ -803,12 +871,6 @@ export function createDeviceApiRoutes() {
       if (isActiveOta) {
         if (versionsExactMatch(reportedFw, latestHist.target_version)) {
           // Never mark OTA succeeded while bootloader verification or MQTT health check is still pending!
-          // Linked Nodes over ESP-NOW intentionally hold no independent EMQX session,
-          // so mqttConnected === false is expected once their ESP-NOW link is healthy.
-          const isLinkedEspNowNode =
-            storedRole === "node" &&
-            (parsed.data.linkState === "linked" || parsed.data.commMode === "espnow");
-          const mqttStillPending = !isLinkedEspNowNode && parsed.data.mqttConnected === false;
           if (parsed.data.otaPendingVerify || mqttStillPending) {
             await db
               .from("firmware_update_history")
@@ -819,6 +881,25 @@ export function createDeviceApiRoutes() {
               .eq("id", latestHist.id)
               .eq("board_instance_id", dev.boardInstanceId)
               .in("status", [...ACTIVE_OTA_STATUSES]);
+            await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
+              makeRealtimeEvent(
+                "board",
+                "updated",
+                dev.boardInstanceId,
+                {
+                  ota: {
+                    historyId: latestHist.id,
+                    status: "verifying",
+                    progressPercent: 96,
+                    errorMessage: null,
+                    targetVersion: latestHist.target_version,
+                    firmwareVersion: reportedFw,
+                    terminal: false,
+                  },
+                },
+                "accepted"
+              ),
+            ]);
           } else {
             const { data: transitioned } = await db
               .from("firmware_update_history")
@@ -859,6 +940,26 @@ export function createDeviceApiRoutes() {
                   firmwareVersion: reportedFw,
                 },
               });
+              await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
+                makeRealtimeEvent(
+                  "board",
+                  "updated",
+                  dev.boardInstanceId,
+                  {
+                    firmwareVersion: reportedFw,
+                    ota: {
+                      historyId: latestHist.id,
+                      status: "succeeded",
+                      progressPercent: 100,
+                      errorMessage: null,
+                      targetVersion: latestHist.target_version,
+                      firmwareVersion: reportedFw,
+                      terminal: true,
+                    },
+                  },
+                  "confirmed"
+                ),
+              ]);
             }
           }
         } else if (
@@ -905,11 +1006,31 @@ export function createDeviceApiRoutes() {
                 firmwareVersion: reportedFw,
               },
             });
+            await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
+              makeRealtimeEvent(
+                "board",
+                "updated",
+                dev.boardInstanceId,
+                {
+                  firmwareVersion: reportedFw,
+                  ota: {
+                    historyId: latestHist.id,
+                    status: "rolled_back",
+                    progressPercent: 0,
+                    errorMessage: rollbackMsg,
+                    targetVersion: latestHist.target_version,
+                    firmwareVersion: reportedFw,
+                    terminal: true,
+                  },
+                },
+                "confirmed"
+              ),
+            ]);
           }
         } else if (
           ["downloading", "flashing", "verifying"].includes(latestHist.status) &&
           Number.isFinite(startedAgeMs) &&
-          startedAgeMs > 90_000
+          startedAgeMs > 300_000
         ) {
           const timeoutMsg = `Controller reconnected on v${reportedFw} before OTA v${latestHist.target_version} finished.`;
           await db
@@ -1746,6 +1867,66 @@ export function createDeviceApiRoutes() {
       size_bytes: number;
     };
 
+    const recordStreamingDownloadProgress = async (pct: number) => {
+      try {
+        const { data: activeHist } = await db
+          .from("firmware_update_history")
+          .select("id,status,progress_percent,target_version")
+          .eq("board_instance_id", dev.boardInstanceId)
+          .eq("account_id", dev.accountId)
+          .eq("release_id", releaseId)
+          .in("status", ["pending", "downloading", "flashing"])
+          .order("started_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!activeHist) return;
+        const row = activeHist as {
+          id: string;
+          status: string;
+          progress_percent: number;
+          target_version: string;
+        };
+        const clampedPct = Math.max(12, Math.min(90, Math.round(pct)));
+        const nextStatus = clampedPct >= 25 ? "flashing" : "downloading";
+        const prevPct = Number(row.progress_percent ?? 0);
+        // Throttle writes to at most ~5 steps across the entire image download
+        const shouldUpdate =
+          row.status !== nextStatus ||
+          clampedPct - prevPct >= 15 ||
+          (clampedPct >= 90 && prevPct < 90);
+        if (!shouldUpdate || clampedPct < prevPct) return;
+        await db
+          .from("firmware_update_history")
+          .update({
+            status: nextStatus,
+            progress_percent: clampedPct,
+          })
+          .eq("id", row.id)
+          .eq("board_instance_id", dev.boardInstanceId)
+          .in("status", ["pending", "downloading", "flashing"]);
+        await publishRealtimeEvents(c.env ?? {}, c.get("deps") ?? {}, dev.accountId, [
+          makeRealtimeEvent(
+            "board",
+            "updated",
+            dev.boardInstanceId,
+            {
+              ota: {
+                historyId: row.id,
+                status: nextStatus,
+                progressPercent: clampedPct,
+                errorMessage: null,
+                targetVersion: row.target_version,
+                terminal: false,
+              },
+            },
+            "accepted"
+          ),
+        ]);
+      } catch {
+        // Streaming progress reporting is best-effort; never fail binary delivery.
+      }
+    };
+
     const rangeHeader = c.req.header("range")?.trim();
     if (rangeHeader && f.size_bytes > 0) {
       const m = rangeHeader.match(/^bytes=(\d+)-(\d*)$/i);
@@ -1764,6 +1945,8 @@ export function createDeviceApiRoutes() {
             buf.byteLength === length
               ? buf
               : buf.subarray(start, Math.min(buf.byteLength, start + length));
+          const pct = 10 + ((start + chunk.byteLength) / f.size_bytes) * 80;
+          await recordStreamingDownloadProgress(pct);
           return new Response(chunk, {
             status: 206,
             headers: {
@@ -1784,6 +1967,7 @@ export function createDeviceApiRoutes() {
 
     const obj = await getFirmwareObject(c.env ?? {}, f.r2_key);
     if (!obj) return c.json({ error: "OTA binary missing from R2." }, 404);
+    await recordStreamingDownloadProgress(30);
 
     return new Response(obj.body, {
       status: 200,

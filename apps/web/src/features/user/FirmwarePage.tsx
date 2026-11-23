@@ -51,7 +51,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@/components/reui/select";
 import {
   Table,
   TableBody,
@@ -171,11 +171,12 @@ export function FirmwarePage({
   const hasActiveOta = history.some(
     (h) => h.update_type === "ota" && ACTIVE_OTA_STATUSES.has(h.status)
   );
-  // OTA progress is pushed by the device: the firmware card moves as soon as
-  // the controller reports, instead of a 2.5 s poll per active update.
+  // OTA progress is pushed live via the shared realtime channel (including
+  // mid-download Range milestones and post-reboot verification). Apply patch
+  // payloads immediately for zero-lag progress bars, and sync full state on
+  // terminal transitions or reconnect.
   const realtimeState = useRealtimeStatus().state;
   useEffect(() => {
-    if (!hasActiveOta) return;
     let cancelled = false;
     const refresh = async () => {
       try {
@@ -192,14 +193,82 @@ export function FirmwarePage({
       }
     };
     const unsubscribe = getRealtimeClient().subscribe((batch) => {
-      if (batch.resync || batch.events.some((event) => event.entity === "board")) {
+      if (batch.resync) {
+        if (hasActiveOta) void refresh();
+        return;
+      }
+      const boardEvents = batch.events.filter((event) => event.entity === "board");
+      if (boardEvents.length === 0) return;
+
+      let needsFullRefresh = false;
+      const otaPatches: Array<{
+        historyId: string;
+        status: FirmwareUpdateHistoryItem["status"];
+        progressPercent: number;
+        errorMessage?: string | null;
+        terminal?: boolean;
+      }> = [];
+
+      for (const ev of boardEvents) {
+        const ota = (ev.patch as Record<string, unknown> | undefined)?.ota as
+          | {
+              historyId?: string;
+              status?: FirmwareUpdateHistoryItem["status"];
+              progressPercent?: number;
+              errorMessage?: string | null;
+              terminal?: boolean;
+            }
+          | undefined;
+        if (ota?.historyId && ota.status) {
+          otaPatches.push({
+            historyId: ota.historyId,
+            status: ota.status,
+            progressPercent: Number(ota.progressPercent ?? 0),
+            errorMessage: ota.errorMessage,
+            terminal: ota.terminal,
+          });
+          if (ota.terminal || !ACTIVE_OTA_STATUSES.has(ota.status)) {
+            needsFullRefresh = true;
+          }
+        } else if (hasActiveOta) {
+          needsFullRefresh = true;
+        }
+      }
+
+      if (otaPatches.length > 0) {
+        setHistory((prev) => {
+          const patchById = new Map(otaPatches.map((p) => [p.historyId, p]));
+          let matchedAny = false;
+          const next = prev.map((row) => {
+            const p = patchById.get(row.id);
+            if (!p) return row;
+            matchedAny = true;
+            return {
+              ...row,
+              status: p.status,
+              progress_percent: p.progressPercent,
+              error_message:
+                p.errorMessage !== undefined ? p.errorMessage : row.error_message,
+              completed_at: p.terminal
+                ? row.completed_at ?? new Date().toISOString()
+                : row.completed_at,
+            };
+          });
+          if (!matchedAny) {
+            needsFullRefresh = true;
+          }
+          return next;
+        });
+      }
+
+      if (needsFullRefresh) {
         void refresh();
       }
     });
     const timer =
-      realtimeState === "live"
-        ? null
-        : window.setInterval(() => void refresh(), 10_000);
+      hasActiveOta && realtimeState !== "live"
+        ? window.setInterval(() => void refresh(), 4_000)
+        : null;
     return () => {
       cancelled = true;
       unsubscribe();
