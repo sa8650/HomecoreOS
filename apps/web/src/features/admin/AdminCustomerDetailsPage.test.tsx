@@ -4,15 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TimezoneContext } from "../../lib/timezone";
 import { AdminCustomerDetailsPage } from "./AdminCustomerDetailsPage";
 import { AdminAccountsStaffPage } from "./AdminAccountsAndBoardsPages";
+import { jsonResponse } from "@/test/http";
 
 const originalFetch = globalThis.fetch;
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 const board = {
   id: "11111111-1111-4111-8111-111111111111",

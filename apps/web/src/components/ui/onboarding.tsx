@@ -11,7 +11,7 @@ import {
 import { useControllableState } from "@radix-ui/react-use-controllable-state"
 import { cva, type VariantProps } from "class-variance-authority"
 
-import { cn } from "@/lib/utils"
+import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 
 const stepIndicatorVariants = cva("flex items-center justify-center gap-2", {

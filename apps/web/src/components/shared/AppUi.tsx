@@ -7,7 +7,7 @@ import {
   RiMoonLine,
   RiSunLine,
 } from "@remixicon/react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { getBrowserTimezoneFallback, getTimezoneRegions } from "@/lib/timezone";
 import {
   Alert,

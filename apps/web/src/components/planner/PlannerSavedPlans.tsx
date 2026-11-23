@@ -13,10 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { PlannerPlanSummary } from "@/lib/planner-api";
 import { formatTimestamp, useEffectiveTimezone } from "@/lib/timezone";
 import { PlannerStateBadge } from "./PlannerResultView";
-
-function plural(count: number, singular: string): string {
-  return `${count} ${count === 1 ? singular : `${singular}s`}`;
-}
+import { plural } from "@homecoreos/shared";
 
 export function PlannerSavedPlans({
   plans,

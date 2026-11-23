@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import "./dynamic-island.css";
 
 const MORPH_SPRING = {

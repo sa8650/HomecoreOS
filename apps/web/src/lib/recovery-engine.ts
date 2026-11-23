@@ -16,7 +16,6 @@
 import {
   RECOVERY_MAX_ATTEMPTS,
   RECOVERY_OPERATION_TIMEOUT_MS,
-  RECOVERY_SESSION_TTL_SEC,
   buildRecoverySteps,
   buildRepairPlan,
   buildRecoveryReport,
@@ -1107,14 +1106,6 @@ function mergeChecks(client: DiagnosticCheck[], server: DiagnosticCheck[]): Diag
 export function isRecoveryFlowExpired(expiresAt: string | null, nowMs = Date.now()): boolean {
   if (!expiresAt) return false;
   return isRecoverySessionExpired(expiresAt, nowMs);
-}
-
-export const RECOVERY_FLOW_TTL_SEC = RECOVERY_SESSION_TTL_SEC;
-
-/** Plain-language "problem / action / verification" rows for the plan screen. */
-export function planRows(plan: RecoveryPlan | null) {
-  if (!plan) return [];
-  return plan.summary;
 }
 
 export type { RecoveryTransportAvailability };

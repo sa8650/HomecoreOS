@@ -7,13 +7,7 @@ import {
   type MockEmqxState,
 } from "./helpers/mock-emqx-r2";
 import { createPglitePostgrest, type PgliteHarness } from "./helpers/pglite-postgrest";
-
-function extractCookie(res: Response, cookieName: string): string {
-  const header = res.headers.get("set-cookie") ?? "";
-  const match = header.match(new RegExp(`${cookieName}=([^;]+)`));
-  if (!match) throw new Error(`Missing cookie ${cookieName} in ${header}`);
-  return `${cookieName}=${match[1]}`;
-}
+import { extractCookie } from "./helpers/http";
 
 function makeFakeEspIdfImage(byteLength = 512): Uint8Array {
   const buf = new Uint8Array(byteLength);

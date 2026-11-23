@@ -39,9 +39,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { BoardProfileItem } from "@/features/types";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { PlannerAnalysisProgress } from "./PlannerAnalysisProgress";
 import { plannerStepNumber } from "./PlannerWizard";
+import { plural } from "@homecoreos/shared";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 
@@ -107,10 +108,6 @@ const EFFECT_LABELS: Record<PlannerWarningEffect, string> = {
   action_required: "Action needed",
   advisory: "Good to know",
 };
-
-function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : pluralForm}`;
-}
 
 function boardTitle(plan: PlannerCandidatePlan): string {
   return `${plan.board.manufacturer} ${plan.board.model}`.trim();

@@ -21,12 +21,6 @@ import {
 import type { ControllerItem, HomeItem } from "@/features/types";
 import { WifiPortalArtwork } from "./RecoveryArtwork";
 
-export interface BoardChoiceOption {
-  id: string;
-  label: string;
-  supportsWifi: boolean;
-}
-
 export const PORTAL_ORIGIN = "http://192.168.4.1";
 
 /**

@@ -11,7 +11,7 @@ import {
 import { RiDragMove2Line } from "@remixicon/react";
 import { isDeviceStateActive } from "@homecoreos/shared";
 import { isEntityOnline } from "@/lib/board-pin-helpers";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type {
   ControllerItem,
   DeviceItem,

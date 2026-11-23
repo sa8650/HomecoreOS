@@ -6,13 +6,7 @@ import { emitNotification } from "../src/lib/notifications";
 import { createDbClient } from "../src/lib/db";
 import { createMockEmqxFetch, createMockR2Bucket } from "./helpers/mock-emqx-r2";
 import { createPglitePostgrest, type PgliteHarness } from "./helpers/pglite-postgrest";
-
-function extractCookie(res: Response, cookieName: string): string {
-  const header = res.headers.get("set-cookie") ?? "";
-  const match = header.match(new RegExp(`${cookieName}=([^;]+)`));
-  if (!match) throw new Error(`Missing cookie ${cookieName} in ${header}`);
-  return `${cookieName}=${match[1]}`;
-}
+import { extractCookie } from "./helpers/http";
 
 function makePin(pin: number, overrides: Partial<GpioPinDefinition> = {}): GpioPinDefinition {
   return {

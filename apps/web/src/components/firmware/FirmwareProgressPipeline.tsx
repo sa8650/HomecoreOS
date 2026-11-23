@@ -11,7 +11,7 @@ import {
   RiTerminalBoxLine,
   RiWifiLine,
 } from "@remixicon/react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type { UsbFlashStage } from "@/lib/usb-flasher";
 import type { FirmwareUpdateHistoryItem } from "@/features/types";
 import { Badge } from "@/components/reui/badge";

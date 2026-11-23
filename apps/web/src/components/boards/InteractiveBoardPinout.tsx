@@ -20,7 +20,7 @@ import {
 import { Badge } from "@/components/reui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type { BoardProfileItem } from "@/features/types";
 
 type PinFilter =

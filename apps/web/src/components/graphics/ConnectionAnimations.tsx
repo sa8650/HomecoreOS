@@ -1,8 +1,8 @@
 import { useId } from "react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 /**
- * The three connection illustrations used across the board modal.
+ * The pairwise-connection illustrations used across the board modal.
  *
  * Each one is a self-contained, looping SVG (SMIL `animate` / `animateTransform`,
  * no JS timers) taken from the supplied design exports:
@@ -11,8 +11,6 @@ import { cn } from "@/lib/utils";
  *   2.0 s loop.
  * - {@link WifiSignalAnimation} — the Wi-Fi glyph arcs swinging open with a
  *   pulsing dot, 2.0 s loop.
- * - {@link UsbCableAnimation} — a USB-C connector travelling into a port and the
- *   chip flashing while firmware streams, 2.04 s loop.
  *
  * Each root carries `.hc-connection-anim`, which drops the SMIL nodes under
  * `prefers-reduced-motion: reduce` — the static geometry underneath stays, so
@@ -220,133 +218,6 @@ export function WifiSignalAnimation({ className }: { className?: string }) {
           </g>
         </g>
       ))}
-    </svg>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* USB: the cable plugs in, the chip lights up                                 */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The supplied export is a 300 × 400 artboard of a USB-C plug meeting a port,
- * with the port's status LED cycling blue → white while a cable-run mask sweeps.
- * It is redrawn here at the same proportions with a handful of paths so it stays
- * crisp at 48–120 px and can be tinted from the surrounding card.
- */
-export function UsbCableAnimation({
-  className,
-  active = true,
-}: {
-  className?: string;
-  /** When false the plug is parked outside the port and nothing pulses. */
-  active?: boolean;
-}) {
-  const uid = useInstanceId("hc-usb");
-  return (
-    <svg
-      viewBox="0 0 120 160"
-      className={cn("hc-connection-anim select-none", className)}
-      fill="none"
-      role="img"
-      aria-label={active ? "USB cable connected" : "USB cable"}
-      data-testid="usb-cable-animation"
-    >
-      <defs>
-        <linearGradient id={`${uid}-body`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#ffffff" />
-          <stop offset="1" stopColor="#e9edf5" />
-        </linearGradient>
-        <clipPath id={`${uid}-slot`}>
-          <rect x="38" y="104" width="44" height="14" rx="4" />
-        </clipPath>
-      </defs>
-
-      {/* Cable */}
-      <path
-        d="M60 8v58"
-        stroke="#94a3b8"
-        strokeWidth="7"
-        strokeLinecap="round"
-      />
-      <path d="M60 8v58" stroke="#cbd5e1" strokeWidth="2.5" strokeLinecap="round" />
-
-      {/* Plug body: slides down into the port and back out */}
-      <g>
-        {active && (
-          <animateTransform
-            attributeName="transform"
-            type="translate"
-            values="0 -6; 0 10; 0 10; 0 -6; 0 -6"
-            keyTimes="0; 0.28; 0.72; 0.94; 1"
-            dur="2.04s"
-            repeatCount="indefinite"
-          />
-        )}
-        <rect
-          x="40"
-          y="58"
-          width="40"
-          height="48"
-          rx="9"
-          fill={`url(#${uid}-body)`}
-          stroke="#94a3b8"
-          strokeWidth="2"
-        />
-        <rect x="46" y="66" width="28" height="7" rx="3.5" fill="#cbd5e1" />
-        <rect
-          x="48"
-          y="98"
-          width="24"
-          height="10"
-          rx="4"
-          fill="#cbd5e1"
-          stroke="#94a3b8"
-          strokeWidth="1.6"
-        />
-      </g>
-
-      {/* Port / board */}
-      <rect
-        x="14"
-        y="118"
-        width="92"
-        height="34"
-        rx="8"
-        fill="#f1f5f9"
-        stroke="#94a3b8"
-        strokeWidth="2"
-      />
-      <rect x="38" y="104" width="44" height="14" rx="4" fill="#0f172a" />
-      <g clipPath={`url(#${uid}-slot)`}>
-        <rect x="38" y="104" width="44" height="14" fill="#0f172a" />
-        <rect x="38" y="104" width="44" height="14" fill="#38bdf8" opacity="0">
-          {active && (
-            <animate
-              attributeName="opacity"
-              values="0;0;0.85;0;0"
-              keyTimes="0;0.3;0.45;0.6;1"
-              dur="2.04s"
-              repeatCount="indefinite"
-            />
-          )}
-        </rect>
-      </g>
-
-      {/* Status LED on the board */}
-      <circle cx="88" cy="135" r="4" fill="#16a34a">
-        {active && (
-          <animate
-            attributeName="fill"
-            values="#16a34a;#16a34a;#38bdf8;#ffffff;#38bdf8;#ffffff;#38bdf8;#16a34a"
-            keyTimes="0;0.62;0.66;0.7;0.76;0.82;0.9;1"
-            dur="2.04s"
-            repeatCount="indefinite"
-          />
-        )}
-      </circle>
-      <rect x="24" y="130" width="34" height="4" rx="2" fill="#cbd5e1" />
-      <rect x="24" y="139" width="22" height="4" rx="2" fill="#dbe2ea" />
     </svg>
   );
 }

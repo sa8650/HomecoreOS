@@ -10,15 +10,9 @@ import type {
   SensorItem,
   SwitchItem,
 } from "../../features/types";
+import { jsonResponse } from "@/test/http";
 
 const originalFetch = globalThis.fetch;
-
-function jsonResponse(payload: unknown, status = 200) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 describe("RoomControlsCard layout and interactions inside HomeFloorPlan", () => {
   afterEach(() => {

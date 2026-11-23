@@ -8,13 +8,7 @@ import { getNotificationTargetUrl } from "@/components/notifications/Notificatio
 import { AdminBoardsPage } from "./admin/AdminAccountsAndBoardsPages";
 import { OfficialBoardImportDialog } from "./admin/OfficialBoardImportDialog";
 import type { BoardProfileItem, ControllerItem, NotificationItem } from "./types";
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+import { jsonResponse } from "@/test/http";
 
 function makeBoard(overrides: Partial<BoardProfileItem> = {}): BoardProfileItem {
   return {

@@ -23,7 +23,7 @@ import {
   RiMagicLine,
   RiSubtractLine,
 } from "@remixicon/react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";
 import {
@@ -65,6 +65,7 @@ import {
   type PlannerDraft,
   type PlannerDraftRoom,
 } from "./planner-draft";
+import { plural } from "@homecoreos/shared";
 
 export const PLANNER_WIZARD_STEPS = [
   { id: "home", title: "Your home", hint: "Floors and rooms" },
@@ -111,10 +112,6 @@ const SENSOR_WIRING_CHOICES: Choice<PlannerSensorWiring>[] = [
   { value: "rs485", label: "RS-485 / Modbus", description: "Industrial sensors on one long cable." },
   { value: "unsure", label: "Not sure", description: "Plan them as ordinary wired sensors." },
 ];
-
-function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : pluralForm}`;
-}
 
 function CountStepper({
   label,

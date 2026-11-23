@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { RiCloseLine, RiSearchLine } from "@remixicon/react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Input } from "@/components/ui/input";
 
 export type HeroTone =

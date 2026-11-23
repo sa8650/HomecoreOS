@@ -61,7 +61,7 @@ import type {
   SensorItem,
   SwitchItem,
 } from "@/features/types";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 // ---------------------------------------------------------------------------
 // Target type — the card that opened the dialog decides what is shown.

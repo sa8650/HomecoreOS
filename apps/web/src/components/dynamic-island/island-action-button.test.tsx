@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetApiCache } from "@/lib/api";
 import { IslandActionButton } from "./IslandActionButton";
 import type { ActionButtonConfigItem } from "@/features/types";
+import { jsonResponse } from "@/test/http";
 
 const originalFetch = globalThis.fetch;
 
@@ -28,13 +29,6 @@ const baseConfig: ActionButtonConfigItem = {
   updatedAt: "2026-11-01T00:00:00Z",
   states: { on: 2, off: 0 },
 };
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 function mockFetch(configs: ActionButtonConfigItem[], executeBody?: unknown, executeStatus = 200) {
   const calls: Array<{ url: string; method: string; body?: unknown }> = [];

@@ -26,20 +26,12 @@
 
 export type RecoveryTransportKind = "wifi" | "ble" | "usb";
 
-export const RECOVERY_TRANSPORT_LABELS: Record<RecoveryTransportKind, string> = {
-  wifi: "Wi-Fi",
-  ble: "Bluetooth LE",
-  usb: "USB",
-};
-
 /** A recovery session is single-use and short lived (matches the firmware's 15 min window). */
 export const RECOVERY_SESSION_TTL_SEC = 15 * 60;
 /** Bound on automatic retries of one transport operation. */
 export const RECOVERY_MAX_ATTEMPTS = 3;
 /** How long a single transport operation may take before it is declared timed out. */
 export const RECOVERY_OPERATION_TIMEOUT_MS = 45_000;
-/** How long post-repair verification may wait for fresh telemetry. */
-export const RECOVERY_VERIFY_TIMEOUT_MS = 60_000;
 /** A heartbeat older than this cannot prove anything about the board right now. */
 export const RECOVERY_STALE_HEARTBEAT_SEC = 180;
 /** A sensor is "not reporting" after this long without a reading. */
@@ -54,15 +46,6 @@ export type RecoveryStage =
   | "repair"
   | "verification"
   | "report";
-
-export const RECOVERY_STAGE_LABELS: Record<RecoveryStage, string> = {
-  discovery: "Detecting controller",
-  diagnostics: "Diagnosing controller",
-  plan: "Building repair plan",
-  repair: "Repairing",
-  verification: "Verifying repair",
-  report: "Recovery report",
-};
 
 // ---------------------------------------------------------------------------
 // Stage 1 — Discovery
@@ -310,12 +293,6 @@ export interface RecoveryTelemetry {
   errors: TelemetryFact & {
     recent: Array<{ code?: string; message: string; at?: string | null }>;
   };
-}
-
-export interface RecoveryErrorEntry {
-  code?: string;
-  message: string;
-  at?: string | null;
 }
 
 export const emptyRecoveryTelemetry = (nowMs = Date.now()): RecoveryTelemetry => ({
@@ -2002,22 +1979,6 @@ export function buildRecoverySteps(): RecoveryStepDefinition[] {
     { id: "report", label: "Recovery report", stage: "report" },
   ];
 }
-
-export const RECOVERY_STEP_IDS = [
-  "detect",
-  "read",
-  "wifi_check",
-  "backend_check",
-  "link_check",
-  "system_check",
-  "plan",
-  "repair",
-  "restart",
-  "verify",
-  "report",
-] as const;
-
-export type RecoveryStepId = (typeof RECOVERY_STEP_IDS)[number];
 
 // ---------------------------------------------------------------------------
 // Session guards

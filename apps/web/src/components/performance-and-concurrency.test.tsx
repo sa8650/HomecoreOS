@@ -25,15 +25,9 @@ import type {
   SwitchItem,
 } from "../features/types";
 import type { HardwareContext } from "../lib/board-pin-helpers";
+import { jsonResponse } from "@/test/http";
 
 const originalFetch = globalThis.fetch;
-
-function jsonResponse(payload: unknown, status = 200) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 function makeController(overrides?: Partial<ControllerItem>): ControllerItem {
   return {

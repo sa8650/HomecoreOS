@@ -10,7 +10,7 @@ import {
 
 import type { HeroTone } from "@/components/shared/PageHeroHeader";
 import { useIsDarkTheme } from "@/lib/theme";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 interface SpotlightThemeColors {
   glowFrom: string;

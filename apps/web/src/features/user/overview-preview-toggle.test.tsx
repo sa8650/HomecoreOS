@@ -5,15 +5,9 @@ import { resetApiCache } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
 import { OverviewPage } from "./OverviewPage";
 import type { OverviewData } from "@/features/types";
+import { jsonResponse } from "@/test/http";
 
 const originalFetch = globalThis.fetch;
-
-function jsonResponse(payload: unknown, status = 200) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
 
 const overview: OverviewData = {
   summary: {

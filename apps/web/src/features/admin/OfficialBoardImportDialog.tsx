@@ -15,7 +15,7 @@ import {
 } from "@remixicon/react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { BoardPadTable, listBoardPads } from "@/components/boards/BoardPadTable";
 import { BoardVectorSvg } from "@/components/boards/BoardVectorSvg";
 import { Badge } from "@/components/reui/badge";

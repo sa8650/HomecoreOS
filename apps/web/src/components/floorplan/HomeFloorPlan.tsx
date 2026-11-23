@@ -21,7 +21,7 @@ import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
 import { isEntityOnline } from "@/lib/board-pin-helpers";
 import { useEffectiveTimezone } from "@/lib/timezone";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Badge } from "@/components/reui/badge";
 import { EmptyStatePanel } from "@/components/shared/AppUi";
 import { Button } from "@/components/ui/button";

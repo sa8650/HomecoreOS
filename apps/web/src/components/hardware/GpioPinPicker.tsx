@@ -15,7 +15,7 @@ import {
   RiSparkling2Line,
 } from "@remixicon/react";
 import type { PinSelection } from "@/lib/board-pin-helpers";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { FormField } from "@/components/shared/AppUi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

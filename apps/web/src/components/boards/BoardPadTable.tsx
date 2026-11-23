@@ -1,5 +1,5 @@
 import type { BoardHeaderPin, GpioPinDefinition } from "@homecoreos/shared";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type { BoardProfileItem } from "@/features/types";
 
 export interface BoardPadRow {
