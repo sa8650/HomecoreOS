@@ -506,6 +506,15 @@ export function createRecoveryRoutes() {
     if (session.status !== "active") {
       return c.json({ error: "This recovery session is already closed.", session: publicSession(session) }, 409);
     }
+    if (sessionExpired(session)) {
+      await closeRecoverySession({
+        db,
+        session,
+        status: "expired",
+        failureReason: "The recovery session expired before it completed.",
+      });
+      return c.json({ error: "This recovery session expired. Start a new one." }, 410);
+    }
 
     const board = session.board_instance_id
       ? await loadBoard(db, auth.accountId, session.board_instance_id)
@@ -556,14 +565,18 @@ export function createRecoveryRoutes() {
       failureReason: parsed.data.failureReason ?? null,
     });
 
+    const persistedProblems =
+      Array.isArray(session.detected_problems) && session.detected_problems.length > 0
+        ? session.detected_problems
+        : verdict.diagnostics.problems;
+
     await db
       .from("recovery_sessions")
       .update({
         actions_attempted: outcomes,
         repair_plan: verdict.plan.actions,
         diagnostics: verdict.diagnostics.checks,
-        detected_problems: verdict.diagnostics.problems,
-        pairing_status_before: board.pairing_status,
+        detected_problems: persistedProblems,
       })
       .eq("id", session.id)
       .eq("account_id", auth.accountId);

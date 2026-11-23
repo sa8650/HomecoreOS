@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import {
-  SUPPORTED_CHIP_FAMILIES,
   boardSupportsEspNow,
+  normalizeChipFamily as normalizeSharedChipFamily,
   type ChipFamily,
 } from "@homecoreos/shared";
 import {
@@ -85,18 +85,7 @@ function controllerStatusBadge(status: ControllerItem["status"]): {
  * drawing can always be rendered, even for boards missing from the library.
  */
 export function normalizeChipFamily(raw: string | null | undefined): ChipFamily {
-  const norm = (raw ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-  const families = SUPPORTED_CHIP_FAMILIES as readonly string[];
-  if (families.includes(norm)) return norm as ChipFamily;
-  const byPrefix = [...families]
-    .sort((a, b) => b.length - a.length)
-    .find((family) => family !== "esp32" && norm.startsWith(family));
-  if (byPrefix) return byPrefix as ChipFamily;
-  if (norm.startsWith("esp8266") || norm.startsWith("esp8285")) return "esp8266";
-  return "esp32";
+  return normalizeSharedChipFamily(raw) ?? "esp32";
 }
 
 /**

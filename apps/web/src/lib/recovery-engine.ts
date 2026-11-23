@@ -287,6 +287,8 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
   let boardInstanceId = options.boardInstanceId;
   let busy = false;
   let cancelled = false;
+  let expectingRestart = false;
+  let linkDroppedOnRestart = false;
 
   const emit = (patch: Partial<RecoveryFlowState>) => {
     state = { ...state, ...patch };
@@ -556,6 +558,8 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
     async connect(kind) {
       if (busy) return;
       cancelled = false;
+      expectingRestart = false;
+      linkDroppedOnRestart = false;
       busy = true;
       const capability = options.capabilityFor(kind);
       emit({
@@ -585,7 +589,17 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         const candidate = options.createTransport(kind);
         transport = candidate;
         const { hello, status } = await candidate.connect({
-          onDisconnected: (error) => { cancelled = true; void fail(error); },
+          onDisconnected: (error) => {
+            if (expectingRestart) {
+              linkDroppedOnRestart = true;
+              logTechnical(
+                `Local link closed during expected controller restart (${error.message}).`
+              );
+              return;
+            }
+            cancelled = true;
+            void fail(error);
+          },
           onProgress: (message) => {
             emit({ progress: message });
             logTechnical(message);
@@ -854,9 +868,11 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         // --- restart: the board must come back on its own -------------------
         // Only a repair that changed stored configuration is restarted; a pure
         // diagnostic pass must not reboot a healthy controller.
+        linkDroppedOnRestart = false;
         if (repairOk && plan.actions.length > 0) {
           setStepStage(8, "active");
           emit({ phase: "verifying", progress: "Restarting the controller and waiting for it to reconnect …" });
+          expectingRestart = true;
           const restarted = await sendRestart(options.backendUrl);
           logTechnical(`restart: ${restarted.message}`);
           // The board drops the local link while it reboots. The reconnect is
@@ -875,23 +891,26 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         setStepStage(9, "active");
         const deadline = now() + verifyTimeoutMs;
         let after = emptyRecoveryTelemetry(now());
+        let gotFreshLocalTelemetry = false;
         let verification: VerificationResult | null = null;
 
         if (plan.actions.length === 0) {
           // Nothing changed, so there is nothing to wait for.
           try {
             const fresh = await readFresh({ base: beforeTelemetry });
+            gotFreshLocalTelemetry = true;
             after = mergeRecoveryTelemetry(beforeTelemetry, fresh.telemetry);
           } catch (err) {
             logTechnical(
               `Verification read failed: ${err instanceof Error ? err.message : "unknown"}`
             );
           }
-        } else {
+        } else if (!linkDroppedOnRestart) {
           while (now() <= deadline) {
             if (cancelled) return;
             try {
               const fresh = await readFresh({ base: beforeTelemetry });
+              gotFreshLocalTelemetry = true;
               after = mergeRecoveryTelemetry(beforeTelemetry, fresh.telemetry);
               verification = verifyRecovery({
                 board: state.board,
@@ -904,11 +923,13 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
               logTechnical(
                 `Verification read failed: ${err instanceof Error ? err.message : "unknown"}`
               );
+              if (linkDroppedOnRestart) break;
             }
             await new Promise((resolve) => setTimeout(resolve, verifyPollMs));
           }
         }
 
+        expectingRestart = false;
         if (cancelled) return;
         verification =
           verification ?? verifyRecovery({ board: state.board, before: beforeTelemetry, after, plan });
@@ -955,10 +976,18 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
 
         // The server's verdict is authoritative for the record, but a console
         // that can see the controller failing must never display success. The
-        // stricter of the two verdicts wins.
+        // stricter of the two verdicts wins whenever local telemetry was read.
+        // If the local link closed cleanly on reboot (e.g., board exited BLE/AP
+        // recovery mode into normal operation) and no local telemetry could be
+        // read afterwards, trust the server's authoritative verification.
         if (report) {
-          const stricter = stricterVerification(verification, report.verification);
-          if (stricter !== report.verification) {
+          const useServerVerdict = linkDroppedOnRestart && !gotFreshLocalTelemetry;
+          const stricter = useServerVerdict
+            ? report.verification
+            : stricterVerification(verification, report.verification);
+          if (useServerVerdict && report.verification.status === "verified") {
+            setStep("verify", "done", report.verification.summary);
+          } else if (stricter !== report.verification) {
             logTechnical(
               "The controller still reports a problem on this connection; the recovery is shown as not verified."
             );
@@ -1026,12 +1055,15 @@ export function createRecoveryController(options: RecoveryControllerOptions): Re
         setStepStage(6, "error");
         await fail(err, "error");
       } finally {
+        expectingRestart = false;
         busy = false;
       }
     },
 
     async cancel(reason = "The user stopped the recovery.") {
       cancelled = true;
+      expectingRestart = false;
+      linkDroppedOnRestart = false;
       if (state.sessionId) {
         try {
           await options.api.abandon(state.sessionId, reason);

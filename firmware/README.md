@@ -28,12 +28,16 @@ profile and is not supported by this console.
     once HomecoreOS confirms the board.
   - `GET /api/recovery` — discovery + status in one round trip
     (`{"recovery":{…},"status":{…}}`), cache-busted by the browser.
-  - `POST /api/recovery` — `{"command":"HC …"}`; the exact same line parser and
+  - `POST /api/recovery` — `{"command":"HC …"}`; reads full HTTP bodies up to
+    576 bytes in a loop and delegates to the exact same 512-byte line parser and
     guards as USB and BLE.
 - Encrypted BLE provisioning service: `action: "hc HC ..."`. The BLE handler
   removes the lowercase relay prefix and forwards the inner command to the same
-  console handler. Responses may use up to ten 150-byte chunks (the status
-  payload now also carries running-image and capability facts).
+  console handler (accepting encrypted frames up to 640 bytes). Responses may
+  use up to ten 150-byte chunks (each chunk re-encrypted cleanly before notify;
+  the status payload also carries running-image and capability facts). Deferred
+  `restart` and `factory_reset` requests execute on the supervision loop after
+  GATT notifications finish transmitting.
 
 ### GATT MTU framing (`main/ble_protocol_logic.c`)
 

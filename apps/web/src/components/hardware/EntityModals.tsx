@@ -18,6 +18,7 @@ import {
 import { useGpioPinField } from "@/lib/use-gpio-pin-field";
 import { formatTimestamp } from "@/lib/timezone";
 import { GpioPinPicker } from "@/components/hardware/GpioPinPicker";
+import { readSensorI2cAddress } from "@/components/hardware/wire-diagram-shared";
 import { Badge } from "@/components/reui/badge";
 import { FormField, StatusAlert } from "@/components/shared/AppUi";
 import { Button } from "@/components/ui/button";
@@ -48,15 +49,6 @@ import type {
 } from "@/features/types";
 
 const ROOM_NONE = "__none__";
-
-function readSensorI2cAddress(sensor: SensorItem | null | undefined): string | null {
-  if (!sensor) return null;
-  if (typeof sensor.i2c_address === "string" && sensor.i2c_address.trim()) {
-    return sensor.i2c_address.trim();
-  }
-  const fromRaw = sensor.last_raw_payload?.i2c_address;
-  return typeof fromRaw === "string" && fromRaw.trim() ? fromRaw.trim() : null;
-}
 
 export function SwitchEditorModal({
   open,

@@ -642,4 +642,48 @@ describe("Unified Controller & Node roles", () => {
     expect(nodeUpdate?.boardRole).toBe("node");
     expect(body.history.some((h) => h.board_instance_id === nodeId)).toBe(true);
   });
+
+  it("confirms OTA success on heartbeat for a linked ESP-NOW Node even with mqttConnected=false", async () => {
+    // Seed an active rebooting OTA history row for the linked Node.
+    const accountRow = await dbHarness.pg.query<{ account_id: string }>(
+      "select account_id from board_instances where id = $1",
+      [nodeId]
+    );
+    const relRow = await dbHarness.pg.query<{ id: string }>(
+      "select id from firmware_releases limit 1"
+    );
+    const accountId = accountRow.rows[0]!.account_id;
+    const releaseId = relRow.rows[0]!.id;
+    const inserted = await dbHarness.pg.query<{ id: string }>(
+      `insert into firmware_update_history
+         (account_id, board_instance_id, release_id, update_type, target_version, status, progress_percent)
+       values ($1, $2, $3, 'ota', '9.9.1', 'rebooting', 90)
+       returning id`,
+      [accountId, nodeId, releaseId]
+    );
+    const histId = inserted.rows[0]!.id;
+
+    // Linked ESP-NOW Node intentionally keeps MQTT disconnected (m: false) once linked.
+    const beat = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${nodeToken}` },
+      body: JSON.stringify({
+        w: true,
+        m: false,
+        v: "9.9.1",
+        op: false,
+        role: "node",
+        cm: "espnow",
+        ls: "linked",
+      }),
+    });
+    expect(beat.status).toBe(200);
+
+    const updated = await dbHarness.pg.query<{ status: string; progress_percent: number }>(
+      "select status, progress_percent from firmware_update_history where id = $1",
+      [histId]
+    );
+    expect(updated.rows[0]?.status).toBe("succeeded");
+    expect(updated.rows[0]?.progress_percent).toBe(100);
+  });
 });

@@ -334,6 +334,29 @@ static void test_espnow_repair_is_a_non_destructive_action(void) {
     assert(strstr(reason, "BOOT") != NULL);
 }
 
+static void test_long_wifi_repair_line(void) {
+    /* Max-length 32-char SSID + 63-char WPA2 passphrase + long backend URL
+     * exceeds the old 224-byte line cap and must parse cleanly now. */
+    const char *long_line =
+        "HC REPAIR {\"action\":\"wifi\","
+        "\"ssid\":\"MyVeryLongHomeWiFiNetwork_24GHz!\","
+        "\"password\":\"SuperSecretWPA2Passphrase_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ\","
+        "\"backend_url\":\"https://homecoreos-production.example-customer-domain.workers.dev/api\"}";
+    assert(strlen(long_line) > 224);
+    assert(strlen(long_line) < HC_RECOVERY_LINE_MAX);
+
+    hc_rec_command_t cmd;
+    assert(hc_rec_parse_line(long_line, &cmd) == 0);
+    assert(cmd.kind == HC_REC_CMD_REPAIR);
+    assert(cmd.action == HC_REC_ACTION_WIFI);
+    assert(strcmp(cmd.ssid, "MyVeryLongHomeWiFiNetwork_24GHz!") == 0);
+    assert(strcmp(cmd.password, "SuperSecretWPA2Passphrase_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ") == 0);
+    assert(strcmp(cmd.backend_url, "https://homecoreos-production.example-customer-domain.workers.dev/api") == 0);
+
+    hc_rec_command_clear(&cmd);
+    assert(cmd.password[0] == '\0');
+}
+
 int main(void) {
     test_snapshot_defaults();
     test_parse_ping_hello_status();
@@ -349,6 +372,7 @@ int main(void) {
     test_status_without_a_server_url_reports_empty_not_missing();
     test_hello_carries_the_running_partition();
     test_espnow_repair_is_a_non_destructive_action();
+    test_long_wifi_repair_line();
     printf("test_recovery_logic: all assertions passed\n");
     return 0;
 }

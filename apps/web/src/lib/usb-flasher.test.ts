@@ -602,4 +602,36 @@ describe("Browser USB flasher: board verification before writing", () => {
     expect((error as UsbBoardMismatchError).message).toMatch(/Chip mismatch/);
     expect(mockWriteFlash).not.toHaveBeenCalled();
   });
+
+  it("classifies post-flash boot lines for fatal errors and healthy banners without logging secrets", async () => {
+    const { inspectPostFlashBootLine } = await import("./usb-flasher");
+
+    const invalidHeader = inspectPostFlashBootLine("invalid header: 0xffffffff");
+    expect(invalidHeader.fatalError).toMatch(/invalid flash header/i);
+    expect(invalidHeader.healthyBoot).toBe(false);
+
+    const panic = inspectPostFlashBootLine("Guru Meditation Error: Core 0 panic'ed (LoadProhibited)");
+    expect(panic.fatalError).toMatch(/panicked/i);
+
+    const wdt = inspectPostFlashBootLine("rst:0x7 (TG0WDT_SYS_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)");
+    expect(wdt.fatalError).toMatch(/Watchdog reset/i);
+
+    // Modern Security 1 banner (no PIN) must still verify boot and capture BLE/AP names.
+    const modernBanner = inspectPostFlashBootLine(
+      "[HC_SETUP] BLE=HomecoreOS-A1B2 AP=HomecoreOS-Setup-A1B2 S1_MODE=auto"
+    );
+    expect(modernBanner.fatalError).toBeNull();
+    expect(modernBanner.healthyBoot).toBe(true);
+    expect(modernBanner.setupInfo).toMatchObject({
+      bleName: "HomecoreOS-A1B2",
+      apSsid: "HomecoreOS-Setup-A1B2",
+    });
+
+    // Legacy PIN banner parses setupPin structurally, and flasher logs never leak it.
+    const legacyBanner = inspectPostFlashBootLine(
+      "[HC_SETUP] BLE=HomecoreOS-A1B2 AP=HomecoreOS-Setup-A1B2 PIN=987654"
+    );
+    expect(legacyBanner.healthyBoot).toBe(true);
+    expect(legacyBanner.setupInfo?.setupPin).toBe("987654");
+  });
 });

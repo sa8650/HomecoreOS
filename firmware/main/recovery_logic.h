@@ -43,7 +43,7 @@
 #include <stdint.h>
 
 #define HC_RECOVERY_PROTO_VERSION 1
-#define HC_RECOVERY_LINE_MAX 224
+#define HC_RECOVERY_LINE_MAX 512
 #define HC_RECOVERY_RESPONSE_MAX 1024
 
 /** Destructive repairs are only accepted while the board is in recovery mode. */

@@ -149,9 +149,9 @@ export function isWebBluetoothSupported(): {
 export function parseSetupSerialLine(line: string): ParsedSerialSetupInfo | null {
   if (!line.includes("[HC_SETUP]")) return null;
   const boardMatch = line.match(/\bBOARD=([^\s]+)/);
-  const bleNameMatch = line.match(/\bBLE_NAME=([^\s]+)/);
+  const bleNameMatch = line.match(/\b(?:BLE_NAME|BLE)=([^\s]+)/);
   const pinMatch = line.match(/\b(?:PIN|POP)=([A-Za-z0-9]{6,32})/);
-  const apSsidMatch = line.match(/\bAP_SSID=([^\s]+)/);
+  const apSsidMatch = line.match(/\b(?:AP_SSID|AP)=([^\s]+)/);
   const apPassMatch = line.match(/\bAP_PASS=([A-Za-z0-9]{6,32})/);
 
   const setupPin = pinMatch?.[1] ?? apPassMatch?.[1];

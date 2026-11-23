@@ -50,7 +50,9 @@ const pairSchema = z.object({
   macAddress: z.string().trim().max(32).optional(),
   identityKey: z.string().trim().min(16).max(256).optional(),
   physicalConfirmed: z.boolean().optional(),
-  physicalConfirmationMethod: z.enum(["button_press", "local_portal", "ble_recovery"]).optional(),
+  physicalConfirmationMethod: z
+    .enum(["button_press", "local_portal", "ble_recovery", "recovery_console"])
+    .optional(),
   firmwareVersion: z.string().trim().max(64).optional(),
   chipVariant: z.string().trim().max(64).optional(),
   boardSlug: z.string().trim().max(120).optional(),
@@ -60,7 +62,9 @@ const pairSchema = z.object({
   wifiSsid: z.string().trim().max(64).optional(),
   localIp: z.string().trim().max(64).optional(),
   bleSetupPin: z.string().trim().min(6).max(16).optional(),
-  provisioningTransport: z.enum(["ble", "softap", "usb", "manual"]).optional(),
+  provisioningTransport: z
+    .enum(["ble", "softap", "usb", "usb_console", "recovery_console", "manual"])
+    .optional(),
 });
 
 const recoverPairSchema = pairSchema.extend({
@@ -75,7 +79,12 @@ const recoverPairSchema = pairSchema.extend({
         "Physical confirmation via controller recovery button or local setup webpage is required.",
     }),
   }),
-  physicalConfirmationMethod: z.enum(["button_press", "local_portal", "ble_recovery"]),
+  physicalConfirmationMethod: z.enum([
+    "button_press",
+    "local_portal",
+    "ble_recovery",
+    "recovery_console",
+  ]),
 });
 
 const heartbeatSchema = z
@@ -747,7 +756,13 @@ export function createDeviceApiRoutes() {
       if (isActiveOta) {
         if (versionsExactMatch(reportedFw, latestHist.target_version)) {
           // Never mark OTA succeeded while bootloader verification or MQTT health check is still pending!
-          if (parsed.data.otaPendingVerify || parsed.data.mqttConnected === false) {
+          // Linked Nodes over ESP-NOW intentionally hold no independent EMQX session,
+          // so mqttConnected === false is expected once their ESP-NOW link is healthy.
+          const isLinkedEspNowNode =
+            storedRole === "node" &&
+            (parsed.data.linkState === "linked" || parsed.data.commMode === "espnow");
+          const mqttStillPending = !isLinkedEspNowNode && parsed.data.mqttConnected === false;
+          if (parsed.data.otaPendingVerify || mqttStillPending) {
             await db
               .from("firmware_update_history")
               .update({
@@ -2014,7 +2029,13 @@ async function handlePairOrRecover(
       local_ip: input.localIp ?? null,
       ...(input.bleSetupPin ? { ble_setup_pin: input.bleSetupPin } : {}),
       ...(input.provisioningTransport
-        ? { provisioning_transport: input.provisioningTransport }
+        ? {
+            provisioning_transport:
+              input.provisioningTransport === "usb_console" ||
+              input.provisioningTransport === "recovery_console"
+                ? "usb"
+                : input.provisioningTransport,
+          }
         : {}),
       last_error: null,
       last_error_at: null,

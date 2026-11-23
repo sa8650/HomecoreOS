@@ -144,6 +144,7 @@ export class RealtimeSyncClient {
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private probeTimer: ReturnType<typeof setTimeout> | null = null;
+  private releaseHandoverTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
   private snapshotRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -405,6 +406,14 @@ export class RealtimeSyncClient {
       return;
     }
 
+    if (this.transport) {
+      try {
+        this.transport.close();
+      } catch {
+        // ignore
+      }
+      this.transport = null;
+    }
     this.connect(config);
   }
 
@@ -475,7 +484,7 @@ export class RealtimeSyncClient {
       const pending = this.buffer;
       this.buffer = [];
       if (pending.length > 0) {
-        this.applyEvents(pending, { broadcast: false });
+        this.applyEvents(pending, { broadcast: true });
       }
       // Buffered events are real state, but they are not a reconciliation: the
       // channel only reports `live` once a snapshot has been applied.
@@ -655,10 +664,19 @@ export class RealtimeSyncClient {
     switch (message.type) {
       case "probe":
         // Answer so two tabs starting together discover each other, then let
-        // the lowest id lead.
+        // the lowest id lead. Also share current leader status immediately so a
+        // newly opened follower tab never sits on "Connecting" while the leader
+        // is already live.
         this.channel?.postMessage({ type: "probe-ack", tabId: this.tabId });
         if (this.isLeader) {
           this.channel?.postMessage({ type: "leader", tabId: this.tabId });
+          this.channel?.postMessage({
+            type: "status",
+            tabId: this.tabId,
+            state: this.status.state,
+            synced: this.status.synced,
+            reason: this.status.reason,
+          });
         }
         break;
       case "probe-ack":
@@ -705,7 +723,9 @@ export class RealtimeSyncClient {
         if (!this.isLeader) {
           this.leaderConfirmed = false;
           // Another tab closed; the highest-priority remaining tab takes over.
-          setTimeout(() => {
+          if (this.releaseHandoverTimer) clearTimeout(this.releaseHandoverTimer);
+          this.releaseHandoverTimer = setTimeout(() => {
+            this.releaseHandoverTimer = null;
             if (this.started && !this.isLeader && !this.leaderConfirmed) {
               void this.resolveLeadershipAfterProbe();
             }
@@ -752,12 +772,14 @@ export class RealtimeSyncClient {
   private teardownTimers(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.probeTimer) clearTimeout(this.probeTimer);
+    if (this.releaseHandoverTimer) clearTimeout(this.releaseHandoverTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     if (this.snapshotRetryTimer) clearTimeout(this.snapshotRetryTimer);
     this.snapshotRetryTimer = null;
     this.reconnectTimer = null;
     this.probeTimer = null;
+    this.releaseHandoverTimer = null;
     this.heartbeatTimer = null;
     this.watchdogTimer = null;
   }

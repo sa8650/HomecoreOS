@@ -1,5 +1,6 @@
 #include "homecore_config.h"
 #include "ota_boot_logic.h"
+#include "role_runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -430,12 +431,14 @@ static hc_ota_health_result_t run_first_boot_health_check(
     }
 
     // 3. Connectivity checks (only wait when paired/Wi-Fi enabled; do NOT fail on transient network loss)
+    //    Linked Nodes over ESP-NOW intentionally keep MQTT disconnected (!hc_role_wants_mqtt()),
+    //    so they validate on Wi-Fi + heartbeat (or ESP-NOW link) without requiring an EMQX session.
     bool wifi_ok = true;
     bool mqtt_ok = true;
     bool hb_ok = true;
     if (cfg && cfg->paired && HOMECORE_HAS_WIFI) {
         wifi_ok = hc_wifi_is_connected();
-        mqtt_ok = hc_mqtt_is_connected();
+        mqtt_ok = hc_role_wants_mqtt() ? hc_mqtt_is_connected() : true;
         hb_ok = s_heartbeat_ok;
     } else if (HOMECORE_HAS_WIFI && cfg && strlen(cfg->wifi_ssid) > 0) {
         wifi_ok = hc_wifi_is_connected();

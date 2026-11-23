@@ -459,6 +459,7 @@ void hc_ble_prov_push_chunked_status(const char *json, size_t len) {
         free(escaped);
         if (n <= 0 || (size_t)n >= sizeof(envelope)) return;
         hc_copy_str(s_status_json, sizeof(s_status_json), envelope);
+        invalidate_status_ciphertext();
         push_status_notification();
         /* One notification per connection event keeps the NimBLE host from
          * overflowing its mbuf pool on boards with little RAM. */
@@ -683,7 +684,7 @@ static int handle_command_write(const uint8_t *buf, uint16_t len) {
         ESP_LOGW(TAG, "Rejected unauthenticated/expired BLE provisioning command");
         return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
     }
-    if (!buf || len <= 28 || len > 512) {
+    if (!buf || len <= 28 || len > 640) {
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
 

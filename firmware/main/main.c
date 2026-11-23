@@ -15,6 +15,9 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#if HOMECORE_HAS_WIFI
+#include "esp_wifi.h"
+#endif
 
 static const char *TAG = "homecore_main";
 static homecore_config_t s_config;
@@ -312,6 +315,14 @@ static void publish_recovery_snapshot(
     snap.recovery_supported = true;
 
     snap.wifi_connected = wifi_connected;
+#if HOMECORE_HAS_WIFI
+    if (wifi_connected) {
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            snap.wifi_rssi = ap_info.rssi;
+        }
+    }
+#endif
     if (cfg) hc_copy_str(snap.wifi_ssid, sizeof(snap.wifi_ssid), cfg->wifi_ssid);
     if (ip_str) hc_copy_str(snap.ip, sizeof(snap.ip), ip_str);
     hc_copy_str(snap.wifi_last_error, sizeof(snap.wifi_last_error), hc_wifi_get_last_error());
@@ -567,6 +578,15 @@ static void controller_supervision_task(void *pvParam) {
             } else {
                 s_ble_close_grace_ms -= 500U;
             }
+        }
+
+        // 4.1 Deferred restart / factory-reset requested over BLE recovery.
+        //     USB and Wi-Fi portal apply restarts immediately after flushing
+        //     their response; BLE cannot block inside the NimBLE GATT write
+        //     callback, so the supervision loop completes it after one tick.
+        if (hc_recovery_restart_pending()) {
+            vTaskDelay(pdMS_TO_TICKS(300));
+            hc_recovery_apply_pending_restart();
         }
 
         // 4a. Converge the temporary interfaces on the current mode every tick.

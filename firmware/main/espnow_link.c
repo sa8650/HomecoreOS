@@ -120,7 +120,8 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int le
     }
     if (rx.type == HC_ESPNOW_FRAME_CONTROLLER_ACK && s_seeking) {
         s_seeking = false;
-        ESP_LOGI(TAG, "Controller answered on channel %u", (unsigned)s_channel);
+        uint8_t locked_ch = hc_espnow_get_channel();
+        ESP_LOGI(TAG, "Controller answered on channel %u", (unsigned)locked_ch);
     }
     if (s_rx_cb) s_rx_cb(&rx);
 }
@@ -198,11 +199,18 @@ esp_err_t hc_espnow_seek_start(const char *controller_mac, uint8_t channel, hc_e
         return hc_espnow_set_channel(channel);
     }
 
-    // No pinned channel: sweep 1..13 until the Controller answers. s_channel
-    // stays 0 ("follow the radio") so get_channel() reports the live channel and
-    // a later re-seek is allowed.
+    // No pinned channel: if STA is already associated with a Wi-Fi AP, keep the
+    // AP's live channel first (Wi-Fi/ESP-NOW coexistence) instead of forcing ch 1.
+    // When STA is disconnected, sweep 1..13 until the Controller answers.
     s_seeking = true;
     s_channel = 0;
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    if (hc_wifi_is_connected() && esp_wifi_get_channel(&primary, &second) == ESP_OK && primary >= 1 && primary <= 13) {
+        s_seek_channel = primary;
+        ESP_LOGI(TAG, "Seeking Controller %s on active Wi-Fi channel %u", controller_mac, (unsigned)primary);
+        return ESP_OK;
+    }
     s_seek_channel = 1;
     esp_err_t hop_err = esp_wifi_set_channel(s_seek_channel, WIFI_SECOND_CHAN_NONE);
     ESP_LOGI(TAG, "Seeking Controller %s across channels", controller_mac);
@@ -215,6 +223,8 @@ bool hc_espnow_is_seeking(void) {
 
 void hc_espnow_seek_hop(void) {
     if (!s_seeking) return;
+    // Never disrupt an active Wi-Fi STA association by forcing a channel switch.
+    if (hc_wifi_is_connected()) return;
     s_seek_channel = (uint8_t)((s_seek_channel % 13) + 1);
     esp_err_t err = esp_wifi_set_channel(s_seek_channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) {
@@ -226,6 +236,12 @@ void hc_espnow_reseek(void) {
     if (s_hosting || !s_has_target) return;
     if (s_channel != 0) return; /* channel pinned in the console profile */
     s_seeking = true;
+    if (hc_wifi_is_connected()) {
+        uint8_t primary = hc_espnow_get_channel();
+        s_seek_channel = primary;
+        ESP_LOGI(TAG, "Controller link lost: re-seeking on active Wi-Fi channel %u", (unsigned)primary);
+        return;
+    }
     s_seek_channel = 1;
     esp_err_t err = esp_wifi_set_channel(s_seek_channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) {
