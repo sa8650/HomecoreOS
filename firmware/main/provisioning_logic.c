@@ -43,6 +43,8 @@ void hc_prov_init_state(hc_prov_state_t *st, const hc_prov_boot_input_t *in) {
     st->has_ble = in->has_ble;
     st->paired = in->paired;
     st->has_saved_config = compute_has_saved_config(in);
+    st->has_wifi_ssid = in->has_wifi_ssid;
+    st->has_backend_url = in->has_backend_url;
     st->mode = hc_prov_determine_initial_mode(in);
     st->recovery_elapsed_ms = 0;
 }
@@ -63,6 +65,31 @@ void hc_prov_enter_recovery(hc_prov_state_t *st) {
     st->recovery_elapsed_ms = 0;
 }
 
+void hc_prov_note_stored_config(hc_prov_state_t *st, bool has_wifi_ssid, bool has_backend_url) {
+    if (!st) return;
+    st->has_wifi_ssid = has_wifi_ssid;
+    st->has_backend_url = has_backend_url;
+    if (st->has_wifi) {
+        st->has_saved_config = has_wifi_ssid && has_backend_url;
+    } else if (has_backend_url) {
+        st->has_saved_config = true;
+    }
+}
+
+void hc_prov_exit_recovery(hc_prov_state_t *st) {
+    if (!st) return;
+    /* Same rule the boot path uses: a board that joined nothing yet, or that is
+     * missing the Wi-Fi network name or the server URL, is still unprovisioned
+     * no matter what the `paired` flag says. */
+    const bool cfg_complete = st->has_wifi
+        ? (st->has_wifi_ssid && st->has_backend_url)
+        : st->has_backend_url;
+    st->recovery_elapsed_ms = 0;
+    st->mode = (st->paired && cfg_complete)
+        ? HC_PROV_MODE_NORMAL
+        : HC_PROV_MODE_UNPROVISIONED;
+}
+
 void hc_prov_on_pairing_completed(hc_prov_state_t *st) {
     if (!st) return;
     st->paired = true;
@@ -77,6 +104,8 @@ void hc_prov_on_wifi_reconfigured(
     bool has_backend_url
 ) {
     if (!st) return;
+    if (has_wifi_ssid) st->has_wifi_ssid = true;
+    if (has_backend_url) st->has_backend_url = true;
     if (has_wifi_ssid && has_backend_url) {
         st->has_saved_config = true;
     }
@@ -92,11 +121,11 @@ bool hc_prov_tick(hc_prov_state_t *st, uint32_t dt_ms, bool *out_timed_out) {
 
     st->recovery_elapsed_ms += dt_ms;
     if (st->recovery_elapsed_ms >= HC_PROV_RECOVERY_TIMEOUT_MS) {
-        st->recovery_elapsed_ms = 0;
-        // Return cleanly without erasing saved credentials or pairing
-        st->mode = (st->paired && st->has_saved_config)
-            ? HC_PROV_MODE_NORMAL
-            : (st->has_saved_config ? HC_PROV_MODE_NORMAL : HC_PROV_MODE_UNPROVISIONED);
+        // Return cleanly without erasing saved credentials or pairing. The
+        // supervisor tears the temporary interfaces down from the new mode, so
+        // a timeout can never leave BLE and the setup AP up on a board that
+        // reports NORMAL.
+        hc_prov_exit_recovery(st);
         if (out_timed_out) *out_timed_out = true;
         return true;
     }
@@ -205,6 +234,40 @@ uint8_t hc_ble_guard_attempts_remaining(const hc_ble_auth_guard_t *g) {
     if (!g) return 0;
     if (g->failed_attempts >= HC_PROV_BLE_MAX_AUTH_ATTEMPTS) return 0;
     return (uint8_t)(HC_PROV_BLE_MAX_AUTH_ATTEMPTS - g->failed_attempts);
+}
+
+hc_prov_iface_plan_t hc_prov_plan_interfaces(
+    const hc_prov_state_t *st,
+    bool ble_active,
+    bool ble_mem_released,
+    bool ap_active
+) {
+    hc_prov_iface_plan_t plan = {0};
+    if (!st) return plan;
+
+    const bool want_ble = hc_prov_should_ble_be_active(st);
+    const bool want_ap = hc_prov_should_ap_be_active(st);
+
+    if (want_ble && !ble_active) {
+        if (ble_mem_released) {
+            /* Reclaimed BT memory cannot be re-initialised without a reboot; the
+             * caller persists the recovery request and restarts instead of
+             * silently reporting a mode whose interfaces never came up. */
+            plan.restart_required = true;
+        } else {
+            plan.open_ble = true;
+        }
+    } else if (!want_ble && ble_active) {
+        plan.close_ble = true;
+    }
+
+    if (want_ap && !ap_active) {
+        plan.open_ap = true;
+    } else if (!want_ap && ap_active) {
+        plan.close_ap = true;
+    }
+
+    return plan;
 }
 
 bool hc_prov_cloud_repair_verified(bool repair_pending, bool paired, bool backend_ok,

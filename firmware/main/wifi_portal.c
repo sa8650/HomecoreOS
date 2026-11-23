@@ -53,6 +53,7 @@ esp_err_t hc_wifi_start_portal_ap(homecore_config_t *cfg) {
 }
 
 void hc_wifi_stop_portal_ap(void) {}
+bool hc_wifi_is_portal_ap_active(void) { return false; }
 
 esp_err_t hc_wifi_apply_new_credentials(homecore_config_t *cfg, const char *ssid, const char *pass) {
     (void)cfg;
@@ -185,18 +186,46 @@ static void extract_form_field(const char *body, const char *key, char *out, siz
     }
 }
 
+bool hc_wifi_is_portal_ap_active(void) {
+    return s_ap_active;
+}
+
 void hc_wifi_stop_portal_ap(void) {
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
     }
-    if (s_ap_active) {
-        s_ap_active = false;
-        if (s_cfg_ref && strlen(s_cfg_ref->wifi_ssid) > 0) {
-            esp_wifi_set_mode(WIFI_MODE_STA);
-        }
-        ESP_LOGI(TAG, "Closed local setup AP; continuing in STA mode");
+    if (!s_ap_active) return;
+
+    s_ap_active = false;
+    const bool has_sta_cfg = s_cfg_ref && strlen(s_cfg_ref->wifi_ssid) > 0;
+    if (!has_sta_cfg) {
+        /* Nothing to fall back to: leave the radio in STA mode (idle) so the
+         * next start does not inherit an AP-only mode. */
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        ESP_LOGI(TAG, "Closed local setup AP (no saved Wi-Fi; radio idle in STA mode)");
+        return;
     }
+
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    /* The AP has been the interface carrying this board while the station could
+     * not join anything. Returning to STA is therefore a *reconnect*, not just a
+     * mode switch: without it the station can sit disconnected with no retry
+     * pending (the STA_DISCONNECTED event that would have scheduled one already
+     * fired while the AP was up). */
+    s_connected = false;
+    s_retry_num = 0;
+    if (s_retry_timer) {
+        esp_timer_stop(s_retry_timer);
+    }
+    if (!s_sta_started) {
+        s_sta_started = true;
+        esp_wifi_start();
+    } else {
+        esp_wifi_disconnect();
+        esp_wifi_connect();
+    }
+    ESP_LOGI(TAG, "Closed local setup AP; reconnecting the station to saved Wi-Fi");
 }
 
 static void retry_timer_cb(void *arg) {

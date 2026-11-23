@@ -273,8 +273,117 @@ static void test_cloud_verification_before_teardown(void) {
     assert(hc_prov_cloud_repair_verified(true, true, true, false, false));
 }
 
+static void test_exit_recovery_chooses_the_mode_stored_state_justifies(void) {
+    // Paired + complete config: leaving Recovery Mode returns to NORMAL.
+    hc_prov_boot_input_t paired = {
+        .has_wifi = true, .has_ble = true, .paired = true,
+        .has_wifi_ssid = true, .has_backend_url = true,
+    };
+    hc_prov_state_t st;
+    hc_prov_init_state(&st, &paired);
+    hc_prov_enter_recovery(&st);
+    hc_prov_exit_recovery(&st);
+    assert(st.mode == HC_PROV_MODE_NORMAL);
+    assert(st.recovery_elapsed_ms == 0);
+    assert(hc_prov_should_ble_be_active(&st) == false);
+    assert(hc_prov_should_ap_be_active(&st) == false);
+
+    // A board that is not paired with a complete config must NOT pretend to be
+    // healthy: it stays discoverable so setup can actually be finished.
+    hc_prov_boot_input_t half_configured = {
+        .has_wifi = true, .has_ble = true, .paired = true,
+        .has_wifi_ssid = true, .has_backend_url = false,
+    };
+    hc_prov_init_state(&st, &half_configured);
+    assert(st.mode == HC_PROV_MODE_UNPROVISIONED);
+    hc_prov_enter_recovery(&st);
+    hc_prov_exit_recovery(&st);
+    assert(st.mode == HC_PROV_MODE_UNPROVISIONED);
+    assert(hc_prov_should_ble_be_active(&st) == true);
+    assert(hc_prov_should_ap_be_active(&st) == true);
+
+    // Recovery timing out while unprovisioned keeps the interfaces the user
+    // still needs, but the recovery session itself ends.
+    hc_prov_enter_recovery(&st);
+    bool timed_out = false;
+    assert(hc_prov_tick(&st, HC_PROV_RECOVERY_TIMEOUT_MS, &timed_out) == true);
+    assert(timed_out == true);
+    assert(st.mode == HC_PROV_MODE_UNPROVISIONED);
+    assert(hc_prov_should_ble_be_active(&st) == true);
+
+    // Null-safe.
+    hc_prov_exit_recovery(NULL);
+}
+
+static void test_interface_plan_is_symmetric(void) {
+    hc_prov_boot_input_t paired = {
+        .has_wifi = true, .has_ble = true, .paired = true,
+        .has_wifi_ssid = true, .has_backend_url = true,
+    };
+    hc_prov_state_t st;
+    hc_prov_init_state(&st, &paired);
+
+    // NORMAL with everything closed: nothing to do, nothing to restart.
+    hc_prov_iface_plan_t plan = hc_prov_plan_interfaces(&st, false, true, false);
+    assert(!plan.open_ble && !plan.open_ap && !plan.close_ble && !plan.close_ap);
+    assert(!plan.restart_required);
+
+    // Entering recovery on a NORMAL board whose BT memory was reclaimed must ask
+    // for a restart instead of silently advertising nothing.
+    hc_prov_enter_recovery(&st);
+    plan = hc_prov_plan_interfaces(&st, false, true, false);
+    assert(plan.restart_required == true);
+    assert(plan.open_ble == false);
+    assert(plan.open_ap == true);
+
+    // Recovery on a board that still owns its BT stack opens BLE in place.
+    plan = hc_prov_plan_interfaces(&st, false, false, false);
+    assert(plan.restart_required == false);
+    assert(plan.open_ble == true);
+    assert(plan.open_ap == true);
+    assert(plan.close_ble == false && plan.close_ap == false);
+
+    // Already open -> idempotent (a second BOOT press must not re-open anything).
+    plan = hc_prov_plan_interfaces(&st, true, false, true);
+    assert(!plan.open_ble && !plan.open_ap && !plan.close_ble && !plan.close_ap);
+
+    // Leaving recovery closes whatever is still up, in one place.
+    hc_prov_exit_recovery(&st);
+    plan = hc_prov_plan_interfaces(&st, true, false, true);
+    assert(plan.close_ble == true);
+    assert(plan.close_ap == true);
+    assert(!plan.open_ble && !plan.open_ap && !plan.restart_required);
+
+    // A board without a radio is never asked to open one.
+    hc_prov_boot_input_t ble_only = {
+        .has_wifi = false, .has_ble = true, .paired = false,
+        .has_backend_url = false,
+    };
+    hc_prov_init_state(&st, &ble_only);
+    plan = hc_prov_plan_interfaces(&st, false, false, false);
+    assert(plan.open_ble == true);
+    assert(plan.open_ap == false);
+
+    hc_prov_boot_input_t wifi_only = {
+        .has_wifi = true, .has_ble = false, .paired = false,
+        .has_wifi_ssid = false, .has_backend_url = false,
+    };
+    hc_prov_init_state(&st, &wifi_only);
+    plan = hc_prov_plan_interfaces(&st, false, true, false);
+    assert(plan.open_ble == false);
+    assert(plan.open_ap == true);
+    assert(plan.restart_required == false);
+
+    // Null state: no plan, never a restart.
+    plan = hc_prov_plan_interfaces(NULL, true, false, true);
+    assert(!plan.open_ble && !plan.open_ap && !plan.close_ble && !plan.close_ap);
+    assert(!plan.restart_required);
+}
+
 int main(void) {
     test_cloud_verification_before_teardown();
+    test_exit_recovery_chooses_the_mode_stored_state_justifies();
+    test_interface_plan_is_symmetric();
     test_initial_boot_modes();
     test_recovery_timeout_and_transitions();
     test_three_second_boot_press_opens_both_temporary_interfaces();

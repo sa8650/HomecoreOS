@@ -198,6 +198,13 @@ esp_err_t hc_nvs_save_io_json(const char *json);
 esp_err_t hc_wifi_start(homecore_config_t *cfg, bool allow_ap_portal);
 esp_err_t hc_wifi_start_portal_ap(homecore_config_t *cfg);
 void hc_wifi_stop_portal_ap(void);
+/**
+ * True while the temporary `HomecoreOS-Setup-XXXX` access point is up. The
+ * supervisor compares this against the provisioning mode so the AP is closed by
+ * policy (see `hc_prov_plan_interfaces`) instead of by each exit path
+ * remembering to call `hc_wifi_stop_portal_ap()`.
+ */
+bool hc_wifi_is_portal_ap_active(void);
 /** Consumed by the supervisor after a successful local form save. */
 bool hc_wifi_take_portal_saved(void);
 esp_err_t hc_wifi_apply_new_credentials(homecore_config_t *cfg, const char *ssid, const char *pass);

@@ -429,16 +429,18 @@ describe("USB serial transport", () => {
     await expect(transport.request("HC STATUS")).rejects.toBeInstanceOf(RecoveryTransportError);
   });
 
-  it("explains that no board answered (recovery mode not open)", async () => {
+  it("explains that no board answered without telling the user to press BOOT", async () => {
     const transport = createUsbRecoveryTransport({
       requestPort: async () => fakePort(),
       support: { available: true, reason: null },
     });
     vi.useFakeTimers();
     try {
+      /* The running firmware answers over USB with no button press, so a silent
+       * port means the cable/port/serial-monitor, not a missing recovery mode. */
       const result = expect(transport.connect()).rejects.toMatchObject({
         code: "usb_no_answer",
-        message: expect.stringMatching(/BOOT/i),
+        message: expect.stringMatching(/serial monitor/i),
       });
       await vi.advanceTimersByTimeAsync(15_001);
       await result;
