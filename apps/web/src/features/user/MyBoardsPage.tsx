@@ -624,25 +624,24 @@ export function MyBoardsPage({
         title="My Boards"
         subtitle={
           <>
-            Every{" "}
+            Manage your{" "}
             <span className="font-medium text-foreground/85">
-              physical board registered to this account,
+              Controllers &amp; ESP-NOW Nodes,
             </span>{" "}
-            grouped by the role it is running right now.{" "}
+            live Wi-Fi &amp; MQTT health,{" "}
             <br className="hidden sm:inline" />
-            Controllers host Nodes over ESP-NOW;{" "}
             <span className="font-semibold text-blue-700 dark:text-sky-400">
-              any compatible board can switch role from its Actions menu.
+              Role Switching,
             </span>{" "}
-            and restore from 30-day Trash
+            USB Flashing, and 30-Day Trash Recovery
           </>
         }
         leftIcons={CONTROLLERS_HERO_ICONS.left}
         rightIcons={CONTROLLERS_HERO_ICONS.right}
         searchValue={search}
         onSearchChange={setSearch}
-        searchAriaLabel="Search controllers"
-        searchPlaceholder="Search controllers (name, board, chip, IP, SSID)..."
+        searchAriaLabel="Search boards"
+        searchPlaceholder="Search boards (name, role, model, chip, IP, SSID)..."
         actions={
           <>
             {canManage && (

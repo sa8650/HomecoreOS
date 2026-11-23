@@ -109,8 +109,9 @@ describe("Overview preview toggle", () => {
     // Switch to Controller Preview — same page, no navigation
     await user.click(controllerTab);
     expect(await screen.findByTestId("controller-preview-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("blueprint-wiring-map")).toBeInTheDocument();
     expect(screen.queryByTestId("floorplan-container")).not.toBeInTheDocument();
-    expect(screen.getByText("Office Hub")).toBeInTheDocument();
+    expect(screen.getAllByText("Office Hub").length).toBeGreaterThan(0);
     expect(controllerTab).toHaveAttribute("aria-selected", "true");
 
     // Switch back

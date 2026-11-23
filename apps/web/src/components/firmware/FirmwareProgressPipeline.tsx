@@ -337,8 +337,8 @@ export function UsbFlashStagePipeline({
 const OTA_STAGES = [
   { key: "downloading", label: "Preparing", statuses: ["pending", "downloading"] },
   { key: "flashing", label: "Installing", statuses: ["flashing"] },
-  { key: "verifying", label: "Checking", statuses: ["verifying"] },
   { key: "rebooting", label: "Restarting", statuses: ["rebooting"] },
+  { key: "verifying", label: "Verifying", statuses: ["verifying"] },
   { key: "succeeded", label: "Complete", statuses: ["succeeded"] },
 ];
 

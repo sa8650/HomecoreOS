@@ -45,7 +45,7 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@/components/reui/select";
 
 export function PageHeader({
   eyebrow,

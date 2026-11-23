@@ -31,7 +31,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@/components/reui/dropdown-menu";
 import { formatTimestamp } from "@/lib/timezone";
 import type { BoardProfileItem, ControllerItem } from "@/features/types";
 

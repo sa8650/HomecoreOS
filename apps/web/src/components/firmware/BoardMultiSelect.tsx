@@ -80,7 +80,12 @@ export function BoardMultiSelect({
             <RiArrowDownSLine className="size-4 opacity-60 shrink-0" aria-hidden="true" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-[340px] sm:w-[400px] p-2.5">
+        <PopoverContent
+          align="start"
+          sideOffset={6}
+          collisionPadding={12}
+          className="w-[340px] sm:w-[400px] rounded-xl border border-border/80 p-2.5 shadow-lg"
+        >
           <div className="space-y-2">
             <div className="relative">
               <RiSearchLine

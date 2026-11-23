@@ -31,7 +31,7 @@ typedef struct {
 } ota_job_t;
 
 static char s_ota_token[128] = {0};
-static bool s_ota_in_progress = false;
+static volatile bool s_ota_in_progress = false;
 static bool s_heartbeat_ok = false;
 static bool s_boot_diag_logged = false;
 static int64_t s_last_wait_log_us = 0;
@@ -225,7 +225,23 @@ static void ota_task(void *pvParam) {
     };
 
     esp_https_ota_handle_t handle = NULL;
-    esp_err_t err = esp_https_ota_begin(&ota_cfg, &handle);
+    esp_err_t err = ESP_FAIL;
+    // Retry once on transient TLS/Wi-Fi hiccup when opening the OTA stream
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        err = esp_https_ota_begin(&ota_cfg, &handle);
+        if (err == ESP_OK) {
+            break;
+        }
+        ESP_LOGW(
+            TAG,
+            "esp_https_ota_begin attempt %d failed: %s",
+            attempt + 1,
+            esp_err_to_name(err)
+        );
+        if (attempt == 0) {
+            vTaskDelay(pdMS_TO_TICKS(1500));
+        }
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_https_ota_begin failed: %s", esp_err_to_name(err));
         post_ota_progress(
@@ -303,6 +319,18 @@ static void ota_task(void *pvParam) {
     const esp_partition_t *boot_after = esp_ota_get_boot_partition();
     uint32_t target_addr = boot_after ? boot_after->address : 0;
 
+    // Report rebooting BEFORE persisting NVS pending metadata so the main
+    // supervision loop cannot race with the old running partition before reboot.
+    post_ota_progress(
+        &job->cfg,
+        job->history_id,
+        job->release_id,
+        "rebooting",
+        95,
+        hc_get_runtime_fw_version(),
+        NULL
+    );
+
     hc_ota_pending_t pend = {0};
     pend.active = true;
     pend.state = HC_OTA_PEND_REBOOT_PENDING;
@@ -331,18 +359,8 @@ static void ota_task(void *pvParam) {
         (unsigned long)pend.target_part_addr
     );
 
-    post_ota_progress(
-        &job->cfg,
-        job->history_id,
-        job->release_id,
-        "rebooting",
-        95,
-        hc_get_runtime_fw_version(),
-        NULL
-    );
-
     ESP_LOGI(TAG, "Rebooting into pending OTA partition...");
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(300));
     esp_restart();
 }
 
@@ -376,6 +394,10 @@ bool hc_ota_is_bootloader_pending_verify(void) {
 }
 
 bool hc_ota_is_pending_verify(void) {
+    // Never treat an in-flight OTA flash/reboot as a post-reboot boot check.
+    if (s_ota_in_progress) {
+        return false;
+    }
     if (hc_ota_is_bootloader_pending_verify()) {
         return true;
     }
@@ -474,6 +496,12 @@ static hc_ota_health_result_t run_first_boot_health_check(
 }
 
 void hc_ota_process_boot_validation(const homecore_config_t *cfg) {
+    // While ota_task is downloading, flashing, or about to esp_restart(), the
+    // board is still running the old partition by design — never evaluate boot
+    // state until the device has actually rebooted.
+    if (s_ota_in_progress) {
+        return;
+    }
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *invalid = esp_ota_get_last_invalid_partition();
     esp_ota_img_states_t ota_state = ESP_OTA_IMG_UNDEFINED;
