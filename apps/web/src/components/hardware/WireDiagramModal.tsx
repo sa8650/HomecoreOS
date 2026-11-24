@@ -48,6 +48,8 @@ import {
   connectionStatus,
   pinCapabilityList,
   readSensorI2cAddress,
+  readSensorModel,
+  readSensorResources,
   wireColor,
   wireDash,
   circuitWireColor,
@@ -148,6 +150,9 @@ export function WireDiagramModal({
               gpioPin: target.data.gpio_pin,
               sensorType: target.data.sensor_type,
               i2cAddress: readSensorI2cAddress(target.data),
+              driverId: target.data.driver_id ?? null,
+              model: readSensorModel(target.data),
+              resources: readSensorResources(target.data),
             };
 
     const wireController = controller

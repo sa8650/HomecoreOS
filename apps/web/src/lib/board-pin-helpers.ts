@@ -36,6 +36,8 @@ export interface HardwareContext {
       id: string;
       name: string;
       sensorType?: string;
+      physicalSensorId?: string | null;
+      i2cAddress?: string | null;
     }>
   >;
   sensorCompatibilityByController?: Map<string, ControllerSensorCompatibilityReport>;
@@ -66,7 +68,7 @@ export async function fetchHardwareContext(
   options?: { force?: boolean }
 ): Promise<HardwareContext> {
   const force = options?.force ?? false;
-  const [ctrlRes, roomRes, catRes, myRes, swRes, devRes, senRes] =
+  const [ctrlRes, roomRes, catRes, myRes, swRes, devRes, senRes, physicalRes] =
     await Promise.all([
       cachedGet<{ controllers: ControllerItem[] }>("/api/board-instances", {
         ttlMs: 15_000,
@@ -105,6 +107,19 @@ export async function fetchHardwareContext(
             force,
           }).catch(() => ({ sensors: [] as SensorItem[] }))
         : Promise.resolve({ sensors: [] as SensorItem[] }),
+      includeAssignedPins
+        ? cachedGet<{
+            physicalSensorInstances: Array<{
+              id: string;
+              board_instance_id: string;
+              driver_id: string;
+              model?: string | null;
+              i2c_address?: string | null;
+              resource_config?: Record<string, unknown> | null;
+            }>;
+          }>("/api/sensors/physical-instances", { ttlMs: 12_000, force })
+            .catch(() => ({ physicalSensorInstances: [] }))
+        : Promise.resolve({ physicalSensorInstances: [] }),
     ]);
 
   const boardsById = new Map<string, BoardProfileItem>();
@@ -116,16 +131,7 @@ export async function fetchHardwareContext(
     boardsById.set(b.id, b);
   }
 
-  const usedPinsByController = new Map<
-    string,
-    Array<{
-      pin: number;
-      entityKind: "switch" | "device" | "sensor";
-      id: string;
-      name: string;
-      sensorType?: string;
-    }>
-  >();
+  const usedPinsByController: NonNullable<HardwareContext["usedPinsByController"]> = new Map();
 
   const pushUsed = (
     boardInstanceId: string,
@@ -133,18 +139,50 @@ export async function fetchHardwareContext(
     entityKind: "switch" | "device" | "sensor",
     id: string,
     name: string,
-    sensorType?: string
+    sensorType?: string,
+    physicalSensorId?: string | null,
+    i2cAddress?: string | null
   ) => {
     if (pin === null || !Number.isFinite(pin)) return;
     const list = usedPinsByController.get(boardInstanceId) ?? [];
-    list.push({ pin, entityKind, id, name, sensorType });
+    list.push({ pin, entityKind, id, name, sensorType, physicalSensorId, i2cAddress });
     usedPinsByController.set(boardInstanceId, list);
   };
 
   for (const s of swRes.switches) pushUsed(s.board_instance_id, s.gpio_pin, "switch", s.id, s.name);
   for (const d of devRes.devices) pushUsed(d.board_instance_id, d.gpio_pin, "device", d.id, d.name);
   for (const sen of senRes.sensors)
-    pushUsed(sen.board_instance_id, sen.gpio_pin, "sensor", sen.id, sen.name, sen.sensor_type);
+    pushUsed(
+      sen.board_instance_id,
+      sen.gpio_pin,
+      "sensor",
+      sen.id,
+      sen.name,
+      sen.sensor_type,
+      sen.physical_sensor_id ?? null,
+      sen.i2c_address ?? null
+    );
+  /* Physical modules without a derived measurement entity still reserve pins. */
+  for (const physical of physicalRes.physicalSensorInstances) {
+    const resources = physical.resource_config as
+      | { pins?: Record<string, number | null>; i2cAddress?: string }
+      | null
+      | undefined;
+    const pin = resources?.pins
+      ? (Object.values(resources.pins).find((p) => typeof p === "number") ?? null)
+      : null;
+    if (pin !== null) {
+      pushUsed(
+        physical.board_instance_id,
+        pin,
+        "sensor",
+        physical.id,
+        physical.model ?? physical.driver_id,
+        undefined,
+        physical.id
+      );
+    }
+  }
 
   const sensorCompatibilityByController = new Map<
     string,

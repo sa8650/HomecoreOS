@@ -483,3 +483,134 @@ export function evaluateGpioPinChoice(params: {
   const entry = evaluateDefinition(def, createContext(params));
   return { allowed: entry.selectable, state: entry.state, explanation: entry.explanation };
 }
+
+// ---------------------------------------------------------------------------
+// Driver-aware pin selection (multi-pin / bus-aware)
+// ---------------------------------------------------------------------------
+
+import {
+  getSensorDriverById,
+  getSensorDriverForMeasurement,
+  resolveSensorResources,
+  validateSensorResourceAssignments,
+  type SensorPinRole,
+  type SensorResourceAllocationInput,
+  type SensorResourcesConfig,
+} from "./sensor-drivers";
+
+export interface DriverPinSelectorModel {
+  driverId: string;
+  bus: string;
+  /** One selector model per required physical role. */
+  byRole: Array<{
+    role: SensorPinRole;
+    model: GpioPinSelectorModel;
+  }>;
+  /** Best overall pin per role (null when no pin is usable). */
+  suggestions: Partial<Record<SensorPinRole, number>>;
+  explanations: string[];
+}
+
+/**
+ * Builds a pin model for *every* role of a physical driver. I2C and 1-Wire
+ * peers that can legally share a bus are not marked as "used"; exclusive
+ * GPIO/UART/SPI/ADC assignments are.
+ */
+export function buildDriverPinSelectorModel(params: {
+  board: GpioPinSelectorBoard;
+  driverId?: string | null;
+  sensorType?: string | null;
+  allocations?: readonly SensorResourceAllocationInput[];
+  current?: SensorResourcesConfig | null;
+  editing?: { entityKind: GpioPinEntityKind; id: string } | null;
+}): DriverPinSelectorModel {
+  const driver = (params.driverId && getSensorDriverById(params.driverId)) ||
+    (params.sensorType ? getSensorDriverForMeasurement(params.sensorType) : undefined);
+  if (!driver?.resources) {
+    return { driverId: params.driverId ?? "", bus: "unknown", byRole: [], suggestions: {}, explanations: ["Unknown sensor driver."] };
+  }
+  const def = driver.resources;
+  const peers = (params.allocations ?? []).filter((a) => a.id !== params.editing?.id);
+  const explanations: string[] = [];
+
+  const byRole = def.roles.map((role) => {
+    const requirement = def.requiredCapabilities[role] ?? (role === "adc" ? "adc" : "digital_in");
+    const usedPins: Array<number | GpioPinUsage> = [];
+    for (const peer of peers) {
+      const peerDriver = peer.driverId
+        ? getSensorDriverById(peer.driverId)
+        : peer.sensorType ? getSensorDriverForMeasurement(peer.sensorType) : null;
+      const shareableBus =
+        (def.bus === "i2c" && peerDriver?.resources?.bus === "i2c" && peer.driverId === driver.id) ||
+        (def.bus === "onewire" && peerDriver?.resources?.bus === "onewire");
+      if (shareableBus) continue;
+      if (typeof peer.gpioPin === "number") {
+        usedPins.push({
+          pin: peer.gpioPin,
+          entityKind: "sensor",
+          id: peer.id,
+          name: peer.name,
+        });
+      }
+      for (const peerRole of peerDriver?.resources?.roles ?? []) {
+        const value = peer.resources?.pins?.[peerRole];
+        if (typeof value === "number" && !usedPins.some((p) => (typeof p === "number" ? p === value : p.pin === value))) {
+          usedPins.push({ pin: value, entityKind: "sensor", id: peer.id, name: peer.name });
+        }
+      }
+      if (peer.kind !== "sensor" && typeof peer.gpioPin === "number") {
+        usedPins.push({ pin: peer.gpioPin, entityKind: peer.kind, id: peer.id, name: peer.name });
+      }
+    }
+    const currentPin = params.current?.pins?.[role] ?? null;
+    const model = buildGpioPinSelectorModel({
+      board: params.board,
+      requirement,
+      usedPins,
+      editing: params.editing
+        ? { entityKind: params.editing.entityKind, id: params.editing.id }
+        : null,
+      currentPin,
+    });
+    if (def.notes) explanations.push(def.notes);
+    return { role, model };
+  });
+
+  const suggestions: Partial<Record<SensorPinRole, number>> = {};
+  for (const { role, model } of byRole) {
+    const current = params.current?.pins?.[role];
+    const choice = typeof current === "number" ? current : model.suggestions[0];
+    if (choice !== undefined) suggestions[role] = choice;
+  }
+  return { driverId: driver.id, bus: def.bus, byRole, suggestions, explanations: Array.from(new Set(explanations)) };
+}
+
+/**
+ * Verdict for a complete driver binding (all roles at once). Used by the
+ * Worker and by the UI before a multi-pin sensor is saved.
+ */
+export function evaluateDriverResourceChoice(params: {
+  board: GpioPinSelectorBoard;
+  allocation: SensorResourceAllocationInput;
+  allocations?: readonly SensorResourceAllocationInput[];
+}): { allowed: boolean; errors: string[]; warnings: string[] } {
+  const spec = {
+    manufacturer: params.board.manufacturer,
+    model: params.board.model,
+    slug: params.board.slug ?? "",
+    chip_family: params.board.chip_family,
+    chip_variant: params.board.chip_variant ?? "",
+    flash_size_mb: params.board.flash_size_mb,
+    psram_size_mb: params.board.psram_size_mb,
+    board_layout: params.board.board_layout ?? null,
+    gpio_definitions: params.board.gpio_definitions,
+  } as BoardProfileSpec;
+  const check = validateSensorResourceAssignments({
+    board: spec,
+    candidate: params.allocation,
+    allocations: params.allocations ?? [],
+  });
+  return { allowed: check.valid, errors: check.errors, warnings: check.warnings };
+}
+
+export { resolveSensorResources };

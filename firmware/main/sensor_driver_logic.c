@@ -33,6 +33,38 @@ hc_sensor_measurement_t hc_sensor_resolve_measurement(const char *sensor_type) {
     if (str_ieq(sensor_type, "contact_reed") || str_ieq(sensor_type, "contact")) return HC_MEAS_CONTACT;
     if (str_ieq(sensor_type, "light_bh1750") || str_ieq(sensor_type, "light")) return HC_MEAS_LIGHT;
     if (str_ieq(sensor_type, "analog_voltage") || str_ieq(sensor_type, "voltage")) return HC_MEAS_VOLTAGE;
+    if (str_ieq(sensor_type, "temperature_dht11")) return HC_MEAS_TEMPERATURE_DHT11;
+    if (str_ieq(sensor_type, "humidity_dht11")) return HC_MEAS_HUMIDITY_DHT11;
+    if (str_ieq(sensor_type, "temperature_sht3x")) return HC_MEAS_TEMPERATURE_SHT3X;
+    if (str_ieq(sensor_type, "humidity_sht3x")) return HC_MEAS_HUMIDITY_SHT3X;
+    if (str_ieq(sensor_type, "temperature_aht20")) return HC_MEAS_TEMPERATURE_AHT20;
+    if (str_ieq(sensor_type, "humidity_aht20")) return HC_MEAS_HUMIDITY_AHT20;
+    if (str_ieq(sensor_type, "temperature_tmp117")) return HC_MEAS_TEMPERATURE_TMP117;
+    if (str_ieq(sensor_type, "presence_ld2410")) return HC_MEAS_PRESENCE_LD2410;
+    if (str_ieq(sensor_type, "motion_ld2410")) return HC_MEAS_MOTION_LD2410;
+    if (str_ieq(sensor_type, "distance_ld2410")) return HC_MEAS_DISTANCE_LD2410;
+    if (str_ieq(sensor_type, "presence_ld2450")) return HC_MEAS_PRESENCE_LD2450;
+    if (str_ieq(sensor_type, "light_veml7700")) return HC_MEAS_LIGHT_VEML7700;
+    if (str_ieq(sensor_type, "tvoc_sgp30")) return HC_MEAS_TVOC_SGP30;
+    if (str_ieq(sensor_type, "eco2_sgp30")) return HC_MEAS_ECO2_SGP30;
+    if (str_ieq(sensor_type, "water_leak")) return HC_MEAS_WATER_LEAK;
+    if (str_ieq(sensor_type, "water_level")) return HC_MEAS_WATER_LEVEL;
+    if (str_ieq(sensor_type, "voltage_ina219")) return HC_MEAS_VOLTAGE_INA219;
+    if (str_ieq(sensor_type, "current_ina219")) return HC_MEAS_CURRENT_INA219;
+    if (str_ieq(sensor_type, "power_ina219")) return HC_MEAS_POWER_INA219;
+    if (str_ieq(sensor_type, "voltage_ina226")) return HC_MEAS_VOLTAGE_INA226;
+    if (str_ieq(sensor_type, "current_ina226")) return HC_MEAS_CURRENT_INA226;
+    if (str_ieq(sensor_type, "power_ina226")) return HC_MEAS_POWER_INA226;
+    if (str_ieq(sensor_type, "energy_ina226")) return HC_MEAS_ENERGY_INA226;
+    if (str_ieq(sensor_type, "voltage_pzem")) return HC_MEAS_VOLTAGE_PZEM;
+    if (str_ieq(sensor_type, "current_pzem")) return HC_MEAS_CURRENT_PZEM;
+    if (str_ieq(sensor_type, "power_pzem")) return HC_MEAS_POWER_PZEM;
+    if (str_ieq(sensor_type, "energy_pzem")) return HC_MEAS_ENERGY_PZEM;
+    if (str_ieq(sensor_type, "current_sct013")) return HC_MEAS_CURRENT_SCT013;
+    if (str_ieq(sensor_type, "soil_moisture")) return HC_MEAS_SOIL_MOISTURE;
+    if (str_ieq(sensor_type, "rain_level")) return HC_MEAS_RAIN;
+    if (str_ieq(sensor_type, "gas_mq2")) return HC_MEAS_GAS_MQ2;
+    if (str_ieq(sensor_type, "gas_mq135")) return HC_MEAS_GAS_MQ135;
     return HC_MEAS_UNKNOWN;
 }
 
@@ -45,6 +77,24 @@ static hc_sensor_driver_id_t parse_driver_id(const char *id) {
     if (str_ieq(id, "reed")) return HC_DRV_REED;
     if (str_ieq(id, "bh1750")) return HC_DRV_BH1750;
     if (str_ieq(id, "adc_voltage")) return HC_DRV_ADC_VOLTAGE;
+    if (str_ieq(id, "dht11")) return HC_DRV_DHT11;
+    if (str_ieq(id, "sht3x")) return HC_DRV_SHT3X;
+    if (str_ieq(id, "aht20")) return HC_DRV_AHT20;
+    if (str_ieq(id, "tmp117")) return HC_DRV_TMP117;
+    if (str_ieq(id, "ld2410")) return HC_DRV_LD2410;
+    if (str_ieq(id, "ld2450")) return HC_DRV_LD2450;
+    if (str_ieq(id, "veml7700")) return HC_DRV_VEML7700;
+    if (str_ieq(id, "sgp30")) return HC_DRV_SGP30;
+    if (str_ieq(id, "water_leak")) return HC_DRV_WATER_LEAK;
+    if (str_ieq(id, "water_level")) return HC_DRV_WATER_LEVEL;
+    if (str_ieq(id, "soil_moisture")) return HC_DRV_SOIL_MOISTURE;
+    if (str_ieq(id, "rain")) return HC_DRV_RAIN;
+    if (str_ieq(id, "ina219")) return HC_DRV_INA219;
+    if (str_ieq(id, "ina226")) return HC_DRV_INA226;
+    if (str_ieq(id, "pzem004t")) return HC_DRV_PZEM004T;
+    if (str_ieq(id, "sct013")) return HC_DRV_SCT013;
+    if (str_ieq(id, "mq2")) return HC_DRV_MQ2;
+    if (str_ieq(id, "mq135")) return HC_DRV_MQ135;
     return HC_DRV_NONE;
 }
 
@@ -72,6 +122,56 @@ hc_sensor_driver_id_t hc_sensor_resolve_driver(const char *sensor_type, const ch
             return HC_DRV_BH1750;
         case HC_MEAS_VOLTAGE:
             return HC_DRV_ADC_VOLTAGE;
+        case HC_MEAS_TEMPERATURE_DHT11:
+        case HC_MEAS_HUMIDITY_DHT11:
+            return HC_DRV_DHT11;
+        case HC_MEAS_TEMPERATURE_SHT3X:
+        case HC_MEAS_HUMIDITY_SHT3X:
+            return HC_DRV_SHT3X;
+        case HC_MEAS_TEMPERATURE_AHT20:
+        case HC_MEAS_HUMIDITY_AHT20:
+            return HC_DRV_AHT20;
+        case HC_MEAS_TEMPERATURE_TMP117:
+            return HC_DRV_TMP117;
+        case HC_MEAS_PRESENCE_LD2410:
+        case HC_MEAS_MOTION_LD2410:
+        case HC_MEAS_DISTANCE_LD2410:
+            return HC_DRV_LD2410;
+        case HC_MEAS_PRESENCE_LD2450:
+            return HC_DRV_LD2450;
+        case HC_MEAS_LIGHT_VEML7700:
+            return HC_DRV_VEML7700;
+        case HC_MEAS_TVOC_SGP30:
+        case HC_MEAS_ECO2_SGP30:
+            return HC_DRV_SGP30;
+        case HC_MEAS_WATER_LEAK:
+            return HC_DRV_WATER_LEAK;
+        case HC_MEAS_WATER_LEVEL:
+            return HC_DRV_WATER_LEVEL;
+        case HC_MEAS_SOIL_MOISTURE:
+            return HC_DRV_SOIL_MOISTURE;
+        case HC_MEAS_RAIN:
+            return HC_DRV_RAIN;
+        case HC_MEAS_VOLTAGE_INA219:
+        case HC_MEAS_CURRENT_INA219:
+        case HC_MEAS_POWER_INA219:
+            return HC_DRV_INA219;
+        case HC_MEAS_VOLTAGE_INA226:
+        case HC_MEAS_CURRENT_INA226:
+        case HC_MEAS_POWER_INA226:
+        case HC_MEAS_ENERGY_INA226:
+            return HC_DRV_INA226;
+        case HC_MEAS_VOLTAGE_PZEM:
+        case HC_MEAS_CURRENT_PZEM:
+        case HC_MEAS_POWER_PZEM:
+        case HC_MEAS_ENERGY_PZEM:
+            return HC_DRV_PZEM004T;
+        case HC_MEAS_CURRENT_SCT013:
+            return HC_DRV_SCT013;
+        case HC_MEAS_GAS_MQ2:
+            return HC_DRV_MQ2;
+        case HC_MEAS_GAS_MQ135:
+            return HC_DRV_MQ135;
         default:
             return HC_DRV_NONE;
     }
@@ -86,6 +186,24 @@ const char *hc_sensor_driver_name(hc_sensor_driver_id_t drv) {
         case HC_DRV_REED: return "reed";
         case HC_DRV_BH1750: return "bh1750";
         case HC_DRV_ADC_VOLTAGE: return "adc_voltage";
+        case HC_DRV_DHT11: return "dht11";
+        case HC_DRV_SHT3X: return "sht3x";
+        case HC_DRV_AHT20: return "aht20";
+        case HC_DRV_TMP117: return "tmp117";
+        case HC_DRV_LD2410: return "ld2410";
+        case HC_DRV_LD2450: return "ld2450";
+        case HC_DRV_VEML7700: return "veml7700";
+        case HC_DRV_SGP30: return "sgp30";
+        case HC_DRV_WATER_LEAK: return "water_leak";
+        case HC_DRV_WATER_LEVEL: return "water_level";
+        case HC_DRV_SOIL_MOISTURE: return "soil_moisture";
+        case HC_DRV_RAIN: return "rain";
+        case HC_DRV_INA219: return "ina219";
+        case HC_DRV_INA226: return "ina226";
+        case HC_DRV_PZEM004T: return "pzem004t";
+        case HC_DRV_SCT013: return "sct013";
+        case HC_DRV_MQ2: return "mq2";
+        case HC_DRV_MQ135: return "mq135";
         default: return "unknown";
     }
 }
@@ -95,16 +213,49 @@ const char *hc_sensor_default_unit(hc_sensor_measurement_t meas) {
         case HC_MEAS_TEMPERATURE:
         case HC_MEAS_TEMPERATURE_DHT22:
         case HC_MEAS_TEMPERATURE_DS18B20:
+        case HC_MEAS_TEMPERATURE_DHT11:
+        case HC_MEAS_TEMPERATURE_SHT3X:
+        case HC_MEAS_TEMPERATURE_AHT20:
+        case HC_MEAS_TEMPERATURE_TMP117:
             return "°C";
         case HC_MEAS_HUMIDITY:
         case HC_MEAS_HUMIDITY_DHT22:
+        case HC_MEAS_HUMIDITY_DHT11:
+        case HC_MEAS_HUMIDITY_SHT3X:
+        case HC_MEAS_HUMIDITY_AHT20:
+        case HC_MEAS_SOIL_MOISTURE:
+        case HC_MEAS_WATER_LEVEL:
+        case HC_MEAS_GAS_MQ2:
+        case HC_MEAS_GAS_MQ135:
             return "%";
         case HC_MEAS_PRESSURE:
             return "hPa";
         case HC_MEAS_LIGHT:
+        case HC_MEAS_LIGHT_VEML7700:
             return "lux";
         case HC_MEAS_VOLTAGE:
+        case HC_MEAS_VOLTAGE_INA219:
+        case HC_MEAS_VOLTAGE_INA226:
+        case HC_MEAS_VOLTAGE_PZEM:
             return "V";
+        case HC_MEAS_CURRENT_INA219:
+        case HC_MEAS_CURRENT_INA226:
+        case HC_MEAS_CURRENT_PZEM:
+        case HC_MEAS_CURRENT_SCT013:
+            return "A";
+        case HC_MEAS_POWER_INA219:
+        case HC_MEAS_POWER_INA226:
+        case HC_MEAS_POWER_PZEM:
+            return "W";
+        case HC_MEAS_ENERGY_INA226:
+        case HC_MEAS_ENERGY_PZEM:
+            return "Wh";
+        case HC_MEAS_TVOC_SGP30:
+            return "ppb";
+        case HC_MEAS_ECO2_SGP30:
+            return "ppm";
+        case HC_MEAS_DISTANCE_LD2410:
+            return "cm";
         case HC_MEAS_MOTION:
         case HC_MEAS_CONTACT:
         default:
@@ -113,12 +264,31 @@ const char *hc_sensor_default_unit(hc_sensor_measurement_t meas) {
 }
 
 bool hc_sensor_driver_is_i2c(hc_sensor_driver_id_t drv) {
-    return drv == HC_DRV_BME280 || drv == HC_DRV_BH1750;
+    switch (drv) {
+        case HC_DRV_BME280:
+        case HC_DRV_BH1750:
+        case HC_DRV_SHT3X:
+        case HC_DRV_AHT20:
+        case HC_DRV_TMP117:
+        case HC_DRV_VEML7700:
+        case HC_DRV_SGP30:
+        case HC_DRV_INA219:
+        case HC_DRV_INA226:
+            return true;
+        default:
+            return false;
+    }
 }
 
 uint8_t hc_sensor_driver_default_i2c_addr(hc_sensor_driver_id_t drv) {
     if (drv == HC_DRV_BME280) return 0x76;
     if (drv == HC_DRV_BH1750) return 0x23;
+    if (drv == HC_DRV_SHT3X) return 0x44;
+    if (drv == HC_DRV_AHT20) return 0x38;
+    if (drv == HC_DRV_TMP117) return 0x48;
+    if (drv == HC_DRV_VEML7700) return 0x10;
+    if (drv == HC_DRV_SGP30) return 0x58;
+    if (drv == HC_DRV_INA219 || drv == HC_DRV_INA226) return 0x40;
     return 0;
 }
 
@@ -157,6 +327,24 @@ bool hc_sensor_is_driver_in_mask(uint32_t compiled_mask, hc_sensor_driver_id_t d
         case HC_DRV_REED: return (compiled_mask & HC_DRV_BIT_REED) != 0;
         case HC_DRV_BH1750: return (compiled_mask & HC_DRV_BIT_BH1750) != 0;
         case HC_DRV_ADC_VOLTAGE: return (compiled_mask & HC_DRV_BIT_ADC_VOLTAGE) != 0;
+        case HC_DRV_DHT11: return (compiled_mask & HC_DRV_BIT_DHT11) != 0;
+        case HC_DRV_SHT3X: return (compiled_mask & HC_DRV_BIT_SHT3X) != 0;
+        case HC_DRV_AHT20: return (compiled_mask & HC_DRV_BIT_AHT20) != 0;
+        case HC_DRV_TMP117: return (compiled_mask & HC_DRV_BIT_TMP117) != 0;
+        case HC_DRV_LD2410: return (compiled_mask & HC_DRV_BIT_LD2410) != 0;
+        case HC_DRV_LD2450: return (compiled_mask & HC_DRV_BIT_LD2450) != 0;
+        case HC_DRV_VEML7700: return (compiled_mask & HC_DRV_BIT_VEML7700) != 0;
+        case HC_DRV_SGP30: return (compiled_mask & HC_DRV_BIT_SGP30) != 0;
+        case HC_DRV_WATER_LEAK: return (compiled_mask & HC_DRV_BIT_WATER_LEAK) != 0;
+        case HC_DRV_WATER_LEVEL: return (compiled_mask & HC_DRV_BIT_WATER_LEVEL) != 0;
+        case HC_DRV_SOIL_MOISTURE: return (compiled_mask & HC_DRV_BIT_SOIL_MOISTURE) != 0;
+        case HC_DRV_RAIN: return (compiled_mask & HC_DRV_BIT_RAIN) != 0;
+        case HC_DRV_INA219: return (compiled_mask & HC_DRV_BIT_INA219) != 0;
+        case HC_DRV_INA226: return (compiled_mask & HC_DRV_BIT_INA226) != 0;
+        case HC_DRV_PZEM004T: return (compiled_mask & HC_DRV_BIT_PZEM004T) != 0;
+        case HC_DRV_SCT013: return (compiled_mask & HC_DRV_BIT_SCT013) != 0;
+        case HC_DRV_MQ2: return (compiled_mask & HC_DRV_BIT_MQ2) != 0;
+        case HC_DRV_MQ135: return (compiled_mask & HC_DRV_BIT_MQ135) != 0;
         default: return false;
     }
 }
@@ -348,4 +536,170 @@ bool hc_adc_mv_to_volts(int32_t mv, double divider_ratio, double *out_volts) {
     double ratio = divider_ratio > 0.0 ? divider_ratio : 1.0;
     *out_volts = round_to_decimals(((double)mv / 1000.0) * ratio, 3);
     return true;
+}
+
+/* ============================================================================
+ * Expanded protocol families — shared by ESP32 (ESP-IDF) and ESP8266 builds.
+ * ============================================================================ */
+
+bool hc_dht11_decode(const uint8_t raw[5], double *out_temp_c, double *out_humidity_pct) {
+    if (!raw || !out_temp_c || !out_humidity_pct) return false;
+    uint8_t sum = (uint8_t)(raw[0] + raw[1] + raw[2] + raw[3]);
+    if (sum != raw[4]) return false;
+    double hum = (double)raw[0];
+    double temp = (double)(raw[2] & 0x7FU);
+    if (raw[2] & 0x80U) temp = -temp;
+    if (hum < 0.0 || hum > 100.0 || temp < 0.0 || temp > 50.0) return false;
+    *out_humidity_pct = round_to_decimals(hum, 0);
+    *out_temp_c = round_to_decimals(temp, 0);
+    return true;
+}
+
+uint8_t hc_sht3x_crc8(const uint8_t *data, size_t len) {
+    uint8_t crc = 0xFFU;
+    if (!data) return 0;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; bit++) {
+            crc = (crc & 0x80U) ? (uint8_t)((crc << 1) ^ 0x31U) : (uint8_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+bool hc_sht3x_decode(const uint8_t raw[6], double *out_temp_c, double *out_humidity_pct) {
+    if (!raw || !out_temp_c || !out_humidity_pct) return false;
+    uint8_t t_crc = hc_sht3x_crc8(raw, 2);
+    uint8_t h_crc = hc_sht3x_crc8(raw + 3, 2);
+    if (t_crc != raw[2] || h_crc != raw[5]) return false;
+    uint16_t t_raw = (uint16_t)(((uint16_t)raw[0] << 8) | raw[1]);
+    uint16_t h_raw = (uint16_t)(((uint16_t)raw[3] << 8) | raw[4]);
+    double temp = -45.0 + 175.0 * (double)t_raw / 65535.0;
+    double hum = 100.0 * (double)h_raw / 65535.0;
+    if (temp < -40.0 || temp > 125.0 || hum < 0.0 || hum > 100.0) return false;
+    *out_temp_c = round_to_decimals(temp, 2);
+    *out_humidity_pct = round_to_decimals(hum, 2);
+    return true;
+}
+
+bool hc_aht20_decode(const uint8_t raw[6], double *out_temp_c, double *out_humidity_pct) {
+    if (!raw || !out_temp_c || !out_humidity_pct) return false;
+    if ((raw[0] & 0x80U) == 0 || (raw[0] & 0x10U) != 0) return false; /* busy / not calibrated */
+    uint32_t hum_raw = (((uint32_t)raw[1] << 16) | ((uint32_t)raw[2] << 8) | raw[3]) >> 4;
+    uint32_t temp_raw = (((uint32_t)(raw[3] & 0x0FU) << 16) |
+                         ((uint32_t)raw[4] << 8) | (uint32_t)raw[5]);
+    double hum = 100.0 * (double)hum_raw / 1048576.0;
+    double temp = 200.0 * (double)temp_raw / 1048576.0 - 50.0;
+    if (hum < 0.0 || hum > 100.0 || temp < -40.0 || temp > 85.0) return false;
+    *out_humidity_pct = round_to_decimals(hum, 2);
+    *out_temp_c = round_to_decimals(temp, 2);
+    return true;
+}
+
+bool hc_tmp117_decode(const uint8_t raw[2], double *out_temp_c) {
+    if (!raw || !out_temp_c) return false;
+    int16_t raw_i = (int16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
+    if (raw_i == -256) return false; /* TMP117 fault marker */
+    double temp = (double)raw_i * 0.0078125;
+    if (temp < -40.0 || temp > 125.0) return false;
+    *out_temp_c = round_to_decimals(temp, 3);
+    return true;
+}
+
+bool hc_veml7700_decode_lux(const uint8_t raw[2], double *out_lux) {
+    if (!raw || !out_lux) return false;
+    uint16_t count = (uint16_t)(((uint16_t)raw[0] << 8) | raw[1]);
+    /* Default 1/4 gain, 100 ms integration: 0.0024 lx/count resolution. */
+    *out_lux = round_to_decimals((double)count * 0.0024, 2);
+    return true;
+}
+
+bool hc_sgp30_decode(const uint8_t raw[6], double *out_tvoc_ppb, double *out_eco2_ppm) {
+    if (!raw || !out_tvoc_ppb || !out_eco2_ppm) return false;
+    if (hc_sht3x_crc8(raw, 2) != raw[2] || hc_sht3x_crc8(raw + 3, 2) != raw[5]) return false;
+    *out_tvoc_ppb = (double)(((uint16_t)raw[0] << 8) | raw[1]);
+    *out_eco2_ppm = (double)(((uint16_t)raw[3] << 8) | raw[4]);
+    if (*out_eco2_ppm < 400.0 || *out_eco2_ppm > 60000.0) return false;
+    return true;
+}
+
+bool hc_ina_decode(const uint8_t raw[2], bool ina226, int meas_kind,
+                   double shunt_ohms, double *out_value) {
+    if (!raw || !out_value) return false;
+    if (!(shunt_ohms > 0.0)) shunt_ohms = 0.1;
+    int16_t signed_raw = (int16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
+    switch (meas_kind) {
+        case 0: { /* bus voltage */
+            double volts = ina226 ? (double)signed_raw * 0.00125
+                                  : (double)(signed_raw >> 3) * 0.004;
+            if (volts < 0.0 || volts > 40.0) return false;
+            *out_value = round_to_decimals(volts, 3);
+            return true;
+        }
+        case 1: { /* current through the fitted shunt */
+            double shunt_uv = (double)signed_raw * (ina226 ? 0.0025 : 0.01);
+            double amps = shunt_uv / (1000.0 * shunt_ohms);
+            if (amps < -500.0 || amps > 500.0) return false;
+            *out_value = round_to_decimals(amps, 3);
+            return true;
+        }
+        case 2: { /* power register */
+            double current_lsb = ina226 ? 0.0000025 / shunt_ohms : 0.00001 / shunt_ohms;
+            double watts = (double)signed_raw * (ina226 ? 25.0 : 20.0) * current_lsb;
+            if (watts < -10000.0 || watts > 10000.0) return false;
+            *out_value = round_to_decimals(watts, 3);
+            return true;
+        }
+        default:
+            return false; /* energy is accumulated in firmware, not decoded */
+    }
+}
+
+bool hc_ld2410_parse_frame(const uint8_t *buf, size_t len, double *out_presence,
+                           double *out_motion, double *out_distance_cm) {
+    if (!buf || len < 7 || !out_presence || !out_motion || !out_distance_cm) return false;
+    for (size_t i = 0; i + 4 < len; i++) {
+        if (buf[i] != 0xAAU || buf[i + 1] != 0x55U) continue;
+        size_t payload_len = (size_t)buf[i + 2] | ((size_t)buf[i + 3] << 8);
+        if (payload_len < 3 || i + 4 + payload_len + 2 > len) continue;
+        size_t tail = i + 4 + payload_len;
+        if (buf[tail] != 0x55U || buf[tail + 1] != 0xAAU) continue;
+        const uint8_t *p = buf + i + 4;
+        if (p[0] == 0x01U && payload_len >= 12) {
+            /* Engineering frame: payload[4] target state, [8..9] moving distance. */
+            int state = p[4];
+            if (state > 2) return false;
+            uint16_t dist = (uint16_t)p[8] | ((uint16_t)p[9] << 8);
+            if (dist > 1000U) return false;
+            *out_presence = (double)(state == 0 ? 0 : 1);
+            *out_motion = (double)(state == 2 ? 1 : 0);
+            *out_distance_cm = (double)dist;
+            return true;
+        }
+        if (p[0] == 0x02U && payload_len >= 5) {
+            /* Compact target-state frame: state + distance in cm. */
+            int state = p[1];
+            if (state > 2) return false;
+            uint16_t dist = (uint16_t)p[2] | ((uint16_t)p[3] << 8);
+            *out_presence = (double)(state == 0 ? 0 : 1);
+            *out_motion = (double)(state == 2 ? 1 : 0);
+            *out_distance_cm = (double)dist;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hc_adc_percent(int32_t mv, int32_t max_mv, double *out_percent) {
+    if (!out_percent || mv < 0 || max_mv <= 0) return false;
+    double pct = 100.0 * (double)mv / (double)max_mv;
+    if (pct > 100.0) pct = 100.0;
+    *out_percent = round_to_decimals(pct, 1);
+    return true;
+}
+
+double hc_mq_qualitative_pct(int32_t mv, int32_t max_mv) {
+    double pct = 0.0;
+    if (!hc_adc_percent(mv, max_mv, &pct)) return 0.0;
+    return pct;
 }

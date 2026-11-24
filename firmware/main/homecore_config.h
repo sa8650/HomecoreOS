@@ -179,6 +179,9 @@ typedef struct {
     bool state;
     char driver_type[32];   /* sensor_type (e.g. temperature, temperature_dht22, light) */
     char driver_id[24];     /* canonical driver_id (e.g. bme280, dht22, bh1750) */
+    char model[24];         /* hardware model chosen in the sensor editor */
+    char physical_id[48];   /* shared physical sensor instance id */
+    int16_t aux_pin_a;      /* SCL (I2C) or RX (UART), -1 when board default */
     uint8_t i2c_addr;       /* 0 to use driver default */
 } hc_io_entry_t;
 

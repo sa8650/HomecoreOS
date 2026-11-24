@@ -74,6 +74,9 @@ export interface ConsolidatedControllerConfigSnapshot {
     gpio_pin: number | null;
     unit: string;
     i2c_address?: string | null;
+    model?: string | null;
+    resources?: Record<string, unknown> | null;
+    physical_sensor_id?: string | null;
   }>;
   automations: Array<{
     id: string;
@@ -181,7 +184,7 @@ export async function buildConsolidatedControllerConfig(
         .order("gpio_pin", { ascending: true }),
       db
         .from("sensors")
-        .select("id,name,sensor_type,gpio_pin,unit,last_raw_payload")
+        .select("id,name,sensor_type,gpio_pin,unit,last_raw_payload,physical_sensor_id")
         .eq("board_instance_id", boardInstanceId)
         .eq("account_id", accountId)
         .is("deleted_at", null)
@@ -265,6 +268,7 @@ export async function buildConsolidatedControllerConfig(
     gpio_pin: number | null;
     unit: string;
     last_raw_payload: Record<string, unknown> | null;
+    physical_sensor_id: string | null;
   }>;
   const sensors = sensorsRaw.map((s) => ({
     id: s.id,
@@ -280,6 +284,13 @@ export async function buildConsolidatedControllerConfig(
       typeof s.last_raw_payload?.i2c_address === "string"
         ? s.last_raw_payload.i2c_address
         : null,
+    model: typeof s.last_raw_payload?.model === "string" ? s.last_raw_payload.model : null,
+    resources:
+      s.last_raw_payload?.resources && typeof s.last_raw_payload.resources === "object"
+        ? (s.last_raw_payload.resources as Record<string, unknown>)
+        : null,
+    physical_sensor_id:
+      typeof s.physical_sensor_id === "string" ? s.physical_sensor_id : null,
   }));
 
   const swSet = new Set(switches.map((s) => s.id));

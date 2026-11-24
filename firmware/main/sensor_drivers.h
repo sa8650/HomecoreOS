@@ -22,9 +22,13 @@ typedef struct {
 typedef struct {
     const char *sensor_type;
     const char *explicit_driver_id;
-    int16_t gpio_pin;       /* -1 for default board I2C bus */
+    int16_t gpio_pin;       /* primary role: SDA / TX / CS / data / ADC / GPIO */
+    int16_t aux_pin_a;      /* second role: SCL / RX (resolved from board default when -1) */
+    int16_t aux_pin_b;      /* reserved for SPI MISO/MOSI expansion */
     uint8_t i2c_addr;       /* 0 to use driver default */
     bool inverted;
+    const char *model;      /* model-specific decoding profile, when selected */
+    const char *physical_id;/* shared physical module identity for sibling measurements */
 } hc_sensor_binding_t;
 
 /* Compile-time driver mask derived from Kconfig CONFIG_HOMECORE_DRIVER_* flags */

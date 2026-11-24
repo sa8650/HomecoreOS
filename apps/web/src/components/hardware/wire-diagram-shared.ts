@@ -145,3 +145,21 @@ export function readSensorI2cAddress(
   const raw = sensor.last_raw_payload?.i2c_address;
   return typeof raw === "string" && raw.trim() ? raw.trim() : null;
 }
+
+/** Driver-aware binding stored with a sensor (lightweight JSON, MQTT safe). */
+export function readSensorResources(sensor: {
+  resources?: unknown;
+  last_raw_payload?: Record<string, unknown> | null;
+}): import("@homecoreos/shared").SensorResourcesConfig | null {
+  const raw = sensor.resources ?? sensor.last_raw_payload?.resources;
+  return raw && typeof raw === "object" ? (raw as import("@homecoreos/shared").SensorResourcesConfig) : null;
+}
+
+export function readSensorModel(sensor: {
+  model?: string | null;
+  last_raw_payload?: Record<string, unknown> | null;
+}): string | null {
+  if (typeof sensor.model === "string" && sensor.model.trim()) return sensor.model;
+  const raw = sensor.last_raw_payload?.model;
+  return typeof raw === "string" && raw.trim() ? raw : null;
+}

@@ -126,6 +126,114 @@ config HOMECORE_DRIVER_ADC_VOLTAGE
     help
         Compile the calibrated ESP-IDF ADC oneshot voltage measurement driver.
 
+config HOMECORE_DRIVER_DHT11
+    bool "Enable DHT11 Single-Wire Driver"
+    default n
+    help
+        Compile the shared DHT single-wire protocol with DHT11 integer decoding.
+
+config HOMECORE_DRIVER_SHT3X
+    bool "Enable SHT3x I2C Driver (SHT30/31/35)"
+    default n
+    help
+        Compile the SHT3x I2C temperature/humidity family with CRC-8 validation.
+
+config HOMECORE_DRIVER_AHT20
+    bool "Enable AHT20 I2C Driver"
+    default n
+    help
+        Compile the AHT20 I2C temperature/humidity driver.
+
+config HOMECORE_DRIVER_TMP117
+    bool "Enable TMP117 Precision I2C Temperature Driver"
+    default n
+    help
+        Compile the TMP117 I2C precision temperature driver.
+
+config HOMECORE_DRIVER_LD2410
+    bool "Enable LD2410 UART Presence Driver"
+    default n
+    help
+        Compile the LD2410 UART mmWave presence/motion/distance driver (UART1).
+
+config HOMECORE_DRIVER_LD2450
+    bool "Enable LD2450 Driver (planned, no implementation)"
+    default n
+    help
+        Reserved only. The LD2450 protocol is not implemented; do not enable.
+
+config HOMECORE_DRIVER_VEML7700
+    bool "Enable VEML7700 Ambient Light Driver"
+    default n
+    help
+        Compile the VEML7700 I2C ambient light driver.
+
+config HOMECORE_DRIVER_SGP30
+    bool "Enable SGP30 Air Quality Driver"
+    default n
+    help
+        Compile the SGP30 TVOC/eCO2 I2C driver. eCO2 is an estimate, not calibrated CO2.
+
+config HOMECORE_DRIVER_WATER_LEAK
+    bool "Enable Water Leak GPIO Driver"
+    default n
+    help
+        Compile the GPIO water-leak contact driver.
+
+config HOMECORE_DRIVER_WATER_LEVEL
+    bool "Enable Analog Water Level Driver"
+    default n
+    help
+        Compile the ADC water-level driver. Requires in-place calibration.
+
+config HOMECORE_DRIVER_SOIL_MOISTURE
+    bool "Enable Capacitive Soil Moisture Driver"
+    default n
+    help
+        Compile the ADC capacitive soil-moisture driver.
+
+config HOMECORE_DRIVER_RAIN
+    bool "Enable Rain Detection GPIO Driver"
+    default n
+    help
+        Compile the comparator rain-sensor digital input driver.
+
+config HOMECORE_DRIVER_INA219
+    bool "Enable INA219 I2C Power Monitor Driver"
+    default n
+    help
+        Compile the INA219 bus voltage / current / power driver.
+
+config HOMECORE_DRIVER_INA226
+    bool "Enable INA226 I2C Power Monitor Driver"
+    default n
+    help
+        Compile the INA226 voltage / current / power / estimated energy driver.
+
+config HOMECORE_DRIVER_PZEM004T
+    bool "Enable PZEM-004T Driver (planned, no implementation)"
+    default n
+    help
+        Reserved only. PZEM-004T UART metering is not implemented.
+
+config HOMECORE_DRIVER_SCT013
+    bool "Enable SCT-013 ADC Driver (planned, no implementation)"
+    default n
+    help
+        Reserved only. Burden/bias external conditioning is not implemented.
+
+config HOMECORE_DRIVER_MQ2
+    bool "Enable MQ-2 Qualitative ADC Driver"
+    default n
+    help
+        Compile qualitative MQ-2 ADC sampling. Not a gas or fire safety alarm.
+
+config HOMECORE_DRIVER_MQ135
+    bool "Enable MQ-135 Qualitative ADC Driver"
+    default n
+    help
+        Compile qualitative MQ-135 ADC sampling. Not an air-safety alarm.
+
 endmenu
 
 endmenu

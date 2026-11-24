@@ -42,6 +42,38 @@ SUPPORTED_SENSOR_TYPE_ORDER = [
     "contact_reed",
     "light_bh1750",
     "analog_voltage",
+    "temperature_dht11",
+    "humidity_dht11",
+    "temperature_sht3x",
+    "humidity_sht3x",
+    "temperature_aht20",
+    "humidity_aht20",
+    "temperature_tmp117",
+    "presence_ld2410",
+    "motion_ld2410",
+    "distance_ld2410",
+    "presence_ld2450",
+    "light_veml7700",
+    "tvoc_sgp30",
+    "eco2_sgp30",
+    "water_leak",
+    "water_level",
+    "voltage_ina219",
+    "current_ina219",
+    "power_ina219",
+    "voltage_ina226",
+    "current_ina226",
+    "power_ina226",
+    "energy_ina226",
+    "voltage_pzem",
+    "current_pzem",
+    "power_pzem",
+    "energy_pzem",
+    "current_sct013",
+    "soil_moisture",
+    "rain_level",
+    "gas_mq2",
+    "gas_mq135",
 ]
 
 SENSOR_DRIVER_CATALOG = [
@@ -87,9 +119,122 @@ SENSOR_DRIVER_CATALOG = [
         "kconfig_flag": "CONFIG_HOMECORE_DRIVER_ADC_VOLTAGE",
         "measurements": ["analog_voltage"],
     },
+    {
+        "id": "dht11",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_DHT11",
+        "measurements": ["temperature_dht11", "humidity_dht11"],
+    },
+    {
+        "id": "sht3x",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_SHT3X",
+        "measurements": ["temperature_sht3x", "humidity_sht3x"],
+    },
+    {
+        "id": "aht20",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_AHT20",
+        "measurements": ["temperature_aht20", "humidity_aht20"],
+    },
+    {
+        "id": "tmp117",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_TMP117",
+        "measurements": ["temperature_tmp117"],
+    },
+    {
+        "id": "ld2410",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_LD2410",
+        "measurements": ["presence_ld2410", "motion_ld2410", "distance_ld2410"],
+    },
+    {
+        "id": "ld2450",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_LD2450",
+        "measurements": ["presence_ld2450"],
+    },
+    {
+        "id": "veml7700",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_VEML7700",
+        "measurements": ["light_veml7700"],
+    },
+    {
+        "id": "sgp30",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_SGP30",
+        "measurements": ["tvoc_sgp30", "eco2_sgp30"],
+    },
+    {
+        "id": "water_leak",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_WATER_LEAK",
+        "measurements": ["water_leak"],
+    },
+    {
+        "id": "water_level",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_WATER_LEVEL",
+        "measurements": ["water_level"],
+    },
+    {
+        "id": "soil_moisture",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_SOIL_MOISTURE",
+        "measurements": ["soil_moisture"],
+    },
+    {
+        "id": "rain",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_RAIN",
+        "measurements": ["rain_level"],
+    },
+    {
+        "id": "ina219",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_INA219",
+        "measurements": ["voltage_ina219", "current_ina219", "power_ina219"],
+    },
+    {
+        "id": "ina226",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_INA226",
+        "measurements": ["voltage_ina226", "current_ina226", "power_ina226", "energy_ina226"],
+    },
+    {
+        "id": "pzem004t",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_PZEM004T",
+        "measurements": ["voltage_pzem", "current_pzem", "power_pzem", "energy_pzem"],
+    },
+    {
+        "id": "sct013",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_SCT013",
+        "measurements": ["current_sct013"],
+    },
+    {
+        "id": "mq2",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_MQ2",
+        "measurements": ["gas_mq2"],
+    },
+    {
+        "id": "mq135",
+        "version": "1.0.0",
+        "kconfig_flag": "CONFIG_HOMECORE_DRIVER_MQ135",
+        "measurements": ["gas_mq135"],
+    },
 ]
 
 DRIVER_BY_ID = {d["id"]: d for d in SENSOR_DRIVER_CATALOG}
+
+# Catalog-only entries: never claim compiled firmware support even if a stray
+# Kconfig flag is enabled. Keep in sync with `hardwareVerificationStatus` in
+# packages/shared/src/sensor-drivers.ts.
+PLANNED_DRIVER_IDS = {"ld2450", "pzem004t", "sct013"}
 
 
 def fail(msg: str) -> None:
@@ -132,6 +277,8 @@ def detect_psram_mode_from_sdkconfig(sdk: dict[str, str]) -> str:
 def extract_compiled_drivers_from_sdkconfig(sdk: dict[str, str]) -> list[dict]:
     compiled: list[dict] = []
     for drv in SENSOR_DRIVER_CATALOG:
+        if drv["id"] in PLANNED_DRIVER_IDS:
+            continue
         if sdk.get(drv["kconfig_flag"]) == "y":
             compiled.append({
                 "id": drv["id"],
@@ -531,6 +678,8 @@ def verify_driver_manifest_section(manifest: dict, *, requested_ver: str, target
         drv_id = entry.get("id")
         if drv_id not in DRIVER_BY_ID:
             fail(f"Unknown driver_id {drv_id!r} in driver_manifest")
+        if drv_id in PLANNED_DRIVER_IDS:
+            fail(f"Planned driver {drv_id!r} cannot be claimed as compiled firmware support")
         if drv_id in seen_ids:
             fail(f"Duplicate driver_id {drv_id!r} in driver_manifest")
         seen_ids.add(drv_id)
