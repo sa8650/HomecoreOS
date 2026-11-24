@@ -431,18 +431,24 @@ static hc_i2c_dev_slot_t *get_or_init_i2c_dev(const hc_sensor_binding_t *binding
     return get_or_init_i2c_dev_ex(sda, scl, addr);
 }
 
+#if HC_EN_BME280 || HC_EN_SHT3X || HC_EN_AHT20 || HC_EN_VEML7700 || HC_EN_SGP30 || HC_EN_INA219 || HC_EN_INA226
 static esp_err_t i2c_write_bytes(i2c_master_dev_handle_t dev, const uint8_t *buf, size_t len) {
     return i2c_master_transmit(dev, buf, len, HC_I2C_TIMEOUT_MS);
 }
+#endif
 
+#if HC_EN_BME280 || HC_EN_TMP117 || HC_EN_VEML7700 || HC_EN_INA219 || HC_EN_INA226
 static esp_err_t i2c_read_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t *buf, size_t len) {
     return i2c_master_transmit_receive(dev, &reg, 1, buf, len, HC_I2C_TIMEOUT_MS);
 }
+#endif
 
+#if HC_EN_BME280
 static esp_err_t i2c_write_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t val) {
     uint8_t payload[2] = { reg, val };
     return i2c_write_bytes(dev, payload, sizeof(payload));
 }
+#endif
 
 static void reset_i2c_manager(void) {
     for (int i = 0; i < HC_MAX_I2C_DEVS; i++) {
@@ -912,6 +918,7 @@ static bool ensure_adc_unit(adc_unit_t unit_id) {
     return true;
 }
 
+#if HC_EN_ADC_VOLTAGE
 static hc_sensor_reading_t read_adc_voltage(
     const hc_sensor_binding_t *binding,
     hc_sensor_measurement_t meas
@@ -962,6 +969,7 @@ static hc_sensor_reading_t read_adc_voltage(
     }
     return make_ok_reading(HC_DRV_ADC_VOLTAGE, meas, volts);
 }
+#endif
 
 static void reset_adc_manager(void) {
     for (int i = 0; i < HC_MAX_ADC_UNITS; i++) {
@@ -1243,7 +1251,9 @@ static bool read_adc_millivolts(const hc_sensor_binding_t *binding, int32_t *out
         sum += raw;
     }
     int raw_avg = (int)(sum / samples);
-    if (slot->cali_ready && adc_cali_raw_to_voltage(slot->cali_handle, raw_avg, out_mv) == ESP_OK) {
+    int mv = 0;
+    if (slot->cali_ready && adc_cali_raw_to_voltage(slot->cali_handle, raw_avg, &mv) == ESP_OK) {
+        *out_mv = (int32_t)mv;
         return true;
     }
     *out_mv = (int32_t)((raw_avg * 3300LL) / 4095LL);
@@ -1315,17 +1325,26 @@ static hc_sensor_reading_t read_ld2410(
     const int tx = (int)binding->gpio_pin;   /* controller TX -> module RX */
     const int rx = (int)binding->aux_pin_a;  /* module TX -> controller RX */
     if (!s_ld2410_uart.initialized || s_ld2410_uart.tx_pin != tx || s_ld2410_uart.rx_pin != rx) {
-        if (s_ld2410_uart.initialized) uart_driver_delete(UART_NUM_1);
-        if (uart_driver_install(UART_NUM_1, 256, 0, 0, NULL, 0) != ESP_OK ||
-            uart_param_config(UART_NUM_1, &(uart_config_t){
-                .baud_rate = 256000,
-                .data_bits = UART_DATA_8_BITS,
-                .parity = UART_PARITY_DISABLE,
-                .stop_bits = UART_STOP_BITS_1,
-                .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-                .source_clk = UART_SCLK_DEFAULT,
-            }) != ESP_OK ||
+        if (s_ld2410_uart.initialized) {
+            uart_driver_delete(UART_NUM_1);
+            s_ld2410_uart.initialized = false;
+            s_ld2410_uart.tx_pin = -1;
+            s_ld2410_uart.rx_pin = -1;
+        }
+        uart_config_t uart_cfg = {
+            .baud_rate = 256000,
+            .data_bits = UART_DATA_8_BITS,
+            .parity = UART_PARITY_DISABLE,
+            .stop_bits = UART_STOP_BITS_1,
+            .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+            .source_clk = UART_SCLK_DEFAULT,
+        };
+        if (uart_driver_install(UART_NUM_1, 256, 0, 0, NULL, 0) != ESP_OK) {
+            return make_error_reading(HC_DRV_LD2410, meas, "uart_init_failed");
+        }
+        if (uart_param_config(UART_NUM_1, &uart_cfg) != ESP_OK ||
             uart_set_pin(UART_NUM_1, tx, rx, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
+            uart_driver_delete(UART_NUM_1);
             return make_error_reading(HC_DRV_LD2410, meas, "uart_init_failed");
         }
         s_ld2410_uart.initialized = true;
@@ -1464,6 +1483,7 @@ esp_err_t hc_sensor_driver_configure(const hc_sensor_binding_t *binding) {
 }
 
 hc_sensor_reading_t hc_sensor_driver_read(const hc_sensor_binding_t *binding, bool allow_cached) {
+    (void)allow_cached;
     if (!binding) {
         return make_error_reading(HC_DRV_NONE, HC_MEAS_UNKNOWN, "invalid_binding");
     }
