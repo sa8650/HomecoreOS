@@ -304,9 +304,11 @@ typedef struct {
     bool bme_sample_valid;
     int64_t bme_sample_ms;
     hc_bme280_sample_t bme_sample;
-    /* BH1750 state */
+    /* BH1750 / VEML7700 / SGP30 init state */
     bool bh_initialized;
     int64_t bh_init_ms;
+    bool veml_initialized;
+    bool sgp_initialized;
     /* Shared protocol-family sample cache (SHT3x/AHT20/TMP117/VEML/SGP30/INA2xx) */
     bool family_valid;
     hc_sensor_driver_id_t family_driver;
@@ -321,12 +323,12 @@ typedef struct {
 static hc_i2c_bus_slot_t s_i2c_buses[HC_MAX_I2C_BUSES];
 static hc_i2c_dev_slot_t s_i2c_devs[HC_MAX_I2C_DEVS];
 
-static bool resolve_i2c_pins(int16_t configured_pin, int *out_sda, int *out_scl) {
+static bool resolve_i2c_pins(int16_t configured_pin, int16_t aux_scl_pin, int *out_sda, int *out_scl) {
     int def_sda = HOMECORE_I2C_DEFAULT_SDA_GPIO;
     int def_scl = HOMECORE_I2C_DEFAULT_SCL_GPIO;
     int sda = (configured_pin >= 0) ? (int)configured_pin : def_sda;
-    int scl = def_scl;
-    if (sda == scl && def_sda >= 0 && def_sda != sda) {
+    int scl = (aux_scl_pin >= 0) ? (int)aux_scl_pin : def_scl;
+    if (sda == scl && aux_scl_pin < 0 && def_sda >= 0 && def_sda != sda) {
         scl = def_sda;
     }
     if (sda < 0 || scl < 0 || sda == scl) {
@@ -420,16 +422,13 @@ static hc_i2c_dev_slot_t *get_or_init_i2c_dev_ex(int sda, int scl, uint8_t addr)
     return &s_i2c_devs[slot];
 }
 
-static hc_i2c_dev_slot_t *get_or_init_i2c_dev(int16_t configured_pin, uint8_t addr) {
+static hc_i2c_dev_slot_t *get_or_init_i2c_dev(const hc_sensor_binding_t *binding, uint8_t addr) {
     int sda = -1;
     int scl = -1;
-    if (!resolve_i2c_pins(configured_pin, &sda, &scl)) return NULL;
+    if (!binding || !resolve_i2c_pins(binding->gpio_pin, binding->aux_pin_a, &sda, &scl)) {
+        return NULL;
+    }
     return get_or_init_i2c_dev_ex(sda, scl, addr);
-}
-
-static esp_err_t i2c_read_bytes(i2c_master_dev_handle_t dev, const uint8_t *tx, size_t tx_len,
-                                uint8_t *buf, size_t len) {
-    return i2c_master_transmit_receive(dev, tx, tx_len, buf, len, HC_I2C_TIMEOUT_MS);
 }
 
 static esp_err_t i2c_write_bytes(i2c_master_dev_handle_t dev, const uint8_t *buf, size_t len) {
@@ -442,7 +441,7 @@ static esp_err_t i2c_read_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t 
 
 static esp_err_t i2c_write_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t val) {
     uint8_t payload[2] = { reg, val };
-    return i2c_master_transmit(dev, payload, sizeof(payload), HC_I2C_TIMEOUT_MS);
+    return i2c_write_bytes(dev, payload, sizeof(payload));
 }
 
 static void reset_i2c_manager(void) {
@@ -471,7 +470,7 @@ static hc_sensor_reading_t read_bme280(
     bool allow_cached
 ) {
     uint8_t addr = binding->i2c_addr != 0 ? binding->i2c_addr : 0x76;
-    hc_i2c_dev_slot_t *dev = get_or_init_i2c_dev(binding->gpio_pin, addr);
+    hc_i2c_dev_slot_t *dev = get_or_init_i2c_dev(binding, addr);
     if (!dev) {
         return make_error_reading(HC_DRV_BME280, meas, "i2c_bus_not_configured");
     }
@@ -555,7 +554,7 @@ static hc_sensor_reading_t read_bh1750(
     hc_sensor_measurement_t meas
 ) {
     uint8_t addr = binding->i2c_addr != 0 ? binding->i2c_addr : 0x23;
-    hc_i2c_dev_slot_t *dev = get_or_init_i2c_dev(binding->gpio_pin, addr);
+    hc_i2c_dev_slot_t *dev = get_or_init_i2c_dev(binding, addr);
     if (!dev) {
         return make_error_reading(HC_DRV_BH1750, meas, "i2c_bus_not_configured");
     }
@@ -587,15 +586,16 @@ static hc_sensor_reading_t read_bh1750(
 #endif
 
 /* ============================================================================
- * DHT22 / AM2302 Single-Wire Driver (with 2s per-pin sample cache)
+ * DHT11 / DHT22 / AM2302 Single-Wire Driver (with 2s per-pin sample cache)
  * ============================================================================ */
-#if HC_EN_DHT22
+#if HC_EN_DHT22 || HC_EN_DHT11
 
 #define HC_MAX_DHT_PINS 6
 
 typedef struct {
     bool in_use;
     uint8_t pin;
+    hc_sensor_driver_id_t drv;
     bool valid;
     int64_t last_read_ms;
     double temp_c;
@@ -629,6 +629,12 @@ static int64_t wait_gpio_level_us(gpio_num_t pin, int target_level, int64_t time
     return esp_timer_get_time() - start;
 }
 
+static bool dht_wants_humidity(hc_sensor_measurement_t meas) {
+    return meas == HC_MEAS_HUMIDITY_DHT22 ||
+           meas == HC_MEAS_HUMIDITY_DHT11 ||
+           meas == HC_MEAS_HUMIDITY;
+}
+
 static hc_sensor_reading_t read_dht_family(
     const hc_sensor_binding_t *binding,
     hc_sensor_driver_id_t drv,
@@ -645,19 +651,18 @@ static hc_sensor_reading_t read_dht_family(
     hc_dht_cache_t *cache = find_dht_cache(pin_u8);
     int64_t t_now = now_ms();
 
-    /* DHT22 hardware requires >= 2 seconds between conversions */
-    if (cache && cache->valid && (allow_cached || (t_now - cache->last_read_ms) < 2000) &&
+    /* DHT11/DHT22 hardware requires >= 2 seconds between conversions */
+    if (cache && cache->valid && cache->drv == drv &&
+        (allow_cached || (t_now - cache->last_read_ms) < 2000) &&
         (t_now - cache->last_read_ms) < 2500) {
-        double v = (meas == HC_MEAS_HUMIDITY_DHT22 || meas == HC_MEAS_HUMIDITY)
-            ? cache->humidity_pct
-            : cache->temp_c;
+        double v = dht_wants_humidity(meas) ? cache->humidity_pct : cache->temp_c;
         return make_ok_reading(drv, meas, v);
     }
 
-    /* Send host start signal: LOW for 2ms, then HIGH for 30us, then release to input */
+    /* Send host start signal: DHT11 requires >=18 ms LOW; DHT22 uses >=1-2 ms LOW. */
     gpio_set_direction(pin, GPIO_MODE_OUTPUT);
     gpio_set_level(pin, 0);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    vTaskDelay(pdMS_TO_TICKS(drv == HC_DRV_DHT11 ? 20 : 2));
     gpio_set_level(pin, 1);
     esp_rom_delay_us(30);
     gpio_set_direction(pin, GPIO_MODE_INPUT);
@@ -698,13 +703,14 @@ static hc_sensor_reading_t read_dht_family(
     }
 
     if (cache) {
+        cache->drv = drv;
         cache->temp_c = temp_c;
         cache->humidity_pct = hum_pct;
         cache->last_read_ms = now_ms();
         cache->valid = true;
     }
 
-    double v = (meas == HC_MEAS_HUMIDITY_DHT22 || meas == HC_MEAS_HUMIDITY) ? hum_pct : temp_c;
+    double v = dht_wants_humidity(meas) ? hum_pct : temp_c;
     return make_ok_reading(drv, meas, v);
 }
 #endif
@@ -1034,20 +1040,7 @@ static hc_sensor_reading_t read_i2c_family(
     bool allow_cached
 ) {
     uint8_t addr = binding->i2c_addr != 0 ? binding->i2c_addr : hc_sensor_driver_default_i2c_addr(drv);
-    int sda = -1;
-    int scl = -1;
-    if (!resolve_i2c_pins(binding->gpio_pin, &sda, &scl)) {
-        return make_error_reading(drv, meas, "i2c_bus_not_configured");
-    }
-    if (binding->aux_pin_a >= 0) {
-        if (!hc_io_is_safe_gpio((uint8_t)binding->aux_pin_a) ||
-            !GPIO_IS_VALID_OUTPUT_GPIO((gpio_num_t)binding->aux_pin_a)) {
-            return make_error_reading(drv, meas, "i2c_scl_invalid");
-        }
-        scl = (int)binding->aux_pin_a;
-    }
-    if (sda == scl) return make_error_reading(drv, meas, "i2c_pins_invalid");
-    hc_i2c_dev_slot_t *dev = get_or_init_i2c_dev_ex(sda, scl, addr);
+    hc_i2c_dev_slot_t *dev = get_or_init_i2c_dev(binding, addr);
     if (!dev) return make_error_reading(drv, meas, "i2c_bus_not_configured");
 
     int64_t t_now = now_ms();
@@ -1087,7 +1080,8 @@ static hc_sensor_reading_t read_i2c_family(
                 return make_error_reading(drv, meas, "i2c_nack");
             }
             if ((status & 0x08U) == 0) {
-                const uint8_t init_cmd[3] = { 0xBE, 0x80, 0x00 };
+                /* AHT20 datasheet calibration init command: 0xBE 0x08 0x00 */
+                const uint8_t init_cmd[3] = { 0xBE, 0x08, 0x00 };
                 if (i2c_write_bytes(dev->handle, init_cmd, sizeof(init_cmd)) != ESP_OK) {
                     return make_error_reading(drv, meas, "aht20_init_failed");
                 }
@@ -1127,14 +1121,18 @@ static hc_sensor_reading_t read_i2c_family(
 #endif
 #if HC_EN_VEML7700
         case HC_DRV_VEML7700: {
-            /* ALS enabled, default gain 1/4 and 100 ms integration. */
-            const uint8_t cfg[2] = { 0x00, 0x01 };
-            uint8_t raw[2] = {0};
-            if (i2c_write_bytes(dev->handle, cfg, sizeof(cfg)) != ESP_OK) {
-                return make_error_reading(drv, meas, "i2c_nack");
+            if (!dev->veml_initialized) {
+                /* Reg 0x00 [LSB, MSB]: ALS_SD=0 (power on), IT=100 ms, Gain=1/4 (0x1800). */
+                const uint8_t cfg[3] = { 0x00, 0x00, 0x18 };
+                if (i2c_write_bytes(dev->handle, cfg, sizeof(cfg)) != ESP_OK) {
+                    return make_error_reading(drv, meas, "i2c_nack");
+                }
+                dev->veml_initialized = true;
+                vTaskDelay(pdMS_TO_TICKS(110));
             }
-            vTaskDelay(pdMS_TO_TICKS(10));
+            uint8_t raw[2] = {0};
             if (i2c_read_reg(dev->handle, 0x04, raw, sizeof(raw)) != ESP_OK) {
+                dev->veml_initialized = false;
                 return make_error_reading(drv, meas, "i2c_read_failed");
             }
             double lux = 0.0;
@@ -1148,13 +1146,23 @@ static hc_sensor_reading_t read_i2c_family(
 #endif
 #if HC_EN_SGP30
         case HC_DRV_SGP30: {
-            const uint8_t cmd[2] = { 0x20, 0x03 };
+            if (!dev->sgp_initialized) {
+                const uint8_t init_cmd[2] = { 0x20, 0x03 }; /* sgp30_iaq_init */
+                if (i2c_write_bytes(dev->handle, init_cmd, sizeof(init_cmd)) != ESP_OK) {
+                    return make_error_reading(drv, meas, "i2c_nack");
+                }
+                dev->sgp_initialized = true;
+                vTaskDelay(pdMS_TO_TICKS(15));
+            }
+            const uint8_t meas_cmd[2] = { 0x20, 0x08 }; /* sgp30_measure_iaq */
             uint8_t raw[6] = {0};
-            if (i2c_write_bytes(dev->handle, cmd, sizeof(cmd)) != ESP_OK) {
+            if (i2c_write_bytes(dev->handle, meas_cmd, sizeof(meas_cmd)) != ESP_OK) {
+                dev->sgp_initialized = false;
                 return make_error_reading(drv, meas, "i2c_nack");
             }
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(20));
             if (i2c_master_receive(dev->handle, raw, sizeof(raw), HC_I2C_TIMEOUT_MS) != ESP_OK) {
+                dev->sgp_initialized = false;
                 return make_error_reading(drv, meas, "i2c_read_failed");
             }
             double tvoc = 0.0, eco2 = 0.0;
@@ -1171,19 +1179,21 @@ static hc_sensor_reading_t read_i2c_family(
         case HC_DRV_INA219:
         case HC_DRV_INA226: {
             bool ina226 = drv == HC_DRV_INA226;
-            /* 0.1 ohm module shunt; 100 mA LSB keeps typical boards in range. */
+            /* 0.1 ohm shunt: Cal=0x1000 (INA219) / 0x0200 (INA226) -> 100 uA/bit.
+               INA219 config 0x399F = 32V bus range, +/-320mV PGA /8, 12-bit cont. */
             const uint8_t cfg[3] = { 0x00,
-                ina226 ? 0x41 : 0x31, ina226 ? 0x27 : 0x9F };
+                ina226 ? 0x41 : 0x39, ina226 ? 0x27 : 0x9F };
             const uint8_t cal[3] = { 0x05,
-                ina226 ? 0x02 : 0x10, ina226 ? 0x00 : 0x00 };
+                ina226 ? 0x02 : 0x10, 0x00 };
             if (i2c_write_bytes(dev->handle, cfg, sizeof(cfg)) != ESP_OK ||
                 i2c_write_bytes(dev->handle, cal, sizeof(cal)) != ESP_OK) {
                 return make_error_reading(drv, meas, "i2c_nack");
             }
+            /* Reg 0x02 = Bus Voltage, Reg 0x01 = Shunt Voltage, Reg 0x03 = Power */
             uint8_t bus[2] = {0}, shunt[2] = {0}, power[2] = {0};
             if (i2c_read_reg(dev->handle, 0x02, bus, sizeof(bus)) != ESP_OK ||
-                i2c_read_reg(dev->handle, 0x03, shunt, sizeof(shunt)) != ESP_OK ||
-                i2c_read_reg(dev->handle, 0x04, power, sizeof(power)) != ESP_OK) {
+                i2c_read_reg(dev->handle, 0x01, shunt, sizeof(shunt)) != ESP_OK ||
+                i2c_read_reg(dev->handle, 0x03, power, sizeof(power)) != ESP_OK) {
                 return make_error_reading(drv, meas, "i2c_read_failed");
             }
             double volts = 0.0, amps = 0.0, watts = 0.0;
@@ -1369,7 +1379,7 @@ esp_err_t hc_sensor_driver_configure(const hc_sensor_binding_t *binding) {
             uint8_t addr = binding->i2c_addr != 0
                 ? binding->i2c_addr
                 : hc_sensor_driver_default_i2c_addr(drv);
-            return get_or_init_i2c_dev(binding->gpio_pin, addr) ? ESP_OK : ESP_ERR_INVALID_ARG;
+            return get_or_init_i2c_dev(binding, addr) ? ESP_OK : ESP_ERR_INVALID_ARG;
 #else
             return ESP_ERR_NOT_SUPPORTED;
 #endif
@@ -1548,7 +1558,7 @@ void hc_sensor_drivers_reset(void) {
     HC_EN_VEML7700 || HC_EN_SGP30 || HC_EN_INA219 || HC_EN_INA226
     reset_i2c_manager();
 #endif
-#if HC_EN_DHT22
+#if HC_EN_DHT22 || HC_EN_DHT11
     memset(s_dht_cache, 0, sizeof(s_dht_cache));
 #endif
 #if HC_EN_DS18B20

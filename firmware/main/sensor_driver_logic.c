@@ -225,9 +225,10 @@ const char *hc_sensor_default_unit(hc_sensor_measurement_t meas) {
         case HC_MEAS_HUMIDITY_AHT20:
         case HC_MEAS_SOIL_MOISTURE:
         case HC_MEAS_WATER_LEVEL:
+            return "%";
         case HC_MEAS_GAS_MQ2:
         case HC_MEAS_GAS_MQ135:
-            return "%";
+            return "%FS";
         case HC_MEAS_PRESSURE:
             return "hPa";
         case HC_MEAS_LIGHT:
@@ -256,6 +257,12 @@ const char *hc_sensor_default_unit(hc_sensor_measurement_t meas) {
             return "ppm";
         case HC_MEAS_DISTANCE_LD2410:
             return "cm";
+        case HC_MEAS_PRESENCE_LD2410:
+        case HC_MEAS_MOTION_LD2410:
+        case HC_MEAS_PRESENCE_LD2450:
+        case HC_MEAS_WATER_LEAK:
+        case HC_MEAS_RAIN:
+            return "state";
         case HC_MEAS_MOTION:
         case HC_MEAS_CONTACT:
         default:
@@ -584,7 +591,8 @@ bool hc_sht3x_decode(const uint8_t raw[6], double *out_temp_c, double *out_humid
 
 bool hc_aht20_decode(const uint8_t raw[6], double *out_temp_c, double *out_humidity_pct) {
     if (!raw || !out_temp_c || !out_humidity_pct) return false;
-    if ((raw[0] & 0x80U) == 0 || (raw[0] & 0x10U) != 0) return false; /* busy / not calibrated */
+    /* Status byte: bit 7 = busy (must be 0), bit 3 = calibrated (must be 1). */
+    if ((raw[0] & 0x80U) != 0 || (raw[0] & 0x08U) == 0) return false;
     uint32_t hum_raw = (((uint32_t)raw[1] << 16) | ((uint32_t)raw[2] << 8) | raw[3]) >> 4;
     uint32_t temp_raw = (((uint32_t)(raw[3] & 0x0FU) << 16) |
                          ((uint32_t)raw[4] << 8) | (uint32_t)raw[5]);
@@ -598,8 +606,10 @@ bool hc_aht20_decode(const uint8_t raw[6], double *out_temp_c, double *out_humid
 
 bool hc_tmp117_decode(const uint8_t raw[2], double *out_temp_c) {
     if (!raw || !out_temp_c) return false;
-    int16_t raw_i = (int16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
-    if (raw_i == -256) return false; /* TMP117 fault marker */
+    /* TMP117 temperature register 0x00 is 16-bit signed big-endian (7.8125 mC/LSB). */
+    uint16_t u_raw = (uint16_t)(((uint16_t)raw[0] << 8) | (uint16_t)raw[1]);
+    if (u_raw == 0x8000U) return false; /* power-on/invalid sentinel (-256 C) */
+    int16_t raw_i = (int16_t)u_raw;
     double temp = (double)raw_i * 0.0078125;
     if (temp < -40.0 || temp > 125.0) return false;
     *out_temp_c = round_to_decimals(temp, 3);
@@ -608,18 +618,21 @@ bool hc_tmp117_decode(const uint8_t raw[2], double *out_temp_c) {
 
 bool hc_veml7700_decode_lux(const uint8_t raw[2], double *out_lux) {
     if (!raw || !out_lux) return false;
-    uint16_t count = (uint16_t)(((uint16_t)raw[0] << 8) | raw[1]);
-    /* Default 1/4 gain, 100 ms integration: 0.0024 lx/count resolution. */
-    *out_lux = round_to_decimals((double)count * 0.0024, 2);
+    /* VEML7700 ALS register 0x04 returns 16-bit little-endian [LSB, MSB]. */
+    uint16_t count = (uint16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
+    /* Gain 1/4 + 100 ms integration time (config 0x1800): 0.2304 lx/count. */
+    *out_lux = round_to_decimals((double)count * 0.2304, 2);
     return true;
 }
 
 bool hc_sgp30_decode(const uint8_t raw[6], double *out_tvoc_ppb, double *out_eco2_ppm) {
     if (!raw || !out_tvoc_ppb || !out_eco2_ppm) return false;
     if (hc_sht3x_crc8(raw, 2) != raw[2] || hc_sht3x_crc8(raw + 3, 2) != raw[5]) return false;
-    *out_tvoc_ppb = (double)(((uint16_t)raw[0] << 8) | raw[1]);
-    *out_eco2_ppm = (double)(((uint16_t)raw[3] << 8) | raw[4]);
+    /* SGP30 measure_iaq (0x2008): bytes 0..1 = eCO2 (ppm), bytes 3..4 = TVOC (ppb). */
+    *out_eco2_ppm = (double)(((uint16_t)raw[0] << 8) | raw[1]);
+    *out_tvoc_ppb = (double)(((uint16_t)raw[3] << 8) | raw[4]);
     if (*out_eco2_ppm < 400.0 || *out_eco2_ppm > 60000.0) return false;
+    if (*out_tvoc_ppb < 0.0 || *out_tvoc_ppb > 60000.0) return false;
     return true;
 }
 
@@ -627,26 +640,28 @@ bool hc_ina_decode(const uint8_t raw[2], bool ina226, int meas_kind,
                    double shunt_ohms, double *out_value) {
     if (!raw || !out_value) return false;
     if (!(shunt_ohms > 0.0)) shunt_ohms = 0.1;
-    int16_t signed_raw = (int16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
+    /* INA219 and INA226 I2C registers are 16-bit big-endian [MSB, LSB]. */
+    uint16_t u_raw = (uint16_t)(((uint16_t)raw[0] << 8) | (uint16_t)raw[1]);
+    int16_t signed_raw = (int16_t)u_raw;
     switch (meas_kind) {
-        case 0: { /* bus voltage */
-            double volts = ina226 ? (double)signed_raw * 0.00125
-                                  : (double)(signed_raw >> 3) * 0.004;
+        case 0: { /* bus voltage register 0x02 (unsigned) */
+            double volts = ina226 ? (double)u_raw * 0.00125
+                                  : (double)(u_raw >> 3) * 0.004;
             if (volts < 0.0 || volts > 40.0) return false;
             *out_value = round_to_decimals(volts, 3);
             return true;
         }
-        case 1: { /* current through the fitted shunt */
-            double shunt_uv = (double)signed_raw * (ina226 ? 0.0025 : 0.01);
-            double amps = shunt_uv / (1000.0 * shunt_ohms);
+        case 1: { /* shunt voltage register 0x01 -> current through fitted shunt */
+            double shunt_mv = (double)signed_raw * (ina226 ? 0.0025 : 0.01);
+            double amps = shunt_mv / (1000.0 * shunt_ohms);
             if (amps < -500.0 || amps > 500.0) return false;
             *out_value = round_to_decimals(amps, 3);
             return true;
         }
-        case 2: { /* power register */
-            double current_lsb = ina226 ? 0.0000025 / shunt_ohms : 0.00001 / shunt_ohms;
-            double watts = (double)signed_raw * (ina226 ? 25.0 : 20.0) * current_lsb;
-            if (watts < -10000.0 || watts > 10000.0) return false;
+        case 2: { /* power register 0x03 (unsigned; calibrated at 100 uA/bit for 0.1 ohm) */
+            double current_lsb = 0.00001 / shunt_ohms;
+            double watts = (double)u_raw * (ina226 ? 25.0 : 20.0) * current_lsb;
+            if (watts < 0.0 || watts > 10000.0) return false;
             *out_value = round_to_decimals(watts, 3);
             return true;
         }
@@ -657,35 +672,32 @@ bool hc_ina_decode(const uint8_t raw[2], bool ina226, int meas_kind,
 
 bool hc_ld2410_parse_frame(const uint8_t *buf, size_t len, double *out_presence,
                            double *out_motion, double *out_distance_cm) {
-    if (!buf || len < 7 || !out_presence || !out_motion || !out_distance_cm) return false;
-    for (size_t i = 0; i + 4 < len; i++) {
-        if (buf[i] != 0xAAU || buf[i + 1] != 0x55U) continue;
-        size_t payload_len = (size_t)buf[i + 2] | ((size_t)buf[i + 3] << 8);
-        if (payload_len < 3 || i + 4 + payload_len + 2 > len) continue;
-        size_t tail = i + 4 + payload_len;
-        if (buf[tail] != 0x55U || buf[tail + 1] != 0xAAU) continue;
-        const uint8_t *p = buf + i + 4;
-        if (p[0] == 0x01U && payload_len >= 12) {
-            /* Engineering frame: payload[4] target state, [8..9] moving distance. */
-            int state = p[4];
-            if (state > 2) return false;
-            uint16_t dist = (uint16_t)p[8] | ((uint16_t)p[9] << 8);
-            if (dist > 1000U) return false;
-            *out_presence = (double)(state == 0 ? 0 : 1);
-            *out_motion = (double)(state == 2 ? 1 : 0);
-            *out_distance_cm = (double)dist;
-            return true;
+    if (!buf || len < 23 || !out_presence || !out_motion || !out_distance_cm) return false;
+    for (size_t i = 0; i + 22 < len; i++) {
+        /* Hi-Link LD2410 reporting frame header: F4 F3 F2 F1 */
+        if (buf[i] != 0xF4U || buf[i + 1] != 0xF3U ||
+            buf[i + 2] != 0xF2U || buf[i + 3] != 0xF1U) {
+            continue;
         }
-        if (p[0] == 0x02U && payload_len >= 5) {
-            /* Compact target-state frame: state + distance in cm. */
-            int state = p[1];
-            if (state > 2) return false;
-            uint16_t dist = (uint16_t)p[2] | ((uint16_t)p[3] << 8);
-            *out_presence = (double)(state == 0 ? 0 : 1);
-            *out_motion = (double)(state == 2 ? 1 : 0);
-            *out_distance_cm = (double)dist;
-            return true;
+        size_t payload_len = (size_t)buf[i + 4] | ((size_t)buf[i + 5] << 8);
+        if (payload_len < 13 || i + 6 + payload_len + 4 > len) continue;
+        size_t tail = i + 6 + payload_len;
+        /* Hi-Link LD2410 reporting frame footer: F8 F7 F6 F5 */
+        if (buf[tail] != 0xF8U || buf[tail + 1] != 0xF7U ||
+            buf[tail + 2] != 0xF6U || buf[tail + 3] != 0xF5U) {
+            continue;
         }
+        const uint8_t *p = buf + i + 6;
+        if ((p[0] != 0x01U && p[0] != 0x02U) || p[1] != 0xAAU) continue;
+        if (p[payload_len - 2] != 0x55U) continue;
+        int state = p[2];
+        if (state > 3) continue;
+        uint16_t dist = (uint16_t)p[9] | ((uint16_t)p[10] << 8);
+        if (dist > 1000U) continue;
+        *out_presence = (double)(state != 0 ? 1 : 0);
+        *out_motion = (double)((state == 1 || state == 3) ? 1 : 0);
+        *out_distance_cm = (double)dist;
+        return true;
     }
     return false;
 }

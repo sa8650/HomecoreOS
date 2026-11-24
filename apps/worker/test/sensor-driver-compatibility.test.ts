@@ -788,4 +788,209 @@ describe("Board-Aware Sensor Drivers & Authoritative Firmware Manifest Enforceme
     expect(afterCfg.devices).toHaveLength(0);
     expect(afterCfg.sensors.find((s) => s.id === bme.id)).toBeUndefined();
   });
+
+  it("enforces resources.pins policy, projects expanded fields in overview/config, updates units on PATCH, and notifies on leak alerts", async () => {
+    const regRes = await req("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "expanded-sensors@example.com",
+        password: "Password123!",
+        fullName: "Expanded Tester",
+        accountName: "Expanded Lab",
+      }),
+    });
+    expect(regRes.status).toBe(201);
+    const cookie = extractCookie(regRes, "hc_user_session");
+
+    const homesRes = await req("/api/homes", { headers: { Cookie: cookie } });
+    const { homes } = (await homesRes.json()) as { homes: Array<{ id: string }> };
+    const home = homes[0]!;
+
+    const boardsRes = await req("/api/board-library/catalog", { headers: { Cookie: cookie } });
+    const { boards } = (await boardsRes.json()) as {
+      boards: Array<{ id: string; slug: string }>;
+    };
+    const s3Board = boards.find((b) => b.slug === "esp32-s3-devkitc-1-n16r8")!;
+
+    const ctrlRes = await req("/api/board-instances", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        name: "Expanded Hub",
+        homeId: home.id,
+        boardProfileId: s3Board.id,
+      }),
+    });
+    expect(ctrlRes.status).toBe(201);
+    const { controller, pairingCode } = (await ctrlRes.json()) as {
+      controller: { id: string };
+      pairingCode: string;
+    };
+
+    const pairRes = await req("/api/device/pair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pairingCode,
+        macAddress: "AA:BB:CC:DD:EE:77",
+        firmwareVersion: "1.6.1",
+        boardSlug: s3Board.slug,
+        chipVariant: "esp32s3",
+        flashSizeMb: 16,
+        psramSizeMb: 8,
+      }),
+    });
+    expect(pairRes.status).toBe(200);
+    const { device_api_token: deviceToken } = (await pairRes.json()) as {
+      device_api_token: string;
+    };
+
+    await seedInstalledFirmwareWithDrivers({
+      pg: dbHarness.pg,
+      boardInstanceId: controller.id,
+      boardId: s3Board.id,
+      boardSlug: s3Board.slug,
+      chipFamily: "esp32s3",
+      version: "1.6.1",
+      driverIds: ["ld2410", "mq2", "water_leak", "dht22"],
+    });
+
+    // 1. Strapping pin (GPIO0) in resources.pins is rejected by checkPinSelectionPolicy
+    const strappingUart = await req("/api/sensors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        name: "Bad Radar",
+        sensorType: "presence_ld2410",
+        boardInstanceId: controller.id,
+        gpioPin: null,
+        driverId: "ld2410",
+        model: "LD2410B",
+        resources: { driverId: "ld2410", model: "LD2410B", pins: { uart_tx: 0, uart_rx: 18 } },
+      }),
+    });
+    expect(strappingUart.status).toBe(400);
+    expect(((await strappingUart.json()) as { error: string }).error).toMatch(/strapping/i);
+
+    // 2. Valid LD2410 on GPIO17/18 succeeds and occupies both GPIO17 and GPIO18 against switch creation
+    const ldRes = await req("/api/sensors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        name: "Hall Radar",
+        sensorType: "presence_ld2410",
+        boardInstanceId: controller.id,
+        gpioPin: null,
+        driverId: "ld2410",
+        model: "LD2410B",
+        resources: { driverId: "ld2410", model: "LD2410B", pins: { uart_tx: 17, uart_rx: 18 } },
+      }),
+    });
+    expect(ldRes.status).toBe(201);
+    const { sensor: ldSensor } = (await ldRes.json()) as {
+      sensor: { id: string; model: string | null; resources: { pins?: Record<string, number> } | null };
+    };
+    expect(ldSensor.model).toBe("LD2410B");
+    expect(ldSensor.resources?.pins).toMatchObject({ uart_tx: 17, uart_rx: 18 });
+
+    const swOverlap = await req("/api/switches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        name: "Colliding Switch",
+        boardInstanceId: controller.id,
+        gpioPin: 18,
+      }),
+    });
+    expect(swOverlap.status).toBe(400);
+
+    // 3. /api/homes/overview projects model, resources, physical_sensor_id, and driver_id
+    const overviewRes = await req("/api/homes/overview", { headers: { Cookie: cookie } });
+    expect(overviewRes.status).toBe(200);
+    const overview = (await overviewRes.json()) as {
+      sensors: Array<{
+        id: string;
+        model: string | null;
+        resources: { pins?: Record<string, number> } | null;
+        driver_id: string | null;
+        physical_sensor_id: string | null;
+      }>;
+    };
+    const ovSensor = overview.sensors.find((s) => s.id === ldSensor.id)!;
+    expect(ovSensor.model).toBe("LD2410B");
+    expect(ovSensor.driver_id).toBe("ld2410");
+    expect(ovSensor.resources?.pins).toMatchObject({ uart_tx: 17, uart_rx: 18 });
+    expect(ovSensor.physical_sensor_id).toBeNull();
+
+    // 4. PATCH model + sensorType to expanded gas_mq2 updates unit ("%FS"), persists model/resources, and bumps config revision
+    const cfgBeforeRes = await req("/api/device/config", {
+      headers: { Authorization: `Bearer ${deviceToken}` },
+    });
+    const cfgBefore = (await cfgBeforeRes.json()) as { revision: number };
+
+    const patchRes = await req(`/api/sensors/${ldSensor.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        sensorType: "gas_mq2",
+        driverId: "mq2",
+        model: "MQ-2",
+        gpioPin: 4,
+        resources: { driverId: "mq2", model: "MQ-2", pins: { adc: 4 } },
+      }),
+    });
+    expect(patchRes.status).toBe(200);
+    const patched = ((await patchRes.json()) as {
+      sensor: { sensor_type: string; unit: string; model: string | null; resources: { pins?: Record<string, number> } | null };
+    }).sensor;
+    expect(patched.sensor_type).toBe("gas_mq2");
+    expect(patched.unit).toBe("%FS");
+    expect(patched.model).toBe("MQ-2");
+    expect(patched.resources?.pins).toMatchObject({ adc: 4 });
+
+    const cfgAfterRes = await req("/api/device/config", {
+      headers: { Authorization: `Bearer ${deviceToken}` },
+    });
+    const cfgAfter = (await cfgAfterRes.json()) as {
+      revision: number;
+      sensors: Array<{ id: string; model: string | null; driver_id: string | null; resources: { pins?: Record<string, number> } | null }>;
+    };
+    expect(cfgAfter.revision).toBeGreaterThan(cfgBefore.revision);
+    expect(cfgAfter.sensors.find((s) => s.id === ldSensor.id)?.model).toBe("MQ-2");
+
+    // 5. Discrete expanded water_leak sensor with notifyOnTrigger emits sensor.alert notification
+    const leakRes = await req("/api/sensors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        name: "Under Sink Leak",
+        sensorType: "water_leak",
+        boardInstanceId: controller.id,
+        gpioPin: 5,
+        config: { notifyOnTrigger: true },
+      }),
+    });
+    expect(leakRes.status).toBe(201);
+    const { sensor: leakSensor } = (await leakRes.json()) as { sensor: { id: string } };
+
+    const telRes = await req("/api/device/telemetry", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${deviceToken}`,
+      },
+      body: JSON.stringify({
+        sensors: [{ sensorId: leakSensor.id, value: 1, unit: "state", status: "ok" }],
+      }),
+    });
+    expect(telRes.status).toBe(200);
+
+    const notifRes = await req("/api/notifications?limit=10", { headers: { Cookie: cookie } });
+    expect(notifRes.status).toBe(200);
+    const notifs = (await notifRes.json()) as {
+      notifications: Array<{ title: string; message: string }>;
+    };
+    expect(notifs.notifications.some((n) => n.title.includes("Under Sink Leak"))).toBe(true);
+  });
 });

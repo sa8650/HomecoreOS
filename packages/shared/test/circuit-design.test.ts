@@ -481,4 +481,69 @@ describe("circuit-design — truthfulness contract", () => {
     expect(byLabel.get("NC")!.drawn).toBe(false);
     expect(byLabel.get("COM")!.role).toBe("load");
   });
+
+  it("dispatches expanded sensor drivers cleanly without generic fallback", () => {
+    const sht = build({
+      entity: {
+        kind: "sensor",
+        id: "sen-sht",
+        name: "SHT31",
+        boardInstanceId: "ctrl-1",
+        gpioPin: null,
+        sensorType: "temperature_sht3x",
+        i2cAddress: "0x44",
+      },
+    });
+    expect(sht.circuit.archetype).toBe("i2c_module");
+
+    const dht11 = build({
+      entity: {
+        kind: "sensor",
+        id: "sen-dht11",
+        name: "DHT11",
+        boardInstanceId: "ctrl-1",
+        gpioPin: 4,
+        sensorType: "temperature_dht11",
+      },
+    });
+    expect(dht11.circuit.archetype).toBe("single_wire_pullup");
+
+    const ld2410 = build({
+      entity: {
+        kind: "sensor",
+        id: "sen-ld",
+        name: "Radar",
+        boardInstanceId: "ctrl-1",
+        gpioPin: null,
+        sensorType: "presence_ld2410",
+        resources: { driverId: "ld2410", pins: { uart_tx: 4, uart_rx: 5 } },
+      },
+    });
+    expect(ld2410.circuit.archetype).toBe("uart_module");
+
+    const mq2 = build({
+      board: xiaoC3(),
+      entity: {
+        kind: "sensor",
+        id: "sen-mq2",
+        name: "Gas",
+        boardInstanceId: "ctrl-1",
+        gpioPin: 2,
+        sensorType: "gas_mq2",
+      },
+    });
+    expect(mq2.circuit.archetype).toBe("adc_divider_advisory");
+
+    const leak = build({
+      entity: {
+        kind: "sensor",
+        id: "sen-leak",
+        name: "Leak",
+        boardInstanceId: "ctrl-1",
+        gpioPin: 4,
+        sensorType: "water_leak",
+      },
+    });
+    expect(leak.circuit.archetype).toBe("digital_input_module");
+  });
 });

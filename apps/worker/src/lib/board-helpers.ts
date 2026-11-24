@@ -192,7 +192,7 @@ export async function getUsedPinsOnController(
       .is("deleted_at", null),
     db
       .from("sensors")
-      .select("id,gpio_pin")
+      .select("id,gpio_pin,last_raw_payload")
       .eq("account_id", accountId)
       .eq("board_instance_id", boardInstanceId)
       .is("deleted_at", null),
@@ -211,10 +211,25 @@ export async function getUsedPinsOnController(
   for (const row of (sensRes.data ?? []) as Array<{
     id: string;
     gpio_pin: number | null;
+    last_raw_payload?: Record<string, unknown> | null;
   }>) {
-    if (row.gpio_pin === null || row.gpio_pin === undefined) continue;
     if (exclude?.table === "sensors" && exclude.id === row.id) continue;
-    used.push(row.gpio_pin);
+    const seenForSensor = new Set<number>();
+    if (row.gpio_pin !== null && row.gpio_pin !== undefined) {
+      used.push(row.gpio_pin);
+      seenForSensor.add(row.gpio_pin);
+    }
+    const rawRes = row.last_raw_payload?.resources as
+      | { pins?: Record<string, number | null | undefined> }
+      | undefined;
+    if (rawRes?.pins && typeof rawRes.pins === "object") {
+      for (const pin of Object.values(rawRes.pins)) {
+        if (typeof pin === "number" && Number.isInteger(pin) && !seenForSensor.has(pin)) {
+          used.push(pin);
+          seenForSensor.add(pin);
+        }
+      }
+    }
   }
 
   return used;

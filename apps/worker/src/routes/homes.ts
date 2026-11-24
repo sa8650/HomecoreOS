@@ -8,6 +8,7 @@ import {
   isValidIanaTimezone,
   resolveEffectiveTimezone,
   type RoomType,
+  type SensorResourcesConfig,
 } from "@homecoreos/shared";
 import { recordActivity } from "../lib/audit";
 import { makeRealtimeEvent, publishRealtimeEvents } from "../lib/realtime";
@@ -204,7 +205,7 @@ export function createHomeRoutes() {
         db.from("board_instances").select("id,account_id,home_id,room_id,board_profile_id,custom_board_profile_id,name,hardware_uid,board_model,chip_variant,flash_size_mb,psram_size_mb,firmware_version,board_role,assigned_controller_id,node_link_state,comm_mode,espnow_channel,status,pairing_status,wifi_connected,mqtt_connected,wifi_ssid,wifi_rssi,local_ip,last_heartbeat_at,last_communication_at,paired_at").eq("account_id", accountId).is("deleted_at", null).is("permanently_deleted_at", null).order("created_at", { ascending: false }),
         db.from("devices").select("id,account_id,home_id,room_id,board_instance_id,name,device_type,gpio_pin,state,is_online").eq("account_id", accountId).is("deleted_at", null).order("created_at", { ascending: false }),
         db.from("switches").select("id,account_id,home_id,room_id,board_instance_id,name,gpio_pin,inverted,is_on,is_online,last_changed_at").eq("account_id", accountId).is("deleted_at", null).order("created_at", { ascending: false }),
-        db.from("sensors").select("id,account_id,home_id,room_id,board_instance_id,name,sensor_type,gpio_pin,unit,last_value,last_raw_payload,last_reading_at,is_online").eq("account_id", accountId).is("deleted_at", null).order("created_at", { ascending: false }),
+        db.from("sensors").select("id,account_id,home_id,room_id,board_instance_id,name,sensor_type,gpio_pin,unit,last_value,last_raw_payload,last_reading_at,is_online,physical_sensor_id").eq("account_id", accountId).is("deleted_at", null).order("created_at", { ascending: false }),
         db.from("activity_logs").select("id,category,action,summary,created_at").eq("account_id", accountId).order("created_at", { ascending: false }).limit(20),
       ]);
 
@@ -228,6 +229,13 @@ export function createHomeRoutes() {
             : typeof s.sensor_type === "string"
               ? (getSensorDriverForMeasurement(s.sensor_type)?.id ?? null)
               : null,
+        model: typeof raw?.model === "string" ? raw.model : null,
+        resources:
+          raw?.resources && typeof raw.resources === "object"
+            ? (raw.resources as SensorResourcesConfig)
+            : null,
+        physical_sensor_id:
+          typeof s.physical_sensor_id === "string" ? s.physical_sensor_id : null,
       };
     });
     const rooms = roomsRes.data ?? [];

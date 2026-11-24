@@ -1288,7 +1288,13 @@ export function createDeviceApiRoutes() {
         const breachedLow = alertMin !== null && numericValue < alertMin;
         const motionAlert =
           Boolean(existingRaw.notifyOnTrigger) &&
-          (meta.sensor_type === "motion_pir" || meta.sensor_type === "contact_reed") &&
+          (meta.sensor_type === "motion_pir" ||
+            meta.sensor_type === "contact_reed" ||
+            meta.sensor_type === "presence_ld2410" ||
+            meta.sensor_type === "motion_ld2410" ||
+            meta.sensor_type === "presence_ld2450" ||
+            meta.sensor_type === "water_leak" ||
+            meta.sensor_type === "rain_level") &&
           numericValue >= 1;
 
         if (breachedHigh || breachedLow || motionAlert) {

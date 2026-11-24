@@ -1,22 +1,29 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   RiAddLine,
+  RiDashboard3Line,
   RiDeleteBinLine,
   RiDoorOpenLine,
   RiDropLine,
   RiEditLine,
   RiEyeLine,
   RiFireLine,
+  RiFlashlightLine,
   RiLightbulbLine,
   RiLockLine,
   RiMapPinLine,
   RiMore2Fill,
+  RiPlantLine,
+  RiRadarLine,
+  RiRainyLine,
   RiRouteLine,
+  RiRulerLine,
   RiSensorLine,
   RiSunLine,
   RiTempColdLine,
   RiToggleLine,
   RiTv2Line,
+  RiWaterFlashLine,
   RiWindyLine,
 } from "@remixicon/react";
 import { isDeviceStateActive } from "@homecoreos/shared";
@@ -1009,14 +1016,54 @@ export function DevicesPage({
 
 function SensorTypeIcon({ type }: { type: string }) {
   const lower = type.toLowerCase();
+  if (lower.includes("rain")) {
+    return <RiRainyLine className="size-4" aria-hidden="true" />;
+  }
+  if (lower.includes("soil")) {
+    return <RiPlantLine className="size-4" aria-hidden="true" />;
+  }
+  if (lower.includes("water")) {
+    return <RiWaterFlashLine className="size-4" aria-hidden="true" />;
+  }
   if (lower.includes("humid")) {
     return <RiDropLine className="size-4" aria-hidden="true" />;
   }
-  if (lower.includes("lux") || lower.includes("light") || lower.includes("bh1750")) {
+  if (
+    lower.includes("lux") ||
+    lower.includes("light") ||
+    lower.includes("bh1750") ||
+    lower.includes("veml")
+  ) {
     return <RiSunLine className="size-4" aria-hidden="true" />;
   }
   if (lower.includes("temp")) {
     return <RiTempColdLine className="size-4" aria-hidden="true" />;
+  }
+  if (lower.includes("press")) {
+    return <RiDashboard3Line className="size-4" aria-hidden="true" />;
+  }
+  if (lower.includes("presence") || lower.includes("motion") || lower.includes("pir")) {
+    return <RiRadarLine className="size-4" aria-hidden="true" />;
+  }
+  if (lower.includes("distance")) {
+    return <RiRulerLine className="size-4" aria-hidden="true" />;
+  }
+  if (lower.includes("contact") || lower.includes("reed")) {
+    return <RiDoorOpenLine className="size-4" aria-hidden="true" />;
+  }
+  if (lower.includes("gas") || lower.includes("tvoc") || lower.includes("eco2") || lower.includes("mq")) {
+    return <RiWindyLine className="size-4" aria-hidden="true" />;
+  }
+  if (
+    lower.includes("volt") ||
+    lower.includes("curr") ||
+    lower.includes("power") ||
+    lower.includes("energy") ||
+    lower.includes("ina") ||
+    lower.includes("pzem") ||
+    lower.includes("sct")
+  ) {
+    return <RiFlashlightLine className="size-4" aria-hidden="true" />;
   }
   return <RiSensorLine className="size-4" aria-hidden="true" />;
 }
@@ -1160,7 +1207,7 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
     return sensors.filter((sen) => {
       const roomName = sen.room_id ? roomById.get(sen.room_id)?.name ?? "" : "";
       const ctrlName = controllerById.get(sen.board_instance_id)?.name ?? "";
-      return `${sen.name} ${sen.sensor_type} ${sen.unit} ${roomName} ${ctrlName}`
+      return `${sen.name} ${sen.sensor_type} ${sen.driver_id ?? ""} ${sen.model ?? ""} ${sen.i2c_address ?? ""} ${sen.unit} ${roomName} ${ctrlName}`
         .toLowerCase()
         .includes(q);
     });

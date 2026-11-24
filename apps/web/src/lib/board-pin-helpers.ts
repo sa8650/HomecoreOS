@@ -40,6 +40,7 @@ export interface HardwareContext {
       i2cAddress?: string | null;
     }>
   >;
+  sensorsByController?: Map<string, SensorItem[]>;
   sensorCompatibilityByController?: Map<string, ControllerSensorCompatibilityReport>;
 }
 
@@ -132,6 +133,7 @@ export async function fetchHardwareContext(
   }
 
   const usedPinsByController: NonNullable<HardwareContext["usedPinsByController"]> = new Map();
+  const sensorsByController: NonNullable<HardwareContext["sensorsByController"]> = new Map();
 
   const pushUsed = (
     boardInstanceId: string,
@@ -151,36 +153,64 @@ export async function fetchHardwareContext(
 
   for (const s of swRes.switches) pushUsed(s.board_instance_id, s.gpio_pin, "switch", s.id, s.name);
   for (const d of devRes.devices) pushUsed(d.board_instance_id, d.gpio_pin, "device", d.id, d.name);
-  for (const sen of senRes.sensors)
-    pushUsed(
-      sen.board_instance_id,
-      sen.gpio_pin,
-      "sensor",
-      sen.id,
-      sen.name,
-      sen.sensor_type,
-      sen.physical_sensor_id ?? null,
-      sen.i2c_address ?? null
-    );
+  for (const sen of senRes.sensors) {
+    const ctrlList = sensorsByController.get(sen.board_instance_id) ?? [];
+    ctrlList.push(sen);
+    sensorsByController.set(sen.board_instance_id, ctrlList);
+
+    const seenPins = new Set<number>();
+    if (sen.gpio_pin !== null && Number.isFinite(sen.gpio_pin)) {
+      seenPins.add(sen.gpio_pin);
+      pushUsed(
+        sen.board_instance_id,
+        sen.gpio_pin,
+        "sensor",
+        sen.id,
+        sen.name,
+        sen.sensor_type,
+        sen.physical_sensor_id ?? null,
+        sen.i2c_address ?? null
+      );
+    }
+    const rawRes =
+      sen.resources ??
+      (sen.last_raw_payload?.resources as
+        | { pins?: Record<string, number | null | undefined> }
+        | undefined);
+    for (const p of Object.values(rawRes?.pins ?? {})) {
+      if (typeof p === "number" && Number.isFinite(p) && !seenPins.has(p)) {
+        seenPins.add(p);
+        pushUsed(
+          sen.board_instance_id,
+          p,
+          "sensor",
+          sen.id,
+          sen.name,
+          sen.sensor_type,
+          sen.physical_sensor_id ?? null,
+          sen.i2c_address ?? null
+        );
+      }
+    }
+  }
   /* Physical modules without a derived measurement entity still reserve pins. */
   for (const physical of physicalRes.physicalSensorInstances) {
     const resources = physical.resource_config as
       | { pins?: Record<string, number | null>; i2cAddress?: string }
       | null
       | undefined;
-    const pin = resources?.pins
-      ? (Object.values(resources.pins).find((p) => typeof p === "number") ?? null)
-      : null;
-    if (pin !== null) {
-      pushUsed(
-        physical.board_instance_id,
-        pin,
-        "sensor",
-        physical.id,
-        physical.model ?? physical.driver_id,
-        undefined,
-        physical.id
-      );
+    for (const pin of Object.values(resources?.pins ?? {})) {
+      if (typeof pin === "number" && Number.isFinite(pin)) {
+        pushUsed(
+          physical.board_instance_id,
+          pin,
+          "sensor",
+          physical.id,
+          physical.model ?? physical.driver_id,
+          undefined,
+          physical.id
+        );
+      }
     }
   }
 
@@ -199,6 +229,7 @@ export async function fetchHardwareContext(
     rooms: roomRes.rooms,
     boardsById,
     usedPinsByController,
+    sensorsByController,
     sensorCompatibilityByController,
   };
 }

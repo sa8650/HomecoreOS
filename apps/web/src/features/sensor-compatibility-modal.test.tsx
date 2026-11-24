@@ -489,4 +489,77 @@ describe("SensorEditorModal — Board + Installed Firmware Compatibility", () =>
     );
     expect(screen.getByText(/0x76/)).toBeInTheDocument();
   });
+
+  it("renders sibling default-bus I2C and GPIO modules in SensorEditorModal without SelectItem crash", async () => {
+    const { board, seed } = buildRelay6Board();
+    const manifest = buildFirmwareDriverManifest({
+      firmwareVersion: "1.6.0",
+      chipFamily: "esp32s3",
+      targetBoardSlug: board.slug,
+      partitionScheme: "dual_ota_16mb",
+      flashSizeMb: 16,
+      psramMode: "octal",
+      driverIds: ["bme280", "ld2410"],
+    });
+    const resolved = extractFirmwareDriverManifestFromRelease({
+      id: "rel-sib",
+      version: "1.6.0",
+      chip_family: "esp32s3",
+      target_board_slug: board.slug,
+      driver_manifest: manifest,
+      compiled_sensor_drivers: ["bme280", "ld2410"],
+      supported_sensor_types: manifest.supported_sensor_types,
+      manifest_version: manifest.manifest_version,
+      manifest_hash: null,
+    });
+    const compatReport = evaluateControllerSensorCompatibility({
+      board: seed,
+      installedFirmware: resolved,
+    });
+
+    const ctrl = makeController("ctrl-sib", "Relay Sibling", board, compatReport);
+    const existingDefaultBusBme: SensorItem = {
+      id: "sen-bme-default",
+      account_id: "acc-1",
+      home_id: "home-1",
+      room_id: null,
+      board_instance_id: ctrl.id,
+      name: "Bus Temp",
+      sensor_type: "temperature_bme280",
+      gpio_pin: null,
+      i2c_address: "0x76",
+      driver_id: "bme280",
+      unit: "°C",
+      last_value: 21.4,
+      last_raw_payload: { i2c_address: "0x76", driver_id: "bme280" },
+      is_online: true,
+      last_reading_at: null,
+    };
+
+    const ctx: HardwareContext = {
+      rooms: [],
+      controllers: [ctrl],
+      boardsById: new Map([[board.id, board]]),
+      usedPinsByController: new Map(),
+      sensorsByController: new Map([[ctrl.id, [existingDefaultBusBme]]]),
+      sensorCompatibilityByController: new Map([[ctrl.id, compatReport]]),
+    };
+
+    render(
+      <SensorEditorModal
+        open
+        onOpenChange={vi.fn()}
+        sensorItem={null}
+        ctx={ctx}
+        onSaved={vi.fn()}
+      />
+    );
+
+    const shareTrigger = screen.getByLabelText(
+      "Attach this measurement to an existing physical module"
+    );
+    expect(shareTrigger).toBeInTheDocument();
+    expect(screen.getAllByText("Separate physical module").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Bus Temp \(I2C 0x76\)/)).toBeInTheDocument();
+  });
 });

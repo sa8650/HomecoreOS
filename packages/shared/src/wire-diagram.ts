@@ -1080,46 +1080,43 @@ export function buildWireDiagram(params: WireDiagramParams): WireDiagramResult {
       ? deriveBoardHardwareCapabilityProfile(board)
       : null;
 
-  // Resolve the I2C bus (assigned SDA pin wins; otherwise the documented default bus).
+  // Resolve the I2C bus (explicit resources pins win, then assigned SDA + documented default SCL).
+  const resourcePins = entity.resources?.pins ?? {};
   let i2cSdaPin: number | null = null;
   let i2cSclPin: number | null = null;
   let i2cFromDefaultBus = false;
+  const explicitSdaConfigured =
+    typeof resourcePins.i2c_sda === "number" && Number.isInteger(resourcePins.i2c_sda);
+  const explicitSclConfigured =
+    typeof resourcePins.i2c_scl === "number" && Number.isInteger(resourcePins.i2c_scl);
   if (entity.kind === "sensor" && isI2cSensor) {
     // Only a documented bus is ever drawn — never the capability profile's
     // lowest-two-pins fallback.
     const defaultBus = board
       ? findDocumentedI2cBus(board)
       : { sdaPin: null, sclPin: null };
-    if (isWholePin(assignedPin)) {
+    if (explicitSdaConfigured) {
+      i2cSdaPin = resourcePins.i2c_sda!;
+      i2cSclPin = explicitSclConfigured ? resourcePins.i2c_scl! : defaultBus.sclPin;
+    } else if (isWholePin(assignedPin)) {
       i2cSdaPin = assignedPin;
-      i2cSclPin = defaultBus.sclPin;
-      if (i2cSclPin === null) {
-        reasons.push(
-          `The board profile does not document the SCL pin for the default I2C bus, so the clock line of ${sensorDriver?.displayName ?? "this sensor"} cannot be resolved. Assign the sensor to a board whose profile documents an I2C bus.`
-        );
-      }
+      i2cSclPin = explicitSclConfigured ? resourcePins.i2c_scl! : defaultBus.sclPin;
     } else {
       i2cSdaPin = defaultBus.sdaPin;
-      i2cSclPin = defaultBus.sclPin;
-      i2cFromDefaultBus = true;
-      if (i2cSdaPin === null || i2cSclPin === null) {
+      i2cSclPin = explicitSclConfigured ? resourcePins.i2c_scl! : defaultBus.sclPin;
+      i2cFromDefaultBus = !explicitSclConfigured;
+    }
+
+    if (i2cSdaPin === null || i2cSclPin === null) {
+      if (isWholePin(assignedPin) || explicitSdaConfigured) {
+        reasons.push(
+          `The board profile does not document the SCL pin for the default I2C bus, so the clock line of ${sensorDriver?.displayName ?? "this sensor"} cannot be resolved. Assign an explicit SCL pin or use a board whose profile documents an I2C bus.`
+        );
+      } else {
         reasons.push(
           "This sensor uses the controller's default I2C bus, but the board profile does not document one (no SDA/SCL pads marked in its headers). Assign an explicit GPIO pin for the sensor's SDA line instead."
         );
       }
-    }
-  }
-
-  // Driver-aware resource binding: when the sensor stores an explicit
-  // configuration, both I2C bus pins (or every UART/SPI role) come from it.
-  const resourcePins = entity.resources?.pins ?? {};
-  if (entity.kind === "sensor" && isI2cSensor) {
-    const configuredSda = resourcePins.i2c_sda;
-    const configuredScl = resourcePins.i2c_scl;
-    if (typeof configuredSda === "number" && Number.isInteger(configuredSda)) i2cSdaPin = configuredSda;
-    if (typeof configuredScl === "number" && Number.isInteger(configuredScl)) {
-      i2cSclPin = configuredScl;
-      i2cFromDefaultBus = false;
     }
   }
 
@@ -1139,7 +1136,7 @@ export function buildWireDiagram(params: WireDiagramParams): WireDiagramResult {
   }
 
   if (entity.kind !== "sensor" || !isI2cSensor) {
-    if (!isWholePin(assignedPin)) {
+    if (!isWholePin(signalPin)) {
       reasons.push(
         entity.kind === "switch"
           ? "The switch has no configured GPIO pin."
@@ -1509,7 +1506,7 @@ export function buildWireDiagram(params: WireDiagramParams): WireDiagramResult {
     const sclShares = shareableNames(sclPin, siblingIndex, sensorType);
     const sclErrors = [...sclCheck.errors];
     const sclWarnings = [...sclCheck.warnings];
-    if (assignedPin !== null) {
+    if ((assignedPin !== null || explicitSdaConfigured) && !explicitSclConfigured) {
       sclWarnings.push(
         "The sensor was assigned an explicit SDA line; SCL is shown from the board's documented default I2C bus. Confirm your firmware bit-bangs or drives the same SCL."
       );
@@ -1522,7 +1519,7 @@ export function buildWireDiagram(params: WireDiagramParams): WireDiagramResult {
       sclShares,
       sclErrors,
       sclWarnings,
-      `Default I2C bus SCL: GPIO${sclPin} → module SCL.${assignedPin !== null ? " (Board default — verify against firmware.)" : ""}`,
+      `${explicitSclConfigured ? "Configured" : "Default I2C bus"} SCL: GPIO${sclPin} → module SCL.${(assignedPin !== null || explicitSdaConfigured) && !explicitSclConfigured ? " (Board default — verify against firmware.)" : ""}`,
       true
     );
   } else {
@@ -1584,10 +1581,21 @@ export function buildWireDiagram(params: WireDiagramParams): WireDiagramResult {
       onewire: "1-Wire data", adc: "Analog input",
       i2c_sda: "I2C SDA", i2c_scl: "I2C SCL",
     };
+    const roleTerminalIds: Record<string, string> = {
+      uart_tx: "tx",
+      uart_rx: "rx",
+      spi_sclk: "sclk",
+      spi_mosi: "mosi",
+      spi_miso: "miso",
+      spi_cs: "cs",
+    };
     for (const role of sensorDriver.resources.roles) {
       const pin = resourcePins[role];
       if (typeof pin !== "number" || pin === signalPin || (usesI2c && (role === "i2c_sda" || role === "i2c_scl"))) continue;
-      const terminal: WireDiagramTerminal = {
+      const matchingTerminal = roleTerminalIds[role]
+        ? classTerminals.find((t) => t.id === roleTerminalIds[role])
+        : undefined;
+      const terminal: WireDiagramTerminal = matchingTerminal ?? {
         id: `role-${role}`,
         label: roleLabels[role] ?? role,
         role: "signal",

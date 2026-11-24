@@ -37,6 +37,15 @@
 #define HC8266_MAX_SENSORS 8
 #define HC8266_SERIAL_BUFFER 1024
 
+struct Hc8266SampleCache {
+    bool valid = false;
+    double temp = 0;
+    double hum = 0;
+    double press = 0;
+    double lux = 0;
+    double scalar = 0;
+};
+
 struct Hc8266Binding {
     char id[40] = {0};
     char sensorType[40] = {0};
@@ -45,7 +54,7 @@ struct Hc8266Binding {
     int16_t pin = -1;     /* primary role (SDA / data / ADC / GPIO) */
     int16_t aux = -1;     /* SCL when I2C */
     uint8_t addr = 0;
-    double lastValue = 0;
+    Hc8266SampleCache sample;
     int64_t lastMs = 0;
     bool cached = false;
     const char *error = nullptr;
@@ -110,9 +119,9 @@ static bool hc8266_apply_config(const char *json) {
     size_t count = 0;
     for (JsonObject item : sensors) {
         if (count >= HC8266_MAX_SENSORS) break;
-        const char *type = item["sensorType"] | "";
-        const char *explicit = item["driverId"] | "";
-        hc_sensor_driver_id_t drv = hc_sensor_resolve_driver(type, explicit);
+        const char *type = item["sensorType"] | item["sensor_type"] | "";
+        const char *explicitId = item["driverId"] | item["driver_id"] | "";
+        hc_sensor_driver_id_t drv = hc_sensor_resolve_driver(type, explicitId);
         if (!hc8266_driver_supported(drv)) {
             Serial.printf("CFG_ERROR:unsupported_driver %s\n", type);
             return false;
@@ -120,7 +129,7 @@ static bool hc8266_apply_config(const char *json) {
         Hc8266Binding &b = next[count++];
         strlcpy(b.sensorType, type, sizeof(b.sensorType));
         b.driver = drv;
-        int pin = item["gpioPin"] | -1;
+        int pin = item["gpioPin"] | item["gpio_pin"] | -1;
         JsonObject resources = item["resources"];
         if (!resources.isNull()) {
             const char *roles[] = { "i2c_sda", "onewire", "adc", "gpio_in", "gpio_out", "gpio_bidirectional", nullptr };
@@ -129,13 +138,24 @@ static bool hc8266_apply_config(const char *json) {
                 if (p >= 0) { pin = p; break; }
             }
             b.aux = hc8266_role_pin(resources, "i2c_scl");
-            const char *resAddr = resources["i2c_address"] | "";
+            const char *resAddr =
+                resources["i2c_address"] | resources["i2cAddress"] |
+                item["i2c_address"] | item["i2cAddress"] | "";
             if (resAddr[0]) {
                 bool valid = false;
                 b.addr = hc_sensor_parse_i2c_addr(resAddr, hc_sensor_driver_default_i2c_addr(drv), &valid);
                 if (!valid) { Serial.println("CFG_ERROR:invalid_i2c_address"); return false; }
             }
-            const char *phys = resources["physicalId"] | item["physicalSensorId"] | "";
+            const char *phys = resources["physicalId"] | item["physicalSensorId"] | item["physical_sensor_id"] | "";
+            strlcpy(b.physicalId, phys, sizeof(b.physicalId));
+        } else {
+            const char *topAddr = item["i2c_address"] | item["i2cAddress"] | "";
+            if (topAddr[0]) {
+                bool valid = false;
+                b.addr = hc_sensor_parse_i2c_addr(topAddr, hc_sensor_driver_default_i2c_addr(drv), &valid);
+                if (!valid) { Serial.println("CFG_ERROR:invalid_i2c_address"); return false; }
+            }
+            const char *phys = item["physicalSensorId"] | item["physical_sensor_id"] | "";
             strlcpy(b.physicalId, phys, sizeof(b.physicalId));
         }
         if (!b.addr) b.addr = hc_sensor_driver_default_i2c_addr(drv);
@@ -157,18 +177,17 @@ static bool hc8266_apply_config(const char *json) {
             return false;
         }
         b.pin = (int16_t)pin;
-        if (!b.addr && drv != HC_DRV_DHT11 && drv != HC_DRV_DHT22 && drv != HC_DRV_DS18B20 &&
-            drv != HC_DRV_PIR && drv != HC_DRV_REED && drv != HC_DRV_WATER_LEAK &&
-            drv != HC_DRV_RAIN && drv != HC_DRV_ADC_VOLTAGE && drv != HC_DRV_WATER_LEVEL &&
-            drv != HC_DRV_SOIL_MOISTURE) {
+        if (!b.addr && hc_sensor_driver_is_i2c(drv)) {
             Serial.println("CFG_ERROR:missing_i2c_address");
             return false;
         }
         const char *id = item["id"] | "";
         strlcpy(b.id, id[0] ? id : b.sensorType, sizeof(b.id));
-        pinMode((uint8_t)b.pin, b.driver == HC_DRV_PIR || b.driver == HC_DRV_REED ||
-                b.driver == HC_DRV_WATER_LEAK || b.driver == HC_DRV_RAIN
-                    ? INPUT_PULLUP : INPUT);
+        if (b.pin != HOMECORE_ADC_PIN && !hc_sensor_driver_is_i2c(drv)) {
+            pinMode((uint8_t)b.pin, b.driver == HC_DRV_PIR || b.driver == HC_DRV_REED ||
+                    b.driver == HC_DRV_WATER_LEAK || b.driver == HC_DRV_RAIN
+                        ? INPUT_PULLUP : INPUT);
+        }
     }
     memcpy(s_sensors, next, sizeof(next));
     s_sensorCount = count;
@@ -204,6 +223,14 @@ static bool hc8266_i2c_read(uint8_t addr, uint8_t *buf, size_t len) {
 
 /* ---------- Protocol implementations ---------- */
 
+static int32_t hc8266_wait_level(uint8_t pin, int target, uint32_t timeoutUs) {
+    uint32_t start = micros();
+    while (digitalRead(pin) != target) {
+        if ((uint32_t)(micros() - start) > timeoutUs) return -1;
+    }
+    return (int32_t)(uint32_t)(micros() - start);
+}
+
 static bool hc8266_read_dht(const Hc8266Binding &b, double *outT, double *outH) {
     if (b.pin < 0 || !hc8266_pin_usable(b.pin)) return false;
     uint8_t pin = (uint8_t)b.pin;
@@ -211,18 +238,23 @@ static bool hc8266_read_dht(const Hc8266Binding &b, double *outT, double *outH) 
     digitalWrite(pin, HIGH);
     delay(20);
     digitalWrite(pin, LOW);
-    delay(b.driver == HC_DRV_DHT11 ? 18 : 2);
+    delay(b.driver == HC_DRV_DHT11 ? 20 : 2);
     digitalWrite(pin, HIGH);
-    delayMicroseconds(b.driver == HC_DRV_DHT11 ? 30 : 30);
+    delayMicroseconds(30);
     pinMode(pin, INPUT_PULLUP);
-    if (pulseIn(pin, LOW, 100) == 0 || pulseIn(pin, HIGH, 100) == 0) return false;
+    /* Sensor handshake: LOW (~80us) -> HIGH (~80us) -> LOW (bit 0 preamble). */
+    if (hc8266_wait_level(pin, LOW, 120) < 0 ||
+        hc8266_wait_level(pin, HIGH, 140) < 0 ||
+        hc8266_wait_level(pin, LOW, 140) < 0) {
+        return false;
+    }
     uint8_t raw[5] = {0};
     for (int bit = 0; bit < 40; bit++) {
-        if (pulseIn(pin, HIGH, 100) == 0) return false;
-        uint32_t low = pulseIn(pin, LOW, 100);
-        if (low == 0) return false;
+        if (hc8266_wait_level(pin, HIGH, 100) < 0) return false;
+        int32_t highUs = hc8266_wait_level(pin, LOW, 120);
+        if (highUs < 0) return false;
         raw[bit / 8] <<= 1;
-        if (low > 45) raw[bit / 8] |= 1;
+        if (highUs > 45) raw[bit / 8] |= 1;
     }
     return b.driver == HC_DRV_DHT11
         ? hc_dht11_decode(raw, outT, outH)
@@ -310,7 +342,7 @@ static bool hc8266_read_aht20(const Hc8266Binding &b, double *outT, double *outH
     uint8_t status = 0;
     if (!hc8266_i2c_read(b.addr, &status, 1)) return false;
     if ((status & 0x08U) == 0) {
-        const uint8_t init[] = { 0xBE, 0x80, 0x00 };
+        const uint8_t init[] = { 0xBE, 0x08, 0x00 };
         if (!hc8266_i2c_write(b.addr, init, sizeof(init))) return false;
         delay(10);
     }
@@ -330,10 +362,10 @@ static bool hc8266_read_bh1750(const Hc8266Binding &b, double *outLux) {
 }
 
 static bool hc8266_read_veml7700(const Hc8266Binding &b, double *outLux) {
-    const uint8_t cfg[] = { 0x00, 0x01 };
+    const uint8_t cfg[] = { 0x00, 0x00, 0x18 }; /* ALS_SD=0, IT=100ms, Gain=1/4 */
     uint8_t raw[2] = {0};
     if (!hc8266_i2c_write(b.addr, cfg, sizeof(cfg))) return false;
-    delay(10);
+    delay(110);
     return hc8266_i2c_read_reg(b.addr, 0x04, raw, sizeof(raw)) && hc_veml7700_decode_lux(raw, outLux);
 }
 
@@ -345,57 +377,104 @@ static bool hc8266_read_adc(const Hc8266Binding &b, double *outVolts) {
     return hc_adc_mv_to_volts(mv, 1.0, outVolts);
 }
 
+static bool hc8266_pick_measurement(hc_sensor_driver_id_t drv, hc_sensor_measurement_t meas,
+                                    const Hc8266SampleCache &s, double *outValue) {
+    if (!s.valid) return false;
+    switch (drv) {
+        case HC_DRV_DHT11:
+        case HC_DRV_DHT22:
+            *outValue = (meas == HC_MEAS_HUMIDITY_DHT11 ||
+                         meas == HC_MEAS_HUMIDITY_DHT22 ||
+                         meas == HC_MEAS_HUMIDITY) ? s.hum : s.temp;
+            return true;
+        case HC_DRV_BME280:
+            *outValue = meas == HC_MEAS_HUMIDITY ? s.hum
+                      : meas == HC_MEAS_PRESSURE ? s.press : s.temp;
+            return true;
+        case HC_DRV_SHT3X:
+            *outValue = meas == HC_MEAS_HUMIDITY_SHT3X ? s.hum : s.temp;
+            return true;
+        case HC_DRV_AHT20:
+            *outValue = meas == HC_MEAS_HUMIDITY_AHT20 ? s.hum : s.temp;
+            return true;
+        case HC_DRV_BH1750:
+        case HC_DRV_VEML7700:
+            *outValue = s.lux;
+            return true;
+        default:
+            *outValue = s.scalar;
+            return true;
+    }
+}
+
 static bool hc8266_read_sensor(Hc8266Binding &b, double *outValue) {
     hc_sensor_measurement_t meas = hc_sensor_resolve_measurement(b.sensorType);
-    double t = 0, h = 0, lux = 0, volts = 0, pct = 0;
+    if (hc_sensor_driver_is_i2c(b.driver) && b.pin >= 0 && b.aux >= 0) {
+        Wire.begin((int)b.pin, (int)b.aux);
+    }
+    Hc8266SampleCache s;
+    double volts = 0;
     switch (b.driver) {
         case HC_DRV_DHT11:
         case HC_DRV_DHT22:
-            if (!hc8266_read_dht(b, &t, &h)) return false;
-            *outValue = (meas == HC_MEAS_HUMIDITY_DHT11 || meas == HC_MEAS_HUMIDITY_DHT22) ? h : t;
-            return true;
+            if (!hc8266_read_dht(b, &s.temp, &s.hum)) return false;
+            s.valid = true;
+            break;
         case HC_DRV_DS18B20:
-            return hc8266_read_ds18b20(b, outValue);
+            if (!hc8266_read_ds18b20(b, &s.scalar)) return false;
+            s.valid = true;
+            break;
         case HC_DRV_BME280: {
             hc_bme280_sample_t sample;
             if (!hc8266_read_bme280(b, &sample)) return false;
-            *outValue = meas == HC_MEAS_HUMIDITY ? sample.humidity_pct
-                      : meas == HC_MEAS_PRESSURE ? sample.pressure_hpa : sample.temp_c;
-            return true;
+            s.temp = sample.temp_c;
+            s.hum = sample.humidity_pct;
+            s.press = sample.pressure_hpa;
+            s.valid = true;
+            break;
         }
         case HC_DRV_SHT3X:
-            if (!hc8266_read_sht3x(b, &t, &h)) return false;
-            *outValue = meas == HC_MEAS_HUMIDITY_SHT3X ? h : t;
-            return true;
+            if (!hc8266_read_sht3x(b, &s.temp, &s.hum)) return false;
+            s.valid = true;
+            break;
         case HC_DRV_AHT20:
-            if (!hc8266_read_aht20(b, &t, &h)) return false;
-            *outValue = meas == HC_MEAS_HUMIDITY_AHT20 ? h : t;
-            return true;
+            if (!hc8266_read_aht20(b, &s.temp, &s.hum)) return false;
+            s.valid = true;
+            break;
         case HC_DRV_BH1750:
-            if (!hc8266_read_bh1750(b, &lux)) return false;
-            *outValue = lux;
-            return true;
+            if (!hc8266_read_bh1750(b, &s.lux)) return false;
+            s.valid = true;
+            break;
         case HC_DRV_VEML7700:
-            if (!hc8266_read_veml7700(b, &lux)) return false;
-            *outValue = lux;
-            return true;
+            if (!hc8266_read_veml7700(b, &s.lux)) return false;
+            s.valid = true;
+            break;
         case HC_DRV_PIR:
         case HC_DRV_RAIN:
         case HC_DRV_WATER_LEAK:
-            *outValue = hc_pir_decode(digitalRead(b.pin), false);
-            return true;
+            s.scalar = hc_pir_decode(digitalRead(b.pin), false);
+            s.valid = true;
+            break;
         case HC_DRV_REED:
-            *outValue = hc_reed_decode(digitalRead(b.pin), false);
-            return true;
+            s.scalar = hc_reed_decode(digitalRead(b.pin), false);
+            s.valid = true;
+            break;
         case HC_DRV_ADC_VOLTAGE:
         case HC_DRV_WATER_LEVEL:
         case HC_DRV_SOIL_MOISTURE:
             if (!hc8266_read_adc(b, &volts)) return false;
-            if (b.driver == HC_DRV_ADC_VOLTAGE) { *outValue = volts; return true; }
-            return hc_adc_percent((int32_t)(volts * 1000.0), 3300, outValue);
+            if (b.driver == HC_DRV_ADC_VOLTAGE) {
+                s.scalar = volts;
+            } else if (!hc_adc_percent((int32_t)(volts * 1000.0), 3300, &s.scalar)) {
+                return false;
+            }
+            s.valid = true;
+            break;
         default:
             return false;
     }
+    b.sample = s;
+    return hc8266_pick_measurement(b.driver, meas, s, outValue);
 }
 
 /** Reuse one physical sample across all measurement entities of that module. */
@@ -413,24 +492,25 @@ static void hc8266_publish_telemetry() {
         int64_t now = (int64_t)millis();
         double value = 0;
         bool reuse = false;
+        hc_sensor_measurement_t meas = hc_sensor_resolve_measurement(b.sensorType);
         for (size_t j = 0; j < i; j++) {
             Hc8266Binding &peer = s_sensors[j];
             if (peer.cached && hc8266_is_same_physical(peer, b)) {
-                value = peer.lastValue;
-                reuse = true;
+                reuse = hc8266_pick_measurement(b.driver, meas, peer.sample, &value);
+                if (reuse) b.sample = peer.sample;
                 break;
             }
         }
         bool ok = reuse || hc8266_read_sensor(b, &value);
-        if (ok) { b.lastValue = value; b.lastMs = now; b.cached = true; b.error = nullptr; }
-        else { b.cached = false; b.error = "read_failed"; }
+        if (ok) { b.lastMs = now; b.cached = true; b.error = nullptr; }
+        else { b.cached = false; b.sample.valid = false; b.error = "read_failed"; }
         JsonObject item = sensors.createNestedObject();
         item["id"] = b.id;
         item["sensorType"] = b.sensorType;
         item["driverId"] = hc_sensor_driver_name(b.driver);
         item["ok"] = ok;
         item["value"] = ok ? value : 0;
-        item["unit"] = hc_sensor_default_unit(hc_sensor_resolve_measurement(b.sensorType));
+        item["unit"] = hc_sensor_default_unit(meas);
         if (!ok) item["error"] = b.error ? b.error : "read_failed";
     }
     root["board"] = HOMECORE_BOARD_SLUG;

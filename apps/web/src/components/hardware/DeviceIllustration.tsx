@@ -468,15 +468,39 @@ export function illustrationForEntity(opts: {
   const t = opts.typeLabel.toLowerCase();
   if (opts.kind === "sensor") {
     switch (opts.driverId) {
-      case "pir": return "pir";
-      case "dht22": return "dht22";
-      case "ds18b20": return "ds18b20";
+      case "pir":
+      case "ld2410":
+      case "ld2450":
+        return "pir";
+      case "dht22":
+      case "dht11":
+        return "dht22";
+      case "ds18b20":
+        return "ds18b20";
       case "bme280":
+      case "sht3x":
+      case "aht20":
+      case "tmp117":
       case "bh1750":
+      case "veml7700":
+      case "sgp30":
+      case "ina219":
+      case "ina226":
+      case "pzem004t":
+      case "water_leak":
+      case "rain":
         return "breakout";
-      case "reed": return "reed";
-      case "adc_voltage": return "divider";
-      default: return "breakout";
+      case "reed":
+        return "reed";
+      case "adc_voltage":
+      case "water_level":
+      case "soil_moisture":
+      case "mq2":
+      case "mq135":
+      case "sct013":
+        return "divider";
+      default:
+        return "breakout";
     }
   }
   if (opts.kind === "switch") return "relay";

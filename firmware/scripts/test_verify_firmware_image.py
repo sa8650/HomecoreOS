@@ -213,6 +213,40 @@ class TestVerifyFirmwareImage(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("PSRAM mode", res.stderr)
 
+    def test_verify_build_checks_default_i2c_for_all_i2c_drivers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ota_bin = os.path.join(tmp, "homecoreos.bin")
+            pt_bin = os.path.join(tmp, "partition-table.bin")
+            sdk_path = os.path.join(tmp, "sdkconfig")
+            make_synthetic_ota_bin(ota_bin, chip_id=9, version="1.3.0")
+            make_synthetic_partition_table(pt_bin)
+
+            with open(sdk_path, "w", encoding="utf-8") as dst:
+                dst.write('CONFIG_IDF_TARGET="esp32s3"\n')
+                dst.write('CONFIG_HOMECORE_FW_VERSION="1.3.0"\n')
+                dst.write('CONFIG_HOMECORE_BOARD_SLUG="waveshare-esp32-s3-zero"\n')
+                dst.write('CONFIG_HOMECORE_PARTITION_SCHEME="dual_ota_4mb"\n')
+                dst.write("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y\n")
+                dst.write("CONFIG_BT_ENABLED=y\n")
+                dst.write("CONFIG_BT_NIMBLE_ENABLED=y\n")
+                dst.write("CONFIG_HOMECORE_DRIVER_SHT3X=y\n")
+                dst.write("CONFIG_HOMECORE_I2C_DEFAULT_SDA_GPIO=-1\n")
+                dst.write("CONFIG_HOMECORE_I2C_DEFAULT_SCL_GPIO=-1\n")
+
+            res = self.run_cli(
+                "--verify-build",
+                "--version", "1.3.0",
+                "--target", "esp32s3",
+                "--board", "waveshare-esp32-s3-zero",
+                "--partition-scheme", "dual_ota_4mb",
+                "--flash-size", "4MB",
+                "--image", ota_bin,
+                "--sdkconfig", sdk_path,
+                "--partition-table", pt_bin,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("default I2C pins are invalid", res.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

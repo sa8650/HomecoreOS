@@ -566,6 +566,7 @@ const EXPANDED_SENSOR_DRIVER_REGISTRY: readonly SensorDriverDefinition[] = [
     measurements: ["temperature_tmp117"],
     defaultUnits: { temperature_tmp117: "°C" },
     kconfigFlag: "CONFIG_HOMECORE_DRIVER_TMP117",
+    supportedChipFamilies: ESP32_ONLY_CHIPS,
     modelProfiles: [{ model: "TMP117", protocolFamily: "tmp117_i2c", accuracy: "±0.1 °C typical" }],
     limitations: "One measurement per device; address must match the A0/A1 strap of the module.",
   }),
@@ -637,14 +638,15 @@ const EXPANDED_SENSOR_DRIVER_REGISTRY: readonly SensorDriverDefinition[] = [
     measurements: ["tvoc_sgp30", "eco2_sgp30"],
     defaultUnits: { tvoc_sgp30: "ppb", eco2_sgp30: "ppm" },
     kconfigFlag: "CONFIG_HOMECORE_DRIVER_SGP30",
+    supportedChipFamilies: ESP32_ONLY_CHIPS,
     modelProfiles: [{ model: "SGP30", protocolFamily: "sgp30_i2c", expectedChipIds: ["0xD0"], notes: "Requires baseline warm-up and humidity compensation." }],
     limitations: "TVOC is a total VOC index in ppb; eCO2 is an estimate derived from TVOC, not a calibrated CO2 measurement. Not an air-safety alarm.",
   }),
   physicalDriver({
-    id: "water_leak", category: "water", protocolFamily: "threshold_adc", resources: RES_GPIO_IN,
+    id: "water_leak", category: "water", protocolFamily: "gpio_contact", resources: RES_GPIO_IN,
     displayName: "Water Leak Detector",
-    shortDescription: "Contact or analog water-leak probe with configurable threshold.",
-    supportedModels: ["Generic Water Leak (GPIO)", "Generic Water Leak (ADC)"],
+    shortDescription: "Contact water-leak probe or float switch read via digital GPIO input.",
+    supportedModels: ["Generic Water Leak (GPIO)", "Float Switch (GPIO)"],
     interface: "gpio_digital_in", interfaceLabel: "GPIO Input",
     requiredInterfaces: ["gpio"], requiredPinCapabilities: ["digital_in"], requiresBidirectionalGpio: false,
     busConfig: { kind: "gpio", requiresPullUp: true, supportsSharedBus: false, debounceMs: 200 },
@@ -756,8 +758,8 @@ const EXPANDED_SENSOR_DRIVER_REGISTRY: readonly SensorDriverDefinition[] = [
   }),
   physicalDriver({
     id: "sct013", category: "energy", protocolFamily: "burden_adc", resources: RES_ADC,
-    displayName: "SCT-013 Current Transformer (ADC)",
-    shortDescription: "SCT-013 clamp with external burden/bias conditioning on an ADC input.",
+    displayName: "SCT-013 Current Transformer (ADC, Planned)",
+    shortDescription: "Planned CT clamp driver; requires an external burden resistor and 1.65 V bias.",
     supportedModels: ["SCT-013-000", "SCT-013-030"],
     interface: "adc", interfaceLabel: "ADC",
     requiredInterfaces: ["adc"], requiredPinCapabilities: ["adc"], requiresBidirectionalGpio: false,
@@ -784,6 +786,7 @@ const EXPANDED_SENSOR_DRIVER_REGISTRY: readonly SensorDriverDefinition[] = [
     measurements: ["gas_mq2"],
     defaultUnits: { gas_mq2: "%FS" },
     kconfigFlag: "CONFIG_HOMECORE_DRIVER_MQ2",
+    supportedChipFamilies: ESP32_ONLY_CHIPS,
     limitations: "NOT a certified gas or fire alarm. Needs burn-in and calibration; output is a qualitative % of full-scale ADC, not a gas concentration.",
   }),
   physicalDriver({
@@ -799,6 +802,7 @@ const EXPANDED_SENSOR_DRIVER_REGISTRY: readonly SensorDriverDefinition[] = [
     measurements: ["gas_mq135"],
     defaultUnits: { gas_mq135: "%FS" },
     kconfigFlag: "CONFIG_HOMECORE_DRIVER_MQ135",
+    supportedChipFamilies: ESP32_ONLY_CHIPS,
     limitations: "NOT a certified air-quality or fire alarm. Cross-sensitive to humidity and temperature; values are uncalibrated %FS only.",
   }),
 ];
@@ -815,7 +819,7 @@ const LEGACY_DRIVER_RESOURCES: Record<string, SensorDriverResourceDefinition> = 
 };
 const LEGACY_DRIVER_CATEGORIES: Record<string, SensorCategoryId> = {
   dht22: "climate", ds18b20: "climate", bme280: "climate",
-  pir: "motion", reed: "motion", bh1750: "light", adc_voltage: "energy",
+  pir: "motion", reed: "contact", bh1750: "light", adc_voltage: "energy",
 };
 const LEGACY_DRIVER_PROTOCOLS: Record<string, string> = {
   dht22: "dht_single_wire", ds18b20: "ds18b20_onewire", bme280: "bme280_i2c",
@@ -2316,6 +2320,12 @@ export function validateSensorResourceAssignments(params: {
   const warnings: string[] = [...resolved.warnings];
 
   const peers = params.allocations.filter((a) => a.id !== params.candidate.id);
+  const maxI2cBuses =
+    deriveBoardHardwareCapabilityProfile(params.board).peripheralLimits.maxI2cBuses;
+  const distinctI2cBuses = new Set<string>();
+  if (def.bus === "i2c" && target.busId) {
+    distinctI2cBuses.add(target.busId);
+  }
   const occupiedPins = new Map<number, string[]>();
   const addOccupied = (pin: number | null | undefined, label: string) => {
     if (typeof pin !== "number") return;
@@ -2349,11 +2359,25 @@ export function validateSensorResourceAssignments(params: {
     const otherDef = getSensorDriverById(other.driverId)!.resources!;
 
     if (def.bus === "i2c" && otherDef.bus === "i2c") {
+      if (other.busId) distinctI2cBuses.add(other.busId);
       const sameBus = target.busId === other.busId;
       if (!sameBus) {
-        errors.push(
-          `${targetDriver.displayName} (${peer.name}) cannot share a different I2C bus: ${peer.name} uses ${other.busId ?? "an undocumented bus"}.`
-        );
+        const targetSda = target.pins.i2c_sda;
+        const targetScl = target.pins.i2c_scl;
+        const otherSda = other.pins.i2c_sda;
+        const otherScl = other.pins.i2c_scl;
+        const pinOverlap =
+          (targetSda !== undefined && (targetSda === otherSda || targetSda === otherScl)) ||
+          (targetScl !== undefined && (targetScl === otherSda || targetScl === otherScl));
+        if (pinOverlap) {
+          errors.push(
+            `${targetDriver.displayName} (${target.busId ?? "I2C"}) shares a pin with "${peer.name}" on ${other.busId ?? "an I2C bus"} without matching both SDA and SCL.`
+          );
+        } else if (distinctI2cBuses.size > maxI2cBuses) {
+          errors.push(
+            `${params.board.model} supports ${maxI2cBuses} hardware I2C bus(es); "${peer.name}" already uses ${other.busId ?? "the I2C bus"}.`
+          );
+        }
       } else if (target.i2cAddress && other.i2cAddress && target.i2cAddress === other.i2cAddress) {
         if (target.driverId === other.driverId && params.candidate.sensorType !== peer.sensorType) {
           // Sibling measurements of one physical module legitimately share the address.
@@ -2368,8 +2392,8 @@ export function validateSensorResourceAssignments(params: {
     }
 
     if (def.bus === "onewire" && otherDef.bus === "onewire") {
-      if (target.pins.onewire !== other.pins.onewire) {
-        errors.push(`${peer.name} is on a different 1-Wire bus (GPIO${other.pins.onewire}); 1-Wire buses are not shared across data pins.`);
+      if (target.pins.onewire === other.pins.onewire) {
+        warnings.push(`${peer.name} shares the 1-Wire bus on GPIO${other.pins.onewire}.`);
       }
       continue;
     }
@@ -2745,6 +2769,11 @@ export function validateSensorAssignmentForController(params: {
     warnings.push(...resourceCheck.warnings);
   }
 
+  // Driver-aware path already handled bus/pin/address validation above.
+  if (params.resources) {
+    return finishSensorFirmwareValidation(params, driver, measurement, warnings);
+  }
+
   const otherSensors = params.existingSensorsOnController.filter(
     (s) => s.id !== params.editingSensorId
   );
@@ -2810,10 +2839,6 @@ export function validateSensorAssignmentForController(params: {
   }
 
   // Validate GPIO pin assignment (when provided, or required for non-I2C sensors)
-  if (params.resources) {
-    // Resource validation above already covered every required pin and bus.
-    return finishSensorFirmwareValidation(params, driver, measurement, warnings);
-  }
   const pin = params.gpioPin ?? null;
   if (pin !== null) {
     // Determine which existing pins actually conflict with this sensor:

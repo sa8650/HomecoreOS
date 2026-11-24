@@ -6,6 +6,7 @@ import {
   SEEED_XIAO_OFFICIAL_BOARDS,
   areMeasurementsSamePhysicalDriver,
   buildFirmwareDriverManifest,
+  evaluateBoardDriverCompatibility,
   getMeasurementOptionsForDriver,
   getSensorDriverById,
   resolveSensorResources,
@@ -117,7 +118,7 @@ describe("physical sensor modules and driver-aware resources", () => {
     expect(conflicting.errors.join(" ")).toMatch(/address|0x44/i);
   });
 
-  it("keeps the ESP8266 single-ADC constraint explicit", () => {
+  it("keeps the ESP8266 single-ADC constraint explicit and restricts ESP32-only chips", () => {
     const spec = board("nodemcu-esp8266");
     const result = resolveSensorResources({
       board: spec,
@@ -126,5 +127,87 @@ describe("physical sensor modules and driver-aware resources", () => {
     });
     expect(result.valid).toBe(true);
     expect(result.resolved?.pins).toMatchObject({ adc: 17 });
+
+    const tmpBoard = evaluateBoardDriverCompatibility({
+      board: spec,
+      driverId: "tmp117",
+    });
+    expect(tmpBoard.supported).toBe(false);
+    const sgpBoard = evaluateBoardDriverCompatibility({
+      board: spec,
+      driverId: "sgp30",
+    });
+    expect(sgpBoard.supported).toBe(false);
+  });
+
+  it("allows same I2C address on disjoint buses and DS18B20 on distinct 1-Wire pins", () => {
+    const spec = board("esp32-s3-devkitc-1-n16r8");
+    const bmeA = resolveSensorResources({
+      board: spec,
+      sensorType: "temperature_bme280",
+      i2cAddress: "0x76",
+      resources: { driverId: "bme280", pins: { i2c_sda: 8, i2c_scl: 9 }, i2cAddress: "0x76" },
+    });
+    const bmeB = resolveSensorResources({
+      board: spec,
+      sensorType: "temperature_bme280",
+      i2cAddress: "0x76",
+      resources: { driverId: "bme280", pins: { i2c_sda: 4, i2c_scl: 5 }, i2cAddress: "0x76" },
+    });
+    expect(bmeA.valid).toBe(true);
+    expect(bmeB.valid).toBe(true);
+    const busCheck = validateSensorResourceAssignments({
+      board: spec,
+      candidate: {
+        sensorType: "temperature_bme280",
+        driverId: "bme280",
+        resources: bmeB.resolved!,
+      },
+      allocations: [
+        {
+          id: "bme-a",
+          name: "Bus 0 BME280",
+          sensorType: "temperature_bme280",
+          driverId: "bme280",
+          resources: bmeA.resolved!,
+        },
+      ],
+    });
+    expect(busCheck.valid).toBe(true);
+
+    const dsA = resolveSensorResources({
+      board: spec,
+      sensorType: "temperature_ds18b20",
+      resources: { driverId: "ds18b20", pins: { onewire: 4 } },
+    });
+    const dsB = resolveSensorResources({
+      board: spec,
+      sensorType: "temperature_ds18b20",
+      resources: { driverId: "ds18b20", pins: { onewire: 5 } },
+    });
+    const owCheck = validateSensorResourceAssignments({
+      board: spec,
+      candidate: {
+        sensorType: "temperature_ds18b20",
+        driverId: "ds18b20",
+        resources: dsB.resolved!,
+      },
+      allocations: [
+        {
+          id: "ds-a",
+          name: "Probe 1",
+          sensorType: "temperature_ds18b20",
+          driverId: "ds18b20",
+          resources: dsA.resolved!,
+        },
+      ],
+    });
+    expect(owCheck.valid).toBe(true);
+  });
+
+  it("aligns reed category and water_leak / sct013 metadata", () => {
+    expect(getSensorDriverById("reed")?.category).toBe("contact");
+    expect(getSensorDriverById("water_leak")?.defaultUnits.water_leak).toBe("state");
+    expect(getSensorDriverById("sct013")?.hardwareVerificationStatus).toBe("planned");
   });
 });
