@@ -472,9 +472,13 @@ export async function buildConsolidatedControllerConfig(
       id: s.id,
       name: s.name,
       sensor_type: s.sensor_type,
+      driver_id: s.driver_id ?? null,
       gpio_pin: s.gpio_pin,
       unit: s.unit,
       i2c_address: s.i2c_address ?? null,
+      model: s.model ?? null,
+      resources: s.resources ?? null,
+      physical_sensor_id: s.physical_sensor_id ?? null,
     })),
     automations: localAutomations,
   };

@@ -236,6 +236,19 @@ DRIVER_BY_ID = {d["id"]: d for d in SENSOR_DRIVER_CATALOG}
 # packages/shared/src/sensor-drivers.ts.
 PLANNED_DRIVER_IDS = {"ld2450", "pzem004t", "sct013"}
 
+# Every driver backed by I2C bus defaults in Kconfig / firmware runtime.
+I2C_DRIVER_IDS = {
+    "bme280",
+    "sht3x",
+    "aht20",
+    "tmp117",
+    "bh1750",
+    "veml7700",
+    "sgp30",
+    "ina219",
+    "ina226",
+}
+
 
 def fail(msg: str) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
@@ -513,7 +526,7 @@ def cmd_verify_build(args: argparse.Namespace) -> None:
         fail("No CONFIG_HOMECORE_DRIVER_* sensor drivers are enabled in sdkconfig")
 
     # Verify I2C default pins whenever an I2C sensor driver is compiled
-    if any(d in compiled_ids for d in ("bme280", "bh1750")):
+    if any(d in I2C_DRIVER_IDS for d in compiled_ids):
         sda_raw = sdk.get("CONFIG_HOMECORE_I2C_DEFAULT_SDA_GPIO", "-1")
         scl_raw = sdk.get("CONFIG_HOMECORE_I2C_DEFAULT_SCL_GPIO", "-1")
         try:
@@ -823,7 +836,7 @@ def cmd_verify_board_overlays(boards_dir: str) -> None:
         compiled = extract_compiled_drivers_from_sdkconfig(sdk)
         if not compiled:
             fail(f"{fname}: must explicitly enable at least one CONFIG_HOMECORE_DRIVER_* flag")
-        if any(d["id"] in ("bme280", "bh1750") for d in compiled):
+        if any(d["id"] in I2C_DRIVER_IDS for d in compiled):
             sda = int(sdk.get("CONFIG_HOMECORE_I2C_DEFAULT_SDA_GPIO", "-1"))
             scl = int(sdk.get("CONFIG_HOMECORE_I2C_DEFAULT_SCL_GPIO", "-1"))
             if sda < 0 or scl < 0 or sda == scl:

@@ -27,8 +27,9 @@ import type {
   SupportedDeviceType,
   SupportedSensorType,
 } from "./index";
-import type {
-  SensorDriverDefinition,
+import {
+  getSensorDriverForMeasurement,
+  type SensorDriverDefinition,
 } from "./sensor-drivers";
 import {
   type WireDiagramEntityInput,
@@ -474,8 +475,26 @@ function pickArchetype(entity: WireDiagramEntityInput): string {
         return "generic_direct";
     }
   }
-  // Sensors follow their driver interface.
+  // Sensors follow their physical driver interface from the registry.
   const sensorType = entity.sensorType as SupportedSensorType | null;
+  const driver = sensorType ? getSensorDriverForMeasurement(sensorType) : undefined;
+  if (driver) {
+    if (driver.interface === "gpio_single_wire" || driver.interface === "onewire") {
+      return "single_wire_pullup";
+    }
+    if (driver.interface === "i2c") {
+      return "i2c_module";
+    }
+    if (driver.interface === "adc") {
+      return "adc_divider_advisory";
+    }
+    if (driver.interface === "uart") {
+      return "uart_module";
+    }
+    if (driver.id === "pir") return "pir_three_wire";
+    if (driver.id === "reed") return "contact_two_wire";
+    if (driver.interface === "gpio_digital_in") return "digital_input_module";
+  }
   switch (sensorType) {
     case "temperature_dht22":
     case "humidity_dht22":
@@ -542,6 +561,10 @@ function buildForArchetype(archetype: string, args: ArchetypeArgs): CircuitDesig
       return pirThreeWire(args);
     case "contact_two_wire":
       return contactTwoWire(args);
+    case "digital_input_module":
+      return digitalInputModule(args);
+    case "uart_module":
+      return uartModule(args);
     case "adc_divider_advisory":
       return adcDividerAdvisory(args);
     default:
@@ -1708,6 +1731,8 @@ function singleWirePullup(args: ArchetypeArgs): CircuitDesign {
   const isOneWire = ctx.sensorDriver?.interface === "onewire";
   const rId = "c-pullup";
   const ds18 = ctx.entity.sensorType === "temperature_ds18b20";
+  const isDht11 = ctx.sensorDriver?.id === "dht11";
+  const driverName = ctx.sensorDriver?.displayName ?? (ds18 ? "DS18B20" : isDht11 ? "DHT11" : "DHT22");
 
   const components: CircuitComponent[] = [
     comp(
@@ -1798,7 +1823,7 @@ function singleWirePullup(args: ArchetypeArgs): CircuitDesign {
     assumptions: [
       ds18
         ? "DS18B20 powered from VCC (not parasitic mode) — parasitic mode needs stronger pull-up and different firmware."
-        : "DHT22 powered from VCC/DATA as documented.",
+        : `${driverName} powered from VCC/DATA as documented.`,
       "Module may already include the pull-up — verify to avoid doubling it (paralleled pull-ups are usually harmless but halve the resistance).",
     ],
     missingSpecifications: [
@@ -2059,9 +2084,127 @@ function contactTwoWire(_args: ArchetypeArgs): CircuitDesign {
 }
 
 // ---------------------------------------------------------------------------
+// I3 — Digital input module (water leak / rain comparator board)
+// ---------------------------------------------------------------------------
+function digitalInputModule(args: ArchetypeArgs): CircuitDesign {
+  const { ctx } = args;
+  const drv = ctx.sensorDriver;
+  const label = drv?.displayName ?? "Digital sensor module";
+  const boardHas5V = ctx.rails.fiveVolt !== null;
+
+  return {
+    state: "ready",
+    archetype: "digital_input_module",
+    archetypeLabel: `${label} (digital GPIO input)`,
+    reasoning: [
+      "This module outputs a digital state (active threshold or probe contact) directly to the configured GPIO input.",
+      drv?.busConfig.requiresPullUp
+        ? "Firmware enables an internal GPIO pull-up so open contacts read consistently."
+        : "The module comparator drives the digital output pin high or low relative to GND.",
+      boardHas5V
+        ? "Power the module from the board's documented 3.3V (preferred) or 5V rail per module datasheet — verify logic output never exceeds 3.3V."
+        : "Verify the module operates at 3.3V logic before connecting OUT to a controller GPIO.",
+    ],
+    safetyClass: "low_voltage_dc",
+    mainsInvolved: false,
+    externalSupplyRequired: false,
+    isolatedFromLoad: false,
+    components: [],
+    wires: [],
+    checks: [
+      {
+        id: "logic-level",
+        status: "warn",
+        title: "Verify 3.3V output logic level",
+        detail:
+          "If powered from 5V, confirm the module's DO/OUT pin does not exceed 3.3V or use a 3.3V supply rail.",
+      },
+      commonGroundCheck(),
+      ratingsCheck(),
+    ],
+    assumptions: [
+      "Digital comparator threshold (if present) is adjusted on the module potentiometer.",
+      drv?.limitations ?? "Output state depends on module polarity and probe wiring.",
+    ],
+    missingSpecifications: [
+      "Module supply voltage (3.3V vs 5V) and logic output high voltage",
+      "Active-HIGH vs active-LOW comparator output polarity",
+    ],
+    formulas: [],
+    notes: [
+      "Keep wet probes isolated from AC mains or ground-referenced plumbing faults.",
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// J — UART sensor module (LD2410 mmWave / UART peripherals)
+// ---------------------------------------------------------------------------
+function uartModule(args: ArchetypeArgs): CircuitDesign {
+  const { ctx } = args;
+  const drv = ctx.sensorDriver;
+  const label = drv?.displayName ?? "UART sensor module";
+  const boardHas5V = ctx.rails.fiveVolt !== null;
+
+  return {
+    state: "ready",
+    archetype: "uart_module",
+    archetypeLabel: `${label} (crossed UART TX/RX)`,
+    reasoning: [
+      "UART requires a crossed pair: connect module TX to the controller's RX pin, and module RX to the controller's TX pin.",
+      "Do not multiplex or share UART pins with USB console (GPIO43/44 or GPIO1/3) or other peripherals.",
+      boardHas5V
+        ? "Many mmWave radar modules require a 5V supply while using 3.3V UART logic — check your module datasheet."
+        : "Check whether your module requires a dedicated 5V supply rail; share common GND either way.",
+    ],
+    safetyClass: "low_voltage_dc",
+    mainsInvolved: false,
+    externalSupplyRequired: !boardHas5V,
+    isolatedFromLoad: false,
+    components: [],
+    wires: [],
+    checks: [
+      {
+        id: "uart-crossover",
+        status: "pass",
+        title: "TX ↔ RX crossover required",
+        detail:
+          "Wire module TX → controller RX and module RX → controller TX. Swapping them prevents communication without damaging 3.3V UART pins.",
+      },
+      {
+        id: "uart-baud",
+        status: "unknown",
+        title: "Baud rate and logic voltage",
+        detail:
+          drv?.busConfig.defaultClockHz
+            ? `Firmware expects ${drv.busConfig.defaultClockHz} baud at 3.3V UART logic levels.`
+            : "Confirm module baud rate and 3.3V UART logic compatibility before powering on.",
+      },
+      commonGroundCheck(),
+      ratingsCheck(),
+    ],
+    assumptions: [
+      "UART signal voltage is 3.3V CMOS.",
+      drv?.limitations ?? "Dedicated hardware UART peripheral assigned to the configured pins.",
+    ],
+    missingSpecifications: [
+      "Module supply rail voltage and peak current draw (mmWave modules often need 5V ≥ 200 mA)",
+      "Exact connector pinout order on the module",
+    ],
+    formulas: [],
+    notes: [
+      "Avoid assigning UART pins shared with the board's USB-UART bridge.",
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // K — Analog voltage input — divider advisory
 // ---------------------------------------------------------------------------
-function adcDividerAdvisory(_args: ArchetypeArgs): CircuitDesign {
+function adcDividerAdvisory(args: ArchetypeArgs): CircuitDesign {
+  const { ctx } = args;
+  const drv = ctx.sensorDriver;
+  const isGasModule = drv?.id === "mq2" || drv?.id === "mq135";
   const divId = "c-divider";
 
   const components: CircuitComponent[] = [
@@ -2148,6 +2291,12 @@ function adcDividerAdvisory(_args: ArchetypeArgs): CircuitDesign {
     notes: [
       "Reference the divider's ground to controller GND — never to a mains-referenced ground.",
       "Add a 100 nF cap from the ADC pin to GND to average noise on slow signals.",
+      ...(isGasModule
+        ? [
+            "MQ-series heaters typically require 5V supply and draw 150+ mA; if AO exceeds 3.3V, scale it with R1/R2 before the ADC pin.",
+            "Readings are qualitative %FS only — NOT a certified gas or fire safety alarm.",
+          ]
+        : []),
     ],
   };
 }

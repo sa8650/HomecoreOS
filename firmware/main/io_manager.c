@@ -306,12 +306,7 @@ esp_err_t hc_io_apply_config_json(const char *json, bool *out_changed) {
             int16_t parsed_pin = -1;
             if (cJSON_IsNumber(pin_j)) {
                 parsed_pin = (int16_t)pin_j->valueint;
-            } else if (kinds[s] == HC_IO_KIND_SENSOR) {
-                hc_sensor_driver_id_t drv = hc_sensor_resolve_driver(stype_str, drvid_str);
-                if (!hc_sensor_driver_is_i2c(drv)) {
-                    continue;
-                }
-            } else {
+            } else if (kinds[s] != HC_IO_KIND_SENSOR) {
                 continue;
             }
 
@@ -379,6 +374,9 @@ esp_err_t hc_io_apply_config_json(const char *json, bool *out_changed) {
                         }
                     }
                     cJSON *addr_j = cJSON_GetObjectItem(res_j, "i2c_address");
+                    if (!cJSON_IsString(addr_j)) {
+                        addr_j = cJSON_GetObjectItem(res_j, "i2cAddress");
+                    }
                     if (cJSON_IsString(addr_j) && addr_j->valuestring[0] != '\0') {
                         e->i2c_addr = hc_sensor_parse_i2c_addr(addr_j->valuestring, def_addr, &valid_addr);
                     }

@@ -54,6 +54,7 @@ import type {
 } from "@/features/types";
 
 const ROOM_NONE = "__none__";
+const MODULE_SEPARATE = "__separate__";
 
 export function SwitchEditorModal({
   open,
@@ -511,7 +512,7 @@ export function SensorEditorModal({
   const [driverId, setDriverId] = useState<string>("");
   const [model, setModel] = useState<string>("");
   const [auxPinText, setAuxPinText] = useState("");
-  const [shareModuleId, setShareModuleId] = useState("");
+  const [shareModuleId, setShareModuleId] = useState(MODULE_SEPARATE);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveCompatByCtrl, setLiveCompatByCtrl] = useState<
@@ -544,6 +545,7 @@ export function SensorEditorModal({
         setAuxPinText(
           String(savedResources?.pins?.i2c_scl ?? savedResources?.pins?.uart_rx ?? savedResources?.pins?.spi_cs ?? "")
         );
+        setShareModuleId(MODULE_SEPARATE);
       } else {
         setName("");
         const initialCtrlId = ctx.controllers[0]?.id ?? "";
@@ -562,7 +564,7 @@ export function SensorEditorModal({
         setDriverId("");
         setModel("");
         setAuxPinText("");
-        setShareModuleId("");
+        setShareModuleId(MODULE_SEPARATE);
       }
     } else if (!sensorItem && !boardInstanceId && ctx.controllers[0]?.id) {
       setControllerId(ctx.controllers[0].id);
@@ -600,17 +602,21 @@ export function SensorEditorModal({
     selectedCtrl?.sensor_compatibility ??
     null;
 
-  // When compatibility changes (e.g. user switches controller), ensure sensorType stays valid for new additions.
+  // When compatibility changes (e.g. user switches controller), ensure sensorType & driverId stay valid.
   useEffect(() => {
     if (!open || !activeCompat) return;
     const isStillCompatible = activeCompat.compatibleSensors.some(
       (s) => s.sensorType === sensorType
     );
     if (!isStillCompatible) {
-      if (!isEditing) {
-        setSensorType(activeCompat.compatibleSensors[0]?.sensorType ?? "");
-      } else if (sensorItem && boardInstanceId !== sensorItem.board_instance_id) {
-        setSensorType(activeCompat.compatibleSensors[0]?.sensorType ?? "");
+      if (!isEditing || (sensorItem && boardInstanceId !== sensorItem.board_instance_id)) {
+        const nextType = activeCompat.compatibleSensors[0]?.sensorType ?? "";
+        const nextDriver = nextType ? getSensorDriverForMeasurement(nextType) : undefined;
+        setSensorType(nextType);
+        setDriverId(nextDriver?.id ?? "");
+        setModel("");
+        setAuxPinText("");
+        setShareModuleId(MODULE_SEPARATE);
       }
     }
   }, [open, activeCompat, boardInstanceId, isEditing, sensorItem, sensorType]);
@@ -670,20 +676,77 @@ export function SensorEditorModal({
     (r) => r === "i2c_scl" || r === "uart_rx" || r === "spi_cs"
   ) ?? null;
   const auxPin = auxPinText.trim() === "" ? null : Number(auxPinText);
-  const siblingModules = (
-    ctx.usedPinsByController?.get(boardInstanceId) ?? []
-  ).filter(
-    (usage) =>
-      usage.entityKind === "sensor" &&
-      usage.id !== sensorItem?.id &&
-      getSensorDriverForMeasurement(usage.sensorType ?? "")?.id === selectedDriver?.id
-  );
+
+  interface SiblingModuleOption {
+    id: string;
+    name: string;
+    pin: number | null;
+    auxPin: number | null;
+    i2cAddress: string | null;
+    model: string | null;
+    physicalSensorId: string | null;
+  }
+
+  const siblingModules: SiblingModuleOption[] = (() => {
+    if (!selectedDriver) return [];
+    const seen = new Set<string>();
+    const out: SiblingModuleOption[] = [];
+
+    for (const sen of ctx.sensorsByController?.get(boardInstanceId) ?? []) {
+      if (sen.id === sensorItem?.id) continue;
+      const drvId =
+        sen.driver_id ?? getSensorDriverForMeasurement(sen.sensor_type)?.id ?? null;
+      if (drvId !== selectedDriver.id || seen.has(sen.id)) continue;
+      seen.add(sen.id);
+      const res =
+        sen.resources ??
+        (sen.last_raw_payload?.resources as SensorResourcesConfig | undefined);
+      const secPin =
+        res?.pins?.i2c_scl ?? res?.pins?.uart_rx ?? res?.pins?.spi_cs ?? null;
+      out.push({
+        id: sen.id,
+        name: sen.name,
+        pin: sen.gpio_pin ?? null,
+        auxPin: typeof secPin === "number" ? secPin : null,
+        i2cAddress: readSensorI2cAddress(sen),
+        model:
+          sen.model ??
+          res?.model ??
+          (typeof sen.last_raw_payload?.model === "string"
+            ? sen.last_raw_payload.model
+            : null),
+        physicalSensorId: sen.physical_sensor_id ?? null,
+      });
+    }
+
+    for (const usage of ctx.usedPinsByController?.get(boardInstanceId) ?? []) {
+      if (usage.entityKind !== "sensor" || usage.id === sensorItem?.id || seen.has(usage.id)) {
+        continue;
+      }
+      if (getSensorDriverForMeasurement(usage.sensorType ?? "")?.id !== selectedDriver.id) {
+        continue;
+      }
+      seen.add(usage.id);
+      out.push({
+        id: usage.id,
+        name: usage.name,
+        pin: usage.pin,
+        auxPin: null,
+        i2cAddress: usage.i2cAddress ?? null,
+        model: null,
+        physicalSensorId: usage.physicalSensorId ?? null,
+      });
+    }
+
+    return out;
+  })();
 
   function handleDriverChange(nextDriverId: string) {
     const drv = getSensorDriverById(nextDriverId);
     setDriverId(nextDriverId);
     setModel(drv?.supportedModels[0] ?? "");
     setAuxPinText("");
+    setShareModuleId(MODULE_SEPARATE);
     const nextMeasurement = drv?.measurements.find((m) => m === sensorType) ?? drv?.measurements[0];
     if (nextMeasurement) setSensorType(nextMeasurement);
     if (drv && !drv.busConfig.defaultAddresses?.length) setI2cAddress("");
@@ -700,11 +763,17 @@ export function SensorEditorModal({
 
   function applySharedModule(moduleId: string) {
     setShareModuleId(moduleId);
-    if (!moduleId) return;
+    if (!moduleId || moduleId === MODULE_SEPARATE) return;
     const sibling = siblingModules.find((usage) => usage.id === moduleId);
     if (!sibling) return;
-    if (primaryRole && primaryRole !== "i2c_sda") setPinText(String(sibling.pin));
+    if (sibling.pin !== null && (primaryRole !== "i2c_sda" || sibling.pin !== undefined)) {
+      setPinText(String(sibling.pin));
+    } else if (primaryRole === "i2c_sda" && sibling.pin === null) {
+      setPinText("");
+    }
+    if (sibling.auxPin !== null) setAuxPinText(String(sibling.auxPin));
     if (sibling.i2cAddress) setI2cAddress(sibling.i2cAddress);
+    if (sibling.model) setModel(sibling.model);
   }
 
   const requirement = getRequirementForSensorType(
@@ -729,12 +798,19 @@ export function SensorEditorModal({
 
   const savedI2cAddress = readSensorI2cAddress(sensorItem);
   const effectiveI2cAddress = isI2c ? (i2cAddress.trim() || null) : null;
+  const savedAuxPin =
+    secondaryRole && typeof sensorItem?.resources?.pins?.[secondaryRole] === "number"
+      ? sensorItem.resources.pins[secondaryRole]
+      : null;
   const hardwareBindingUnchanged = Boolean(
     isEditing &&
       sensorItem &&
       boardInstanceId === sensorItem.board_instance_id &&
       sensorType === sensorItem.sensor_type &&
       parsedPin === sensorItem.gpio_pin &&
+      auxPin === savedAuxPin &&
+      (selectedDriver?.id ?? null) === (sensorItem.driver_id ?? selectedDriver?.id ?? null) &&
+      (model || null) === (sensorItem.model ?? null) &&
       effectiveI2cAddress === savedI2cAddress
   );
 
@@ -780,6 +856,14 @@ export function SensorEditorModal({
       setError("Enter a valid whole-number GPIO pin for the secondary signal.");
       return;
     }
+    if ((secondaryRole === "uart_rx" || secondaryRole === "spi_cs") && auxPin === null) {
+      setError(
+        secondaryRole === "uart_rx"
+          ? "Enter a UART RX GPIO pin for this sensor."
+          : "Enter an SPI CS GPIO pin for this sensor."
+      );
+      return;
+    }
     savingRef.current = true;
     setSaving(true);
     setError(null);
@@ -799,6 +883,11 @@ export function SensorEditorModal({
           }
         : undefined;
 
+      const selectedPhysicalId =
+        shareModuleId && shareModuleId !== MODULE_SEPARATE
+          ? siblingModules.find((s) => s.id === shareModuleId)?.physicalSensorId ?? undefined
+          : sensorItem?.physical_sensor_id ?? undefined;
+
       const payload = {
         name: name.trim(),
         sensorType,
@@ -809,9 +898,7 @@ export function SensorEditorModal({
         driverId: selectedDriver?.id ?? null,
         model: model || null,
         resources,
-        physicalSensorId: shareModuleId
-          ? siblingModules.find((s) => s.id === shareModuleId)?.physicalSensorId ?? undefined
-          : undefined,
+        physicalSensorId: selectedPhysicalId,
       };
       if (isEditing && sensorItem) {
         await apiFetch(`/api/sensors/${sensorItem.id}`, {
@@ -1009,9 +1096,19 @@ export function SensorEditorModal({
                       <SelectValue placeholder="Separate physical module" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">Separate physical module</SelectItem>
+                      <SelectItem value={MODULE_SEPARATE}>Separate physical module</SelectItem>
                       {siblingModules.map((s) => (
-                        <SelectItem key={s.id} value={s.id}>{s.name} (GPIO {s.pin})</SelectItem>
+                        <SelectItem key={s.id} value={s.id}>
+                          {s.name} (
+                          {s.pin !== null
+                            ? s.auxPin !== null
+                              ? `GPIO ${s.pin} / ${s.auxPin}`
+                              : `GPIO ${s.pin}`
+                            : s.i2cAddress
+                              ? `I2C ${s.i2cAddress}`
+                              : "default I2C"}
+                          )
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -1352,13 +1449,34 @@ export function HardwareDetailsModal({
           <div>
             <p className="text-[11px] font-medium text-muted-foreground">Pin / Bus</p>
             <p className="mt-0.5 font-mono text-foreground">
-              {subject.data.gpio_pin !== null
-                ? `GPIO${subject.data.gpio_pin}`
-                : "I2C / Virtual"}
+              {(() => {
+                const res = isSensor
+                  ? (subject.data.resources ??
+                    (subject.data.last_raw_payload?.resources as
+                      | SensorResourcesConfig
+                      | undefined))
+                  : undefined;
+                const pinPairs = Object.entries(res?.pins ?? {}).filter(
+                  (entry): entry is [string, number] => typeof entry[1] === "number"
+                );
+                if (pinPairs.length > 0) {
+                  return pinPairs
+                    .map(([role, p]) => `${role.toUpperCase()}:GPIO${p}`)
+                    .join(" · ");
+                }
+                return subject.data.gpio_pin !== null
+                  ? `GPIO${subject.data.gpio_pin}`
+                  : "I2C / Virtual";
+              })()}
               {isSensor && readSensorI2cAddress(subject.data)
                 ? ` · ${readSensorI2cAddress(subject.data)}`
                 : ""}
             </p>
+            {isSensor && (subject.data.driver_id || subject.data.model) && (
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {[subject.data.driver_id, subject.data.model].filter(Boolean).join(" · ")}
+              </p>
+            )}
           </div>
 
           {isSwitch && (

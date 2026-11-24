@@ -82,6 +82,16 @@ function sensorPinLabel(sensor: SensorItem): string {
   const raw = sensor.last_raw_payload as Record<string, unknown> | null | undefined;
   const rawAddr = typeof raw?.i2c_address === "string" ? raw.i2c_address.trim() : "";
   if (rawAddr) return `I2C · ${rawAddr}`;
+  const resPins = (sensor.resources?.pins ??
+    (raw?.resources as { pins?: Record<string, number | null | undefined> } | undefined)?.pins) as
+    | Record<string, number | null | undefined>
+    | undefined;
+  const pinPairs = Object.entries(resPins ?? {}).filter(
+    (entry): entry is [string, number] => typeof entry[1] === "number"
+  );
+  if (pinPairs.length > 0) {
+    return pinPairs.map(([role, p]) => `${role.replace(/^.*_/, "").toUpperCase()} ${p}`).join(" · ");
+  }
   if (sensor.gpio_pin !== null && sensor.gpio_pin !== undefined) {
     return `GPIO ${sensor.gpio_pin}`;
   }

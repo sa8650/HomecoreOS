@@ -601,4 +601,52 @@ describe("buildWireDiagram — custom boards", () => {
     expect(signal.kind).toBe("Configured (Logical)");
     expect(result.board?.isCustom).toBe(true);
   });
+
+  it("wires UART resources.pins and explicit custom I2C SCL cleanly", () => {
+    const board = xiaoC3();
+    const uartDiag = buildWireDiagram(
+      params({
+        board,
+        entity: {
+          kind: "sensor",
+          id: "sen-ld",
+          name: "Presence Radar",
+          boardInstanceId: "ctrl-1",
+          gpioPin: null,
+          sensorType: "presence_ld2410",
+          resources: {
+            driverId: "ld2410",
+            pins: { uart_tx: 4, uart_rx: 5 },
+          },
+        },
+      })
+    );
+    expect(uartDiag.state).toBe("ready");
+    expect(uartDiag.connections.find((c) => c.terminalId === "tx")?.pin).toBe(4);
+    expect(uartDiag.connections.find((c) => c.terminalId === "rx")?.pin).toBe(5);
+
+    const i2cDiag = buildWireDiagram(
+      params({
+        board,
+        entity: {
+          kind: "sensor",
+          id: "sen-sht",
+          name: "Custom I2C SHT31",
+          boardInstanceId: "ctrl-1",
+          gpioPin: 4,
+          sensorType: "temperature_sht3x",
+          i2cAddress: "0x44",
+          resources: {
+            driverId: "sht3x",
+            pins: { i2c_sda: 4, i2c_scl: 5 },
+            i2cAddress: "0x44",
+          },
+        },
+      })
+    );
+    expect(i2cDiag.state).toBe("ready");
+    expect(i2cDiag.connections.find((c) => c.terminalId === "sda")?.pin).toBe(4);
+    expect(i2cDiag.connections.find((c) => c.terminalId === "scl")?.pin).toBe(5);
+    expect(i2cDiag.warnings.join(" ")).not.toMatch(/assumed default/i);
+  });
 });

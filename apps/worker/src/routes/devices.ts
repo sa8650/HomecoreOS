@@ -4,7 +4,10 @@ import {
   SENSOR_DRIVER_REGISTRY,
   SENSOR_MEASUREMENT_REGISTRY,
   getSensorDriverById,
+  getSensorMeasurementByType,
   SUPPORTED_DEVICE_TYPES,
+  type BoardProfileSpec,
+  type PinOperationRequirement,
   type SensorResourcesConfig,
   SUPPORTED_SENSOR_TYPES,
   getSensorDriverForMeasurement,
@@ -130,12 +133,71 @@ const sensorUpdateSchema = z.object({
 });
 
 function defaultUnitForSensorType(st: string, fallback = "unit"): string {
-  if (st.startsWith("temperature_")) return "°C";
-  if (st.startsWith("humidity_")) return "%";
-  if (st === "pressure_bme280") return "hPa";
-  if (st === "light_bh1750") return "lx";
-  if (st === "analog_voltage") return "V";
-  return fallback;
+  return getSensorMeasurementByType(st)?.defaultUnit ?? fallback;
+}
+
+function pinRequirementForRole(role: string, sensorType: string): PinOperationRequirement {
+  switch (role) {
+    case "i2c_sda":
+    case "i2c_scl":
+      return "i2c";
+    case "adc":
+      return "adc";
+    case "uart_tx":
+    case "spi_mosi":
+    case "spi_sclk":
+    case "spi_cs":
+    case "gpio_out":
+      return "digital_out";
+    case "uart_rx":
+    case "spi_miso":
+    case "gpio_in":
+      return "digital_in";
+    default:
+      return isSupportedSensorType(sensorType)
+        ? requiredPinCapabilityForSensor(sensorType)
+        : "digital_in";
+  }
+}
+
+function checkSensorPinsSelectionPolicy(params: {
+  board: BoardProfileSpec;
+  sensorType: string;
+  gpioPin: number | null | undefined;
+  resources?: SensorResourcesConfig | null;
+  unchangedPins?: Set<number>;
+}): string | null {
+  const resPins = params.resources?.pins;
+  const entries = resPins
+    ? Object.entries(resPins).filter(
+        (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isInteger(entry[1])
+      )
+    : [];
+  if (entries.length > 0) {
+    for (const [role, pin] of entries) {
+      const err = checkPinSelectionPolicy({
+        board: params.board,
+        pin,
+        requirement: pinRequirementForRole(role, params.sensorType),
+        usedPins: [],
+        unchanged: params.unchangedPins?.has(pin) ?? false,
+      });
+      if (err) return err;
+    }
+    return null;
+  }
+  if (params.gpioPin !== null && params.gpioPin !== undefined) {
+    return checkPinSelectionPolicy({
+      board: params.board,
+      pin: params.gpioPin,
+      requirement: isSupportedSensorType(params.sensorType)
+        ? requiredPinCapabilityForSensor(params.sensorType)
+        : "digital_in",
+      usedPins: [],
+      unchanged: params.unchangedPins?.has(params.gpioPin) ?? false,
+    });
+  }
+  return null;
 }
 
 function serializeSensorRow<T extends Record<string, unknown>>(row: T): T & {
@@ -1250,6 +1312,17 @@ export function createDeviceRoutes() {
           400
         );
       }
+      if (validation.board) {
+        const policyError = checkSensorPinsSelectionPolicy({
+          board: validation.board,
+          sensorType: driver.measurements[0],
+          gpioPin,
+          resources: (input.resources as SensorResourcesConfig | null | undefined) ?? null,
+        });
+        if (policyError) {
+          return c.json({ error: policyError, warnings: validation.result.warnings }, 400);
+        }
+      }
 
       const { data, error } = await db
         .from("physical_sensor_instances")
@@ -1513,21 +1586,15 @@ export function createDeviceRoutes() {
       }
 
       const warnings = [...validation.result.warnings];
-      if (
-        parsed.data.gpioPin !== null &&
-        parsed.data.gpioPin !== undefined &&
-        validation.board &&
-        !parsed.data.resources
-      ) {
-        const requirement = requiredPinCapabilityForSensor(parsed.data.sensorType);
-        // Pin selection policy enforces strapping/USB/off-header guards.
+      if (validation.board) {
+        // Pin selection policy enforces strapping/USB/off-header guards across primary gpioPin and resources.pins.
         // Shared I2C/same-driver pin sharing is already validated above, so pass empty usedPins here
         // to avoid falsely blocking valid shared I2C / DHT22 sibling pins.
-        const policyError = checkPinSelectionPolicy({
+        const policyError = checkSensorPinsSelectionPolicy({
           board: validation.board,
-          pin: parsed.data.gpioPin,
-          requirement,
-          usedPins: [],
+          sensorType: parsed.data.sensorType,
+          gpioPin: parsed.data.gpioPin,
+          resources: parsed.data.resources as SensorResourcesConfig | null | undefined,
         });
         if (policyError) {
           return c.json({ error: policyError, warnings }, 400);
@@ -1633,7 +1700,7 @@ export function createDeviceRoutes() {
       const sensorId = c.req.param("id");
       const { data: existingData } = await db
         .from("sensors")
-        .select("id,home_id,room_id,board_instance_id,name,sensor_type,gpio_pin,unit,last_raw_payload")
+        .select("id,home_id,room_id,board_instance_id,name,sensor_type,gpio_pin,unit,last_raw_payload,physical_sensor_id")
         .eq("id", sensorId)
         .eq("account_id", auth.accountId)
         .is("deleted_at", null)
@@ -1650,6 +1717,7 @@ export function createDeviceRoutes() {
         gpio_pin: number | null;
         unit: string;
         last_raw_payload: Record<string, unknown> | null;
+        physical_sensor_id: string | null;
       };
 
       const targetControllerId = parsed.data.boardInstanceId ?? existing.board_instance_id;
@@ -1663,6 +1731,15 @@ export function createDeviceRoutes() {
         typeof existing.last_raw_payload?.i2c_address === "string"
           ? normalizeI2cAddress(existing.last_raw_payload.i2c_address) ??
             existing.last_raw_payload.i2c_address
+          : null;
+      const existingModel =
+        typeof existing.last_raw_payload?.model === "string"
+          ? existing.last_raw_payload.model
+          : null;
+      const existingResources =
+        existing.last_raw_payload?.resources &&
+        typeof existing.last_raw_payload.resources === "object"
+          ? (existing.last_raw_payload.resources as SensorResourcesConfig)
           : null;
       const targetDriverIsI2c =
         getSensorDriverForMeasurement(targetSensorType)?.interface === "i2c";
@@ -1682,6 +1759,7 @@ export function createDeviceRoutes() {
         targetPin !== existing.gpio_pin ||
         parsed.data.resources !== undefined ||
         parsed.data.driverId !== undefined ||
+        (parsed.data.model !== undefined && (parsed.data.model ?? null) !== existingModel) ||
         (parsed.data.i2cAddress !== undefined && targetI2cAddr !== existingI2cAddr);
 
       const needsControllerLookup =
@@ -1753,15 +1831,23 @@ export function createDeviceRoutes() {
         warnings = [...validation.result.warnings];
         validatedDriverId = validation.result.driver?.id ?? null;
 
-        if (targetPin !== null && targetPin !== undefined && validation.board && !parsed.data.resources) {
-          const requirement = requiredPinCapabilityForSensor(targetSensorType);
-          const policyError = checkPinSelectionPolicy({
+        if (validation.board) {
+          const unchangedPins = new Set<number>();
+          if (ctrlRow.id === existing.board_instance_id) {
+            if (typeof existing.gpio_pin === "number") unchangedPins.add(existing.gpio_pin);
+            for (const p of Object.values(existingResources?.pins ?? {})) {
+              if (typeof p === "number" && Number.isInteger(p)) unchangedPins.add(p);
+            }
+          }
+          const policyError = checkSensorPinsSelectionPolicy({
             board: validation.board,
-            pin: targetPin,
-            requirement,
-            usedPins: [],
-            unchanged:
-              targetPin === existing.gpio_pin && ctrlRow.id === existing.board_instance_id,
+            sensorType: targetSensorType,
+            gpioPin: targetPin,
+            resources:
+              parsed.data.resources !== undefined
+                ? ((parsed.data.resources as SensorResourcesConfig | null | undefined) ?? null)
+                : existingResources,
+            unchangedPins,
           });
           if (policyError) {
             return c.json({ error: policyError, warnings }, 400);
@@ -1780,6 +1866,9 @@ export function createDeviceRoutes() {
 
       if (
         parsed.data.i2cAddress !== undefined ||
+        parsed.data.model !== undefined ||
+        parsed.data.resources !== undefined ||
+        parsed.data.driverId !== undefined ||
         validatedDriverId ||
         (!targetDriverIsI2c && existingI2cAddr !== null)
       ) {
@@ -1847,7 +1936,9 @@ export function createDeviceRoutes() {
         parsed.data.gpioPin !== undefined ||
         parsed.data.i2cAddress !== undefined ||
         parsed.data.resources !== undefined ||
-        parsed.data.model !== undefined;
+        parsed.data.driverId !== undefined ||
+        parsed.data.model !== undefined ||
+        parsed.data.physicalSensorId !== undefined;
 
       const deps = c.get("deps") ?? {};
       await Promise.all([

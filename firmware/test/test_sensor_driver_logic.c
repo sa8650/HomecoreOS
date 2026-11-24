@@ -230,34 +230,69 @@ static void test_shared_protocol_decoders(void) {
     sht[1] ^= 0x01U;
     assert(!hc_sht3x_decode(sht, &t, &h));
 
-    /* AHT20: calibrated + ready status, 50 %RH and 25 C. */
-    uint8_t aht[6] = { 0x88, 0x80, 0x00, 0x06, 0x00, 0x00 };
+    /* AHT20: ready (bit7=0) + calibrated (bit3=1), 50 %RH and 25 C. */
+    uint8_t aht[6] = { 0x08, 0x80, 0x00, 0x06, 0x00, 0x00 };
     assert(hc_aht20_decode(aht, &t, &h));
     assert(approx(h, 50.0, 0.5));
     assert(approx(t, 25.0, 0.5));
+    /* Reject busy (0x88) and uncalibrated (0x00). */
+    assert(!hc_aht20_decode((const uint8_t[]){ 0x88, 0x80, 0x00, 0x06, 0x00, 0x00 }, &t, &h));
+    assert(!hc_aht20_decode((const uint8_t[]){ 0x00, 0x80, 0x00, 0x06, 0x00, 0x00 }, &t, &h));
 
-    uint8_t tmp[2] = { 0x14, 0x00 }; /* 20 * 0.0078125 = 0.15625 C */
+    /* TMP117 big-endian: 25.0 C = 3200 (0x0C80), 0.15625 C = 20 (0x0014), -10.0 C = 0xFB00. */
+    uint8_t tmp[2] = { 0x00, 0x14 };
     assert(hc_tmp117_decode(tmp, &t) && approx(t, 0.156, 0.01));
-    assert(!hc_tmp117_decode((const uint8_t[]){ 0x00, 0xFF }, &t));
+    assert(hc_tmp117_decode((const uint8_t[]){ 0x0C, 0x80 }, &t) && approx(t, 25.0, 0.01));
+    assert(hc_tmp117_decode((const uint8_t[]){ 0xFB, 0x00 }, &t) && approx(t, -10.0, 0.01));
+    assert(!hc_tmp117_decode((const uint8_t[]){ 0x80, 0x00 }, &t));
 
-    uint8_t veml[2] = { 0x01, 0x00 }; /* 256 * 0.0024 = 0.614 lx */
-    assert(hc_veml7700_decode_lux(veml, &lux) && approx(lux, 0.61, 0.01));
+    /* VEML7700 little-endian: {0x00, 0x01} = 256 counts * 0.2304 = 58.98 lx. */
+    uint8_t veml[2] = { 0x00, 0x01 };
+    assert(hc_veml7700_decode_lux(veml, &lux) && approx(lux, 58.98, 0.01));
 
-    /* INA219 12 V bus = 0x0BB8 raw (12 / 0.004 = 3000, shifted << 3). */
-    uint8_t ina[2] = { 0xC0, 0x5D };
+    /* SGP30: bytes 0..1 = eCO2 (450 = 0x01C2), bytes 3..4 = TVOC (120 = 0x0078). */
+    uint8_t sgp[6] = { 0x01, 0xC2, 0, 0x00, 0x78, 0 };
+    sgp[2] = hc_sht3x_crc8(sgp, 2);
+    sgp[5] = hc_sht3x_crc8(sgp + 3, 2);
+    double tvoc = 0.0, eco2 = 0.0;
+    assert(hc_sgp30_decode(sgp, &tvoc, &eco2));
+    assert(approx(eco2, 450.0, 0.01) && approx(tvoc, 120.0, 0.01));
+    sgp[2] ^= 0xFFU;
+    assert(!hc_sgp30_decode(sgp, &tvoc, &eco2));
+
+    /* INA219/INA226 big-endian: 0x5DC0 (24000) -> 12.0V (INA219 >>3 * 4mV) / 30.0V (INA226 * 1.25mV). */
+    uint8_t ina[2] = { 0x5D, 0xC0 };
     assert(hc_ina_decode(ina, false, 0, 0.1, &v) && approx(v, 12.0, 0.01));
     assert(hc_ina_decode(ina, true, 0, 0.1, &v) && approx(v, 30.0, 0.01));
-    /* INA226 0.5 A through 0.1 ohm -> shunt voltage 50 mV -> 20000 raw. */
-    uint8_t shunt[2] = { 0x20, 0x4E };
+    /* INA226 0.5 A through 0.1 ohm -> shunt 50 mV -> 20000 = 0x4E20 big-endian. */
+    uint8_t shunt[2] = { 0x4E, 0x20 };
     assert(hc_ina_decode(shunt, true, 1, 0.1, &v) && approx(v, 0.5, 0.01));
+    /* INA226 6.0 W power (Cal=0x0200, 2.5 mW/LSB) -> 2400 = 0x0960 big-endian. */
+    assert(hc_ina_decode((const uint8_t[]){ 0x09, 0x60 }, true, 2, 0.1, &v) && approx(v, 6.0, 0.01));
+    /* INA219 6.0 W power (Cal=0x1000, 2.0 mW/LSB) -> 3000 = 0x0BB8 big-endian. */
+    assert(hc_ina_decode((const uint8_t[]){ 0x0B, 0xB8 }, false, 2, 0.1, &v) && approx(v, 6.0, 0.01));
 
-    /* LD2410 engineering frame: target state 2 (moving), distance 180 cm. */
+    /* Hi-Link LD2410 normal reporting frame (F4 F3 F2 F1 ... F8 F7 F6 F5):
+       state=0x03 (moving+stationary), detection distance=180 cm (0x00B4 LE). */
     uint8_t ld[] = {
-        0xAA, 0x55, 0x0F, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
-        0x00, 0x00, 0x00, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0xAA
+        0xF4, 0xF3, 0xF2, 0xF1, 0x0D, 0x00,
+        0x02, 0xAA, 0x03,
+        0xB4, 0x00, 0x46,
+        0xC8, 0x00, 0x32,
+        0xB4, 0x00,
+        0x55, 0x00,
+        0xF8, 0xF7, 0xF6, 0xF5
     };
     assert(hc_ld2410_parse_frame(ld, sizeof(ld), &v, &pct, &t));
     assert(approx(v, 1.0, 0.01) && approx(pct, 1.0, 0.01) && approx(t, 180.0, 0.01));
+    /* Stationary-only target (state=0x02): presence=1, motion=0 */
+    ld[8] = 0x02;
+    assert(hc_ld2410_parse_frame(ld, sizeof(ld), &v, &pct, &t));
+    assert(approx(v, 1.0, 0.01) && approx(pct, 0.0, 0.01));
+    /* No target (state=0x00): presence=0, motion=0 */
+    ld[8] = 0x00;
+    assert(hc_ld2410_parse_frame(ld, sizeof(ld), &v, &pct, &t));
+    assert(approx(v, 0.0, 0.01) && approx(pct, 0.0, 0.01));
 
     assert(hc_adc_percent(1650, 3300, &pct) && approx(pct, 50.0, 0.01));
     assert(!hc_adc_percent(-1, 3300, &pct));
