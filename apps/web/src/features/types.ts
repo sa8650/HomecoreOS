@@ -218,6 +218,10 @@ export interface SensorItem {
   sensor_type: string;
   gpio_pin: number | null;
   i2c_address?: string | null;
+  driver_id?: string | null;
+  model?: string | null;
+  resources?: import("@homecoreos/shared").SensorResourcesConfig | null;
+  physical_sensor_id?: string | null;
   unit: string;
   last_value: number | null;
   last_raw_payload: Record<string, unknown> | null;

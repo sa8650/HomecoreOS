@@ -1113,6 +1113,40 @@
       "rowCount": 0,
       "dataHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
+    "physical_sensor_instances": {
+      "columns": [
+        "id uuid NOT NULL DEFAULT gen_random_uuid()",
+        "account_id uuid NOT NULL",
+        "board_instance_id uuid NOT NULL",
+        "driver_id text NOT NULL",
+        "model text",
+        "bus_id text",
+        "i2c_address text",
+        "resource_config jsonb NOT NULL DEFAULT '{}'::jsonb",
+        "source_gpio_pin integer",
+        "source_i2c_address text",
+        "created_at timestamp with time zone NOT NULL DEFAULT now()",
+        "updated_at timestamp with time zone NOT NULL DEFAULT now()",
+        "deleted_at timestamp with time zone"
+      ],
+      "constraints": [
+        "physical_sensor_instances_account_id_not_null n NOT NULL account_id",
+        "physical_sensor_instances_board_instance_id_not_null n NOT NULL board_instance_id",
+        "physical_sensor_instances_created_at_not_null n NOT NULL created_at",
+        "physical_sensor_instances_driver_id_not_null n NOT NULL driver_id",
+        "physical_sensor_instances_id_not_null n NOT NULL id",
+        "physical_sensor_instances_pkey p PRIMARY KEY (id)",
+        "physical_sensor_instances_resource_config_not_null n NOT NULL resource_config",
+        "physical_sensor_instances_updated_at_not_null n NOT NULL updated_at"
+      ],
+      "indexes": [
+        "idx_physical_sensor_instances_controller CREATE INDEX idx_physical_sensor_instances_controller ON public.physical_sensor_instances USING btree (account_id, board_instance_id) WHERE (deleted_at IS NULL)",
+        "physical_sensor_instances_pkey CREATE UNIQUE INDEX physical_sensor_instances_pkey ON public.physical_sensor_instances USING btree (id)"
+      ],
+      "triggers": [],
+      "rowCount": 0,
+      "dataHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
     "planner_plans": {
       "columns": [
         "id uuid NOT NULL DEFAULT gen_random_uuid()",
@@ -1481,7 +1515,9 @@
         "updated_at timestamp with time zone NOT NULL DEFAULT now()",
         "deleted_at timestamp with time zone",
         "deleted_reason text",
-        "permanently_deleted_at timestamp with time zone"
+        "permanently_deleted_at timestamp with time zone",
+        "physical_sensor_id uuid",
+        "driver_config jsonb NOT NULL DEFAULT '{}'::jsonb"
       ],
       "constraints": [
         "sensors_account_id_fkey f FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE",
@@ -1489,12 +1525,14 @@
         "sensors_board_instance_id_fkey f FOREIGN KEY (board_instance_id) REFERENCES board_instances(id) ON DELETE CASCADE",
         "sensors_board_instance_id_not_null n NOT NULL board_instance_id",
         "sensors_created_at_not_null n NOT NULL created_at",
+        "sensors_driver_config_not_null n NOT NULL driver_config",
         "sensors_gpio_pin_check c CHECK (((gpio_pin >= 0) AND (gpio_pin <= 54)))",
         "sensors_home_id_fkey f FOREIGN KEY (home_id) REFERENCES homes(id) ON DELETE CASCADE",
         "sensors_home_id_not_null n NOT NULL home_id",
         "sensors_id_not_null n NOT NULL id",
         "sensors_is_online_not_null n NOT NULL is_online",
         "sensors_name_not_null n NOT NULL name",
+        "sensors_physical_sensor_id_fkey f FOREIGN KEY (physical_sensor_id) REFERENCES physical_sensor_instances(id) ON DELETE SET NULL",
         "sensors_pkey p PRIMARY KEY (id)",
         "sensors_room_id_fkey f FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL",
         "sensors_sensor_type_not_null n NOT NULL sensor_type",
@@ -1505,6 +1543,7 @@
         "idx_sensors_account_created CREATE INDEX idx_sensors_account_created ON public.sensors USING btree (account_id, created_at DESC) WHERE (deleted_at IS NULL)",
         "idx_sensors_controller CREATE INDEX idx_sensors_controller ON public.sensors USING btree (board_instance_id) WHERE (deleted_at IS NULL)",
         "idx_sensors_controller_pin CREATE INDEX idx_sensors_controller_pin ON public.sensors USING btree (board_instance_id, gpio_pin) WHERE ((deleted_at IS NULL) AND (gpio_pin IS NOT NULL))",
+        "idx_sensors_physical_sensor CREATE INDEX idx_sensors_physical_sensor ON public.sensors USING btree (physical_sensor_id) WHERE (deleted_at IS NULL)",
         "sensors_pkey CREATE UNIQUE INDEX sensors_pkey ON public.sensors USING btree (id)"
       ],
       "triggers": [

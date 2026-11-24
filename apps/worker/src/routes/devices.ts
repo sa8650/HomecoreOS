@@ -1,9 +1,11 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { z } from "zod";
 import {
   SENSOR_DRIVER_REGISTRY,
   SENSOR_MEASUREMENT_REGISTRY,
+  getSensorDriverById,
   SUPPORTED_DEVICE_TYPES,
+  type SensorResourcesConfig,
   SUPPORTED_SENSOR_TYPES,
   getSensorDriverForMeasurement,
   isDeviceStateActive,
@@ -29,6 +31,15 @@ import { makeRealtimeEvent, publishRealtimeEvents } from "../lib/realtime";
 import { validateControllerSensorMutation } from "../lib/sensor-compatibility";
 import { requireStaffRole, requireUserSession } from "../middleware/auth";
 import type { AppEnv } from "../types/context";
+
+const sensorResourcesSchema = z.object({
+  driverId: z.string().trim().max(64).optional(),
+  model: z.string().trim().max(64).optional(),
+  busId: z.string().trim().max(64).nullable().optional(),
+  pins: z.record(z.number().int().min(0).max(54).nullable()).optional(),
+  i2cAddress: z.string().trim().max(16).nullable().optional(),
+  inverted: z.boolean().optional(),
+});
 
 const deviceSchema = z.object({
   boardInstanceId: z.string().uuid(),
@@ -82,6 +93,11 @@ const sensorSchema = z.object({
   i2cAddress: z.string().trim().max(16).optional().nullable(),
   unit: z.string().trim().min(1).max(24).default("unit"),
   config: z.record(z.unknown()).default({}),
+  resources: sensorResourcesSchema.optional().nullable(),
+  driverId: z.string().trim().max(64).optional().nullable(),
+  model: z.string().trim().max(64).optional().nullable(),
+  physicalSensorId: z.string().uuid().optional().nullable(),
+  measurementIds: z.array(z.string().trim().max(64)).max(32).optional(),
 });
 
 const deviceUpdateSchema = z.object({
@@ -107,6 +123,10 @@ const sensorUpdateSchema = z.object({
   sensorType: z.string().trim().min(1).max(64).optional(),
   gpioPin: z.number().int().min(0).max(54).nullable().optional(),
   i2cAddress: z.string().trim().max(16).nullable().optional(),
+  resources: sensorResourcesSchema.optional().nullable(),
+  driverId: z.string().trim().max(64).optional().nullable(),
+  model: z.string().trim().max(64).optional().nullable(),
+  physicalSensorId: z.string().uuid().optional().nullable(),
 });
 
 function defaultUnitForSensorType(st: string, fallback = "unit"): string {
@@ -121,6 +141,9 @@ function defaultUnitForSensorType(st: string, fallback = "unit"): string {
 function serializeSensorRow<T extends Record<string, unknown>>(row: T): T & {
   i2c_address: string | null;
   driver_id: string | null;
+  model: string | null;
+  resources: SensorResourcesConfig | null;
+  physical_sensor_id: string | null;
 } {
   const raw = (row.last_raw_payload ?? null) as Record<string, unknown> | null;
   const i2cAddress =
@@ -137,6 +160,12 @@ function serializeSensorRow<T extends Record<string, unknown>>(row: T): T & {
     ...row,
     i2c_address: i2cAddress,
     driver_id: driverId,
+    model: typeof raw?.model === "string" ? raw.model : null,
+    resources: raw?.resources && typeof raw.resources === "object"
+      ? (raw.resources as SensorResourcesConfig)
+      : null,
+    physical_sensor_id:
+      typeof row.physical_sensor_id === "string" ? row.physical_sensor_id : null,
   };
 }
 
@@ -1113,6 +1142,220 @@ export function createDeviceRoutes() {
   );
 
   // ---------------- SENSORS ----------------
+  /**
+   * Physical sensor modules — one hardware binding shared by multiple
+   * measurement entities. All mutations are account-scoped and validated
+   * against the board/firmware manifest before anything is stored.
+   */
+  const physicalInstanceSchema = z.object({
+    boardInstanceId: z.string().uuid(),
+    name: z.string().trim().min(1).max(120),
+    driverId: z.string().trim().min(1).max(64),
+    model: z.string().trim().max(64).nullable().optional(),
+    resources: sensorResourcesSchema.optional().nullable(),
+    i2cAddress: z.string().trim().max(16).nullable().optional(),
+  });
+
+  async function loadPhysicalController(
+    c: Context<AppEnv>,
+    boardInstanceId: string
+  ) {
+    const auth = c.get("userAuth")!;
+    const db = c.get("db");
+    const { data: ctrl } = await db
+      .from("board_instances")
+      .select("id,home_id,board_profile_id,custom_board_profile_id,firmware_version,installed_firmware_release_id")
+      .eq("id", boardInstanceId)
+      .eq("account_id", auth.accountId)
+      .is("deleted_at", null)
+      .maybeSingle();
+    return { auth, db, ctrl: ctrl as Parameters<typeof validateControllerSensorMutation>[1]["controller"] | null };
+  }
+
+  app.get("/sensors/physical-instances", async (c) => {
+    const auth = c.get("userAuth")!;
+    const db = c.get("db");
+    const boardInstanceId = c.req.query("boardInstanceId");
+    let query = db
+      .from("physical_sensor_instances")
+      .select("*")
+      .eq("account_id", auth.accountId)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false });
+    if (boardInstanceId) query = query.eq("board_instance_id", boardInstanceId);
+    const { data, error } = await query;
+    if (error) return c.json({ error: error.message }, 400);
+    const ids = (data ?? []).map((row: { id: string }) => row.id);
+    const { data: linked } = ids.length
+      ? await db
+          .from("sensors")
+          .select("id,name,sensor_type,gpio_pin,physical_sensor_id")
+          .eq("account_id", auth.accountId)
+          .is("deleted_at", null)
+          .in("physical_sensor_id", ids)
+      : { data: [] as Array<Record<string, unknown>> };
+    const byInstance: Record<string, Array<Record<string, unknown>>> = {};
+    for (const row of (linked ?? []) as Array<Record<string, unknown>>) {
+      const physicalId = row.physical_sensor_id as string | null;
+      if (!physicalId) continue;
+      (byInstance[physicalId] ??= []).push({
+        id: row.id as string,
+        name: row.name as string,
+        sensorType: row.sensor_type as string,
+        gpioPin: row.gpio_pin as number | null,
+      });
+    }
+    return c.json({
+      physicalSensorInstances: (data ?? []).map((row: Record<string, unknown>) => ({
+        ...row,
+        measurementEntities: byInstance[row.id as string] ?? [],
+      })),
+    });
+  });
+
+  app.post(
+    "/sensors/physical-instances",
+    requireStaffRole("owner", "administrator"),
+    async (c) => {
+      const body = await c.req.json().catch(() => null);
+      const parsed = physicalInstanceSchema.safeParse(body);
+      if (!parsed.success) return c.json({ error: "Invalid physical sensor payload." }, 400);
+      const input = parsed.data;
+      const driver = getSensorDriverById(input.driverId);
+      if (!driver || driver.hardwareVerificationStatus === "planned" || !driver.measurements.length) {
+        return c.json({ error: `Driver "${input.driverId}" is not firmware-supported.` }, 400);
+      }
+      const { auth, db, ctrl } = await loadPhysicalController(c, input.boardInstanceId);
+      if (!ctrl) return c.json({ error: "Controller not found." }, 404);
+
+      const pins = input.resources?.pins ?? {};
+      const gpioPin = Object.values(pins).find((v): v is number => typeof v === "number") ?? null;
+      const validation = await validateControllerSensorMutation(db, {
+        accountId: auth.accountId,
+        controller: ctrl,
+        sensorType: driver.measurements[0],
+        gpioPin,
+        i2cAddress: input.i2cAddress ?? null,
+        resources: input.resources ?? null,
+        driverId: driver.id,
+        model: input.model ?? null,
+      });
+      if (!validation.result.valid) {
+        return c.json(
+          {
+            error: validation.result.errors.join(" ") || "Hardware configuration is incompatible.",
+            code: validation.result.code,
+            warnings: validation.result.warnings,
+          },
+          400
+        );
+      }
+
+      const { data, error } = await db
+        .from("physical_sensor_instances")
+        .insert({
+          account_id: auth.accountId,
+          board_instance_id: ctrl.id,
+          driver_id: driver.id,
+          model: input.model ?? null,
+          bus_id: input.resources?.busId ?? null,
+          i2c_address: validation.result.driver?.interface === "i2c"
+            ? (input.i2cAddress ?? null)
+            : null,
+          resource_config: input.resources ?? {},
+          source_gpio_pin: gpioPin,
+          source_i2c_address: input.i2cAddress ?? null,
+        })
+        .select("*")
+        .single();
+      if (error) return c.json({ error: error.message }, 400);
+      await recordActivity(db, {
+        accountId: auth.accountId,
+        actorUserId: auth.userId,
+        boardInstanceId: ctrl.id,
+        category: "sensor",
+        action: "physical_sensor.created",
+        summary: `Added physical ${driver.displayName} module "${input.name}"`,
+      });
+      return c.json({ physicalSensorInstance: data }, 201);
+    }
+  );
+
+  app.patch(
+    "/sensors/physical-instances/:id",
+    requireStaffRole("owner", "administrator"),
+    async (c) => {
+      const id = c.req.param("id");
+      const body = await c.req.json().catch(() => null);
+      const parsed = z.object({
+        name: z.string().trim().min(1).max(120).optional(),
+        model: z.string().trim().max(64).nullable().optional(),
+        resources: sensorResourcesSchema.optional().nullable(),
+        i2cAddress: z.string().trim().max(16).nullable().optional(),
+      }).safeParse(body);
+      if (!parsed.success) return c.json({ error: "Invalid physical sensor payload." }, 400);
+      const auth = c.get("userAuth")!;
+      const db = c.get("db");
+      const { data: current, error: fetchError } = await db
+        .from("physical_sensor_instances")
+        .select("*")
+        .eq("id", id)
+        .eq("account_id", auth.accountId)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (fetchError) return c.json({ error: fetchError.message }, 400);
+      if (!current) return c.json({ error: "Physical sensor not found." }, 404);
+      const input = parsed.data;
+      const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (input.name) {
+        // Name is informational; the canonical label stays in driver_config.
+        updates.resource_config = { ...(current.resource_config ?? {}), name: input.name };
+      }
+      if (input.model !== undefined) updates.model = input.model;
+      if (input.resources !== undefined) updates.resource_config = input.resources ?? {};
+      if (input.i2cAddress !== undefined) updates.i2c_address = input.i2cAddress;
+      const { data, error } = await db
+        .from("physical_sensor_instances")
+        .update(updates)
+        .eq("id", id)
+        .eq("account_id", auth.accountId)
+        .is("deleted_at", null)
+        .select("*")
+        .single();
+      if (error) return c.json({ error: error.message }, 400);
+      return c.json({ physicalSensorInstance: data });
+    }
+  );
+
+  app.delete(
+    "/sensors/physical-instances/:id",
+    requireStaffRole("owner", "administrator"),
+    async (c) => {
+      const auth = c.get("userAuth")!;
+      const db = c.get("db");
+      const id = c.req.param("id");
+      const { count } = await db
+        .from("sensors")
+        .select("id", { count: "exact", head: true })
+        .eq("account_id", auth.accountId)
+        .eq("physical_sensor_id", id)
+        .is("deleted_at", null);
+      if ((count ?? 0) > 0) {
+        return c.json(
+          { error: "Detach or delete all measurement entities before removing this physical module." },
+          400
+        );
+      }
+      const { error } = await db
+        .from("physical_sensor_instances")
+        .update({ deleted_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("account_id", auth.accountId);
+      if (error) return c.json({ error: error.message }, 400);
+      return c.json({ ok: true });
+    }
+  );
+
   app.get("/sensors", async (c) => {
     const auth = c.get("userAuth")!;
     const db = c.get("db");
@@ -1251,6 +1494,9 @@ export function createDeviceRoutes() {
         sensorType: parsed.data.sensorType,
         gpioPin: parsed.data.gpioPin ?? null,
         i2cAddress: parsed.data.i2cAddress ?? null,
+        resources: parsed.data.resources as SensorResourcesConfig | null | undefined,
+        driverId: parsed.data.driverId ?? null,
+        model: parsed.data.model ?? null,
       });
 
       if (!validation.result.valid) {
@@ -1270,7 +1516,8 @@ export function createDeviceRoutes() {
       if (
         parsed.data.gpioPin !== null &&
         parsed.data.gpioPin !== undefined &&
-        validation.board
+        validation.board &&
+        !parsed.data.resources
       ) {
         const requirement = requiredPinCapabilityForSensor(parsed.data.sensorType);
         // Pin selection policy enforces strapping/USB/off-header guards.
@@ -1306,9 +1553,15 @@ export function createDeviceRoutes() {
           unit: defaultUnit,
           last_raw_payload: {
             ...(parsed.data.config ?? {}),
-            ...(validation.result.driver ? { driver_id: validation.result.driver.id } : {}),
+            ...(validation.result.driver ? { driver_id: parsed.data.driverId ?? validation.result.driver.id } : {}),
             ...(normalizedI2c ? { i2c_address: normalizedI2c } : {}),
+            ...(parsed.data.model ? { model: parsed.data.model } : {}),
+            ...(parsed.data.resources ? { resources: parsed.data.resources } : {}),
+            ...(parsed.data.measurementIds ? { measurement_ids: parsed.data.measurementIds } : {}),
           },
+          ...(parsed.data.physicalSensorId
+            ? { physical_sensor_id: parsed.data.physicalSensorId }
+            : {}),
           is_online: true,
         })
         .select("*")
@@ -1427,6 +1680,8 @@ export function createDeviceRoutes() {
         targetControllerId !== existing.board_instance_id ||
         targetSensorType !== existing.sensor_type ||
         targetPin !== existing.gpio_pin ||
+        parsed.data.resources !== undefined ||
+        parsed.data.driverId !== undefined ||
         (parsed.data.i2cAddress !== undefined && targetI2cAddr !== existingI2cAddr);
 
       const needsControllerLookup =
@@ -1477,6 +1732,9 @@ export function createDeviceRoutes() {
           gpioPin: targetPin,
           i2cAddress: targetI2cAddr,
           editingSensorId: existing.id,
+          resources: parsed.data.resources as SensorResourcesConfig | null | undefined,
+          driverId: parsed.data.driverId ?? null,
+          model: parsed.data.model ?? null,
         });
 
         if (!validation.result.valid) {
@@ -1495,7 +1753,7 @@ export function createDeviceRoutes() {
         warnings = [...validation.result.warnings];
         validatedDriverId = validation.result.driver?.id ?? null;
 
-        if (targetPin !== null && targetPin !== undefined && validation.board) {
+        if (targetPin !== null && targetPin !== undefined && validation.board && !parsed.data.resources) {
           const requirement = requiredPinCapabilityForSensor(targetSensorType);
           const policyError = checkPinSelectionPolicy({
             board: validation.board,
@@ -1527,7 +1785,15 @@ export function createDeviceRoutes() {
       ) {
         const nextPayload = { ...(existing.last_raw_payload ?? {}) };
         if (validatedDriverId) {
-          nextPayload.driver_id = validatedDriverId;
+          nextPayload.driver_id = parsed.data.driverId ?? validatedDriverId;
+        }
+        if (parsed.data.model !== undefined) {
+          if (parsed.data.model) nextPayload.model = parsed.data.model;
+          else delete nextPayload.model;
+        }
+        if (parsed.data.resources !== undefined) {
+          if (parsed.data.resources) nextPayload.resources = parsed.data.resources;
+          else delete nextPayload.resources;
         }
         if (!targetDriverIsI2c) {
           delete nextPayload.i2c_address;
@@ -1540,6 +1806,9 @@ export function createDeviceRoutes() {
           }
         }
         updates.last_raw_payload = nextPayload;
+      }
+      if (parsed.data.physicalSensorId !== undefined) {
+        updates.physical_sensor_id = parsed.data.physicalSensorId;
       }
 
       if (parsed.data.roomId !== undefined) {
@@ -1576,7 +1845,9 @@ export function createDeviceRoutes() {
         parsed.data.boardInstanceId !== undefined ||
         parsed.data.sensorType !== undefined ||
         parsed.data.gpioPin !== undefined ||
-        parsed.data.i2cAddress !== undefined;
+        parsed.data.i2cAddress !== undefined ||
+        parsed.data.resources !== undefined ||
+        parsed.data.model !== undefined;
 
       const deps = c.get("deps") ?? {};
       await Promise.all([

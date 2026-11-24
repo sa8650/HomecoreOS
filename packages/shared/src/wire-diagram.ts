@@ -42,6 +42,7 @@ import {
   getSensorMeasurementByType,
   normalizeI2cAddress,
   type SensorDriverDefinition,
+  type SensorResourcesConfig,
 } from "./sensor-drivers";
 import {
   requiredPinCapabilityForDevice,
@@ -83,6 +84,10 @@ export interface WireDiagramEntityInput {
   i2cAddress?: string | null;
   /** Sensor only: stored driver id, shown when present (never required). */
   driverId?: string | null;
+  /** Sensor only: hardware model selected from the driver registry. */
+  model?: string | null;
+  /** Sensor only: driver-aware multi-pin/bus configuration. */
+  resources?: SensorResourcesConfig | null;
   isOnline?: boolean | null;
 }
 
@@ -185,6 +190,10 @@ export interface WireDiagramBoardFacts {
 
 export interface WireDiagramSensorDriverFacts {
   driverId: string;
+  model: string | null;
+  category: string | null;
+  protocolFamily: string | null;
+  resourceRoles: string[];
   driverDisplayName: string;
   driverVersion: string | null;
   interfaceLabel: string;
@@ -662,14 +671,44 @@ interface SensorInterfaceSpec {
 
 function sensorInterfaceSpec(
   driver: SensorDriverDefinition,
-  measurementShort: string | null
+  measurementShort: string | null,
+  model: string | null = null
 ): SensorInterfaceSpec {
   const base = {
     typeLabel: measurementShort ?? driver.displayName,
   };
+  const augment = (spec: SensorInterfaceSpec): SensorInterfaceSpec => {
+    const extraTerminals: Array<Omit<WireDiagramTerminal, "drawn">> = [];
+    if (driver.id === "ina219" || driver.id === "ina226") {
+      extraTerminals.push(
+        { id: "vin_plus", label: "VIN+", role: "load", function: "Measured bus positive terminal — never connect above the module's rated voltage." },
+        { id: "vin_minus", label: "VIN−", role: "load", function: "Measured bus negative terminal, in series with the load path." }
+      );
+    }
+    if (driver.id === "ld2410") {
+      extraTerminals.push(
+        { id: "uart_note", label: "TX/RX crossed", role: "signal", function: "Module TX goes to controller RX and module RX to controller TX." }
+      );
+    }
+    if (driver.id === "ds18b20") {
+      extraTerminals.push(
+        { id: "pullup", label: "4.7 kΩ", role: "signal", function: "Required pull-up resistor from DQ to VCC for reliable 1-Wire communication." }
+      );
+    }
+    if (driver.id === "aht20" || driver.id === "sht3x" || driver.id === "bme280") {
+      extraTerminals.push(
+        { id: "addr", label: "ADDR", role: "signal", function: `I2C address strap — configured address ${driver.busConfig.defaultAddresses?.join(" / ") ?? "not documented"}.` }
+      );
+    }
+    return {
+      ...spec,
+      typeLabel: model ? `${model} · ${spec.typeLabel}` : spec.typeLabel,
+      terminals: [...spec.terminals, ...extraTerminals.map((t) => ({ ...t, drawn: false }))],
+    };
+  };
   switch (driver.interface) {
     case "i2c":
-      return {
+      return augment({
         ...base,
         signal: "I2C",
         interfaceLabel: driver.interfaceLabel,
@@ -699,9 +738,9 @@ function sensorInterfaceSpec(
             function: "Signal ground — shared reference with the controller.",
           },
         ],
-      };
+      });
     case "onewire":
-      return {
+      return augment({
         ...base,
         signal: "1-Wire data",
         interfaceLabel: driver.interfaceLabel,
@@ -725,9 +764,9 @@ function sensorInterfaceSpec(
             function: "Signal ground — shared reference with the controller.",
           },
         ],
-      };
+      });
     case "adc":
-      return {
+      return augment({
         ...base,
         signal: "ADC input",
         interfaceLabel: driver.interfaceLabel,
@@ -745,9 +784,9 @@ function sensorInterfaceSpec(
             function: "Signal ground — shared reference with the controller.",
           },
         ],
-      };
+      });
     case "gpio_single_wire":
-      return {
+      return augment({
         ...base,
         signal: "Single-wire data",
         interfaceLabel: driver.interfaceLabel,
@@ -771,7 +810,33 @@ function sensorInterfaceSpec(
             function: "Signal ground — shared reference with the controller.",
           },
         ],
-      };
+      });
+    case "uart":
+      return augment({
+        ...base,
+        signal: "UART",
+        interfaceLabel: driver.interfaceLabel,
+        terminals: [
+          { id: "tx", label: "TX", role: "signal", function: "Module transmit data — connect to the controller's RX pin (crossed)." },
+          { id: "rx", label: "RX", role: "signal", function: "Module receive data — connect to the controller's TX pin (crossed)." },
+          { id: "vcc", label: "VCC", role: "power", function: "Module supply — connect to a rail matching your module's datasheet." },
+          { id: "gnd", label: "GND", role: "ground", function: "Signal ground — shared reference with the controller." },
+        ],
+      });
+    case "spi":
+      return augment({
+        ...base,
+        signal: "SPI",
+        interfaceLabel: driver.interfaceLabel,
+        terminals: [
+          { id: "sclk", label: "SCLK", role: "signal", function: "SPI clock line." },
+          { id: "mosi", label: "MOSI", role: "signal", function: "Controller-out/module-in data line." },
+          { id: "miso", label: "MISO", role: "signal", function: "Module-out/controller-in data line." },
+          { id: "cs", label: "CS", role: "signal", function: "Chip select — one dedicated pin per peripheral." },
+          { id: "vcc", label: "VCC", role: "power", function: "Module supply — connect to a rail matching your module's datasheet." },
+          { id: "gnd", label: "GND", role: "ground", function: "Signal ground — shared reference with the controller." },
+        ],
+      });
     case "gpio_digital_in":
       if (driver.busConfig.requiresPullUp && driver.id === "reed") {
         return {
@@ -794,7 +859,7 @@ function sensorInterfaceSpec(
           ],
         };
       }
-      return {
+      return augment({
         ...base,
         signal: "Digital input",
         interfaceLabel: driver.interfaceLabel,
@@ -818,7 +883,7 @@ function sensorInterfaceSpec(
             function: "Signal ground — shared reference with the controller.",
           },
         ],
-      };
+      });
   }
 }
 
@@ -1045,12 +1110,33 @@ export function buildWireDiagram(params: WireDiagramParams): WireDiagramResult {
     }
   }
 
-  const signalPin: number | null =
+  // Driver-aware resource binding: when the sensor stores an explicit
+  // configuration, both I2C bus pins (or every UART/SPI role) come from it.
+  const resourcePins = entity.resources?.pins ?? {};
+  if (entity.kind === "sensor" && isI2cSensor) {
+    const configuredSda = resourcePins.i2c_sda;
+    const configuredScl = resourcePins.i2c_scl;
+    if (typeof configuredSda === "number" && Number.isInteger(configuredSda)) i2cSdaPin = configuredSda;
+    if (typeof configuredScl === "number" && Number.isInteger(configuredScl)) {
+      i2cSclPin = configuredScl;
+      i2cFromDefaultBus = false;
+    }
+  }
+
+  let signalPin: number | null =
     entity.kind === "sensor" && isI2cSensor
       ? i2cSdaPin
       : isWholePin(assignedPin)
         ? assignedPin
         : null;
+
+  if (entity.kind === "sensor" && !isI2cSensor && sensorDriver) {
+    const primaryRole = sensorDriver.resources?.roles[0];
+    const configured = primaryRole ? resourcePins[primaryRole] : undefined;
+    if (typeof configured === "number" && Number.isInteger(configured)) {
+      signalPin = configured;
+    }
+  }
 
   if (entity.kind !== "sensor" || !isI2cSensor) {
     if (!isWholePin(assignedPin)) {
@@ -1229,7 +1315,7 @@ export function buildWireDiagram(params: WireDiagramParams): WireDiagramResult {
   } else {
     const driver = sensorDriver!;
     const measurement = sensorMeasurement;
-    const spec = sensorInterfaceSpec(driver, measurement?.displayName ?? null);
+    const spec = sensorInterfaceSpec(driver, measurement?.displayName ?? null, entity.model ?? null);
     classTypeLabel = spec.typeLabel;
     classInterfaceLabel = spec.interfaceLabel;
     classSignal = spec.signal;
@@ -1263,6 +1349,10 @@ export function buildWireDiagram(params: WireDiagramParams): WireDiagramResult {
     }
     sensorDriverFacts = {
       driverId: driver.id,
+      model: entity.model ?? null,
+      category: driver.category ?? null,
+      protocolFamily: driver.protocolFamily ?? null,
+      resourceRoles: [...(driver.resources?.roles ?? [])],
       driverDisplayName: driver.displayName,
       driverVersion: driver.driverVersion ?? null,
       interfaceLabel: driver.interfaceLabel,
@@ -1482,6 +1572,43 @@ export function buildWireDiagram(params: WireDiagramParams): WireDiagramResult {
       bus,
       featureLabel
     );
+  }
+
+  // Multi-pin drivers: draw each remaining configured signal role (UART RX,
+  // SPI chip select, ...) instead of silently omitting required connections.
+  if (entity.kind === "sensor" && sensorDriver && sensorDriver.resources) {
+    const roleLabels: Record<string, string> = {
+      uart_tx: "UART TX", uart_rx: "UART RX",
+      spi_sclk: "SPI SCLK", spi_mosi: "SPI MOSI", spi_miso: "SPI MISO", spi_cs: "SPI CS",
+      gpio_in: "GPIO input", gpio_out: "GPIO output", gpio_bidirectional: "GPIO data",
+      onewire: "1-Wire data", adc: "Analog input",
+      i2c_sda: "I2C SDA", i2c_scl: "I2C SCL",
+    };
+    for (const role of sensorDriver.resources.roles) {
+      const pin = resourcePins[role];
+      if (typeof pin !== "number" || pin === signalPin || (usesI2c && (role === "i2c_sda" || role === "i2c_scl"))) continue;
+      const terminal: WireDiagramTerminal = {
+        id: `role-${role}`,
+        label: roleLabels[role] ?? role,
+        role: "signal",
+        function: `Required ${roleLabels[role] ?? role} connection of ${sensorDriver.displayName}.`,
+        drawn: true,
+      };
+      const req = sensorDriver.resources.requiredCapabilities[role] ?? "digital_in";
+      const check = applyValidation(pin, req);
+      const shared = shareableNames(pin, siblingIndex, sensorType);
+      pushSignalLike(
+        terminal,
+        pin,
+        roleLabels[role] ?? role,
+        req === "adc" ? "0–3.3V" : gpioLogicVoltage,
+        shared,
+        [...check.errors],
+        [...check.warnings],
+        `Configured ${roleLabels[role] ?? role}: GPIO${pin} → module ${terminal.label}.${sensorDriver.resources.sharing === "exclusive" ? " This role cannot be shared." : ""}`,
+        sensorDriver.resources.sharing !== "exclusive"
+      );
+    }
   }
 
   // When the configured pin is hardwired to an on-board output stage (relay /

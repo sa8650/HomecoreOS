@@ -46,8 +46,20 @@ function getBoardInput(slug: string) {
 
 describe("Sensor Driver Registry & Multi-Board Hardware Compatibility", () => {
   it("maps every SUPPORTED_SENSOR_TYPE cleanly to a registered physical sensor driver", () => {
-    expect(SENSOR_DRIVER_IDS).toHaveLength(7);
-    expect(Object.keys(SENSOR_DRIVER_REGISTRY)).toHaveLength(7);
+    expect(SENSOR_DRIVER_IDS.length).toBeGreaterThanOrEqual(25);
+    expect(Object.keys(SENSOR_DRIVER_REGISTRY)).toHaveLength(SENSOR_DRIVER_IDS.length);
+    /* Every registry driver must declare complete resource requirements. */
+    for (const id of SENSOR_DRIVER_IDS) {
+      const driver = getSensorDriverById(id)!;
+      expect(driver.resources.roles.length, `Missing pin roles for ${id}`).toBeGreaterThan(0);
+      expect(driver.measurements.length, `Missing measurements for ${id}`).toBeGreaterThan(0);
+      expect(driver.category).toBeTruthy();
+      expect(driver.hardwareModel || driver.modelProfiles?.length || driver.supportedModels.length).toBeTruthy();
+    }
+    /* Planned drivers are catalog-only and never advertised as compiled. */
+    for (const id of ["ld2450", "pzem004t", "sct013"]) {
+      expect(getSensorDriverById(id)!.hardwareVerificationStatus).toBe("planned");
+    }
 
     for (const sensorType of SUPPORTED_SENSOR_TYPES) {
       const driver = getSensorDriverForMeasurement(sensorType);

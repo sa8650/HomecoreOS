@@ -3,11 +3,16 @@ import {
   SENSOR_MEASUREMENT_REGISTRY,
   SUPPORTED_DEVICE_TYPES,
   SUPPORTED_SENSOR_TYPES,
+  getSensorCategory,
+  getSensorDriverById,
   getSensorDriverForMeasurement,
+  getMeasurementOptionsForDriver,
   getSensorMeasurementByType,
   isDeviceStateActive,
   type ControllerSensorCompatibilityReport,
   type ControllerSensorOptionReport,
+  type SensorDriverDefinition,
+  type SensorResourcesConfig,
 } from "@homecoreos/shared";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
@@ -503,6 +508,10 @@ export function SensorEditorModal({
   const [boardInstanceId, setControllerId] = useState("");
   const [roomId, setRoomId] = useState(ROOM_NONE);
   const [i2cAddress, setI2cAddress] = useState("");
+  const [driverId, setDriverId] = useState<string>("");
+  const [model, setModel] = useState<string>("");
+  const [auxPinText, setAuxPinText] = useState("");
+  const [shareModuleId, setShareModuleId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveCompatByCtrl, setLiveCompatByCtrl] = useState<
@@ -521,11 +530,20 @@ export function SensorEditorModal({
       initializedOpenRef.current = true;
       setError(null);
       if (sensorItem) {
+        const savedDriver =
+          sensorItem.driver_id ?? getSensorDriverForMeasurement(sensorItem.sensor_type)?.id ?? "";
+        const savedResources = sensorItem.resources ??
+          (sensorItem.last_raw_payload?.resources as SensorResourcesConfig | undefined);
         setName(sensorItem.name);
         setSensorType(sensorItem.sensor_type);
         setControllerId(sensorItem.board_instance_id);
         setRoomId(sensorItem.room_id ?? ROOM_NONE);
         setI2cAddress(readSensorI2cAddress(sensorItem) ?? "");
+        setDriverId(savedDriver);
+        setModel(sensorItem.model ?? savedResources?.model ?? getSensorDriverById(savedDriver)?.supportedModels[0] ?? "");
+        setAuxPinText(
+          String(savedResources?.pins?.i2c_scl ?? savedResources?.pins?.uart_rx ?? savedResources?.pins?.spi_cs ?? "")
+        );
       } else {
         setName("");
         const initialCtrlId = ctx.controllers[0]?.id ?? "";
@@ -541,6 +559,10 @@ export function SensorEditorModal({
         setControllerId(initialCtrlId);
         setRoomId(ROOM_NONE);
         setI2cAddress("");
+        setDriverId("");
+        setModel("");
+        setAuxPinText("");
+        setShareModuleId("");
       }
     } else if (!sensorItem && !boardInstanceId && ctx.controllers[0]?.id) {
       setControllerId(ctx.controllers[0].id);
@@ -628,7 +650,62 @@ export function SensorEditorModal({
     null;
 
   const selectedMeasurement = sensorType ? getSensorMeasurementByType(sensorType) : undefined;
-  const selectedDriver = sensorType ? getSensorDriverForMeasurement(sensorType) : undefined;
+  const measuredDriver = sensorType ? getSensorDriverForMeasurement(sensorType) : undefined;
+  const selectedDriver = getSensorDriverById(driverId) ?? measuredDriver;
+  const driversById = new Map<string, SensorDriverDefinition | undefined>();
+  for (const option of selectableOptions) {
+    driversById.set(option.driverId, getSensorDriverById(option.driverId));
+  }
+  const hardwareOptions = Array.from(driversById.values()).filter(
+    (drv): drv is SensorDriverDefinition => Boolean(drv)
+  );
+  const driverMeasurements = selectedDriver
+    ? getMeasurementOptionsForDriver(selectedDriver.id)
+    : [];
+  const compatibleDriver = selectedDriver
+    ? selectableOptions.some((option) => option.driverId === selectedDriver.id)
+    : false;
+  const primaryRole = selectedDriver?.resources?.roles[0] ?? null;
+  const secondaryRole = selectedDriver?.resources?.roles.find(
+    (r) => r === "i2c_scl" || r === "uart_rx" || r === "spi_cs"
+  ) ?? null;
+  const auxPin = auxPinText.trim() === "" ? null : Number(auxPinText);
+  const siblingModules = (
+    ctx.usedPinsByController?.get(boardInstanceId) ?? []
+  ).filter(
+    (usage) =>
+      usage.entityKind === "sensor" &&
+      usage.id !== sensorItem?.id &&
+      getSensorDriverForMeasurement(usage.sensorType ?? "")?.id === selectedDriver?.id
+  );
+
+  function handleDriverChange(nextDriverId: string) {
+    const drv = getSensorDriverById(nextDriverId);
+    setDriverId(nextDriverId);
+    setModel(drv?.supportedModels[0] ?? "");
+    setAuxPinText("");
+    const nextMeasurement = drv?.measurements.find((m) => m === sensorType) ?? drv?.measurements[0];
+    if (nextMeasurement) setSensorType(nextMeasurement);
+    if (drv && !drv.busConfig.defaultAddresses?.length) setI2cAddress("");
+  }
+
+  function handleMeasurementChange(nextType: string) {
+    setSensorType(nextType);
+    const owner = getSensorDriverForMeasurement(nextType);
+    if (owner && owner.id !== driverId) {
+      setDriverId(owner.id);
+      setModel(owner.supportedModels[0] ?? "");
+    }
+  }
+
+  function applySharedModule(moduleId: string) {
+    setShareModuleId(moduleId);
+    if (!moduleId) return;
+    const sibling = siblingModules.find((usage) => usage.id === moduleId);
+    if (!sibling) return;
+    if (primaryRole && primaryRole !== "i2c_sda") setPinText(String(sibling.pin));
+    if (sibling.i2cAddress) setI2cAddress(sibling.i2cAddress);
+  }
 
   const requirement = getRequirementForSensorType(
     sensorType || SUPPORTED_SENSOR_TYPES[0]
@@ -646,6 +723,7 @@ export function SensorEditorModal({
     fallbackPin: isI2c ? "" : "5",
     sensorType: sensorType || undefined,
   });
+  const setPinText = pinField.setPin;
   const parsedPin = pinField.pinNum;
   const pinBlocked = pinField.selection.blocked || (!isI2c && parsedPin === null);
 
@@ -698,10 +776,29 @@ export function SensorEditorModal({
       setError("Enter a valid GPIO pin for this sensor driver.");
       return;
     }
+    if (auxPinText.trim() && (!Number.isInteger(auxPin) || (auxPin ?? -1) < 0)) {
+      setError("Enter a valid whole-number GPIO pin for the secondary signal.");
+      return;
+    }
     savingRef.current = true;
     setSaving(true);
     setError(null);
     try {
+      const bindingPins: Record<string, number> = {};
+      if (primaryRole && parsedPin !== null) bindingPins[primaryRole] = parsedPin;
+      if (secondaryRole && auxPin !== null && Number.isInteger(auxPin)) {
+        bindingPins[secondaryRole] = auxPin;
+      }
+      const resources: SensorResourcesConfig | undefined = selectedDriver
+        ? {
+            driverId: selectedDriver.id,
+            model: model || selectedDriver.supportedModels[0] || undefined,
+            busId: null,
+            pins: bindingPins,
+            i2cAddress: isI2c ? (i2cAddress.trim() || null) : null,
+          }
+        : undefined;
+
       const payload = {
         name: name.trim(),
         sensorType,
@@ -709,6 +806,12 @@ export function SensorEditorModal({
         roomId: roomId === ROOM_NONE ? null : roomId,
         gpioPin: parsedPin,
         i2cAddress: isI2c ? (i2cAddress.trim() || null) : null,
+        driverId: selectedDriver?.id ?? null,
+        model: model || null,
+        resources,
+        physicalSensorId: shareModuleId
+          ? siblingModules.find((s) => s.id === shareModuleId)?.physicalSensorId ?? undefined
+          : undefined,
       };
       if (isEditing && sensorItem) {
         await apiFetch(`/api/sensors/${sensorItem.id}`, {
@@ -808,33 +911,114 @@ export function SensorEditorModal({
                 placeholder="Ambient Temperature"
               />
             </FormField>
-            <FormField id="sen-type" label="Firmware Driver">
+            <FormField id="sen-hardware" label="Hardware Model (Physical Driver)">
               <Select
-                value={sensorType}
-                onValueChange={setSensorType}
-                disabled={loadingCompat || selectableOptions.length === 0}
+                value={selectedDriver?.id ?? ""}
+                onValueChange={handleDriverChange}
+                disabled={loadingCompat || hardwareOptions.length === 0}
               >
-                <SelectTrigger id="sen-type" className="w-full">
+                <SelectTrigger id="sen-hardware" className="w-full">
                   <SelectValue
                     placeholder={
-                      loadingCompat
-                        ? "Checking controller compatibility..."
-                        : selectableOptions.length === 0
-                          ? "No compatible sensors on installed firmware"
-                          : "Select compatible sensor..."
+                      hardwareOptions.length === 0
+                        ? "No hardware supported by this firmware"
+                        : "Select hardware model..."
                     }
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  {selectableOptions.map((opt) => (
-                    <SelectItem key={opt.sensorType} value={opt.sensorType}>
-                      {opt.displayName} · {opt.interfaceLabel}
+                  {hardwareOptions.map((drv) => (
+                    <SelectItem key={drv.id} value={drv.id}>
+                      {getSensorCategory(drv.category ?? "")?.displayName ?? "Sensor"} · {drv.displayName}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </FormField>
           </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FormField id="sen-model" label="Model / Variant">
+              <Select value={model} onValueChange={setModel} disabled={!selectedDriver}>
+                <SelectTrigger id="sen-model" className="w-full">
+                  <SelectValue placeholder="Select model..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {(selectedDriver?.supportedModels ?? []).map((item) => (
+                    <SelectItem key={item} value={item}>{item}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+            <FormField id="sen-type" label="Measurement Entity">
+              <Select
+                value={sensorType}
+                onValueChange={handleMeasurementChange}
+                disabled={loadingCompat || driverMeasurements.length === 0}
+              >
+                <SelectTrigger id="sen-type" className="w-full">
+                  <SelectValue placeholder="Select measurement..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {driverMeasurements.map((m) => (
+                    <SelectItem key={m.sensorType} value={m.sensorType}>
+                      {m.displayName} · {m.defaultUnit}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+          </div>
+
+          {selectedDriver && (
+            <div className="rounded-lg border bg-muted/25 px-3 py-2 text-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant="outline" radius="full">
+                  {getSensorCategory(selectedDriver.category ?? "")?.displayName ?? "Sensor"}
+                </Badge>
+                <Badge variant="outline" radius="full">
+                  {selectedDriver.interfaceLabel}
+                </Badge>
+                {!compatibleDriver && (
+                  <Badge variant="warning" radius="full">Requires firmware update</Badge>
+                )}
+                <Badge variant="outline" radius="full">
+                  {selectedDriver.hardwareVerificationStatus.replace(/_/g, " ")}
+                </Badge>
+              </div>
+              <p className="mt-1.5 text-[11px] text-muted-foreground">
+                Driver <strong>{selectedDriver.id}</strong> v{selectedDriver.driverVersion} · protocol{" "}
+                {selectedDriver.protocolFamily ?? selectedDriver.id} · shares one physical module across{" "}
+                {driverMeasurements.length} measurement(s).
+              </p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Available measurements: {driverMeasurements.map((m) => m.displayName).join(", ")}
+              </p>
+              {selectedDriver.limitations && (
+                <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                  {selectedDriver.limitations}
+                </p>
+              )}
+              {siblingModules.length > 0 && (
+                <div className="mt-2">
+                  <label className="text-[11px] font-medium" htmlFor="sen-share-module">
+                    Attach this measurement to an existing physical module
+                  </label>
+                  <Select value={shareModuleId} onValueChange={applySharedModule}>
+                    <SelectTrigger id="sen-share-module" className="mt-1 w-full">
+                      <SelectValue placeholder="Separate physical module" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">Separate physical module</SelectItem>
+                      {siblingModules.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>{s.name} (GPIO {s.pin})</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+          )}
 
           {selectedOption && (
             <div className="rounded-lg border bg-muted/35 px-3 py-2 text-xs">
@@ -896,6 +1080,31 @@ export function SensorEditorModal({
                 value={i2cAddress}
                 onChange={(e) => setI2cAddress(e.target.value)}
                 placeholder={defaultI2cAddrs}
+              />
+            </FormField>
+          )}
+
+          {secondaryRole && (
+            <FormField
+              id="sen-aux-pin"
+              label={
+                secondaryRole === "i2c_scl"
+                  ? "I2C SCL GPIO (Optional)"
+                  : secondaryRole === "uart_rx"
+                    ? "UART RX GPIO"
+                    : "SPI Chip Select (CS) GPIO"
+              }
+              hint={
+                secondaryRole === "i2c_scl" && defaultI2cBus?.sclPin !== null && defaultI2cBus?.sclPin !== undefined
+                  ? `Leave empty to use the documented board bus (SCL GPIO${defaultI2cBus.sclPin}).`
+                  : "Required second signal for this physical driver."
+              }
+            >
+              <Input
+                id="sen-aux-pin"
+                value={auxPinText}
+                onChange={(e) => setAuxPinText(e.target.value)}
+                placeholder={secondaryRole === "i2c_scl" ? String(defaultI2cBus?.sclPin ?? "") : "GPIO"}
               />
             </FormField>
           )}

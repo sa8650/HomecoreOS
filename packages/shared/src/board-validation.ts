@@ -1,3 +1,4 @@
+import { getSensorDriverForMeasurement } from "./sensor-drivers";
 import {
   SUPPORTED_DEVICE_TYPES,
   SUPPORTED_SENSOR_TYPES,
@@ -36,6 +37,14 @@ export function requiredPinCapabilityForDevice(
 export function requiredPinCapabilityForSensor(
   sensorType: SupportedSensorType
 ): PinOperationRequirement {
+  // Driver-aware lookup for the expanded catalog. Legacy measurement types keep
+  // their historical switch mapping below.
+  const measurementDriver = getSensorDriverForMeasurement(sensorType);
+  if (measurementDriver?.resources) {
+    const role = measurementDriver.resources.roles[0];
+    const requirement = measurementDriver.resources.requiredCapabilities[role];
+    if (requirement) return requirement;
+  }
   switch (sensorType) {
     case "analog_voltage":
       return "adc";

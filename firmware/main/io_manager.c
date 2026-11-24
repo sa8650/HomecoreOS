@@ -95,8 +95,12 @@ static hc_sensor_binding_t make_sensor_binding(const hc_io_entry_t *entry) {
         .sensor_type = entry->driver_type,
         .explicit_driver_id = entry->driver_id[0] != '\0' ? entry->driver_id : NULL,
         .gpio_pin = entry->gpio_pin,
+        .aux_pin_a = entry->aux_pin_a,
+        .aux_pin_b = -1,
         .i2c_addr = entry->i2c_addr,
         .inverted = entry->inverted,
+        .model = entry->model[0] != '\0' ? entry->model : NULL,
+        .physical_id = entry->physical_id[0] != '\0' ? entry->physical_id : NULL,
     };
     return b;
 }
@@ -346,6 +350,52 @@ esp_err_t hc_io_apply_config_json(const char *json, bool *out_changed) {
                 e->i2c_addr = cJSON_IsString(i2c_j)
                     ? hc_sensor_parse_i2c_addr(i2c_j->valuestring, def_addr, &valid_addr)
                     : def_addr;
+
+                /* Driver-aware resource binding. Every physical role is read
+                 * from the authoritative `resources` object; the legacy
+                 * gpio_pin / i2c_address fields remain a compatible fallback. */
+                cJSON *res_j = cJSON_GetObjectItem(item, "resources");
+                cJSON *pins_j = cJSON_IsObject(res_j) ? cJSON_GetObjectItem(res_j, "pins") : NULL;
+                if (cJSON_IsObject(pins_j)) {
+                    const char *primary_names[] = {
+                        "i2c_sda", "uart_tx", "spi_cs", "onewire", "adc",
+                        "gpio_in", "gpio_out", "gpio_bidirectional", NULL
+                    };
+                    for (int n = 0; primary_names[n] != NULL; n++) {
+                        cJSON *pj = cJSON_GetObjectItem(pins_j, primary_names[n]);
+                        if (cJSON_IsNumber(pj)) {
+                            parsed_pin = (int16_t)pj->valueint;
+                            e->gpio_pin = parsed_pin;
+                            break;
+                        }
+                    }
+                    const char *aux_names[] = { "i2c_scl", "uart_rx", "spi_sclk", NULL };
+                    e->aux_pin_a = -1;
+                    for (int n = 0; aux_names[n] != NULL; n++) {
+                        cJSON *pj = cJSON_GetObjectItem(pins_j, aux_names[n]);
+                        if (cJSON_IsNumber(pj)) {
+                            e->aux_pin_a = (int16_t)pj->valueint;
+                            break;
+                        }
+                    }
+                    cJSON *addr_j = cJSON_GetObjectItem(res_j, "i2c_address");
+                    if (cJSON_IsString(addr_j) && addr_j->valuestring[0] != '\0') {
+                        e->i2c_addr = hc_sensor_parse_i2c_addr(addr_j->valuestring, def_addr, &valid_addr);
+                    }
+                }
+                cJSON *model_j = cJSON_GetObjectItem(item, "model");
+                if (cJSON_IsString(model_j)) {
+                    hc_copy_str(e->model, sizeof(e->model), model_j->valuestring);
+                }
+                cJSON *phys_j = cJSON_GetObjectItem(item, "physical_sensor_id");
+                if (cJSON_IsString(phys_j)) {
+                    hc_copy_str(e->physical_id, sizeof(e->physical_id), phys_j->valuestring);
+                }
+                if (e->gpio_pin < 0 && !hc_sensor_driver_is_i2c(drv)) {
+                    ESP_LOGW(TAG, "Sensor %s has no usable primary pin; skipping", e->id);
+                    s_entry_count--;
+                    continue;
+                }
             }
 
             configure_entry_gpio(e);

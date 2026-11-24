@@ -1093,20 +1093,19 @@ describe("GPIO pin selector", () => {
     expect(save).toBeEnabled();
     await user.click(save);
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
-    expect(calls).toEqual([
-      {
-        url: "/api/sensors/sen-1",
-        method: "PATCH",
-        body: {
-          name: "Desk Climate",
-          sensorType: "temperature_bme280",
-          boardInstanceId: "c2",
-          roomId: null,
-          gpioPin: null,
-          i2cAddress: "0x76",
-        },
-      },
-    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("/api/sensors/sen-1");
+    expect(calls[0].method).toBe("PATCH");
+    expect(calls[0].body).toMatchObject({
+      name: "Desk Climate",
+      sensorType: "temperature_bme280",
+      boardInstanceId: "c2",
+      roomId: null,
+      gpioPin: null,
+      i2cAddress: "0x76",
+      driverId: "bme280",
+      model: "BME280",
+    });
   });
 });
 

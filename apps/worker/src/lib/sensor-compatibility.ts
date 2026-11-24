@@ -13,6 +13,7 @@ import {
   type FirmwareDriverManifest,
   type ResolvedFirmwareDriverManifest,
   type SensorAssignmentValidationResult,
+  type SensorResourcesConfig,
   type SupportedSensorType,
 } from "@homecoreos/shared";
 import { resolveControllerBoardSpec } from "./board-helpers";
@@ -458,6 +459,14 @@ export async function getControllerSensorOccupancy(
       typeof s.last_raw_payload?.i2c_address === "string"
         ? s.last_raw_payload.i2c_address
         : null,
+    driver_id:
+      typeof s.last_raw_payload?.driver_id === "string"
+        ? s.last_raw_payload.driver_id
+        : null,
+    resources:
+      s.last_raw_payload?.resources && typeof s.last_raw_payload.resources === "object"
+        ? (s.last_raw_payload.resources as SensorResourcesConfig)
+        : null,
   }));
 
   return {
@@ -475,6 +484,9 @@ export async function validateControllerSensorMutation(
     gpioPin: number | null | undefined;
     i2cAddress?: string | null;
     editingSensorId?: string | null;
+    resources?: SensorResourcesConfig | null;
+    driverId?: string | null;
+    model?: string | null;
   }
 ): Promise<{
   result: SensorAssignmentValidationResult;
@@ -496,6 +508,9 @@ export async function validateControllerSensorMutation(
     usedPinsByNonSensors: occupancy.nonSensorUsedPins,
     existingSensorsOnController: occupancy.existingSensors,
     editingSensorId: params.editingSensorId,
+    resources: params.resources ?? null,
+    driverId: params.driverId ?? null,
+    model: params.model ?? null,
   });
 
   return { result, board, installedFirmware };

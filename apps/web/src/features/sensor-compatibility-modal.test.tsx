@@ -148,20 +148,20 @@ describe("SensorEditorModal — Board + Installed Firmware Compatibility", () =>
     await user.click(screen.getByRole("button", { name: "Add Sensor" }));
 
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
-    expect(requests).toEqual([
-      {
-        url: "/api/sensors",
-        method: "POST",
-        body: {
-          name: "Panel Climate",
-          sensorType: "temperature_bme280",
-          boardInstanceId: "ctrl-relay",
-          roomId: null,
-          gpioPin: null,
-          i2cAddress: "0x76",
-        },
-      },
-    ]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe("/api/sensors");
+    expect(requests[0].method).toBe("POST");
+    expect(requests[0].body).toMatchObject({
+      name: "Panel Climate",
+      sensorType: "temperature_bme280",
+      boardInstanceId: "ctrl-relay",
+      roomId: null,
+      gpioPin: null,
+      i2cAddress: "0x76",
+      driverId: "bme280",
+      model: null,
+      resources: expect.objectContaining({ driverId: "bme280", i2cAddress: "0x76" }),
+    });
   });
 
   it("blocks submission cleanly when installed firmware lacks a verified driver manifest", () => {

@@ -190,12 +190,88 @@ static void test_bh1750_digital_and_adc(void) {
     assert(hc_adc_mv_to_volts(9000, 1.0, &volts) == false);
 }
 
+
+static void test_expanded_driver_resolution(void) {
+    assert(hc_sensor_resolve_driver("temperature_sht3x", NULL) == HC_DRV_SHT3X);
+    assert(hc_sensor_resolve_driver("humidity_sht3x", NULL) == HC_DRV_SHT3X);
+    assert(hc_sensor_resolve_driver("temperature_aht20", "sht3x") == HC_DRV_SHT3X);
+    assert(hc_sensor_resolve_driver("presence_ld2410", NULL) == HC_DRV_LD2410);
+    assert(hc_sensor_resolve_driver("voltage_ina219", NULL) == HC_DRV_INA219);
+    assert(hc_sensor_resolve_driver("energy_ina226", NULL) == HC_DRV_INA226);
+    assert(hc_sensor_resolve_driver("soil_moisture", NULL) == HC_DRV_SOIL_MOISTURE);
+    assert(hc_sensor_resolve_driver("gas_mq135", NULL) == HC_DRV_MQ135);
+    assert(strcmp(hc_sensor_driver_name(HC_DRV_SHT3X), "sht3x") == 0);
+    assert(strcmp(hc_sensor_default_unit(HC_MEAS_CURRENT_INA226), "A") == 0);
+    assert(strcmp(hc_sensor_default_unit(HC_MEAS_TVOC_SGP30), "ppb") == 0);
+    assert(strcmp(hc_sensor_default_unit(HC_MEAS_DISTANCE_LD2410), "cm") == 0);
+    assert(hc_sensor_driver_is_i2c(HC_DRV_INA219) == true);
+    assert(hc_sensor_driver_is_i2c(HC_DRV_LD2410) == false);
+    assert(hc_sensor_driver_default_i2c_addr(HC_DRV_AHT20) == 0x38);
+    assert(hc_sensor_is_driver_in_mask(HC_DRV_BIT_SHT3X | HC_DRV_BIT_INA226, HC_DRV_INA219) == false);
+}
+
+static void test_shared_protocol_decoders(void) {
+    double t = 0.0, h = 0.0, lux = 0.0, v = 0.0, pct = 0.0;
+
+    /* DHT11: 23 C / 45 %RH, checksum is the low byte of the sum. */
+    uint8_t dht11[5] = { 45, 0, 23, 0, 0 };
+    dht11[4] = (uint8_t)(dht11[0] + dht11[1] + dht11[2] + dht11[3]);
+    assert(hc_dht11_decode(dht11, &t, &h));
+    assert(approx(t, 23.0, 0.01) && approx(h, 45.0, 0.01));
+    dht11[4]++;
+    assert(!hc_dht11_decode(dht11, &t, &h));
+
+    /* SHT3x: 25 C (0x6266) / 50 %RH (0x8000), CRC-8 poly 0x31 init 0xFF. */
+    uint8_t sht[6] = { 0x66, 0x66, 0, 0x80, 0x00, 0 };
+    sht[2] = hc_sht3x_crc8(sht, 2);
+    sht[5] = hc_sht3x_crc8(sht + 3, 2);
+    assert(hc_sht3x_decode(sht, &t, &h));
+    assert(approx(t, 25.0, 0.1) && approx(h, 50.0, 0.1));
+    sht[1] ^= 0x01U;
+    assert(!hc_sht3x_decode(sht, &t, &h));
+
+    /* AHT20: calibrated + ready status, 50 %RH and 25 C. */
+    uint8_t aht[6] = { 0x88, 0x80, 0x00, 0x06, 0x00, 0x00 };
+    assert(hc_aht20_decode(aht, &t, &h));
+    assert(approx(h, 50.0, 0.5));
+    assert(approx(t, 25.0, 0.5));
+
+    uint8_t tmp[2] = { 0x14, 0x00 }; /* 20 * 0.0078125 = 0.15625 C */
+    assert(hc_tmp117_decode(tmp, &t) && approx(t, 0.156, 0.01));
+    assert(!hc_tmp117_decode((const uint8_t[]){ 0x00, 0xFF }, &t));
+
+    uint8_t veml[2] = { 0x01, 0x00 }; /* 256 * 0.0024 = 0.614 lx */
+    assert(hc_veml7700_decode_lux(veml, &lux) && approx(lux, 0.61, 0.01));
+
+    /* INA219 12 V bus = 0x0BB8 raw (12 / 0.004 = 3000, shifted << 3). */
+    uint8_t ina[2] = { 0xC0, 0x5D };
+    assert(hc_ina_decode(ina, false, 0, 0.1, &v) && approx(v, 12.0, 0.01));
+    assert(hc_ina_decode(ina, true, 0, 0.1, &v) && approx(v, 30.0, 0.01));
+    /* INA226 0.5 A through 0.1 ohm -> shunt voltage 50 mV -> 20000 raw. */
+    uint8_t shunt[2] = { 0x20, 0x4E };
+    assert(hc_ina_decode(shunt, true, 1, 0.1, &v) && approx(v, 0.5, 0.01));
+
+    /* LD2410 engineering frame: target state 2 (moving), distance 180 cm. */
+    uint8_t ld[] = {
+        0xAA, 0x55, 0x0F, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
+        0x00, 0x00, 0x00, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0xAA
+    };
+    assert(hc_ld2410_parse_frame(ld, sizeof(ld), &v, &pct, &t));
+    assert(approx(v, 1.0, 0.01) && approx(pct, 1.0, 0.01) && approx(t, 180.0, 0.01));
+
+    assert(hc_adc_percent(1650, 3300, &pct) && approx(pct, 50.0, 0.01));
+    assert(!hc_adc_percent(-1, 3300, &pct));
+    assert(approx(hc_mq_qualitative_pct(1650, 3300), 50.0, 0.01));
+}
+
 int main(void) {
     test_resolution_and_i2c_parsing();
     test_dht22_decoder();
     test_ds18b20_decoder();
     test_bme280_compensation();
     test_bh1750_digital_and_adc();
-    printf("test_sensor_driver_logic: all assertions passed.\n");
+    test_expanded_driver_resolution();
+    test_shared_protocol_decoders();
+    printf("All sensor driver logic tests passed.\n");
     return 0;
 }
