@@ -108,8 +108,9 @@ uint32_t hc_role_node_step(
         in->ms_since_controller <= HC_ROLE_LINK_TIMEOUT_MS;
 
     if (controller_fresh) {
-        const bool was_standalone = state->standalone ||
-            state->link == HC_NODE_STANDALONE;
+        const bool recovered = state->standalone ||
+            state->link == HC_NODE_STANDALONE ||
+            state->link == HC_NODE_CONTROLLER_LOST;
         enter_link(state, HC_NODE_LINKED);
         state->lost_ms = 0;
         state->standalone_ms = 0;
@@ -118,7 +119,7 @@ uint32_t hc_role_node_step(
         /* Normal operation: ESP-NOW only. The Wi-Fi link stays up because the
            radio is shared, but no independent MQTT session is maintained. */
         actions |= HC_ROLE_ACT_KEEP_WIFI | HC_ROLE_ACT_ESPNOW_SEEK | HC_ROLE_ACT_STOP_MQTT;
-        if (was_standalone) actions |= HC_ROLE_ACT_REPORT_STATE;
+        if (recovered) actions |= HC_ROLE_ACT_REPORT_STATE;
         if (in->ota_window) {
             /* OTA is authorised over EMQX, so the session is re-opened just for
                the download and closed again afterwards. */
@@ -185,6 +186,42 @@ uint32_t hc_role_controller_step(hc_role_state_t *state, const hc_role_input_t *
 bool hc_role_node_is_stale(uint32_t now_ms, uint32_t last_seen_ms) {
     if (now_ms < last_seen_ms) return false;
     return (now_ms - last_seen_ms) > HC_ROLE_NODE_STALE_MS;
+}
+
+bool hc_role_validate_keepalive_target(
+    const char *self_controller_id,
+    const char *node_id,
+    const char *target_controller_id
+) {
+    if (!node_id || node_id[0] == '\0') return false;
+    if (self_controller_id && self_controller_id[0] != '\0') {
+        if (strcmp(node_id, self_controller_id) == 0) return false;
+        if (target_controller_id && target_controller_id[0] != '\0' &&
+            strcmp(target_controller_id, self_controller_id) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool hc_role_validate_controller_ack(
+    uint16_t expected_epoch,
+    uint32_t last_tx_seq,
+    uint32_t last_ack_seq,
+    uint16_t rx_epoch,
+    uint32_t rx_seq,
+    const char *expected_controller_id,
+    const char *rx_controller_id
+) {
+    if (expected_epoch == 0 || last_tx_seq == 0) return false;
+    if (rx_epoch != expected_epoch) return false;
+    if (rx_seq == 0 || rx_seq > last_tx_seq || rx_seq < last_ack_seq) return false;
+    if (expected_controller_id && expected_controller_id[0] != '\0' &&
+        rx_controller_id && rx_controller_id[0] != '\0' &&
+        strcmp(expected_controller_id, rx_controller_id) != 0) {
+        return false;
+    }
+    return true;
 }
 
 bool hc_role_can_change(

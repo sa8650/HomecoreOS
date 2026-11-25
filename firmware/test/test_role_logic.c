@@ -286,6 +286,56 @@ static void test_epoch_bump_reopens_command_window(void) {
     hc_role_bump_epoch(NULL); /* safe */
 }
 
+static void test_controller_loss_recovery_reports_state(void) {
+    hc_role_state_t st;
+    hc_role_state_init(&st, HC_ROLE_NODE);
+    hc_role_input_t in = node_input();
+
+    /* Establish initial link, then lose Controller past the 10s timeout. */
+    hc_role_node_step(&st, &in, 500);
+    assert(st.link == HC_NODE_LINKED);
+
+    in.controller_online = false;
+    in.ms_since_controller = HC_ROLE_LINK_TIMEOUT_MS + 500u;
+    uint32_t act = hc_role_node_step(&st, &in, 500);
+    assert(st.link == HC_NODE_CONTROLLER_LOST);
+    assert((act & HC_ROLE_ACT_REPORT_STATE) != 0);
+
+    /* Controller answers inside the 45s reconnect window: report immediately. */
+    in.controller_online = true;
+    in.ms_since_controller = 0;
+    act = hc_role_node_step(&st, &in, 500);
+    assert(st.link == HC_NODE_LINKED);
+    assert((act & HC_ROLE_ACT_REPORT_STATE) != 0);
+    assert((act & HC_ROLE_ACT_STOP_MQTT) != 0);
+}
+
+static void test_espnow_handshake_validation(void) {
+    /* Keepalive target validation on the Controller. */
+    assert(hc_role_validate_keepalive_target("ctrl-1", "node-1", "ctrl-1"));
+    assert(hc_role_validate_keepalive_target("ctrl-1", "node-1", ""));
+    assert(hc_role_validate_keepalive_target("ctrl-1", "node-1", NULL));
+    /* Empty Node ID must never enter the roster (would fail heartbeat schema). */
+    assert(!hc_role_validate_keepalive_target("ctrl-1", "", "ctrl-1"));
+    assert(!hc_role_validate_keepalive_target("ctrl-1", NULL, "ctrl-1"));
+    /* Never roster self or hijack a Node aimed at another Controller. */
+    assert(!hc_role_validate_keepalive_target("ctrl-1", "ctrl-1", "ctrl-1"));
+    assert(!hc_role_validate_keepalive_target("ctrl-1", "node-1", "ctrl-2"));
+
+    /* Controller ACK validation on the Node. */
+    /* Reject if no keepalive has been transmitted yet in this session. */
+    assert(!hc_role_validate_controller_ack(2, 0, 0, 2, 1, "ctrl-1", "ctrl-1"));
+    /* Valid first ACK matching epoch, seq and Controller ID. */
+    assert(hc_role_validate_controller_ack(2, 1, 0, 2, 1, "ctrl-1", "ctrl-1"));
+    /* Valid subsequent ACK after link epoch bumped. */
+    assert(hc_role_validate_controller_ack(3, 4, 1, 3, 4, "ctrl-1", "ctrl-1"));
+    /* Reject wrong epoch, future seq, older-than-last-ack seq, or wrong Controller ID. */
+    assert(!hc_role_validate_controller_ack(3, 4, 2, 2, 4, "ctrl-1", "ctrl-1"));
+    assert(!hc_role_validate_controller_ack(3, 4, 2, 3, 5, "ctrl-1", "ctrl-1"));
+    assert(!hc_role_validate_controller_ack(3, 4, 3, 3, 2, "ctrl-1", "ctrl-1"));
+    assert(!hc_role_validate_controller_ack(3, 4, 2, 3, 4, "ctrl-1", "ctrl-other"));
+}
+
 int main(void) {
     test_role_names_and_parsing();
     test_node_linked_keeps_only_espnow();
@@ -301,6 +351,8 @@ int main(void) {
     test_role_change_guards();
     test_command_dedupe_across_transitions();
     test_epoch_bump_reopens_command_window();
+    test_controller_loss_recovery_reports_state();
+    test_espnow_handshake_validation();
     printf("test_role_logic: all assertions passed\n");
     return 0;
 }

@@ -135,10 +135,26 @@ const heartbeatSchema = z
     espnowSupported: z.boolean().optional(),
     es: z.boolean().optional(),
     espnowLinkState: z
-      .enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned", "down"])
+      .enum([
+        "hosting",
+        "linked",
+        "controller_lost",
+        "reconnecting",
+        "standalone",
+        "unassigned",
+        "down",
+      ])
       .optional(),
     els: z
-      .enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned", "down"])
+      .enum([
+        "hosting",
+        "linked",
+        "controller_lost",
+        "reconnecting",
+        "standalone",
+        "unassigned",
+        "down",
+      ])
       .optional(),
     configRevision: z.number().int().min(0).optional(),
     rev: z.number().int().min(0).optional(),
@@ -155,6 +171,11 @@ const heartbeatSchema = z
     ls: z
       .enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned"])
       .optional(),
+    ch: z.number().int().min(1).max(13).optional(),
+    kaTx: z.number().int().min(0).optional(),
+    ackRx: z.number().int().min(0).optional(),
+    peerRssi: z.number().int().min(-120).max(0).optional(),
+    peerCh: z.number().int().min(1).max(13).optional(),
     /** Controller only: the Nodes it currently hosts over ESP-NOW. */
     nodes: z
       .array(
@@ -163,6 +184,7 @@ const heartbeatSchema = z
           link: z.enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned"]).optional(),
           rssi: z.number().int().min(-120).max(0).optional(),
           channel: z.number().int().min(1).max(13).optional(),
+          seq: z.number().int().min(0).optional(),
         })
       )
       .max(64)
@@ -197,6 +219,11 @@ const heartbeatSchema = z
     boardRole: d.boardRole ?? d.role,
     commMode: d.commMode ?? d.cm,
     linkState: d.linkState ?? d.ls,
+    radioChannel: d.ch,
+    kaTx: d.kaTx,
+    ackRx: d.ackRx,
+    peerRssi: d.peerRssi,
+    peerCh: d.peerCh,
     nodes: d.nodes,
   }));
 
@@ -427,7 +454,7 @@ export function createDeviceApiRoutes() {
       db
         .from("board_instances")
         .select(
-          "id,name,status,mqtt_connected,wifi_connected,board_role,firmware_version,config_revision,last_synced_config_revision,pending_config_sync,node_link_state"
+          "id,name,status,mqtt_connected,wifi_connected,board_role,assigned_controller_id,comm_mode,firmware_version,config_revision,last_synced_config_revision,pending_config_sync,node_link_state,espnow_telemetry"
         )
         .eq("id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
@@ -449,11 +476,14 @@ export function createDeviceApiRoutes() {
       mqtt_connected: boolean;
       wifi_connected?: boolean | null;
       node_link_state?: string | null;
+      comm_mode?: string | null;
+      assigned_controller_id?: string | null;
       board_role?: string | null;
       firmware_version?: string | null;
       config_revision?: number;
       last_synced_config_revision?: number;
       pending_config_sync?: boolean;
+      espnow_telemetry?: Record<string, unknown> | null;
     } | null;
 
     // A Node is never described as a Controller in a notification.
@@ -579,6 +609,13 @@ export function createDeviceApiRoutes() {
     }
     // `comm_mode` / `node_link_state` describe a Node's uplink only; a Controller
     // reporting them must not make its row look like a Node.
+    const prevTel =
+      prev?.espnow_telemetry && typeof prev.espnow_telemetry === "object"
+        ? prev.espnow_telemetry
+        : {};
+    let rosterChanged = false;
+    let keepaliveFirstReported = false;
+
     if (storedRole === "node") {
       if (parsed.data.commMode !== undefined) {
         updates.comm_mode = parsed.data.commMode;
@@ -589,6 +626,70 @@ export function createDeviceApiRoutes() {
           updates.node_last_linked_at = now;
         }
       }
+      const hasNodeEspnowReport =
+        parsed.data.radioChannel !== undefined ||
+        parsed.data.peerCh !== undefined ||
+        parsed.data.peerRssi !== undefined ||
+        parsed.data.kaTx !== undefined ||
+        parsed.data.ackRx !== undefined ||
+        parsed.data.linkState !== undefined;
+      if (hasNodeEspnowReport) {
+        const prevKa = typeof prevTel.keepaliveTxSeq === "number" ? prevTel.keepaliveTxSeq : 0;
+        if (prevKa === 0 && (parsed.data.kaTx ?? 0) > 0) {
+          keepaliveFirstReported = true;
+        }
+        const ackConfirmed =
+          parsed.data.ackRx !== undefined
+            ? parsed.data.ackRx > 0
+            : parsed.data.linkState === "linked"
+              ? true
+              : parsed.data.linkState === "controller_lost" ||
+                  parsed.data.linkState === "standalone" ||
+                  parsed.data.linkState === "unassigned"
+                ? false
+                : (prevTel.ackConfirmed ?? null);
+        updates.espnow_telemetry = {
+          ...prevTel,
+          channel: parsed.data.peerCh ?? parsed.data.radioChannel ?? prevTel.channel ?? null,
+          rssi: parsed.data.peerRssi ?? prevTel.rssi ?? null,
+          keepaliveTxSeq: parsed.data.kaTx ?? prevTel.keepaliveTxSeq ?? null,
+          ackRxSeq: parsed.data.ackRx ?? prevTel.ackRxSeq ?? null,
+          ackConfirmed,
+          nodeReportedLinkState: parsed.data.linkState ?? prevTel.nodeReportedLinkState ?? null,
+          nodeReportedAt: now,
+        };
+      }
+    } else if (parsed.data.nodes !== undefined || parsed.data.radioChannel !== undefined) {
+      const prevRoster = Array.isArray(prevTel.roster)
+        ? (prevTel.roster as Array<{ id?: string; link?: string }>)
+        : null;
+      const nextRoster =
+        parsed.data.nodes !== undefined
+          ? parsed.data.nodes.map((n) => ({
+              id: n.id,
+              link: n.link ?? "linked",
+              rssi: n.rssi ?? null,
+              channel: n.channel ?? parsed.data.radioChannel ?? null,
+              seq: n.seq ?? null,
+            }))
+          : prevRoster;
+      if (parsed.data.nodes !== undefined) {
+        const prevSig = prevRoster
+          ? prevRoster.map((r) => `${r.id}:${r.link ?? "linked"}`).sort().join(",")
+          : "__none__";
+        const nextSig = (nextRoster ?? [])
+          .map((r) => `${r.id}:${r.link ?? "linked"}`)
+          .sort()
+          .join(",");
+        rosterChanged = prevSig !== nextSig;
+      }
+      updates.espnow_telemetry = {
+        ...prevTel,
+        channel: parsed.data.radioChannel ?? prevTel.channel ?? null,
+        ...(parsed.data.nodes !== undefined
+          ? { roster: nextRoster, rosterReportedAt: now }
+          : {}),
+      };
     }
 
     const { error: hbUpdateError } = await db
@@ -618,6 +719,7 @@ export function createDeviceApiRoutes() {
           "ota_error",
           "espnow_supported",
           "espnow_link_state",
+          "espnow_telemetry",
           "supports_wifi",
           "supports_ble",
           "health_reported_at",
@@ -625,7 +727,7 @@ export function createDeviceApiRoutes() {
           delete coreUpdates[col];
         }
         console.warn(
-          `[device-api] heartbeat update hit missing optional column (${errCode || errMsg}); retrying core heartbeat fields. Apply database/migrations/0008_board_recovery_health.sql.`
+          `[device-api] heartbeat update hit missing optional column (${errCode || errMsg}); retrying core heartbeat fields.`
         );
         const { error: retryError } = await db
           .from("board_instances")
@@ -642,17 +744,29 @@ export function createDeviceApiRoutes() {
       }
     }
 
-    // Only genuine ONLINE/OFFLINE, uplink or firmware transitions are pushed.
-    // A steady heartbeat is written to Postgres but never broadcast, so a
-    // healthy fleet does not turn the console into a polling loop.
+    // Only genuine ONLINE/OFFLINE, uplink, config-sync, roster or firmware
+    // transitions are pushed. Steady heartbeats write to Postgres quietly.
+    const configJustAcked =
+      parsed.data.configRevision !== undefined &&
+      parsed.data.configRevision >= (prev?.config_revision ?? 1) &&
+      Boolean(
+        prev?.pending_config_sync ||
+          (prev?.last_synced_config_revision ?? 0) < (prev?.config_revision ?? 1)
+      );
     const boardTransition =
       prev?.status !== "online" ||
+      configJustAcked ||
+      rosterChanged ||
+      keepaliveFirstReported ||
       (parsed.data.mqttConnected !== undefined &&
         prev?.mqtt_connected !== parsed.data.mqttConnected) ||
       (parsed.data.wifiConnected !== undefined &&
         prev?.wifi_connected !== parsed.data.wifiConnected) ||
       (parsed.data.firmwareVersion !== undefined &&
         prev?.firmware_version !== parsed.data.firmwareVersion) ||
+      (storedRole === "node" &&
+        parsed.data.commMode !== undefined &&
+        prev?.comm_mode !== parsed.data.commMode) ||
       (storedRole === "node" &&
         parsed.data.linkState !== undefined &&
         prev?.node_link_state !== parsed.data.linkState);
@@ -689,8 +803,9 @@ export function createDeviceApiRoutes() {
     // their status, communication mode and last-activity honest. An empty array
     // is meaningful too: it is how a Controller says "I host nobody right now",
     // which is what marks its assigned Nodes as controller_lost.
-    if (parsed.data.nodes) {
+    if (parsed.data.nodes && storedRole === "controller") {
       const roster = parsed.data.nodes;
+      const rosterById = new Map(roster.map((n) => [n.id, n]));
       const linkedIds = roster.filter((n) => (n.link ?? "linked") === "linked").map((n) => n.id);
 
       // Read the roster's current state first so only genuine link changes are
@@ -699,7 +814,7 @@ export function createDeviceApiRoutes() {
       const reportedIds = new Set(roster.map((n) => n.id));
       const { data: assignedNodes } = await db
         .from("board_instances")
-        .select("id,status,node_link_state,node_last_linked_at")
+        .select("id,status,node_link_state,node_last_linked_at,espnow_telemetry")
         .eq("account_id", dev.accountId)
         .eq("assigned_controller_id", dev.boardInstanceId)
         .eq("board_role", "node")
@@ -710,23 +825,84 @@ export function createDeviceApiRoutes() {
         status: string | null;
         node_link_state: string | null;
         node_last_linked_at: string | null;
+        espnow_telemetry?: Record<string, unknown> | null;
       }>;
 
-      if (linkedIds.length > 0) {
-        await db
-          .from("board_instances")
-          .update({
-            status: "online",
-            comm_mode: "espnow",
-            node_link_state: "linked",
-            node_last_linked_at: now,
-            last_heartbeat_at: now,
-            last_communication_at: now,
-          })
-          .eq("account_id", dev.accountId)
-          .eq("assigned_controller_id", dev.boardInstanceId)
-          .eq("board_role", "node")
-          .in("id", linkedIds);
+      const confirmedLinkedIds: string[] = [];
+      const oneWayHeardIds: string[] = [];
+
+      for (const id of linkedIds) {
+        const assignedRow = assigned.find((n) => n.id === id);
+        if (!assignedRow) continue;
+        const nTel =
+          assignedRow.espnow_telemetry && typeof assignedRow.espnow_telemetry === "object"
+            ? assignedRow.espnow_telemetry
+            : {};
+        const nodeReportedAtMs =
+          typeof nTel.nodeReportedAt === "string" ? Date.parse(nTel.nodeReportedAt) : NaN;
+        const recentUnackedNodeReport =
+          nTel.ackConfirmed === false &&
+          typeof nTel.keepaliveTxSeq === "number" &&
+          nTel.keepaliveTxSeq > 0 &&
+          Number.isFinite(nodeReportedAtMs) &&
+          Date.now() - nodeReportedAtMs < 10_000;
+
+        const rEntry = rosterById.get(id);
+        const mergedTel = {
+          ...nTel,
+          controllerHeardAt: now,
+          controllerReportedRssi: rEntry?.rssi ?? nTel.controllerReportedRssi ?? null,
+          controllerReportedChannel:
+            rEntry?.channel ?? parsed.data.radioChannel ?? nTel.controllerReportedChannel ?? null,
+        };
+
+        if (recentUnackedNodeReport) {
+          // Asymmetric one-way RX: Controller heard the Node's keepalive, but
+          // the Node very recently reported zero received ACKs. Record that the
+          // Controller heard it without falsely marking bidirectional `linked`.
+          oneWayHeardIds.push(id);
+          await db
+            .from("board_instances")
+            .update({
+              espnow_telemetry: mergedTel,
+              last_communication_at: now,
+            })
+            .eq("account_id", dev.accountId)
+            .eq("id", id);
+        } else {
+          confirmedLinkedIds.push(id);
+          const { error: nodeRosterErr } = await db
+            .from("board_instances")
+            .update({
+              status: "online",
+              comm_mode: "espnow",
+              node_link_state: "linked",
+              node_last_linked_at: now,
+              last_heartbeat_at: now,
+              last_communication_at: now,
+              espnow_telemetry: mergedTel,
+            })
+            .eq("account_id", dev.accountId)
+            .eq("assigned_controller_id", dev.boardInstanceId)
+            .eq("board_role", "node")
+            .eq("id", id);
+          if (nodeRosterErr) {
+            await db
+              .from("board_instances")
+              .update({
+                status: "online",
+                comm_mode: "espnow",
+                node_link_state: "linked",
+                node_last_linked_at: now,
+                last_heartbeat_at: now,
+                last_communication_at: now,
+              })
+              .eq("account_id", dev.accountId)
+              .eq("assigned_controller_id", dev.boardInstanceId)
+              .eq("board_role", "node")
+              .eq("id", id);
+          }
+        }
       }
 
       const staleCutoff = Date.now() - ESPNOW_NODE_STALE_MS;
@@ -750,12 +926,12 @@ export function createDeviceApiRoutes() {
       }
 
       const byId = new Map(assigned.map((n) => [n.id, n]));
-      const linkedChanged = linkedIds.filter((id) => {
+      const linkedChanged = confirmedLinkedIds.filter((id) => {
         const row = byId.get(id);
         return !row || row.status !== "online" || row.node_link_state !== "linked";
       });
 
-      if (linkedChanged.length > 0 || missing.length > 0) {
+      if (linkedChanged.length > 0 || missing.length > 0 || oneWayHeardIds.length > 0) {
         await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
           ...linkedChanged.map((id) =>
             makeRealtimeEvent(
@@ -770,6 +946,16 @@ export function createDeviceApiRoutes() {
                 lastHeartbeatAt: now,
               },
               "confirmed",
+              now
+            )
+          ),
+          ...oneWayHeardIds.map((id) =>
+            makeRealtimeEvent(
+              "board",
+              "state",
+              id,
+              { role: "node", controllerHeardAt: now },
+              "accepted",
               now
             )
           ),
@@ -1063,7 +1249,13 @@ export function createDeviceApiRoutes() {
       });
     }
 
-    if (prev && prev.mqtt_connected && parsed.data.mqttConnected === false) {
+    const nodeExpectsNoMqtt =
+      storedRole === "node" &&
+      Boolean(prev?.assigned_controller_id) &&
+      parsed.data.linkState !== "standalone" &&
+      parsed.data.linkState !== "unassigned";
+
+    if (prev && prev.mqtt_connected && parsed.data.mqttConnected === false && !nodeExpectsNoMqtt) {
       await emitNotification(db, {
         scope: "user",
         accountId: dev.accountId,

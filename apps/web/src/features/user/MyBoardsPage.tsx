@@ -25,6 +25,11 @@ import {
 } from "@/components/controllers/ControllerSetupModal";
 import { ControllerCard } from "@/components/controllers/ControllerCard";
 import { NodeCard } from "@/components/controllers/NodeCard";
+import { NodeControllerLinkDialog } from "@/components/controllers/NodeControllerLinkDialog";
+import {
+  canAssignNodeToController,
+  normalizeBoardRole,
+} from "@homecoreos/shared";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";
 import {
@@ -125,13 +130,26 @@ export function MyBoardsPage({
     device: ControllerItem;
     role: "controller" | "node";
   } | null>(null);
+  const [makeNodeControllerId, setMakeNodeControllerId] = useState<string>("");
+  const [roleSubmitting, setRoleSubmitting] = useState(false);
+  const [makeNodePartialFailure, setMakeNodePartialFailure] = useState<{
+    nodeId: string;
+    error: string;
+  } | null>(null);
   const [attachedNodeWarning, setAttachedNodeWarning] = useState<{
     device: ControllerItem;
     count: number;
+    selectedControllerId: string;
   } | null>(null);
   const [assignNodeTarget, setAssignNodeTarget] = useState<ControllerItem | null>(null);
   const [assignNodeSelection, setAssignNodeSelection] = useState<string>("");
   const [relinkTarget, setRelinkTarget] = useState<ControllerItem | null>(null);
+  const [linkVerification, setLinkVerification] = useState<{
+    nodeId: string;
+    controllerId: string;
+  } | null>(null);
+  const [linkRetrying, setLinkRetrying] = useState(false);
+  const [linkRetryError, setLinkRetryError] = useState<string | null>(null);
 
   const [trashTarget, setTrashTarget] = useState<ControllerItem | null>(null);
   const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<ControllerItem | null>(null);
@@ -333,11 +351,30 @@ export function MyBoardsPage({
     if (!node) return [];
     return controllerDevices.filter(
       (c) =>
-        c.id !== node.id &&
-        c.status === "online" &&
-        (!node.home_id || c.home_id === node.home_id)
+        canAssignNodeToController({
+          nodeId: node.id,
+          boardInstanceId: c.id,
+          controllerRole: normalizeBoardRole(c.board_role),
+          controllerOnline: c.status === "online",
+          sameHome: !node.home_id || c.home_id === node.home_id,
+        }).ok
     );
   }, [assignNodeTarget, controllerDevices]);
+
+  const makeNodeCandidates = useMemo(() => {
+    const device = roleTarget?.role === "node" ? roleTarget.device : null;
+    if (!device) return [];
+    return controllerDevices.filter(
+      (c) =>
+        canAssignNodeToController({
+          nodeId: device.id,
+          boardInstanceId: c.id,
+          controllerRole: normalizeBoardRole(c.board_role),
+          controllerOnline: c.status === "online",
+          sameHome: !device.home_id || c.home_id === device.home_id,
+        }).ok
+    );
+  }, [roleTarget, controllerDevices]);
 
   const filteredControllers = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -363,39 +400,85 @@ export function MyBoardsPage({
   async function handleRoleChange(
     device: ControllerItem,
     role: "controller" | "node",
-    acknowledgeAttachedNodes = false
+    acknowledgeAttachedNodes = false,
+    selectedControllerId = ""
   ) {
+    if (roleSubmitting) return;
+    setRoleSubmitting(true);
     try {
-      await apiFetch(`/api/board-instances/${device.id}/role`, {
-        method: "PATCH",
-        body: JSON.stringify({ role, acknowledgeAttachedNodes }),
-      });
+      const alreadyConvertedNode =
+        role === "node" && makeNodePartialFailure?.nodeId === device.id;
+
+      if (!alreadyConvertedNode) {
+        try {
+          await apiFetch(`/api/board-instances/${device.id}/role`, {
+            method: "PATCH",
+            body: JSON.stringify({ role, acknowledgeAttachedNodes }),
+          });
+        } catch (err) {
+          if (err instanceof ApiError) {
+            // The Worker reports how many Nodes would be released, so the operator
+            // confirms the fallback explicitly instead of silently losing the link.
+            const details = err.details as
+              | { attachedNodeCount?: number }
+              | undefined;
+            if (err.code === "attached_nodes" && !acknowledgeAttachedNodes) {
+              setRoleTarget(null);
+              setAttachedNodeWarning({
+                device,
+                count: details?.attachedNodeCount ?? device.connected_node_count ?? 0,
+                selectedControllerId,
+              });
+              return;
+            }
+            toast.error(err.message);
+            return;
+          }
+          toast.error("Failed to change the device role.");
+          return;
+        }
+      }
+
+      if (role === "node" && selectedControllerId) {
+        try {
+          await apiFetch(`/api/board-instances/${device.id}/assign-controller`, {
+            method: "POST",
+            body: JSON.stringify({ boardInstanceId: selectedControllerId }),
+          });
+          toast.success(`${device.name} is now a Node assigned to its Controller.`);
+          setMakeNodePartialFailure(null);
+          setRoleTarget(null);
+          setLinkRetryError(null);
+          setLinkVerification({
+            nodeId: device.id,
+            controllerId: selectedControllerId,
+          });
+          await load(true);
+          return;
+        } catch (assignErr) {
+          const errMsg =
+            assignErr instanceof ApiError
+              ? assignErr.message
+              : "Failed to assign the selected Controller.";
+          await load(true);
+          setMakeNodePartialFailure({ nodeId: device.id, error: errMsg });
+          toast.error(
+            `${device.name} was converted to a Node, but Controller assignment failed: ${errMsg}`
+          );
+          return;
+        }
+      }
+
       toast.success(
         role === "node"
           ? `${device.name} is now a Node.`
           : `${device.name} is now a Controller.`
       );
+      setMakeNodePartialFailure(null);
       setRoleTarget(null);
       await load(true);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        // The Worker reports how many Nodes would be released, so the operator
-        // confirms the fallback explicitly instead of silently losing the link.
-        const details = err.details as
-          | { attachedNodeCount?: number }
-          | undefined;
-        if (err.code === "attached_nodes" && !acknowledgeAttachedNodes) {
-          setRoleTarget(null);
-          setAttachedNodeWarning({
-            device,
-            count: details?.attachedNodeCount ?? device.connected_node_count ?? 0,
-          });
-          return;
-        }
-        toast.error(err.message);
-        return;
-      }
-      toast.error("Failed to change the device role.");
+    } finally {
+      setRoleSubmitting(false);
     }
   }
 
@@ -409,6 +492,10 @@ export function MyBoardsPage({
         boardInstanceId ? `${node.name} assigned to its Controller.` : "Controller assignment cleared."
       );
       setAssignNodeTarget(null);
+      if (boardInstanceId) {
+        setLinkRetryError(null);
+        setLinkVerification({ nodeId: node.id, controllerId: boardInstanceId });
+      }
       await load(true);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to assign the Node.");
@@ -426,9 +513,44 @@ export function MyBoardsPage({
           ? `Asked ${node.name} to re-link to its Controller.`
           : `Sent the re-link request through ${node.assigned_controller_name ?? "the Controller"}.`
       );
+      if (node.assigned_controller_id) {
+        setLinkRetryError(null);
+        setLinkVerification({
+          nodeId: node.id,
+          controllerId: node.assigned_controller_id,
+        });
+      }
       await load(true);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Failed to re-link the Node.");
+    }
+  }
+
+  async function handleRetryLinkConnection() {
+    if (!linkVerification || linkRetrying) return;
+    const liveNode = controllers.find((c) => c.id === linkVerification.nodeId);
+    if (!liveNode) return;
+    setLinkRetrying(true);
+    setLinkRetryError(null);
+    try {
+      if (liveNode.assigned_controller_id !== linkVerification.controllerId) {
+        await apiFetch(`/api/board-instances/${liveNode.id}/assign-controller`, {
+          method: "POST",
+          body: JSON.stringify({ boardInstanceId: linkVerification.controllerId }),
+        });
+      } else {
+        await apiFetch(`/api/board-instances/${liveNode.id}/relink`, {
+          method: "POST",
+        });
+      }
+      await load(true);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError ? err.message : "Failed to retry the ESP-NOW connection.";
+      setLinkRetryError(msg);
+      toast.error(msg);
+    } finally {
+      setLinkRetrying(false);
     }
   }
 
@@ -443,6 +565,7 @@ export function MyBoardsPage({
   // The board list itself stays current through the shared real-time channel.
   useLiveSync(() => load(true), {
     kinds: ["board", "switch", "device", "sensor", "home"],
+    minIntervalMs: linkVerification ? 250 : 2_000,
     fallbackMs: 60_000,
   });
 
@@ -750,7 +873,11 @@ export function MyBoardsPage({
                   onAssignRoom={() => openRoomAssign(ctrl)}
                   onAction={(action) => void handleAction(ctrl, action)}
                   onMoveToTrash={() => setTrashTarget(ctrl)}
-                  onMakeNode={() => setRoleTarget({ device: ctrl, role: "node" })}
+                  onMakeNode={() => {
+                    setMakeNodeControllerId("");
+                    setMakeNodePartialFailure(null);
+                    setRoleTarget({ device: ctrl, role: "node" });
+                  }}
                 />
               ))}
             </div>
@@ -904,48 +1031,231 @@ export function MyBoardsPage({
       <Dialog
         open={roleTarget !== null}
         onOpenChange={(open) => {
-          if (!open) setRoleTarget(null);
+          if (!open && !roleSubmitting) {
+            setMakeNodePartialFailure(null);
+            setRoleTarget(null);
+          }
         }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>
               {roleTarget?.role === "node" ? "Make this a Node?" : "Make this a Controller?"}
             </DialogTitle>
             <DialogDescription>
               {roleTarget?.role === "node"
-                ? `${roleTarget?.device.name ?? "This device"} keeps its switches, sensors and history. As a Node it reaches HomecoreOS through a Controller over ESP-NOW instead of its own cloud connection.`
+                ? `${roleTarget?.device.name ?? "This device"} keeps its switches, sensors, devices, room links, pairing and firmware history. As a Node it reaches HomecoreOS through a Controller over ESP-NOW instead of its own cloud session.`
                 : `${roleTarget?.device.name ?? "This device"} will host its own cloud connection again and can host Nodes over ESP-NOW.`}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2 text-xs text-muted-foreground">
-            {roleTarget?.role === "node" ? (
-              <>
-                <p>The device restarts into Node mode and looks for the Controller it is assigned to.</p>
+
+          {roleTarget && (
+            <div
+              className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/40 px-3 py-2 text-xs"
+              data-testid="role-dialog-board-summary"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <RiCpuLine className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-foreground">
+                    {roleTarget.device.name}
+                  </p>
+                  <p className="truncate text-[11px] text-muted-foreground">
+                    {roleTarget.device.board_compat?.model ?? roleTarget.device.board_model}
+                  </p>
+                </div>
+              </div>
+              <Badge variant="secondary" size="sm" radius="full">
+                {roleTarget.role === "node" ? "Controller → Node" : "Node → Controller"}
+              </Badge>
+            </div>
+          )}
+
+          {roleTarget?.role === "node" ? (
+            <div className="space-y-3">
+              {makeNodePartialFailure && (
+                <StatusAlert
+                  tone="warning"
+                  title="Converted to Node — Controller assignment failed"
+                >
+                  <p>
+                    {roleTarget.device.name} is safely saved as an unassigned Node on Wi-Fi /
+                    MQTT, but assigning it to the selected Controller failed:{" "}
+                    <span className="font-semibold">{makeNodePartialFailure.error}</span>.
+                    Choose an online Controller below to retry assignment, or leave it unassigned.
+                  </p>
+                </StatusAlert>
+              )}
+
+              <div className="space-y-1.5 text-xs text-muted-foreground">
                 <p>
-                  If that Controller is out of range, it keeps working as a Standalone Node on
-                  Wi-Fi until the link comes back. It is never promoted to a Controller on its own.
+                  The board switches into Node mode and seeks the Controller you assign over 2.4 GHz
+                  ESP-NOW. If that Controller becomes unreachable, it falls back to Standalone Node
+                  Wi-Fi / MQTT without ever promoting itself to a Controller.
                 </p>
-              </>
-            ) : (
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-foreground">Choose Controller</p>
+                  <span className="text-[11px] text-muted-foreground">Optional</span>
+                </div>
+
+                <div
+                  role="radiogroup"
+                  aria-label="Choose Controller"
+                  className="max-h-60 space-y-1.5 overflow-y-auto"
+                >
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={makeNodeControllerId === ""}
+                    onClick={() => setMakeNodeControllerId("")}
+                    className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
+                      makeNodeControllerId === ""
+                        ? "border-primary/50 bg-primary/6 ring-1 ring-primary/30"
+                        : "hover:bg-muted/50"
+                    }`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-foreground">
+                        Set Controller Later
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        Convert to Node now and assign a Controller later
+                      </span>
+                    </span>
+                    {makeNodeControllerId === "" && (
+                      <RiCheckLine
+                        className="size-4 shrink-0 text-primary"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </button>
+
+                  {makeNodeCandidates.map((candidate) => {
+                    const selected = makeNodeControllerId === candidate.id;
+                    const candidateModel =
+                      candidate.board_compat?.model ?? candidate.board_model;
+                    const mqttUp = candidate.mqtt_connected !== false;
+                    return (
+                      <button
+                        key={candidate.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => setMakeNodeControllerId(candidate.id)}
+                        className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors ${
+                          selected
+                            ? "border-primary/50 bg-primary/6 ring-1 ring-primary/30"
+                            : "hover:bg-muted/50"
+                        }`}
+                      >
+                        <span className="flex min-w-0 items-start gap-2.5">
+                          <RiCpuLine
+                            className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                            aria-hidden="true"
+                          />
+                          <span className="min-w-0 space-y-1">
+                            <span className="block truncate font-medium text-foreground">
+                              {candidate.name}
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {candidateModel} · {candidate.connected_node_count ?? 0} Node
+                              {(candidate.connected_node_count ?? 0) === 1 ? "" : "s"} linked
+                            </span>
+                            <span className="flex flex-wrap items-center gap-1 pt-0.5">
+                              <Badge variant="success-light" size="xs" radius="full">
+                                Online
+                              </Badge>
+                              <Badge
+                                variant={mqttUp ? "success-light" : "warning-light"}
+                                size="xs"
+                                radius="full"
+                              >
+                                {mqttUp ? "MQTT Connected" : "MQTT Disconnected"}
+                              </Badge>
+                            </span>
+                          </span>
+                        </span>
+                        {selected && (
+                          <RiCheckLine
+                            className="size-4 shrink-0 text-primary"
+                            aria-hidden="true"
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {makeNodeCandidates.length === 0 && (
+                  <p
+                    className="rounded-lg border border-dashed border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+                    data-testid="make-node-no-controllers-note"
+                  >
+                    No online Controllers are available in this home right now. Keep{" "}
+                    <span className="font-medium text-foreground">Set Controller Later</span>{" "}
+                    selected to convert this board now and assign a Controller once one is online.
+                  </p>
+                )}
+
+                {makeNodeControllerId !== "" &&
+                  !makeNodeCandidates.some((c) => c.id === makeNodeControllerId) && (
+                    <StatusAlert tone="warning" title="Selected Controller Offline">
+                      The selected Controller is no longer online. Choose another online Controller
+                      or select Set Controller Later.
+                    </StatusAlert>
+                  )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2 text-xs text-muted-foreground">
               <p>
                 A Controller needs Wi-Fi and ESP-NOW. Devices on boards without a Wi-Fi radio
                 cannot take this role.
               </p>
-            )}
-          </div>
+            </div>
+          )}
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRoleTarget(null)}>
-              Cancel
+            <Button
+              variant="outline"
+              disabled={roleSubmitting}
+              onClick={() => {
+                setMakeNodePartialFailure(null);
+                setRoleTarget(null);
+              }}
+            >
+              {makeNodePartialFailure ? "Close" : "Cancel"}
             </Button>
             <Button
+              disabled={
+                roleSubmitting ||
+                (roleTarget?.role === "node" &&
+                  makeNodeControllerId !== "" &&
+                  !makeNodeCandidates.some((c) => c.id === makeNodeControllerId))
+              }
               onClick={() => {
                 if (!roleTarget) return;
                 const target = roleTarget;
-                void handleRoleChange(target.device, target.role);
+                void handleRoleChange(
+                  target.device,
+                  target.role,
+                  false,
+                  target.role === "node" ? makeNodeControllerId : ""
+                );
               }}
             >
-              {roleTarget?.role === "node" ? "Make Node" : "Make Controller"}
+              {roleSubmitting
+                ? "Saving…"
+                : makeNodePartialFailure
+                  ? makeNodeControllerId
+                    ? "Retry Assignment"
+                    : "Leave Unassigned"
+                  : roleTarget?.role === "node"
+                    ? "Make Node"
+                    : "Make Controller"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -954,7 +1264,7 @@ export function MyBoardsPage({
       <Dialog
         open={attachedNodeWarning !== null}
         onOpenChange={(open) => {
-          if (!open) setAttachedNodeWarning(null);
+          if (!open && !roleSubmitting) setAttachedNodeWarning(null);
         }}
       >
         <DialogContent className="sm:max-w-md">
@@ -966,18 +1276,35 @@ export function MyBoardsPage({
               {attachedNodeWarning?.device.name ?? "this Controller"}. Making it a Node releases
               them: each one switches to its Wi-Fi connection and keeps running as a Standalone
               Node until you assign it to another Controller.
+              {attachedNodeWarning?.selectedControllerId
+                ? ` After releasing them, ${attachedNodeWarning.device.name} will be assigned to ${
+                    controllerDevices.find(
+                      (c) => c.id === attachedNodeWarning.selectedControllerId
+                    )?.name ?? "the selected Controller"
+                  }.`
+                : ""}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAttachedNodeWarning(null)}>
+            <Button
+              variant="outline"
+              disabled={roleSubmitting}
+              onClick={() => setAttachedNodeWarning(null)}
+            >
               Keep as Controller
             </Button>
             <Button
+              disabled={roleSubmitting}
               onClick={() => {
                 const warning = attachedNodeWarning;
                 if (!warning) return;
                 setAttachedNodeWarning(null);
-                void handleRoleChange(warning.device, "node", true);
+                void handleRoleChange(
+                  warning.device,
+                  "node",
+                  true,
+                  warning.selectedControllerId
+                );
               }}
             >
               Release Nodes and Continue
@@ -1126,6 +1453,42 @@ export function MyBoardsPage({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {(() => {
+        const liveLinkNode = linkVerification
+          ? controllers.find((c) => c.id === linkVerification.nodeId) ?? null
+          : null;
+        const liveLinkController = linkVerification
+          ? controllers.find((c) => c.id === linkVerification.controllerId) ?? null
+          : null;
+        return (
+          <NodeControllerLinkDialog
+            open={linkVerification !== null}
+            node={liveLinkNode}
+            controller={liveLinkController}
+            nodeBoard={liveLinkNode ? boardForController(liveLinkNode) : null}
+            controllerBoard={
+              liveLinkController ? boardForController(liveLinkController) : null
+            }
+            timezone={timezone}
+            retrying={linkRetrying}
+            retryError={linkRetryError}
+            canOperate={canOperate}
+            canManage={canManage}
+            onRetryConnection={() => void handleRetryLinkConnection()}
+            onChangeController={() => {
+              if (!liveLinkNode) return;
+              setLinkVerification(null);
+              setAssignNodeSelection(liveLinkNode.assigned_controller_id ?? "");
+              setAssignNodeTarget(liveLinkNode);
+            }}
+            onClose={() => {
+              setLinkRetryError(null);
+              setLinkVerification(null);
+            }}
+          />
+        );
+      })()}
 
       {/* Wi-Fi Update Modal (Online MQTT + Offline BLE / Portal Guidance) */}
       <Dialog open={Boolean(wifiTarget)} onOpenChange={(o) => !o && setWifiTarget(null)}>

@@ -307,7 +307,8 @@
         "espnow_link_state text",
         "supports_wifi boolean",
         "supports_ble boolean",
-        "health_reported_at timestamp with time zone"
+        "health_reported_at timestamp with time zone",
+        "espnow_telemetry jsonb"
       ],
       "constraints": [
         "board_instances_account_id_fkey f FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE",

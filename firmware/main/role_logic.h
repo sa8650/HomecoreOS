@@ -110,6 +110,38 @@ uint32_t hc_role_controller_step(hc_role_state_t *state, const hc_role_input_t *
 bool hc_role_node_is_stale(uint32_t now_ms, uint32_t last_seen_ms);
 
 /**
+ * Validates an inbound Node keepalive on a Controller before ACKing or adding
+ * the Node to the hosted roster:
+ *   - node_id must be non-empty and must never equal self_controller_id
+ *   - if target_controller_id is present (and self_controller_id is known),
+ *     they must match so a Controller never hijacks a Node aimed elsewhere.
+ */
+bool hc_role_validate_keepalive_target(
+    const char *self_controller_id,
+    const char *node_id,
+    const char *target_controller_id
+);
+
+/**
+ * Validates a Controller ACK frame received by a Node before marking the
+ * ESP-NOW link healthy:
+ *   - at least one keepalive must have been transmitted in the current epoch
+ *   - rx_epoch must match expected_epoch
+ *   - rx_seq must be within (0, last_tx_seq] and >= last_ack_seq
+ *   - if both expected_controller_id and rx_controller_id are non-empty, they
+ *     must match so an ACK from another board is rejected.
+ */
+bool hc_role_validate_controller_ack(
+    uint16_t expected_epoch,
+    uint32_t last_tx_seq,
+    uint32_t last_ack_seq,
+    uint16_t rx_epoch,
+    uint32_t rx_seq,
+    const char *expected_controller_id,
+    const char *rx_controller_id
+);
+
+/**
  * Role changes are user-initiated only. A Controller may not be demoted while it
  * still hosts Nodes unless the caller explicitly acknowledged the fallback.
  */

@@ -686,4 +686,218 @@ describe("Unified Controller & Node roles", () => {
     expect(updated.rows[0]?.status).toBe("succeeded");
     expect(updated.rows[0]?.progress_percent).toBe(100);
   });
+
+  it("surfaces Controller reported_nodes roster and blocks false linked state on one-way unacked keepalives", async () => {
+    // 1. Node sends keepalives (kaTx=3) but explicitly reports zero received ACKs (ackRx=0).
+    const unackedBeat = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${nodeToken}` },
+      body: JSON.stringify({
+        w: true,
+        m: false,
+        role: "node",
+        cm: "offline",
+        ls: "reconnecting",
+        ch: 6,
+        kaTx: 3,
+        ackRx: 0,
+      }),
+    });
+    expect(unackedBeat.status).toBe(200);
+
+    // 2. Controller hears the one-way keepalive and reports the Node in its roster.
+    // Because the Node just reported ackRx=0, the Worker must record controllerHeardAt
+    // without falsely overwriting node_link_state to "linked".
+    const ctrlBeat = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${hubToken}` },
+      body: JSON.stringify({
+        w: true,
+        m: true,
+        role: "controller",
+        cm: "wifi_mqtt",
+        ch: 6,
+        espnowLinkState: "hosting",
+        nodes: [{ id: nodeId, link: "linked", rssi: -52, channel: 6, seq: 3 }],
+      }),
+    });
+    expect(ctrlBeat.status).toBe(200);
+
+    let listRes = await req("/api/board-instances", { headers: { Cookie: cookie } });
+    let { controllers } = (await listRes.json()) as {
+      controllers: Array<Record<string, unknown>>;
+    };
+    let nodeItem = controllers.find((c) => c.id === nodeId)!;
+    let hubItem = controllers.find((c) => c.id === hubId)!;
+    expect(nodeItem.node_link_state).toBe("reconnecting");
+    expect((nodeItem.espnow_telemetry as { controllerHeardAt?: string })?.controllerHeardAt).toBeTruthy();
+    expect(hubItem.reported_nodes).toEqual([
+      { id: nodeId, link: "linked", rssi: -52, channel: 6, seq: 3 },
+    ]);
+
+    // 3. Node now receives Controller ACK #4 and reports ls="linked", cm="espnow", ackRx=4.
+    // Also verify no spurious "MQTT Disconnected" notification is emitted when m=false.
+    await dbHarness.pg.query("update board_instances set mqtt_connected = true where id = $1", [
+      nodeId,
+    ]);
+    await dbHarness.pg.query(
+      "delete from notifications where dedup_key = $1",
+      [`ctrl:${nodeId}:mqtt_off`]
+    );
+
+    const ackedBeat = await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${nodeToken}` },
+      body: JSON.stringify({
+        w: true,
+        m: false,
+        role: "node",
+        cm: "espnow",
+        ls: "linked",
+        ch: 6,
+        kaTx: 4,
+        ackRx: 4,
+        peerRssi: -49,
+        peerCh: 6,
+      }),
+    });
+    expect(ackedBeat.status).toBe(200);
+
+    listRes = await req("/api/board-instances", { headers: { Cookie: cookie } });
+    ({ controllers } = (await listRes.json()) as {
+      controllers: Array<Record<string, unknown>>;
+    });
+    nodeItem = controllers.find((c) => c.id === nodeId)!;
+    hubItem = controllers.find((c) => c.id === hubId)!;
+    expect(nodeItem.node_link_state).toBe("linked");
+    expect(nodeItem.node_comm_mode).toBe("espnow");
+    expect(hubItem.hosted_node_ids).toContain(nodeId);
+    expect((nodeItem.espnow_telemetry as { ackConfirmed?: boolean; rssi?: number }).ackConfirmed).toBe(true);
+    expect((nodeItem.espnow_telemetry as { rssi?: number }).rssi).toBe(-49);
+
+    const notifCheck = await dbHarness.pg.query<{ n: number }>(
+      "select count(*)::int as n from notifications where dedup_key = $1",
+      [`ctrl:${nodeId}:mqtt_off`]
+    );
+    expect(notifCheck.rows[0]!.n).toBe(0);
+  });
+
+  it("preserves room, switches, devices, sensors and credentials across Controller->Node conversion and assignment", async () => {
+    const createRes = await postJson("/api/board-instances", {
+      name: "Bedroom Panel",
+      boardProfileId: boardId,
+    });
+    expect(createRes.status).toBe(201);
+    const created = (await createRes.json()) as {
+      controller: { id: string; home_id: string };
+      pairingCode: string;
+    };
+    const panelId = created.controller.id;
+
+    const pairRes = await req("/api/device/pair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pairingCode: created.pairingCode,
+        macAddress: "AA:BB:CC:11:22:33",
+        firmwareVersion: "1.6.0",
+      }),
+    });
+    expect(pairRes.status).toBe(200);
+    const panelToken = ((await pairRes.json()) as { device_api_token: string }).device_api_token;
+
+    // Bring panel online and attach room, switch, device, and sensor.
+    await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${panelToken}` },
+      body: JSON.stringify({ w: true, m: true, v: "1.6.0" }),
+    });
+
+    const roomRes = await postJson("/api/homes/rooms", {
+      homeId: created.controller.home_id,
+      name: "Master Bedroom",
+    });
+    expect(roomRes.status).toBe(201);
+    const roomId = ((await roomRes.json()) as { room: { id: string } }).room.id;
+
+    const assignRoomRes = await req(`/api/board-instances/${panelId}/room`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ roomId }),
+    });
+    expect(assignRoomRes.status).toBe(200);
+
+    await dbHarness.pg.query(
+      `insert into switches (account_id, home_id, room_id, board_instance_id, name, gpio_pin)
+       select account_id, home_id, room_id, id, 'Ceiling Light', 4 from board_instances where id = $1`,
+      [panelId]
+    );
+    await dbHarness.pg.query(
+      `insert into devices (account_id, home_id, room_id, board_instance_id, name, device_type, gpio_pin)
+       select account_id, home_id, room_id, id, 'Ceiling Fan', 'fan', 5 from board_instances where id = $1`,
+      [panelId]
+    );
+    await dbHarness.pg.query(
+      `insert into sensors (account_id, home_id, room_id, board_instance_id, name, sensor_type, gpio_pin, unit)
+       select account_id, home_id, room_id, id, 'Bedroom Temp', 'temperature', 6, 'C' from board_instances where id = $1`,
+      [panelId]
+    );
+
+    // Ensure hub is online, then convert Bedroom Panel to a Node and assign to hubId.
+    await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${hubToken}` },
+      body: JSON.stringify({ w: true, m: true, role: "controller" }),
+    });
+
+    const roleRes = await req(`/api/board-instances/${panelId}/role`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ role: "node" }),
+    });
+    expect(roleRes.status).toBe(200);
+
+    const assignRes = await postJson(`/api/board-instances/${panelId}/assign-controller`, {
+      boardInstanceId: hubId,
+    });
+    expect(assignRes.status).toBe(200);
+
+    const check = await dbHarness.pg.query<{
+      room_id: string | null;
+      hardware_uid: string | null;
+      pairing_status: string;
+      sw_count: number;
+      dev_count: number;
+      sen_count: number;
+      cred_count: number;
+    }>(
+      `select b.room_id, b.hardware_uid, b.pairing_status,
+              (select count(*)::int from switches where board_instance_id = b.id and deleted_at is null) as sw_count,
+              (select count(*)::int from devices where board_instance_id = b.id and deleted_at is null) as dev_count,
+              (select count(*)::int from sensors where board_instance_id = b.id and deleted_at is null) as sen_count,
+              (select count(*)::int from mqtt_credentials_metadata where board_instance_id = b.id and status = 'active') as cred_count
+         from board_instances b where b.id = $1`,
+      [panelId]
+    );
+    expect(check.rows[0]).toEqual({
+      room_id: roomId,
+      hardware_uid: "AA:BB:CC:11:22:33",
+      pairing_status: "paired",
+      sw_count: 1,
+      dev_count: 1,
+      sen_count: 1,
+      cred_count: 1,
+    });
+
+    // Re-link publishes refreshed config snapshots + command without mutating identity.
+    emqx.state.published.length = 0;
+    const relinkRes = await postJson(`/api/board-instances/${panelId}/relink`, {});
+    expect(relinkRes.status).toBe(200);
+    expect(emqx.state.published.some((m) => m.topic.endsWith(`/${panelId}/config/snapshot`))).toBe(
+      true
+    );
+    expect(emqx.state.published.some((m) => m.topic.endsWith(`/${hubId}/config/snapshot`))).toBe(
+      true
+    );
+  });
 });

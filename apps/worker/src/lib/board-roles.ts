@@ -32,7 +32,39 @@ export interface RoleChangeResult {
     | "invalid";
   attachedNodeCount?: number;
   attachedNodes?: AttachedNodeRow[];
+  releasedNodeIds?: string[];
   device?: Record<string, unknown>;
+}
+
+async function updateBoardInstanceSafe(
+  db: DbClient,
+  accountId: string,
+  matchCol: "id" | "assigned_controller_id",
+  matchVal: string,
+  updates: Record<string, unknown>
+): Promise<void> {
+  const { error } = await db
+    .from("board_instances")
+    .update(updates)
+    .eq("account_id", accountId)
+    .eq(matchCol, matchVal);
+  if (error && "espnow_telemetry" in updates) {
+    const errMsg = error.message ?? "";
+    const errCode = error.code ?? "";
+    if (
+      errCode === "PGRST204" ||
+      errCode === "42703" ||
+      /espnow_telemetry/i.test(errMsg)
+    ) {
+      const fallback = { ...updates };
+      delete fallback.espnow_telemetry;
+      await db
+        .from("board_instances")
+        .update(fallback)
+        .eq("account_id", accountId)
+        .eq(matchCol, matchVal);
+    }
+  }
 }
 
 /** Nodes currently hosted by a Controller (soft-deleted rows excluded). */
@@ -217,6 +249,7 @@ export async function changeBoardRole(
   return {
     ok: true,
     status: 200,
+    releasedNodeIds: attachedNodes.map((n) => n.id),
     device: { ...device, ...updates },
   };
 }
@@ -227,6 +260,7 @@ export interface AssignResult {
   error?: string;
   node?: Record<string, unknown>;
   controller?: Record<string, unknown>;
+  previousControllerId?: string | null;
 }
 
 /** Points a Node at a Controller (or clears the assignment with `null`). */
@@ -243,7 +277,7 @@ export async function assignNodeToController(
 ): Promise<AssignResult> {
   const { data: nodeRow } = await db
     .from("board_instances")
-    .select("id,name,home_id,board_role,status")
+    .select("id,name,home_id,board_role,assigned_controller_id,status")
     .eq("id", params.nodeId)
     .eq("account_id", params.accountId)
     .is("deleted_at", null)
@@ -258,6 +292,7 @@ export async function assignNodeToController(
     name: string;
     home_id: string;
     board_role?: string | null;
+    assigned_controller_id?: string | null;
     status: string;
   };
   if (normalizeBoardRole(node.board_role) !== "node") {
@@ -268,19 +303,18 @@ export async function assignNodeToController(
     };
   }
 
+  const prevControllerId = node.assigned_controller_id ?? null;
   const now = new Date().toISOString();
 
   if (!params.boardInstanceId) {
-    await db
-      .from("board_instances")
-      .update({
-        assigned_controller_id: null,
-        comm_mode: "wifi_mqtt",
-        node_link_state: "unassigned",
-        updated_at: now,
-      })
-      .eq("id", node.id)
-      .eq("account_id", params.accountId);
+    const unassignUpdates = {
+      assigned_controller_id: null,
+      comm_mode: node.status === "online" ? "wifi_mqtt" : "offline",
+      node_link_state: "unassigned",
+      espnow_telemetry: null,
+      updated_at: now,
+    };
+    await updateBoardInstanceSafe(db, params.accountId, "id", node.id, unassignUpdates);
 
     await recordActivity(db, {
       accountId: params.accountId,
@@ -290,18 +324,26 @@ export async function assignNodeToController(
       action: "controller.node_unassigned",
       summary: `Cleared the Controller assignment for Node "${node.name}"`,
     });
-    await syncControllerConfigSnapshot(db, env, deps, {
-      accountId: params.accountId,
-      boardInstanceId: node.id,
-      reason: "config_change",
-      forcePublish: true,
-    }).catch(() => undefined);
-    return { ok: true, status: 200, node: { ...node, assigned_controller_id: null } };
+    const toSync = [node.id, ...(prevControllerId ? [prevControllerId] : [])];
+    for (const syncId of toSync) {
+      await syncControllerConfigSnapshot(db, env, deps, {
+        accountId: params.accountId,
+        boardInstanceId: syncId,
+        reason: "config_change",
+        forcePublish: true,
+      }).catch(() => undefined);
+    }
+    return {
+      ok: true,
+      status: 200,
+      previousControllerId: prevControllerId,
+      node: { ...node, ...unassignUpdates },
+    };
   }
 
   const { data: ctrlRow } = await db
     .from("board_instances")
-    .select("id,name,home_id,board_role,status")
+    .select("id,name,home_id,board_role,status,hardware_uid,mqtt_connected,espnow_channel")
     .eq("id", params.boardInstanceId)
     .eq("account_id", params.accountId)
     .is("deleted_at", null)
@@ -317,6 +359,9 @@ export async function assignNodeToController(
     home_id: string;
     board_role?: string | null;
     status: string;
+    hardware_uid?: string | null;
+    mqtt_connected?: boolean;
+    espnow_channel?: number | null;
   };
 
   const verdict = canAssignNodeToController({
@@ -330,16 +375,14 @@ export async function assignNodeToController(
     return { ok: false, status: 409, error: verdict.message };
   }
 
-  await db
-    .from("board_instances")
-    .update({
-      assigned_controller_id: controller.id,
-      comm_mode: "espnow",
-      node_link_state: "reconnecting",
-      updated_at: now,
-    })
-    .eq("id", node.id)
-    .eq("account_id", params.accountId);
+  const assignUpdates = {
+    assigned_controller_id: controller.id,
+    comm_mode: "espnow",
+    node_link_state: "reconnecting",
+    espnow_telemetry: null,
+    updated_at: now,
+  };
+  await updateBoardInstanceSafe(db, params.accountId, "id", node.id, assignUpdates);
 
   await recordActivity(db, {
     accountId: params.accountId,
@@ -350,7 +393,12 @@ export async function assignNodeToController(
     summary: `Assigned Node "${node.name}" to Controller "${controller.name}"`,
   });
 
-  for (const id of [node.id, controller.id]) {
+  const syncIds = [
+    node.id,
+    controller.id,
+    ...(prevControllerId && prevControllerId !== controller.id ? [prevControllerId] : []),
+  ];
+  for (const id of syncIds) {
     await syncControllerConfigSnapshot(db, env, deps, {
       accountId: params.accountId,
       boardInstanceId: id,
@@ -362,7 +410,8 @@ export async function assignNodeToController(
   return {
     ok: true,
     status: 200,
-    node: { ...node, assigned_controller_id: controller.id },
+    previousControllerId: prevControllerId,
+    node: { ...node, ...assignUpdates },
     controller,
   };
 }
