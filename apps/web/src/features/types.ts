@@ -225,6 +225,8 @@ export interface SensorItem {
   unit: string;
   last_value: number | null;
   last_raw_payload: Record<string, unknown> | null;
+  threshold_enabled?: boolean;
+  threshold_value?: number | null;
   is_online: boolean;
   last_reading_at: string | null;
 }

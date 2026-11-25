@@ -12,6 +12,7 @@ import { RiDragMove2Line } from "@remixicon/react";
 import { isDeviceStateActive } from "@homecoreos/shared";
 import { isEntityOnline } from "@/lib/board-pin-helpers";
 import { cn } from "cn";
+import { formatMultiMetricSummary } from "../../lib/sensor-readings";
 import type {
   ControllerItem,
   DeviceItem,
@@ -57,13 +58,9 @@ interface RoomBadges {
   overflow: MapBadge[];
 }
 
-function formatSensorValue(sensor: SensorItem): string | undefined {
-  if (sensor.last_value === null || sensor.last_value === undefined) return undefined;
-  const unit = (sensor.unit ?? "").trim();
-  if (!unit) return String(sensor.last_value);
-  return unit.startsWith("°") || unit === "%"
-    ? `${sensor.last_value}${unit}`
-    : `${sensor.last_value} ${unit}`;
+function formatSensorValue(sensor: SensorItem, allSensors?: SensorItem[]): string | undefined {
+  const summary = formatMultiMetricSummary(sensor, allSensors);
+  return summary === "—" ? undefined : summary;
 }
 
 /**
@@ -248,7 +245,7 @@ export const SmartHomeMap = memo(function SmartHomeMap({
         isOn: item.last_value !== null && item.last_value !== undefined,
         online: resolveOnline(item.is_online, item.board_instance_id),
         pending: false,
-        valueLabel: formatSensorValue(item),
+        valueLabel: formatSensorValue(item, sensors),
       });
     }
     return byRoom;

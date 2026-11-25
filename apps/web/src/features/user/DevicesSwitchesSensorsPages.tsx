@@ -57,6 +57,10 @@ import {
   SWITCHES_HERO_ICONS,
 } from "@/components/shared/HeroDomainIcons";
 import { SensorSparkline, type SensorReadingPoint } from "@/components/sensors/SensorSparkline";
+import {
+  isSensorThresholdExceeded,
+  resolveSensorReadings,
+} from "../../lib/sensor-readings";
 import { PageHeroHeader, type HeroTone } from "@/components/shared/PageHeroHeader";
 import { Button } from "@/components/ui/button";
 import {
@@ -1305,6 +1309,8 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
               ? roomById.get(sen.room_id)?.name ?? "Assigned room"
               : "Unassigned";
             const online = isEntityOnline(sen.is_online, ctrl);
+            const readings = resolveSensorReadings(sen, sensors);
+            const thresholdAlert = isSensorThresholdExceeded(sen, sensors);
             return (
               <HardwareEntityCard
                 key={sen.id}
@@ -1324,25 +1330,50 @@ export function SensorsPage({ canManage }: { canManage: boolean }) {
                 onMoveRoom={() => setMoveTarget(sen)}
                 onDelete={() => setDeleteTarget(sen)}
               >
-                <div className="flex items-center justify-between gap-2 border-t pt-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold tabular-nums text-foreground">
-                      {sen.last_value !== null
-                        ? `${sen.last_value} ${sen.unit}`
-                        : "No reading"}
-                    </p>
+                <div className="flex items-start justify-between gap-2 border-t pt-3">
+                  <div className="min-w-0 flex-1">
+                    {readings.length > 1 ? (
+                      <div
+                        className="grid grid-cols-2 gap-x-3 gap-y-1.5"
+                        data-testid="multi-metric-readings"
+                      >
+                        {readings.map((r) => (
+                          <div key={r.measurement} className="min-w-0">
+                            <p className="truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              {r.label}
+                            </p>
+                            <p className="truncate text-sm font-semibold tabular-nums text-foreground">
+                              {r.formatted}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm font-semibold tabular-nums text-foreground">
+                        {sen.last_value !== null
+                          ? `${sen.last_value} ${sen.unit}`
+                          : "No reading"}
+                      </p>
+                    )}
                     {sen.last_reading_at && (
-                      <p className="truncate text-[11px] text-muted-foreground">
+                      <p className="mt-1 truncate text-[11px] text-muted-foreground">
                         {formatTimestamp(sen.last_reading_at, timezone)}
                       </p>
                     )}
                   </div>
-                  <Badge
-                    variant={online ? "success-light" : "warning-light"}
-                    radius="full"
-                  >
-                    {online ? "Online" : "Offline"}
-                  </Badge>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <Badge
+                      variant={online ? "success-light" : "warning-light"}
+                      radius="full"
+                    >
+                      {online ? "Online" : "Offline"}
+                    </Badge>
+                    {thresholdAlert.exceeded && (
+                      <Badge variant="destructive" radius="full">
+                        Over threshold
+                      </Badge>
+                    )}
+                  </div>
                 </div>
                 <SensorSparkline
                   sensorType={sen.sensor_type}

@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/reui/select";
+import { formatMultiMetricSummary } from "../../lib/sensor-readings";
 import type {
   ControllerItem,
   DeviceItem,
@@ -353,14 +354,8 @@ function parseFanSpeedFromState(
   return fallbackActiveSpeed;
 }
 
-function formatSensorMetricValue(sensor: SensorItem): string {
-  if (sensor.last_value === null || sensor.last_value === undefined) return "—";
-  const unit = (sensor.unit ?? "").trim();
-  if (!unit) return String(sensor.last_value);
-  if (unit.startsWith("°") || unit === "%") {
-    return `${sensor.last_value}${unit}`;
-  }
-  return `${sensor.last_value} ${unit}`;
+function formatSensorMetricValue(sensor: SensorItem, allSensors?: SensorItem[]): string {
+  return formatMultiMetricSummary(sensor, allSensors);
 }
 
 function formatSensorMetricLabel(sensor: SensorItem): string {
@@ -678,7 +673,7 @@ export function RoomControlsCard({
                         {formatSensorMetricLabel(sensor)}
                       </p>
                       <p className="mt-0.5 truncate text-[15px] font-semibold leading-tight tabular-nums text-foreground">
-                        {formatSensorMetricValue(sensor)}
+                        {formatSensorMetricValue(sensor, sensors)}
                       </p>
                     </div>
                   </div>

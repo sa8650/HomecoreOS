@@ -101,6 +101,8 @@ const sensorSchema = z.object({
   model: z.string().trim().max(64).optional().nullable(),
   physicalSensorId: z.string().uuid().optional().nullable(),
   measurementIds: z.array(z.string().trim().max(64)).max(32).optional(),
+  thresholdEnabled: z.boolean().optional(),
+  thresholdValue: z.number().finite().nullable().optional(),
 });
 
 const deviceUpdateSchema = z.object({
@@ -130,6 +132,8 @@ const sensorUpdateSchema = z.object({
   driverId: z.string().trim().max(64).optional().nullable(),
   model: z.string().trim().max(64).optional().nullable(),
   physicalSensorId: z.string().uuid().optional().nullable(),
+  thresholdEnabled: z.boolean().optional(),
+  thresholdValue: z.number().finite().nullable().optional(),
 });
 
 function defaultUnitForSensorType(st: string, fallback = "unit"): string {
@@ -1625,6 +1629,8 @@ export function createDeviceRoutes() {
             ...(parsed.data.model ? { model: parsed.data.model } : {}),
             ...(parsed.data.resources ? { resources: parsed.data.resources } : {}),
             ...(parsed.data.measurementIds ? { measurement_ids: parsed.data.measurementIds } : {}),
+            ...(parsed.data.thresholdEnabled !== undefined ? { threshold_enabled: parsed.data.thresholdEnabled } : {}),
+            ...(parsed.data.thresholdValue !== undefined ? { threshold_value: parsed.data.thresholdValue } : {}),
           },
           ...(parsed.data.physicalSensorId
             ? { physical_sensor_id: parsed.data.physicalSensorId }
@@ -1869,10 +1875,22 @@ export function createDeviceRoutes() {
         parsed.data.model !== undefined ||
         parsed.data.resources !== undefined ||
         parsed.data.driverId !== undefined ||
+        parsed.data.thresholdEnabled !== undefined ||
+        parsed.data.thresholdValue !== undefined ||
         validatedDriverId ||
         (!targetDriverIsI2c && existingI2cAddr !== null)
       ) {
         const nextPayload = { ...(existing.last_raw_payload ?? {}) };
+        if (parsed.data.thresholdEnabled !== undefined) {
+          nextPayload.threshold_enabled = parsed.data.thresholdEnabled;
+        }
+        if (parsed.data.thresholdValue !== undefined) {
+          if (parsed.data.thresholdValue === null) {
+            delete nextPayload.threshold_value;
+          } else {
+            nextPayload.threshold_value = parsed.data.thresholdValue;
+          }
+        }
         if (validatedDriverId) {
           nextPayload.driver_id = parsed.data.driverId ?? validatedDriverId;
         }
