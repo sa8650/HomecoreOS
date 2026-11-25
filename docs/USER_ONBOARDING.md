@@ -50,7 +50,7 @@ render without an extra round trip.
 | `onboarding_completed_at` | `timestamptz` | `NULL` = dashboard locked; CHECK only allows it when the step is 4 |
 
 Partial index `idx_users_onboarding_pending (user_kind, onboarding_step)` covers the "who is still
-onboarding" query. `npm run db:verify` replays all three migrations into a clean database and
+onboarding" query. `npm run db:verify` replays every numbered migration into a clean database and
 fingerprints the result.
 
 ## 4. UI
@@ -75,7 +75,7 @@ inline alert with **Try again** and never marks the step as completed locally.
 
 | Where | What |
 |---|---|
-| `apps/worker/test/onboarding.test.ts` | 7 tests: register starts at step 1, DB persistence, Back saves, refresh resumes, sign-out/login resumes without completing, completion is idempotent + audited, legacy users stay completed, all routes require a session |
+| `apps/worker/test/onboarding.test.ts` | 8 tests: register starts at step 1, DB persistence, Back saves, refresh resumes, sign-out/login resumes without completing, completion is idempotent + audited, legacy users stay completed, full register-to-completion journey, all routes require a session |
 | `apps/web/src/features/onboarding/user-onboarding.test.tsx` | 8 tests: step 1 + indicator, no skip/close/dismiss, forward-only navigation with persistence, Back, resume from stored step, Get Started completes, failure keeps the tour open, sign-out does not complete |
 | `apps/web/src/App.test.tsx` | Route protection: `/devices` for a new account renders onboarding at `/onboarding`, completed accounts go straight to the console |
 | `packages/shared/test/user-onboarding.test.ts` | Contract: four steps, required/resolved states, normalization, one-step-at-a-time |

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CustomerAuthPage } from "./CustomerAuthPage";
 
@@ -58,6 +58,51 @@ it("opens the card with a personal title and no horizontal tab scroller", () => 
   expect(tabs).not.toBeNull();
   expect(tabs!.className).toContain("overflow-visible");
   expect(tabs!.className).not.toContain("overflow-x-auto");
+});
+
+it("signs in a customer with the submitted credentials", async () => {
+  const calls = installFetchMock();
+  const onAuthenticated = vi.fn();
+  const user = userEvent.setup();
+  render(<CustomerAuthPage onAuthenticated={onAuthenticated} />);
+
+  await user.type(screen.getByLabelText(/Email address/i), "owner@homecoreos.local");
+  await user.type(screen.getByLabelText(/^Password$/i), "Sup3rSecretPass");
+  await user.click(screen.getByRole("button", { name: /Sign in to User Console/i }));
+
+  await waitFor(() => expect(onAuthenticated).toHaveBeenCalledTimes(1));
+  expect(calls.find((call) => call.url.includes("/api/auth/login"))).toMatchObject({
+    method: "POST",
+    body: { email: "owner@homecoreos.local", password: "Sup3rSecretPass" },
+  });
+});
+
+it("creates a customer account with the profile and home details", async () => {
+  const calls = installFetchMock();
+  const onAuthenticated = vi.fn();
+  const user = userEvent.setup();
+  render(<CustomerAuthPage initialTab="register" onAuthenticated={onAuthenticated} />);
+
+  await user.type(screen.getByLabelText(/Full name/i), "Alex Rivera");
+  await user.type(screen.getByLabelText(/Email address/i), "alex@example.com");
+  await user.type(screen.getByLabelText(/Account name/i), "Rivera Household");
+  const homeNameField = screen.getByLabelText(/Primary home name/i);
+  await user.clear(homeNameField);
+  await user.type(homeNameField, "Rivera Home");
+  await user.type(screen.getByLabelText(/^Password$/i), "Sup3rSecretPass");
+  await user.click(screen.getByRole("button", { name: /Create Customer Account/i }));
+
+  await waitFor(() => expect(onAuthenticated).toHaveBeenCalledTimes(1));
+  expect(calls.find((call) => call.url.includes("/api/auth/register"))).toMatchObject({
+    method: "POST",
+    body: {
+      email: "alex@example.com",
+      password: "Sup3rSecretPass",
+      fullName: "Alex Rivera",
+      accountName: "Rivera Household",
+      homeName: "Rivera Home",
+    },
+  });
 });
 
 it("recovers a password with an emailed code, then a new password typed twice", async () => {
