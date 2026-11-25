@@ -467,6 +467,7 @@ static void controller_supervision_task(void *pvParam) {
     uint32_t hb_elapsed_ms = 0;
     uint32_t ota_retry_elapsed_ms = 0;
     uint32_t pair_retry_cooldown_ms = 0;
+    uint32_t role_report_cooldown_ms = 0;
     bool prev_wifi_connected = hc_wifi_is_connected();
 
     hc_prov_button_tracker_reset(&s_btn_tracker);
@@ -480,6 +481,11 @@ static void controller_supervision_task(void *pvParam) {
             pair_retry_cooldown_ms -= 500U;
         } else {
             pair_retry_cooldown_ms = 0;
+        }
+        if (role_report_cooldown_ms >= 500U) {
+            role_report_cooldown_ms -= 500U;
+        } else {
+            role_report_cooldown_ms = 0;
         }
 
         // 0. Keep the provisioning state's view of the stored config current, so
@@ -853,11 +859,16 @@ static void controller_supervision_task(void *pvParam) {
             hc_ota_process_boot_validation(&s_config);
         }
 
-        // 10. Periodic heartbeat & batched telemetry
+        // 10. Periodic heartbeat & immediate role/link transition reporting
         uint32_t hb_interval_ms = (uint32_t)hc_io_get_heartbeat_interval_sec() * 1000U;
         if (hb_interval_ms < 30000U) hb_interval_ms = HOMECORE_DEFAULT_HEARTBEAT_SEC * 1000U;
-        if (s_config.paired && hb_elapsed_ms >= hb_interval_ms) {
+        bool role_state_report =
+            (role_report_cooldown_ms == 0) && hc_role_consume_report_request();
+        if (s_config.paired && (hb_elapsed_ms >= hb_interval_ms || role_state_report)) {
             hb_elapsed_ms = 0;
+            if (role_state_report) {
+                role_report_cooldown_ms = 1500U;
+            }
             note_backend_result(hc_http_post_heartbeat(&s_config));
             if (s_backend_ok) {
                 hc_ota_notify_heartbeat_ok();

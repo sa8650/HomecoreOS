@@ -16,6 +16,7 @@ import {
   normalizeBoardRole,
   normalizeNodeLinkState,
   roleChangeBlocker,
+  evaluateNodeControllerLink,
 } from "../src/board-role";
 
 describe("device roles", () => {
@@ -214,5 +215,140 @@ describe("device roles", () => {
         controllerRole: "node",
       })
     ).toMatchObject({ ok: false });
+  });
+
+  it("evaluates Node-Controller ESP-NOW verification strictly from real hardware state", () => {
+    const baseNode = {
+      id: "node-1",
+      name: "Hallway Node",
+      status: "online",
+      board_role: "node" as const,
+      assigned_controller_id: "ctrl-1",
+      node_comm_mode: "espnow" as const,
+      node_link_state: "reconnecting" as const,
+      config_revision: 5,
+      last_synced_config_revision: 4,
+      pending_config_sync: true,
+    };
+    const baseCtrl = {
+      id: "ctrl-1",
+      name: "Living Hub",
+      status: "online",
+      board_role: "controller" as const,
+      hardware_uid: "AA:BB:CC:DD:EE:01",
+      mqtt_connected: true,
+      wifi_connected: true,
+      connected_node_count: 1, // another Node may be connected — must NOT fool verification!
+      reported_nodes: [{ id: "other-node", link: "linked" as const, rssi: -60, channel: 6 }],
+    };
+
+    // 1. Waiting for Node config sync: never claims connected.
+    const waitingCfg = evaluateNodeControllerLink({
+      node: baseNode,
+      controller: baseCtrl,
+    });
+    expect(waitingCfg.connected).toBe(false);
+    expect(waitingCfg.tone).toBe("waiting");
+    expect(waitingCfg.stages.find((s) => s.id === "node_config")?.status).toBe("active");
+
+    // 2. Node reports linked, but Controller's reported_nodes only contains OTHER node:
+    // connected_node_count === 1 alone MUST NOT mark connected!
+    const waitingRoster = evaluateNodeControllerLink({
+      node: {
+        ...baseNode,
+        node_link_state: "linked",
+        last_synced_config_revision: 5,
+        pending_config_sync: false,
+      },
+      controller: baseCtrl,
+    });
+    expect(waitingRoster.connected).toBe(false);
+    expect(waitingRoster.inControllerRoster).toBe(false);
+    expect(waitingRoster.tone).toBe("waiting");
+
+    // 3. Full bidirectional hardware + Controller roster + Controller MQTT confirmation -> connected!
+    const connected = evaluateNodeControllerLink({
+      node: {
+        ...baseNode,
+        node_link_state: "linked",
+        last_synced_config_revision: 5,
+        pending_config_sync: false,
+        espnow_telemetry: { keepaliveTxSeq: 2, ackRxSeq: 2, ackConfirmed: true, rssi: -49, channel: 6 },
+      },
+      controller: {
+        ...baseCtrl,
+        reported_nodes: [
+          { id: "other-node", link: "linked", rssi: -60, channel: 6 },
+          { id: "node-1", link: "linked", rssi: -48, channel: 6, seq: 2 },
+        ],
+      },
+    });
+    expect(connected.connected).toBe(true);
+    expect(connected.tone).toBe("connected");
+    expect(connected.inControllerRoster).toBe(true);
+    expect(connected.effectiveChannel).toBe(6);
+    expect(connected.effectiveRssi).toBe(-48);
+
+    // 4. Controller MQTT drops while ESP-NOW stays linked -> degraded (amber), NOT green connected!
+    const mqttDown = evaluateNodeControllerLink({
+      node: {
+        ...baseNode,
+        node_link_state: "linked",
+        last_synced_config_revision: 5,
+        pending_config_sync: false,
+      },
+      controller: {
+        ...baseCtrl,
+        mqtt_connected: false,
+        reported_nodes: [{ id: "node-1", link: "linked", rssi: -48, channel: 6 }],
+      },
+    });
+    expect(mqttDown.connected).toBe(false);
+    expect(mqttDown.tone).toBe("degraded");
+    expect(mqttDown.faultTarget).toBe("cloud_link");
+
+    // 5. Standalone Wi-Fi/MQTT fallback -> degraded (amber), never ESP-NOW connected!
+    const standalone = evaluateNodeControllerLink({
+      node: {
+        ...baseNode,
+        node_comm_mode: "wifi_mqtt",
+        node_link_state: "standalone",
+        last_synced_config_revision: 5,
+        pending_config_sync: false,
+      },
+      controller: baseCtrl,
+    });
+    expect(standalone.connected).toBe(false);
+    expect(standalone.tone).toBe("degraded");
+    expect(standalone.faultTarget).toBe("espnow_link");
+
+    // 6. Live disconnect after previous connected state -> connectionLostAfterSuccess!
+    const lost = evaluateNodeControllerLink({
+      node: {
+        ...baseNode,
+        node_link_state: "controller_lost",
+        last_synced_config_revision: 5,
+        pending_config_sync: false,
+      },
+      controller: { ...baseCtrl, reported_nodes: [] },
+      wasEverConnected: true,
+    });
+    expect(lost.connected).toBe(false);
+    expect(lost.connectionLostAfterSuccess).toBe(true);
+    expect(lost.tone).toBe("failed");
+    expect(lost.faultTarget).toBe("espnow_link");
+
+    // 7. Missing Controller MAC -> failed with controller faultTarget.
+    const missingMac = evaluateNodeControllerLink({
+      node: {
+        ...baseNode,
+        last_synced_config_revision: 5,
+        pending_config_sync: false,
+      },
+      controller: { ...baseCtrl, hardware_uid: null, reported_nodes: [] },
+    });
+    expect(missingMac.connected).toBe(false);
+    expect(missingMac.tone).toBe("failed");
+    expect(missingMac.faultTarget).toBe("controller");
   });
 });

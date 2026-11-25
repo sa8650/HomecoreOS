@@ -297,6 +297,7 @@ export function createBoardInstanceRoutes() {
     // actually report a live ESP-NOW link. Assigned-but-lost Nodes are counted
     // separately by the role-change guard, which must warn before orphaning them.
     const attachedNodeCount = new Map<string, number>();
+    const hostedNodeIdsByCtrl = new Map<string, string[]>();
     for (const row of ctrlRows) {
       const id = String(row.id);
       const role = normalizeBoardRole(row.board_role);
@@ -312,6 +313,9 @@ export function createBoardInstanceRoutes() {
       // still said "linked": the card must not claim it as hosted.
       if (String(row.status ?? "") !== "online") continue;
       attachedNodeCount.set(parentId, (attachedNodeCount.get(parentId) ?? 0) + 1);
+      const list = hostedNodeIdsByCtrl.get(parentId) ?? [];
+      list.push(String(row.id));
+      hostedNodeIdsByCtrl.set(parentId, list);
     }
 
     const reconcileOnlineIds: string[] = [];
@@ -369,6 +373,15 @@ export function createBoardInstanceRoutes() {
             }))
           : null;
 
+      const espnowTel =
+        ctrl.espnow_telemetry && typeof ctrl.espnow_telemetry === "object"
+          ? (ctrl.espnow_telemetry as Record<string, unknown>)
+          : null;
+      const reportedNodes =
+        role === "controller" && espnowTel && Array.isArray(espnowTel.roster)
+          ? espnowTel.roster
+          : null;
+
       return {
         ...ctrl,
         status: effectiveStatus,
@@ -394,6 +407,9 @@ export function createBoardInstanceRoutes() {
           ? (nameById.get(assignedControllerId) ?? null)
           : null,
         connected_node_count: role === "controller" ? (attachedNodeCount.get(id) ?? 0) : 0,
+        hosted_node_ids: role === "controller" ? (hostedNodeIdsByCtrl.get(id) ?? []) : [],
+        reported_nodes: reportedNodes,
+        espnow_telemetry: espnowTel,
         role_changed_at: ctrl.role_changed_at ?? null,
         node_last_linked_at: ctrl.node_last_linked_at ?? null,
       };
@@ -1957,6 +1973,15 @@ export function createBoardInstanceRoutes() {
           { role: parsed.data.role },
           "accepted"
         ),
+        ...(result.releasedNodeIds ?? []).map((releasedId) =>
+          makeRealtimeEvent(
+            "board",
+            "updated",
+            releasedId,
+            { assignedControllerId: null, nodeLinkState: "unassigned" },
+            "accepted"
+          )
+        ),
       ]);
 
       return c.json({ device: result.device });
@@ -1990,6 +2015,14 @@ export function createBoardInstanceRoutes() {
         ...(parsed.data.boardInstanceId
           ? [
               makeRealtimeEvent("board", "updated", parsed.data.boardInstanceId, {
+                nodeRosterChanged: true,
+              }),
+            ]
+          : []),
+        ...(result.previousControllerId &&
+        result.previousControllerId !== parsed.data.boardInstanceId
+          ? [
+              makeRealtimeEvent("board", "updated", result.previousControllerId, {
                 nodeRosterChanged: true,
               }),
             ]
@@ -2101,6 +2134,34 @@ export function createBoardInstanceRoutes() {
         })
         .eq("id", node.id)
         .eq("account_id", auth.accountId);
+
+      // Re-publish role config snapshots on retry so a board that missed an
+      // earlier snapshot immediately receives the authoritative assignment.
+      await Promise.all([
+        syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
+          accountId: auth.accountId,
+          boardInstanceId: node.id,
+          reason: "reconnect",
+          forcePublish: true,
+        }).catch(() => null),
+        syncControllerConfigSnapshot(db, c.env ?? {}, deps, {
+          accountId: auth.accountId,
+          boardInstanceId: node.assigned_controller_id,
+          reason: "reconnect",
+          forcePublish: true,
+        }).catch(() => null),
+      ]);
+
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
+        makeRealtimeEvent(
+          "board",
+          "state",
+          node.id,
+          { role: "node", nodeLinkState: "reconnecting" },
+          "accepted",
+          now
+        ),
+      ]);
 
       await recordActivity(db, {
         accountId: auth.accountId,

@@ -176,6 +176,36 @@ export interface ControllerItem {
   assigned_controller_id?: string | null;
   assigned_controller_name?: string | null;
   connected_node_count?: number;
+  hosted_node_ids?: string[];
+  reported_nodes?: Array<{
+    id: string;
+    link: "linked" | "controller_lost" | "reconnecting" | "standalone" | "unassigned";
+    rssi?: number | null;
+    channel?: number | null;
+    seq?: number | null;
+  }> | null;
+  espnow_telemetry?: {
+    channel?: number | null;
+    rssi?: number | null;
+    keepaliveTxSeq?: number | null;
+    ackRxSeq?: number | null;
+    ackConfirmed?: boolean | null;
+    nodeReportedLinkState?:
+      | "linked"
+      | "controller_lost"
+      | "reconnecting"
+      | "standalone"
+      | "unassigned"
+      | null;
+    nodeReportedAt?: string | null;
+    controllerHeardAt?: string | null;
+    controllerReportedRssi?: number | null;
+    controllerReportedChannel?: number | null;
+    rosterReportedAt?: string | null;
+  } | null;
+  config_revision?: number;
+  last_synced_config_revision?: number;
+  pending_config_sync?: boolean;
   role_changed_at?: string | null;
   node_last_linked_at?: string | null;
   offline_recovery_instructions?: string[];

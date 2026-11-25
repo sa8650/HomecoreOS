@@ -234,3 +234,589 @@ export function canAssignNodeToController(input: {
   }
   return { ok: true };
 }
+
+/** Entry in a Controller's firmware-reported ESP-NOW Node roster. */
+export interface EspNowRosterEntry {
+  id: string;
+  link: NodeLinkState;
+  rssi?: number | null;
+  channel?: number | null;
+  seq?: number | null;
+}
+
+/** Hardware-reported ESP-NOW diagnostics stored per board instance. */
+export interface EspNowBoardTelemetry {
+  channel?: number | null;
+  rssi?: number | null;
+  keepaliveTxSeq?: number | null;
+  ackRxSeq?: number | null;
+  ackConfirmed?: boolean | null;
+  nodeReportedLinkState?: NodeLinkState | null;
+  nodeReportedAt?: string | null;
+  controllerHeardAt?: string | null;
+  controllerReportedRssi?: number | null;
+  controllerReportedChannel?: number | null;
+  roster?: EspNowRosterEntry[] | null;
+  rosterReportedAt?: string | null;
+}
+
+export type NodeControllerVerificationTone =
+  | "waiting"
+  | "connected"
+  | "degraded"
+  | "failed";
+
+export type NodeControllerFaultTarget =
+  | "node"
+  | "controller"
+  | "espnow_link"
+  | "cloud_link"
+  | "assignment"
+  | null;
+
+export type NodeControllerStageId =
+  | "save"
+  | "node_config"
+  | "controller_ready"
+  | "espnow_attempt"
+  | "bidirectional_ack"
+  | "controller_cloud"
+  | "verdict";
+
+export type NodeControllerStageStatus =
+  | "pending"
+  | "active"
+  | "confirmed"
+  | "warning"
+  | "failed";
+
+export interface NodeControllerLifecycleStage {
+  id: NodeControllerStageId;
+  label: string;
+  detail: string;
+  status: NodeControllerStageStatus;
+}
+
+export interface NodeSnapshotForVerification {
+  id: string;
+  name: string;
+  status: string;
+  board_role?: BoardRole | string | null;
+  assigned_controller_id?: string | null;
+  node_comm_mode?: NodeCommMode | string | null;
+  comm_mode?: NodeCommMode | string | null;
+  node_link_state?: NodeLinkState | string | null;
+  espnow_channel?: number | null;
+  config_revision?: number | null;
+  last_synced_config_revision?: number | null;
+  pending_config_sync?: boolean | null;
+  last_heartbeat_at?: string | null;
+  last_communication_at?: string | null;
+  node_last_linked_at?: string | null;
+  espnow_telemetry?: EspNowBoardTelemetry | null;
+}
+
+export interface ControllerSnapshotForVerification {
+  id: string;
+  name: string;
+  status: string;
+  board_role?: BoardRole | string | null;
+  hardware_uid?: string | null;
+  mqtt_connected?: boolean | null;
+  wifi_connected?: boolean | null;
+  espnow_channel?: number | null;
+  connected_node_count?: number | null;
+  reported_nodes?: EspNowRosterEntry[] | null;
+  hosted_node_ids?: string[] | null;
+  last_heartbeat_at?: string | null;
+  last_communication_at?: string | null;
+  espnow_telemetry?: EspNowBoardTelemetry | null;
+}
+
+export interface NodeControllerLinkEvaluation {
+  connected: boolean;
+  connectionLostAfterSuccess: boolean;
+  tone: NodeControllerVerificationTone;
+  faultTarget: NodeControllerFaultTarget;
+  headline: string;
+  summary: string;
+  nodeOnline: boolean;
+  controllerOnline: boolean;
+  controllerMqttHealthy: boolean;
+  nodeConfigSynced: boolean;
+  keepaliveSentOrHeard: boolean;
+  controllerHeardNode: boolean;
+  nodeAckConfirmed: boolean;
+  rosterAvailable: boolean;
+  inControllerRoster: boolean;
+  channelMismatch: boolean;
+  effectiveChannel: number | null;
+  effectiveRssi: number | null;
+  stages: NodeControllerLifecycleStage[];
+}
+
+/**
+ * Pure hardware-truthful evaluator for the Node <-> Controller ESP-NOW link.
+ *
+ * Never uses timers or simulated progress to claim a connection: `connected`
+ * becomes true ONLY when server-reported hardware data confirms all required
+ * Node, Controller, ESP-NOW, roster and MQTT invariants.
+ */
+export function evaluateNodeControllerLink(input: {
+  node: NodeSnapshotForVerification | null | undefined;
+  controller: ControllerSnapshotForVerification | null | undefined;
+  saving?: boolean;
+  saveError?: string | null;
+  wasEverConnected?: boolean;
+  waitingOverReconnectWindow?: boolean;
+}): NodeControllerLinkEvaluation {
+  const {
+    node,
+    controller,
+    saving = false,
+    saveError = null,
+    wasEverConnected = false,
+    waitingOverReconnectWindow = false,
+  } = input;
+
+  if (saving || !node || !controller) {
+    const failed = Boolean(saveError);
+    return {
+      connected: false,
+      connectionLostAfterSuccess: false,
+      tone: failed ? "failed" : "waiting",
+      faultTarget: failed ? "assignment" : null,
+      headline: failed
+        ? "Role or Controller assignment failed"
+        : !node || !controller
+          ? "Loading board state…"
+          : "Saving role and Controller assignment…",
+      summary:
+        saveError ??
+        "Updating role and publishing consolidated configuration snapshots to both boards.",
+      nodeOnline: Boolean(node && node.status === "online"),
+      controllerOnline: Boolean(controller && controller.status === "online"),
+      controllerMqttHealthy: Boolean(controller?.mqtt_connected),
+      nodeConfigSynced: false,
+      keepaliveSentOrHeard: false,
+      controllerHeardNode: false,
+      nodeAckConfirmed: false,
+      rosterAvailable: false,
+      inControllerRoster: false,
+      channelMismatch: false,
+      effectiveChannel: null,
+      effectiveRssi: null,
+      stages: [
+        {
+          id: "save",
+          label: "Saving role and Controller assignment",
+          detail: saveError ?? "Writing assignment and updating configuration snapshots.",
+          status: failed ? "failed" : "active",
+        },
+        {
+          id: "node_config",
+          label: "Waiting for Node to apply updated configuration",
+          detail: "Pending assignment save.",
+          status: "pending",
+        },
+        {
+          id: "controller_ready",
+          label: "Waiting for Controller to be ready and discoverable",
+          detail: "Pending assignment save.",
+          status: "pending",
+        },
+        {
+          id: "espnow_attempt",
+          label: "Attempting ESP-NOW link",
+          detail: "Pending configuration sync.",
+          status: "pending",
+        },
+        {
+          id: "bidirectional_ack",
+          label: "Confirming bidirectional Node-Controller communication",
+          detail: "Waiting for keepalive and Controller ACK.",
+          status: "pending",
+        },
+        {
+          id: "controller_cloud",
+          label: "Verifying Controller cloud / MQTT path",
+          detail: "Pending link verification.",
+          status: "pending",
+        },
+        {
+          id: "verdict",
+          label: failed ? "Assignment failed" : "Awaiting hardware confirmation",
+          detail: saveError ?? "Connection is only confirmed from live hardware telemetry.",
+          status: failed ? "failed" : "pending",
+        },
+      ],
+    };
+  }
+
+  const nodeRole = normalizeBoardRole(node.board_role);
+  const ctrlRole = normalizeBoardRole(controller.board_role);
+  const nodeOnline = node.status === "online";
+  const controllerOnline = controller.status === "online";
+  const controllerMqttHealthy = controllerOnline && Boolean(controller.mqtt_connected);
+  const controllerHasMac = Boolean(controller.hardware_uid && controller.hardware_uid.trim().length > 0);
+  const assignmentMatches =
+    nodeRole === "node" &&
+    ctrlRole === "controller" &&
+    node.assigned_controller_id === controller.id;
+
+  const linkState = normalizeNodeLinkState(node.node_link_state);
+  const commMode =
+    normalizeNodeCommMode(node.node_comm_mode) ??
+    normalizeNodeCommMode(node.comm_mode) ??
+    deriveCommMode({
+      role: nodeRole,
+      online: nodeOnline,
+      espNowLinked: linkState === "linked",
+      linkState,
+      mqttConnected: false,
+    });
+
+  const nodeTel = node.espnow_telemetry ?? null;
+  const ctrlTel = controller.espnow_telemetry ?? null;
+
+  // Roster verification: never rely on connected_node_count alone.
+  const reportedRoster =
+    Array.isArray(controller.reported_nodes)
+      ? controller.reported_nodes
+      : Array.isArray(ctrlTel?.roster)
+        ? ctrlTel!.roster!
+        : null;
+  const rosterAvailable = reportedRoster !== null;
+  const rosterEntry = reportedRoster
+    ? reportedRoster.find((r) => r.id === node.id) ?? null
+    : null;
+  const inReportedRoster = Boolean(
+    rosterEntry && normalizeNodeLinkState(rosterEntry.link ?? "linked") === "linked"
+  );
+  const hostedIds = Array.isArray(controller.hosted_node_ids)
+    ? controller.hosted_node_ids
+    : null;
+  const inControllerRoster = rosterAvailable
+    ? inReportedRoster
+    : hostedIds !== null
+      ? hostedIds.includes(node.id)
+      : linkState === "linked" && commMode === "espnow";
+
+  const nodeChannel = nodeTel?.channel ?? node.espnow_channel ?? null;
+  const ctrlChannel =
+    rosterEntry?.channel ?? ctrlTel?.channel ?? controller.espnow_channel ?? null;
+  const effectiveChannel =
+    rosterEntry?.channel ??
+    nodeTel?.controllerReportedChannel ??
+    nodeChannel ??
+    ctrlChannel ??
+    null;
+  const effectiveRssi =
+    rosterEntry?.rssi ??
+    nodeTel?.rssi ??
+    nodeTel?.controllerReportedRssi ??
+    null;
+
+  const channelMismatch = Boolean(
+    nodeChannel &&
+      ctrlChannel &&
+      nodeChannel !== ctrlChannel &&
+      linkState !== "linked"
+  );
+
+  // Config sync check: either the revision is explicitly acknowledged, or the
+  // Node is already reporting post-assignment ESP-NOW activity.
+  const revTarget = typeof node.config_revision === "number" ? node.config_revision : null;
+  const revSynced =
+    typeof node.last_synced_config_revision === "number"
+      ? node.last_synced_config_revision
+      : null;
+  const configExplicitlySynced =
+    node.pending_config_sync === false &&
+    (revTarget === null || revSynced === null || revSynced >= revTarget);
+  const nodeConfigSynced =
+    configExplicitlySynced ||
+    linkState === "linked" ||
+    inReportedRoster ||
+    Boolean(nodeTel?.keepaliveTxSeq && nodeTel.keepaliveTxSeq > 0);
+
+  const controllerHeardNode =
+    inReportedRoster || Boolean(nodeTel?.controllerHeardAt);
+  const keepaliveSentOrHeard =
+    controllerHeardNode ||
+    Boolean(nodeTel?.keepaliveTxSeq && nodeTel.keepaliveTxSeq > 0) ||
+    linkState === "linked";
+  const nodeAckConfirmed =
+    nodeOnline &&
+    assignmentMatches &&
+    linkState === "linked" &&
+    commMode === "espnow" &&
+    nodeTel?.ackConfirmed !== false;
+
+  const connected =
+    nodeOnline &&
+    assignmentMatches &&
+    linkState === "linked" &&
+    commMode === "espnow" &&
+    controllerOnline &&
+    controllerMqttHealthy &&
+    inControllerRoster &&
+    nodeAckConfirmed;
+
+  const connectionLostAfterSuccess = Boolean(wasEverConnected && !connected);
+
+  // Determine overall tone, faultTarget, headline and summary from real state.
+  let tone: NodeControllerVerificationTone = "waiting";
+  let faultTarget: NodeControllerFaultTarget = null;
+  let headline = "Connecting Node to Controller…";
+  let summary =
+    "Waiting for live ESP-NOW keepalive and Controller acknowledgement (2s keepalive · 10s timeout · 45s fallback window).";
+
+  if (connected) {
+    tone = "connected";
+    faultTarget = null;
+    headline = "Connected over ESP-NOW";
+    summary = `${node.name} is linked to ${controller.name} over 2.4 GHz ESP-NOW and routing cloud traffic through ${controller.name}'s MQTT session.`;
+  } else if (!assignmentMatches) {
+    tone = "failed";
+    faultTarget = "assignment";
+    headline = "Controller assignment mismatch";
+    summary =
+      nodeRole !== "node"
+        ? `${node.name} is no longer operating in the Node role.`
+        : ctrlRole !== "controller"
+          ? `${controller.name} is no longer operating as a Controller.`
+          : `${node.name} is no longer assigned to ${controller.name}.`;
+  } else if (!controllerOnline) {
+    tone = "failed";
+    faultTarget = "controller";
+    headline = connectionLostAfterSuccess
+      ? "Connection lost — Controller went offline"
+      : "Selected Controller is offline";
+    summary = `${controller.name} stopped reporting online status. Bring ${controller.name} back online so ${node.name} can link over ESP-NOW.`;
+  } else if (!controllerHasMac && linkState !== "linked" && !inReportedRoster) {
+    tone = "failed";
+    faultTarget = "controller";
+    headline = "Controller MAC address unavailable";
+    summary = `${controller.name} has not reported its hardware MAC address yet, so ${node.name} cannot address ESP-NOW frames to it.`;
+  } else if (!nodeOnline) {
+    tone = "failed";
+    faultTarget = "node";
+    headline = connectionLostAfterSuccess
+      ? "Connection lost — Node went offline"
+      : !nodeConfigSynced
+        ? "Node went offline before applying configuration"
+        : "Node is offline";
+    summary = !nodeConfigSynced
+      ? `${node.name} went offline before acknowledging the updated role configuration.`
+      : `${node.name} is currently offline and has not reported a fresh heartbeat or Controller roster entry.`;
+  } else if (channelMismatch) {
+    tone = "failed";
+    faultTarget = "espnow_link";
+    headline = "ESP-NOW Wi-Fi channel mismatch";
+    summary = `${node.name} is operating on channel ${nodeChannel} while ${controller.name} is on channel ${ctrlChannel}. Both boards must share a 2.4 GHz channel to exchange ESP-NOW frames.`;
+  } else if (linkState === "standalone") {
+    tone = "degraded";
+    faultTarget = "espnow_link";
+    headline = connectionLostAfterSuccess
+      ? "ESP-NOW link lost — running standalone Wi-Fi/MQTT fallback"
+      : "Node fell back to standalone Wi-Fi/MQTT";
+    summary = `${node.name} did not receive a Controller ACK within the 45s ESP-NOW window and opened its own Wi-Fi/MQTT fallback session while continuing to probe ${controller.name} every 15s.`;
+  } else if (linkState === "controller_lost") {
+    tone = "failed";
+    faultTarget = "espnow_link";
+    headline = connectionLostAfterSuccess
+      ? "Connection lost — Controller unreachable over ESP-NOW"
+      : "Node lost ESP-NOW contact with Controller";
+    summary = controllerHeardNode
+      ? `${controller.name} heard a keepalive from ${node.name}, but ${node.name} has not confirmed ${controller.name}'s ACK (missed the 10s link timeout).`
+      : `${node.name} missed ESP-NOW acknowledgements from ${controller.name} past the 10s link timeout and is retrying before the 45s fallback window.`;
+  } else if (linkState === "linked" && commMode === "espnow" && inControllerRoster && !controllerMqttHealthy) {
+    tone = "degraded";
+    faultTarget = "cloud_link";
+    headline = "ESP-NOW linked, but Controller MQTT is disconnected";
+    summary = `${node.name} and ${controller.name} are communicating over ESP-NOW, but ${controller.name}'s MQTT session to HomecoreOS is disconnected so cloud relay is degraded.`;
+  } else if (linkState === "linked" && commMode === "espnow" && !inControllerRoster) {
+    tone = "waiting";
+    faultTarget = null;
+    headline = "Waiting for Controller roster confirmation…";
+    summary = `${node.name} confirmed an ESP-NOW link to ${controller.name}; waiting for ${controller.name}'s next heartbeat to include ${node.name} in its hosted Node roster.`;
+  } else if (controllerHeardNode && !nodeAckConfirmed) {
+    tone = "waiting";
+    faultTarget = null;
+    headline = "Controller heard keepalive — confirming Node ACK…";
+    summary = `${controller.name} received ${node.name}'s ESP-NOW keepalive and sent an ACK; waiting for ${node.name} to confirm bidirectional link state.`;
+  } else if (!nodeConfigSynced) {
+    tone = "waiting";
+    faultTarget = null;
+    headline = "Waiting for Node to apply configuration…";
+    summary = waitingOverReconnectWindow
+      ? `Still waiting for ${node.name} to acknowledge configuration revision ${revTarget ?? "latest"}. Check that ${node.name} is powered and connected to Wi-Fi, or click Retry Connection.`
+      : `Configuration snapshot published to ${node.name}; waiting for revision acknowledgement.`;
+  } else {
+    tone = "waiting";
+    faultTarget = null;
+    headline = waitingOverReconnectWindow
+      ? "Still waiting for ESP-NOW confirmation from hardware"
+      : "Attempting ESP-NOW link…";
+    summary = waitingOverReconnectWindow
+      ? `The 45s initial reconnect window has elapsed without a confirmed ESP-NOW link report yet. Verify both ESP32 boards are powered within 2.4 GHz range on compatible channels, or click Retry Connection.`
+      : `${node.name} is sending 2s ESP-NOW keepalives to ${controller.name}; waiting for bidirectional ACK and roster report.`;
+  }
+
+  // Build the 7 truthful lifecycle stages.
+  const stages: NodeControllerLifecycleStage[] = [
+    {
+      id: "save",
+      label: "Saving role and Controller assignment",
+      detail: assignmentMatches
+        ? `Assigned ${node.name} (Node) to ${controller.name}.`
+        : "Assignment no longer matches the selected Controller.",
+      status: assignmentMatches ? "confirmed" : "failed",
+    },
+    {
+      id: "node_config",
+      label: "Waiting for Node to apply updated configuration",
+      detail: !assignmentMatches
+        ? "Blocked by assignment mismatch."
+        : nodeConfigSynced
+          ? revSynced
+            ? `${node.name} synced configuration revision #${revSynced}.`
+            : `${node.name} applied Node role configuration.`
+          : !nodeOnline
+            ? `${node.name} went offline before acknowledging configuration.`
+            : `Waiting for ${node.name} to acknowledge revision ${revTarget ? `#${revTarget}` : "update"}…`,
+      status: !assignmentMatches
+        ? "failed"
+        : nodeConfigSynced
+          ? "confirmed"
+          : !nodeOnline
+            ? "failed"
+            : "active",
+    },
+    {
+      id: "controller_ready",
+      label: "Waiting for Controller to be ready and discoverable",
+      detail: !controllerOnline
+        ? `${controller.name} is offline.`
+        : !controllerHasMac && linkState !== "linked" && !inReportedRoster
+          ? `${controller.name} has not reported its hardware MAC address.`
+          : `${controller.name} is online${controllerHasMac ? ` (${controller.hardware_uid})` : ""}${ctrlChannel ? ` · Ch ${ctrlChannel}` : ""}.`,
+      status:
+        !controllerOnline || (!controllerHasMac && linkState !== "linked" && !inReportedRoster)
+          ? "failed"
+          : "confirmed",
+    },
+    {
+      id: "espnow_attempt",
+      label: "Attempting ESP-NOW link",
+      detail: channelMismatch
+        ? `Channel mismatch: Node on Ch ${nodeChannel}, Controller on Ch ${ctrlChannel}.`
+        : !nodeOnline || !controllerOnline || !assignmentMatches
+          ? "Paused until both boards are online and assigned."
+          : keepaliveSentOrHeard
+            ? `2.4 GHz ESP-NOW frames active${effectiveChannel ? ` on Ch ${effectiveChannel}` : ""}${nodeTel?.keepaliveTxSeq ? ` (keepalive #${nodeTel.keepaliveTxSeq})` : ""}.`
+            : linkState === "standalone"
+              ? "Initial 45s seek elapsed; probing every 15s from standalone fallback."
+              : nodeConfigSynced
+                ? "Transmitting 2s ESP-NOW keepalives to Controller…"
+                : "Starts as soon as Node applies configuration.",
+      status: channelMismatch
+        ? "failed"
+        : !nodeOnline || !controllerOnline || !assignmentMatches
+          ? "pending"
+          : keepaliveSentOrHeard
+            ? "confirmed"
+            : linkState === "standalone"
+              ? "warning"
+              : nodeConfigSynced
+                ? "active"
+                : "pending",
+    },
+    {
+      id: "bidirectional_ack",
+      label: "Confirming bidirectional Node-Controller communication",
+      detail:
+        nodeAckConfirmed && inControllerRoster
+          ? `Confirmed: ${node.name} is linked over ESP-NOW and listed in ${controller.name}'s Node roster${effectiveRssi !== null ? ` (${effectiveRssi} dBm)` : ""}.`
+          : linkState === "standalone"
+            ? `${node.name} did not link within 45s and is running standalone over Wi-Fi/MQTT.`
+            : linkState === "controller_lost"
+              ? controllerHeardNode
+                ? `Controller heard keepalive, but ${node.name} has not confirmed Controller ACK.`
+                : `Missed Controller ACKs beyond the 10s link timeout.`
+              : nodeAckConfirmed && !inControllerRoster
+                ? `${node.name} confirmed ACK; waiting for ${controller.name}'s roster report.`
+                : controllerHeardNode
+                  ? `${controller.name} received keepalive; waiting for ${node.name} ACK confirmation.`
+                  : "Waiting for Controller roster reception and Node ACK confirmation.",
+      status:
+        nodeAckConfirmed && inControllerRoster
+          ? "confirmed"
+          : linkState === "standalone"
+            ? "warning"
+            : linkState === "controller_lost"
+              ? "failed"
+              : keepaliveSentOrHeard || nodeConfigSynced
+                ? "active"
+                : "pending",
+    },
+    {
+      id: "controller_cloud",
+      label: "Verifying Controller cloud / MQTT path",
+      detail: !controllerOnline
+        ? `${controller.name} is offline — cloud relay unavailable.`
+        : controllerMqttHealthy
+          ? `${controller.name} has an active HomecoreOS MQTT session (Node intentionally closes its own MQTT when linked).`
+          : `${controller.name} is online on Wi-Fi, but its MQTT session to HomecoreOS is disconnected.`,
+      status: !controllerOnline
+        ? "failed"
+        : controllerMqttHealthy
+          ? "confirmed"
+          : "warning",
+    },
+    {
+      id: "verdict",
+      label: connected
+        ? "Connected"
+        : tone === "degraded"
+          ? "Degraded / Fallback"
+          : tone === "failed"
+            ? connectionLostAfterSuccess
+              ? "Connection Lost"
+              : "Connection Failed"
+            : "Waiting for Hardware Confirmation",
+      detail: headline,
+      status: connected
+        ? "confirmed"
+        : tone === "degraded"
+          ? "warning"
+          : tone === "failed"
+            ? "failed"
+            : "active",
+    },
+  ];
+
+  return {
+    connected,
+    connectionLostAfterSuccess,
+    tone,
+    faultTarget,
+    headline,
+    summary,
+    nodeOnline,
+    controllerOnline,
+    controllerMqttHealthy,
+    nodeConfigSynced,
+    keepaliveSentOrHeard,
+    controllerHeardNode,
+    nodeAckConfirmed,
+    rosterAvailable,
+    inControllerRoster,
+    channelMismatch,
+    effectiveChannel,
+    effectiveRssi,
+    stages,
+  };
+}
+

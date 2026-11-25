@@ -99,6 +99,9 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int le
     rx.epoch = hdr->epoch;
     rx.seq = hdr->seq;
     rx.rssi = info->rx_ctrl ? info->rx_ctrl->rssi : 0;
+    rx.channel = (info->rx_ctrl && info->rx_ctrl->channel >= 1 && info->rx_ctrl->channel <= 13)
+        ? (uint8_t)info->rx_ctrl->channel
+        : hc_espnow_get_channel();
     rx.payload_len = payload_len;
     memcpy(rx.payload, data + sizeof(hc_espnow_header_t), payload_len);
     rx.payload[payload_len] = '\0';
@@ -106,22 +109,13 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int le
     if (s_hosting) {
         char from[20];
         mac_to_str(rx.mac, from, sizeof(from));
-        ensure_peer(rx.mac);
-        if (rx.type == HC_ESPNOW_FRAME_NODE_KEEPALIVE) {
-            hc_espnow_send_ack(rx.mac, rx.epoch, rx.seq);
-        }
         if (s_rx_cb) s_rx_cb(&rx);
-        ESP_LOGD(TAG, "node frame from %s type=%d rssi=%d", from, (int)rx.type, rx.rssi);
+        ESP_LOGD(TAG, "node frame from %s type=%d rssi=%d ch=%u", from, (int)rx.type, rx.rssi, (unsigned)rx.channel);
         return;
     }
 
-    if (s_has_target && memcmp(info->src_addr, s_target_mac, 6) != 0) {
-        return; /* someone else's traffic while seeking */
-    }
-    if (rx.type == HC_ESPNOW_FRAME_CONTROLLER_ACK && s_seeking) {
-        s_seeking = false;
-        uint8_t locked_ch = hc_espnow_get_channel();
-        ESP_LOGI(TAG, "Controller answered on channel %u", (unsigned)locked_ch);
+    if (!s_has_target || memcmp(info->src_addr, s_target_mac, 6) != 0) {
+        return; /* ignore frames until a target Controller MAC is armed */
     }
     if (s_rx_cb) s_rx_cb(&rx);
 }
@@ -148,12 +142,13 @@ bool hc_espnow_is_ready(void) {
 }
 
 uint8_t hc_espnow_get_channel(void) {
-    if (s_channel != 0) return s_channel;
     uint8_t primary = 0;
     wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
-    if (esp_wifi_get_channel(&primary, &second) == ESP_OK && primary > 0) {
+    if (esp_wifi_get_channel(&primary, &second) == ESP_OK && primary >= 1 && primary <= 13) {
         return primary;
     }
+    if (s_channel != 0) return s_channel;
+    if (s_seeking && s_seek_channel >= 1 && s_seek_channel <= 13) return s_seek_channel;
     return 1;
 }
 
@@ -180,6 +175,14 @@ esp_err_t hc_espnow_host_start(hc_espnow_rx_fn on_node_frame) {
     s_has_target = false;
     ESP_LOGI(TAG, "Hosting Nodes on channel %u", (unsigned)hc_espnow_get_channel());
     return ESP_OK;
+}
+
+void hc_espnow_stop(void) {
+    s_hosting = false;
+    s_seeking = false;
+    s_has_target = false;
+    memset(s_target_mac, 0, sizeof(s_target_mac));
+    s_rx_cb = NULL;
 }
 
 esp_err_t hc_espnow_seek_start(const char *controller_mac, uint8_t channel, hc_espnow_rx_fn on_ctrl_frame) {
@@ -219,6 +222,13 @@ esp_err_t hc_espnow_seek_start(const char *controller_mac, uint8_t channel, hc_e
 
 bool hc_espnow_is_seeking(void) {
     return s_seeking;
+}
+
+void hc_espnow_seek_lock(void) {
+    if (s_seeking) {
+        s_seeking = false;
+        ESP_LOGI(TAG, "Controller ACK verified on channel %u", (unsigned)hc_espnow_get_channel());
+    }
 }
 
 void hc_espnow_seek_hop(void) {
@@ -299,6 +309,15 @@ esp_err_t hc_espnow_send_ack(const uint8_t mac[6], uint16_t epoch, uint32_t seq)
     return send_frame(mac, HC_ESPNOW_FRAME_CONTROLLER_ACK, epoch, seq, NULL);
 }
 
+esp_err_t hc_espnow_send_ack_json(
+    const uint8_t mac[6],
+    uint16_t epoch,
+    uint32_t seq,
+    const char *json
+) {
+    return send_frame(mac, HC_ESPNOW_FRAME_CONTROLLER_ACK, epoch, seq, json);
+}
+
 esp_err_t hc_espnow_send_command(const char *mac, uint16_t epoch, uint32_t seq, const char *json) {
     uint8_t addr[6];
     if (!hc_espnow_mac_from_string(mac, addr)) return ESP_ERR_INVALID_ARG;
@@ -319,6 +338,7 @@ esp_err_t hc_espnow_host_start(hc_espnow_rx_fn on_node_frame) {
     (void)on_node_frame;
     return ESP_ERR_NOT_SUPPORTED;
 }
+void hc_espnow_stop(void) {}
 esp_err_t hc_espnow_seek_start(const char *controller_mac, uint8_t channel, hc_espnow_rx_fn on_ctrl_frame) {
     (void)controller_mac;
     (void)channel;
@@ -327,6 +347,7 @@ esp_err_t hc_espnow_seek_start(const char *controller_mac, uint8_t channel, hc_e
 }
 bool hc_espnow_is_seeking(void) { return false; }
 void hc_espnow_seek_hop(void) {}
+void hc_espnow_seek_lock(void) {}
 esp_err_t hc_espnow_send_keepalive(const char *mac, uint16_t epoch, uint32_t seq) {
     (void)mac;
     (void)epoch;
@@ -357,6 +378,18 @@ esp_err_t hc_espnow_send_ack(const uint8_t mac[6], uint16_t epoch, uint32_t seq)
     (void)mac;
     (void)epoch;
     (void)seq;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t hc_espnow_send_ack_json(
+    const uint8_t mac[6],
+    uint16_t epoch,
+    uint32_t seq,
+    const char *json
+) {
+    (void)mac;
+    (void)epoch;
+    (void)seq;
+    (void)json;
     return ESP_ERR_NOT_SUPPORTED;
 }
 esp_err_t hc_espnow_add_peer(const char *mac) {

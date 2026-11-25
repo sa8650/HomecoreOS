@@ -53,6 +53,7 @@ typedef struct {
     uint16_t epoch;
     uint32_t seq;
     int8_t rssi;
+    uint8_t channel;
     uint16_t payload_len;
     char payload[HC_ESPNOW_MAX_PAYLOAD + 1];
 } hc_espnow_rx_t;
@@ -73,11 +74,16 @@ uint8_t hc_espnow_get_channel(void);
 /** Controller: register the Node frame handler and start hosting peers. */
 esp_err_t hc_espnow_host_start(hc_espnow_rx_fn on_node_frame);
 
+/** Stops hosting or seeking so a demoted/unassigned board never answers peers. */
+void hc_espnow_stop(void);
+
 /** Node: register the Controller frame handler and (re)target the Controller. */
 esp_err_t hc_espnow_seek_start(const char *controller_mac, uint8_t channel, hc_espnow_rx_fn on_ctrl_frame);
 
 /** Advances the Node's channel search by one hop (no-op unless searching). */
 void hc_espnow_seek_hop(void);
+/** Locks onto the current channel once a validated Controller ACK arrives. */
+void hc_espnow_seek_lock(void);
 bool hc_espnow_is_seeking(void);
 
 /** Sends a keepalive to `mac` (used by the Node every heartbeat interval). */
@@ -112,6 +118,12 @@ esp_err_t hc_espnow_send_command(
 
 /** Answers a Node keepalive so it knows the Controller is alive. */
 esp_err_t hc_espnow_send_ack(const uint8_t mac[6], uint16_t epoch, uint32_t seq);
+esp_err_t hc_espnow_send_ack_json(
+    const uint8_t mac[6],
+    uint16_t epoch,
+    uint32_t seq,
+    const char *json
+);
 
 /** Adds/refreshes a peer (Controller side). */
 esp_err_t hc_espnow_add_peer(const char *mac);

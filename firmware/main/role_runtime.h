@@ -72,6 +72,13 @@ uint8_t hc_role_node_count(void);
 /** Human readable comm mode for heartbeats/logs. */
 const char *hc_role_comm_mode_name(const homecore_config_t *cfg);
 
+/**
+ * True (and cleared) when a role, link, or hosted-roster transition occurred
+ * and the supervisor should push an immediate heartbeat to HomecoreOS instead
+ * of waiting for the 60s periodic interval.
+ */
+bool hc_role_consume_report_request(void);
+
 #ifdef __cplusplus
 }
 #endif
