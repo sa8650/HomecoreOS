@@ -223,7 +223,7 @@ Wi-Fi), and ESP8266 remains a separate legacy layer.
 | 5 | Node fallback never promotes the device | same file — *“accepts a standalone Node reporting its Wi-Fi/MQTT fallback”* |
 | 6 | Demoting a Controller with attached Nodes is refused until acknowledged | same file — *“refuses to demote a Controller that still hosts Nodes…”* |
 | 7 | Node → Controller promotion keeps identity/history; invalid assignments rejected | same file — *“…promotes a Node back to Controller…”*, *“rejects assigning a Node to another Node or to an offline Controller”* |
-| 8 | Node OTA is relayed through the Controller and stays in the shared history | same file — *“relays a Node OTA instruction…”*, *“keeps the Node OTA record in the shared update history”*. Client side: `apps/web/src/components/firmware/firmware-ota-only.test.tsx` |
+| 8 | Node OTA is relayed through the Controller and stays in the shared history | same file — *“relays a Node OTA instruction…”*, *“keeps the Node OTA record in the shared update history”*. Client side: `apps/web/src/features/user/firmware-ota-only.test.tsx` |
 | 9 | Two-tab console: Controllers vs Nodes, standalone wording, role dialogs, assign, re-link | `apps/web/src/features/user/controllers-page-roles.test.tsx` (5 tests) |
 | 10 | Firmware link state machine: link/loss/reconnect/standalone/return, command dedupe, role guards | `firmware/test/test_role_logic.c` (13 functions), run in `build-firmware.yml` |
 

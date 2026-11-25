@@ -1,9 +1,9 @@
 # HomecoreOS End-to-End Platform Validation & Test Report
 
-- **Date:** 2026-11-23
-- **Branch:** `arena/7bfb00ae-homecoreos` (base `b2496fa2915ef0284182875c4901ccb5adfb67f9`)
-- **Environment:** Node v22.22.3, TypeScript (`tsc --noEmit`), ESLint, Vite 6.4.6, Vitest 3.2.7 (PGlite + Mock EMQX + Mock R2 + JSDOM/RTL), GCC 12.2.0 (`-Wall -Wextra -Werror -std=c11`), Python 3.11.2.
-- **Tooling / Hardware Constraints:** ESP-IDF (`idf.py`), PlatformIO (`pio`), Playwright/Chromium, live EMQX Serverless / Supabase instances, and physical ESP32/ESP8266 development boards are **not** present in this sandbox. All target cross-compilation, live RF/Wi-Fi/BLE/ESP-NOW, and physical USB-serial tests are explicitly marked **`BLOCKED (Hardware Required)`** or **`BLOCKED (Toolchain Required)`** — zero hardware-dependent tests were faked or marked passed.
+- **Date:** 2026-11-25 (UTC)
+- **Branch:** `arena/1bcf9385-homecoreos` (branched from `a8ee29fb307ca3f67d44360d24d5b379d09a0ef5`; tests include the working-tree changes in this report)
+- **Environment:** Node v22.22.3, npm 10.9.8, Vite 6.4.6, Vitest 3.2.7, PGlite + Mock EMQX + Mock R2 + JSDOM/React Testing Library, GCC 12.2.0 (`-Wall -Wextra -Werror -std=c11`), Python 3.11.2.
+- **Scope / constraints:** ESP-IDF (`idf.py`), PlatformIO (`pio`), Playwright/Chromium, live EMQX/Supabase services, and physical ESP32/ESP8266 boards are not installed or connected. Worker and realtime cases use local database/broker/storage mocks. UI cases run in JSDOM. Target builds, real RF/Wi-Fi/BLE/ESP-NOW, actual USB flashing, email delivery, and live cloud round-trips remain blocked; none are represented as passed.
 
 ---
 
@@ -13,17 +13,17 @@
 | --- | --- | --- | --- |
 | TypeScript Typecheck | `npm run typecheck` | **PASS** | `packages/shared`, `apps/web`, `apps/worker` — 0 errors |
 | ESLint Static Analysis | `npm run lint` | **PASS** | `apps`, `packages`, `database` — 0 errors, 0 warnings |
-| Production Build | `npm run build` | **PASS** | Shared `tsc`, Web Vite production bundle (1199 modules), Worker `tsc` |
-| Database Schema & Drift | `npm run db:verify` | **PASS** | 8 migrations (`0001`–`0008`), 36 tables, 6 functions, 345 seeded rows |
-| Shared Vitest Suite | `npm -w packages/shared run test` | **PASS** | 19/19 files, 266/266 tests |
-| Worker Integration & E2E Suite | `npm -w apps/worker run test` | **PASS** | 27/27 files, 153/153 tests (includes new 12-scenario `e2e-user-workflows.test.ts`) |
-| Web UI / Component / Logic Suite | `npm -w apps/web run test` | **PASS** | 40/40 files, 336/336 tests |
-| Firmware Host C Unit Suites | `gcc -Wall -Wextra -Werror -std=c11` | **PASS** | 7/7 C suites (`io_state`, `ota_boot`, `provisioning`, `sensor_driver`, `role`, `recovery`, `ble_protocol`) |
-| Firmware Overlay & Verifier Checks | `verify_firmware_image.py` + `unittest` | **PASS** | 21 ESP-IDF board overlays, ESP8266 isolation (7 drivers), 4/4 Python tests |
-| Target ESP-IDF / PlatformIO Compile | `idf.py build` / `pio run` | **BLOCKED (Toolchain Required)** | Verified in CI via `.github/workflows/build-firmware.yml` |
-| Physical ESP32/ESP8266 Hardware Tests | Real boards over USB/Wi-Fi/BLE/ESP-NOW | **BLOCKED (Hardware Required)** | Detailed checklist in §6 below |
+| Production Build | `npm run build` | **PASS (warning)** | Shared and Worker TypeScript builds pass; Vite production bundle transforms 1,202 modules. Largest entry chunk is 550.59 kB minified (177.32 kB gzip), above Vite's 500 kB advisory threshold. |
+| Database Schema & Drift | `npm run db:verify` | **PASS** | Replayed 9 migrations (`0001`–`0009`); 37 tables, 6 functions, 345 seeded rows match the schema snapshot. |
+| Shared Vitest Suite | `npm -w packages/shared run test` | **PASS** | 20/20 files, 274/274 tests. |
+| Worker Integration & E2E Suite | `npm -w apps/worker run test` | **PASS** | 27/27 files, 155/155 tests; includes mocked signup/login, device workflows, board lifecycle, realtime, automations and recovery. |
+| Web UI / Component / Logic Suite | `npm -w apps/web run test` | **PASS** | 42/42 files, 346/346 tests, including customer signup/sign-in and Activity Log UI checks. |
+| Firmware Host C Unit Suites | `gcc -Wall -Wextra -Werror -std=c11` | **PASS** | 7/7 C logic suites (`io_state`, `ota_boot`, `provisioning`, `sensor_driver`, `role`, `recovery`, `ble_protocol`). |
+| Firmware Overlay & Verifier Checks | `verify_firmware_image.py` + `unittest` | **PASS** | 21 ESP-IDF board overlays; isolated ESP8266 profile validated with 15 drivers; 5/5 Python verifier tests. |
+| Target ESP-IDF / PlatformIO Compile | `idf.py build` / `pio run` | **BLOCKED (Toolchain Required)** | Neither toolchain is installed in this sandbox. |
+| Real Browser, Live Cloud & Physical Board Tests | Chromium / live Supabase + EMQX / USB, Wi-Fi, BLE, ESP-NOW | **BLOCKED (Environment Required)** | JSDOM and mock services are not substitutes for real browser, cloud, radio or board validation; checklist in §4E. |
 
-**Total Automated Tests Executed & Passed:** 755 Vitest assertions/cases across 86 files + 7 compiled C logic test suites + 4 Python firmware verifier tests + 21 overlay checks + 8 SQL migration replays.
+**Total automated Vitest cases passed:** 775 across 89 test files, plus 7 compiled C logic suites, 5 Python verifier tests, 21 overlay checks, and one schema verification replay of all 9 migrations.
 
 ---
 
@@ -75,20 +75,22 @@ Every defect below was discovered by auditing and testing real implementation co
 | Workflow 9 & 10: BLE & USB recovery sessions preserving board identity + USB flash record | Worker Recovery Engine / Device API | **PASS** | Recovery sessions update existing `board_instances.id` (no duplicates), normalize `usb_console`->`usb`, return `410` when expired, preserve pre-repair `detected_problems` | `e2e-user-workflows.test.ts`, `recovery-engine-api.test.ts` | None | Fixed `BUG-WK-01`, `BUG-WK-03` | **PASS** | Partial (real BLE/USB link in §4E) |
 | Workflow 11 & 12: Firmware publish, OTA update, incompatible chip guard & Admin Customer Monitoring | Worker Firmware / Admin | **PASS** | Compatible ESP32-S3 OTA installs & validates; incompatible ESP32-C3 release blocked; Admin `/api/admin/accounts/:id/overview` is read-only with 0 MQTT publishes | `e2e-user-workflows.test.ts`, `multiboard-firmware-lifecycle.test.ts`, `admin-customer-monitoring.test.ts` | None | None | **PASS** | Partial (real OTA boot/rollback in §4E) |
 | RBAC, Tenant Isolation, Paused Accounts & Login Rate Limits | Worker Auth & Middleware | **PASS** | Cross-account reads/writes rejected (403/404); support admins cannot mutate; paused accounts blocked | `auth-and-isolation.test.ts` | None | None | **PASS** | No |
-| DB Schema & Migration Drift Verification | `database/migrations/0001..0008` | **PASS** | Replays 8 SQL migrations cleanly; 36 tables, 6 functions, 345 seeded rows match snapshot | `npm run db:verify` | None | None | **PASS** | No |
-| Shared Domain Logic (Board Catalog, GPIO, Recovery, BLE Relay, Planner, Automations) | `packages/shared` (19 files, 266 tests) | **PASS** | All 266 assertions pass including 512-byte BLE relay limit & side-effect-free module check | `npm -w packages/shared run test` | Initial `ble-recovery-relay.test.ts` expected old 240B cap | Updated test to verify 260B accepted & >512B rejected (`BUG-FW-03`) | **PASS** | No |
+| DB Schema & Migration Drift Verification | `database/migrations/0001..0009` | **PASS** | Replays all 9 SQL migrations; 37 tables, 6 functions, 345 seeded rows match snapshot | `npm run db:verify` | None | None | **PASS** | No |
+| Shared Domain Logic (Board Catalog, GPIO, Recovery, BLE Relay, Planner, Automations) | `packages/shared` (20 files, 274 tests) | **PASS** | All 274 tests pass, including board catalogs, GPIO mapping, firmware compatibility, sensors, BLE relay, planner, automations and wire diagrams | `npm -w packages/shared run test` | None in this run | None | **PASS** | No |
 | Performance & Query Budget Benchmark | `apps/worker/test/perf-benchmark.test.ts` | **PASS** | Core routes complete with bounded DB/EMQX calls (e.g. `GET /api/homes/overview`: 8 DB, 0 EMQX; `POST /api/switches/:id/toggle`: 8 DB, 2 EMQX) | `npm -w apps/worker run test -- test/perf-benchmark.test.ts` | None | None | **PASS** | No |
 
 ### 4B. Browser / DOM UI & State Tests (React Testing Library + JSDOM)
 
-> Note: Headless Chromium/Playwright is not installed in this sandbox. UI flows, routing, forms, modals, Dynamic Island, sidebar collapse, multi-tab BroadcastChannel leadership, and responsive layout classes were verified via 40 RTL/JSDOM suites (336 tests).
+> Note: Headless Chromium/Playwright is not installed in this sandbox. UI flows, routing, forms, modals, Activity Log, Dynamic Island, sidebar collapse, multi-tab BroadcastChannel leadership, and responsive layout classes were verified via 42 RTL/JSDOM suites (346 tests); this does not claim visual verification in a real browser.
 
 | Test Name | Component | Status | Expected vs Actual | Repro Steps | Errors / Logs | Root Cause / Fix | Retest | Hardware Required? |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | SPA Routing, Auth Guards, Onboarding Redirect & Admin Isolation | `apps/web/src/App.test.tsx` | **PASS** | Unauthenticated `/` -> Sign In; `/admin` -> Admin Bootstrap; new users forced into onboarding; support admins have read-only UI | `npm -w apps/web run test -- src/App.test.tsx` | None | None | **PASS** | No |
+| Customer Signup, Sign-In & Password Recovery Forms | `apps/web/src/features/auth/customer-auth-recovery.test.tsx` | **PASS** | Submits registration/login credentials to Worker routes, completes six-digit recovery and rejects a wrong code | `npm --workspace=apps/web run test -- src/features/auth/customer-auth-recovery.test.tsx` | None | Added direct signup and sign-in interaction coverage | **PASS** | No |
+| User Activity Log | `apps/web/src/features/user/activity-page.test.tsx` | **PASS** | Renders account audit events, category/action/timezone details, and reloads when the category filter changes | `npm --workspace=apps/web run test -- src/features/user/activity-page.test.tsx` | None | Added focused Activity Log UI tests | **PASS** | No |
 | Sidebar, Dynamic Island, Floor Plan, Modals & Responsive Layouts | `ui-features.test.tsx`, `ui-overhaul.test.tsx`, `ui-layout-theme-audit.test.tsx` | **PASS** | 2D floorplan controls, Room Editor, Switch/Sensor/Device modals, GPIO conflict selector, Dynamic Island, MagicCard, sticky headers | `npm -w apps/web run test` | None | None | **PASS** | No |
 | RealtimeSyncClient Multi-Tab Leadership & Reconnect Flush | `apps/web/src/lib/realtime/realtime-sync.test.tsx` | **PASS** | Single MQTT WS session across tabs; follower `"probe"` receives immediate `"status"`; reconnect flushes missed events; prior transport/timers cleaned up | `npm -w apps/web run test -- src/lib/realtime/realtime-sync.test.tsx` | None | Fixed `BUG-WEB-04` | **PASS** | No |
-| Smart Home Planner, Board Library, Wire Diagram, Admin Customer Details | `SmartHomePlannerPage.test.tsx`, `board-library-workflows.test.tsx`, `wire-diagram-modal.test.tsx`, `AdminCustomerDetailsPage.test.tsx` | **PASS** | 100% pass across all 40 web test files (336/336 tests) | `npm -w apps/web run test` | None | Deduplicated `emptyDeviceCounts`, `normalizeChipFamily`, `readSensorI2cAddress` | **PASS** | No |
+| Smart Home Planner, Board Library, Wire Diagram, Admin Customer Details | `features/user/SmartHomePlannerPage.test.tsx`, `features/board-library-workflows.test.tsx`, `components/hardware/wire-diagram-modal.test.tsx`, `features/admin/AdminCustomerDetailsPage.test.tsx` | **PASS** | 100% pass across all 42 web test files (346/346 tests) | `npm -w apps/web run test` | None | None in this run | **PASS** | No |
 | Real Headless Browser E2E (Playwright/Chromium) | Live Browser Engine | **BLOCKED (Toolchain Required)** | Chromium/Playwright not installed in sandbox | Install Playwright/Chromium and run against live preview | N/A | N/A | N/A | No (requires browser binary) |
 
 ### 4C. Firmware Host-C Logic & Build Configuration Verification
@@ -100,8 +102,8 @@ Every defect below was discovered by auditing and testing real implementation co
 | Role State Machine (`test_role_logic.c`) | `firmware/main/role_logic.c` | **PASS** | Controller vs Node role transitions, ESP-NOW link timeout & MQTT gating | `gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_role_logic.c firmware/main/role_logic.c` | None | Fixed `BUG-FW-04`, `BUG-FW-05`, `BUG-FW-06` | **PASS** | Partial (real ESP-NOW in §4E) |
 | OTA Boot Validation (`test_ota_boot_logic.c`) | `firmware/main/ota_boot_logic.c` | **PASS** | Dual-slot pending-verify, rollback conditions, boot confirm thresholds | `gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_ota_boot_logic.c firmware/main/ota_boot_logic.c` | None | Fixed `BUG-FW-04` (linked Node OTA confirm) | **PASS** | Partial (real OTA flash in §4E) |
 | Provisioning, IO State & Sensor Drivers (`test_provisioning_logic.c`, `test_io_state_logic.c`, `test_sensor_driver_logic.c`) | `firmware/main/*.c` | **PASS** | All 3 suites compile cleanly with `-Werror` and pass all assertions | Run GCC commands in `.github/workflows/build-firmware.yml` | None | None | **PASS** | Partial (real sensors in §4E) |
-| 21-Board `.sdkconfig` Overlays & Partition Tables | `firmware/boards/*.sdkconfig`, `firmware/partitions*.csv` | **PASS** | All 21 overlays valid; 4MB/8MB/16MB dual-OTA offsets aligned; 4/4 Python verifier unit tests pass | `python3 firmware/scripts/verify_firmware_image.py --verify-board-overlays firmware/boards` | None | None | **PASS** | No |
-| ESP8266 Profile Isolation & Feature Scope | `firmware/esp8266/src/main.cpp`, `board-profile.json` | **PASS (Starter Scope)** | Isolated profile verified (7 drivers). **NOT IMPLEMENTED on ESP8266:** BLE, ESP-NOW, MQTT client, OTA rollback, and unified recovery console — honestly documented in `README.md` and `firmware/README.md` | `python3 firmware/scripts/verify_firmware_image.py --verify-esp8266-profile firmware/esp8266/board-profile.json` | None | Updated `README.md` to state exact starter scope | **PASS** | Yes (PlatformIO build & NodeMCU board) |
+| 21-Board `.sdkconfig` Overlays & Partition Tables | `firmware/boards/*.sdkconfig`, `firmware/partitions/*.csv` | **PASS** | All 21 overlays validated; 4MB/8MB/16MB partition layouts checked; all 5 Python verifier tests pass | `python3 firmware/scripts/verify_firmware_image.py --verify-board-overlays firmware/boards` | None | None | **PASS** | No |
+| ESP8266 Profile Isolation & Feature Scope | `firmware/esp8266/src/main.cpp`, `board-profile.json` | **PASS (profile check only)** | Isolated NodeMCU profile verified with 15 drivers. ESP8266 still does not implement BLE, ESP-NOW, MQTT client, OTA rollback, or unified recovery console; no PlatformIO build was run here. | `python3 firmware/scripts/verify_firmware_image.py --verify-esp8266-profile firmware/esp8266/board-profile.json` | None | None in this run | **PASS** | Yes (PlatformIO build & NodeMCU board) |
 | Target Cross-Compilation for 21 ESP32 Targets | ESP-IDF v5.4/v5.5.2 (`idf.py build`) | **BLOCKED (Toolchain Required)** | `idf.py` / xtensa & riscv32 toolchains not installed in sandbox; executed via GitHub Actions `.github/workflows/build-firmware.yml` | Trigger CI `build-firmware.yml` | N/A | N/A | N/A | No (requires ESP-IDF container) |
 
 ### 4D. Simulated Hardware Tests (Mock Web Serial / esptool-js / BLE GATT / Recovery Console)
@@ -126,4 +128,32 @@ Every item below requires real physical ESP32-family / ESP8266 hardware, real RF
 | Real 2-Board ESP-NOW Pairing, Wi-Fi STA Channel Coexistence, Packet Loss Recovery & MQTT Forwarding | `firmware/main/espnow_link.c` | **BLOCKED (Hardware Required)** | 1 Controller board + 1+ Node board on live Wi-Fi router + EMQX Serverless |
 | Real Dual-Partition OTA Upgrade, Linked ESP-NOW Node Boot Confirm & Automatic Rollback on Bad Image | `firmware/main/ota_manager.c` | **BLOCKED (Hardware Required)** | Controller + linked Node + R2 OTA binary |
 | Real I2C/1-Wire/Analog Sensor Readings (DHT22, BME280, SHT31, BH1750, etc.) & Watchdog/Heap Soak | `firmware/main/sensor_driver*.c` | **BLOCKED (Hardware Required)** | Physical sensors wired to board GPIOs (24h soak) |
-| Live EMQX Serverless TLS-8883 + Browser WSS + Cloudflare Worker + Supabase Round-Trip | Full deployed cloud stack | **BLOCKED (Hardware Required)** | Deployed Worker, Supabase DB, EMQX Serverless, and physical Controller |
+| Live EMQX Serverless TLS-8883 + Browser WSS + Cloudflare Worker + Supabase Round-Trip | Full deployed cloud stack | **BLOCKED (Live services + board required)** | Deployed Worker, Supabase database, EMQX Serverless, browser and physical Controller |
+
+## 5. Requested feature coverage
+
+| # | Area | Automated evidence | Result and boundary |
+| --- | --- | --- | --- |
+| 1 | Sensors, switches and devices | Worker sensor compatibility, sensor readings, entity PATCH/CRUD, switch toggles and device command tests; shared physical-sensor/driver contracts; firmware IO and sensor-driver host C suites. | **PASS (simulated / host logic).** Real GPIO, I²C, 1-Wire, ADC and sensor readings need boards and sensors. |
+| 2 | Board Library, connectivity, firmware, flashing and maps | Board catalog/import and validation suites; board roles and pairing; firmware release/OTA lifecycle; GPIO/pinout tests; mocked BLE, EMQX and Web Serial/esptool flows; 21 board overlay checks and ESP8266 profile check. | **PASS (simulated / static).** Real USB flash, radio connectivity, target compilation and boot/OTA validation remain blocked. |
+| 3 | Home Preview, Controller Preview and wire diagram | `overview-preview-toggle.test.tsx`, `controller-wiring-preview.test.tsx`, `wire-diagram-modal.test.tsx`, floor-plan geometry tests. | **PASS (JSDOM).** Diagram correctness is contract-tested; physical wiring is not verified. |
+| 4 | Automations and Action Button | Shared rule/flow/action contracts; Worker automation and action execution tests; visual flow-builder dry-run and Action Button settings/island UI tests. | **PASS (mocked integration + JSDOM).** No real controller execution is claimed. |
+| 5 | UI/UX layout and theme | UI feature/overhaul/layout-theme suites cover navigation, overlays, responsive classes, light/dark styling and theme interactions. | **PASS (JSDOM).** No screenshot or cross-browser visual test was available. |
+| 6 | Realtime synchronization and state changes | Worker realtime snapshot/event tests; browser `RealtimeSyncClient` reconnect, event delta, multi-tab leadership and MQTT transport tests. | **PASS (mocked broker).** Live Supabase/EMQX ACL, latency and reconnect behavior remain unverified. |
+| 7 | Notifications, alerts and activity | Worker notification creation/preferences/read-state/tenant-isolation and audit-log assertions; notification popover/page tests; new Activity Log rendering and filter tests. | **PASS (mocked database/broker + JSDOM).** Real email/push delivery and production alert traffic were not tested. |
+| 8 | Documentation against the checked-out repository | Compared migration lists, test counts, test paths and feature claims with migrations and test files. Corrections are summarized in §6. | **PASS for audited claims.** Historical dated audit notes remain historical and were not rewritten as current build results. |
+| 9 | Signup, sign-in and password recovery | Worker registration/login/session/rate-limit/isolation suites; customer auth UI registration and sign-in tests; five Worker reset-flow cases and UI email-code/new-password/wrong-code tests. | **PASS (PGlite + mocks).** Live Supabase sessions and Brevo email delivery were not exercised. |
+
+## 6. Documentation consistency fixes
+
+- `README.md` now lists the schema through `0009_physical_sensor_instances.sql` rather than stopping at `0008`.
+- `database/README.md` now documents migrations `0006`–`0009`; its old claim of “70 integration tests” was removed in favor of describing the current PGlite-backed test behavior without a stale count.
+- `docs/USER_ONBOARDING.md` now describes replaying every numbered migration and reports the current eight Worker onboarding tests (the UI suite remains eight tests).
+- A relative Markdown-link sweep checked all 16 Markdown files and found no broken links; `docs/UNIFIED_CONTROLLER_NODE.md` also had one stale OTA UI test path, now corrected to the existing `features/user/firmware-ota-only.test.tsx`.
+- This report's branch, migration/table counts, suite counts, ESP8266 driver count, browser/cloud/hardware boundaries, and build warnings were refreshed from this checkout and the commands listed above.
+
+## 7. Follow-up findings and limits
+
+- **Dependency audit:** `npm audit` reports 25 advisories in the full lockfile (1 low, 16 moderate, 6 high, 2 critical). `npm audit --omit=dev` reports 3 production-tree advisories (1 high, 2 moderate, 0 critical), including current advisories affecting `zod` and DiceBear. This validation task did not change dependency versions; schedule a reviewed dependency-upgrade/remediation change.
+- **Bundle-size advisory:** Vite builds successfully, but the minified entry chunk is 550.59 kB (177.32 kB gzip), above its 500 kB warning threshold. Consider further code splitting separately.
+- **Physical and live-service validation:** Before release, run the §4E checklist against supported boards and a deployed Worker/Supabase/EMQX stack, and perform a browser pass in Chromium/Edge for USB Serial, Web Bluetooth, responsive layout and real sign-up/password-reset email delivery.

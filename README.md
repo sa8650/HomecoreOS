@@ -49,7 +49,7 @@ packages/
   shared/           Shared TypeScript types, verified Board Library & pinouts, flow-graph compiler/validator, timezone & version helpers
 firmware/           ESP-IDF C firmware (21 board overlays, Kconfig sensor drivers, host C tests, verifier) & isolated firmware/esp8266/
 database/
-  migrations/       PostgreSQL schema: 0001_init.sql baseline through 0008_board_recovery_health.sql
+  migrations/       PostgreSQL schema: 0001_init.sql baseline through 0009_physical_sensor_instances.sql
   verify/           Schema snapshot + `npm run db:verify` drift check
   seeds/            Development-only seed data
 .github/workflows/  CI checks & automated ESP-IDF firmware build pipeline
