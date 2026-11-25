@@ -21,6 +21,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import { TimezoneContext } from "@/lib/timezone";
 import { RealtimeProvider } from "@/lib/realtime/RealtimeProvider";
+import { SensorThresholdAlertPopup } from "@/components/sensors/SensorThresholdAlertPopup";
 import { AdminIslandWorkspaceBar } from "@/components/dynamic-island/AdminIslandWorkspaceBar";
 import { UserIslandWorkspaceBar } from "@/components/dynamic-island/UserIslandWorkspaceBar";
 import { ConsoleShell, type NavItem } from "@/components/layout/ConsoleShell";
@@ -584,6 +585,7 @@ export function App() {
     <TooltipProvider delayDuration={200}>
       <TimezoneContext.Provider value={userEffectiveTz}>
         <RealtimeProvider accountId={userSession.account.id}>
+          <SensorThresholdAlertPopup />
         <ConsoleShell
           consoleTitle={userSession.account.name}
           navItems={USER_ROUTES}

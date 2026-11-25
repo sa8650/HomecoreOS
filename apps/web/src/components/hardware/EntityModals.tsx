@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { getSensorThresholdConfig } from "../../lib/sensor-readings";
 import {
   SENSOR_MEASUREMENT_REGISTRY,
   SUPPORTED_DEVICE_TYPES,
@@ -513,6 +514,8 @@ export function SensorEditorModal({
   const [model, setModel] = useState<string>("");
   const [auxPinText, setAuxPinText] = useState("");
   const [shareModuleId, setShareModuleId] = useState(MODULE_SEPARATE);
+  const [thresholdEnabled, setThresholdEnabled] = useState(false);
+  const [thresholdValue, setThresholdValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveCompatByCtrl, setLiveCompatByCtrl] = useState<
@@ -546,6 +549,9 @@ export function SensorEditorModal({
           String(savedResources?.pins?.i2c_scl ?? savedResources?.pins?.uart_rx ?? savedResources?.pins?.spi_cs ?? "")
         );
         setShareModuleId(MODULE_SEPARATE);
+        const thresholdCfg = getSensorThresholdConfig(sensorItem);
+        setThresholdEnabled(thresholdCfg.enabled);
+        setThresholdValue(thresholdCfg.value !== null ? String(thresholdCfg.value) : "");
       } else {
         setName("");
         const initialCtrlId = ctx.controllers[0]?.id ?? "";
@@ -565,6 +571,8 @@ export function SensorEditorModal({
         setModel("");
         setAuxPinText("");
         setShareModuleId(MODULE_SEPARATE);
+        setThresholdEnabled(false);
+        setThresholdValue("");
       }
     } else if (!sensorItem && !boardInstanceId && ctx.controllers[0]?.id) {
       setControllerId(ctx.controllers[0].id);
@@ -888,6 +896,15 @@ export function SensorEditorModal({
           ? siblingModules.find((s) => s.id === shareModuleId)?.physicalSensorId ?? undefined
           : sensorItem?.physical_sensor_id ?? undefined;
 
+      const parsedThreshold =
+        thresholdValue.trim() === "" ? null : Number(thresholdValue.trim());
+      if (thresholdEnabled && (parsedThreshold === null || !Number.isFinite(parsedThreshold))) {
+        setError("Enter a valid numeric threshold value when threshold alert is enabled.");
+        savingRef.current = false;
+        setSaving(false);
+        return;
+      }
+
       const payload = {
         name: name.trim(),
         sensorType,
@@ -899,6 +916,8 @@ export function SensorEditorModal({
         model: model || null,
         resources,
         physicalSensorId: selectedPhysicalId,
+        thresholdEnabled,
+        thresholdValue: parsedThreshold,
       };
       if (isEditing && sensorItem) {
         await apiFetch(`/api/sensors/${sensorItem.id}`, {
@@ -1205,6 +1224,41 @@ export function SensorEditorModal({
               />
             </FormField>
           )}
+
+          <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-foreground">Threshold alert</p>
+                <p className="text-xs text-muted-foreground">
+                  Show a screen alert popup when the reading exceeds this value.
+                </p>
+              </div>
+              <input
+                id="sen-threshold-enabled"
+                type="checkbox"
+                aria-label="Enable threshold alert"
+                checked={thresholdEnabled}
+                onChange={(e) => setThresholdEnabled(e.target.checked)}
+                className="h-4 w-4 rounded border-border accent-primary"
+              />
+            </div>
+            {thresholdEnabled && (
+              <FormField
+                label="Alert threshold"
+                id="sen-threshold-value"
+                hint={`Triggers when reading is over this value${getSensorMeasurementByType(sensorType)?.defaultUnit ? ` (${getSensorMeasurementByType(sensorType)?.defaultUnit})` : ""}.`}
+              >
+                <Input
+                  id="sen-threshold-value"
+                  type="number"
+                  step="any"
+                  value={thresholdValue}
+                  onChange={(e) => setThresholdValue(e.target.value)}
+                  placeholder="e.g. 30"
+                />
+              </FormField>
+            )}
+          </div>
 
           <DialogFooter>
             <Button
