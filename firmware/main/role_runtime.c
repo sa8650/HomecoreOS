@@ -1083,7 +1083,7 @@ void hc_role_set_binding_challenge(const homecore_config_t *cfg,
         hc_copy_str(s_challenge_id, sizeof(s_challenge_id), challenge_id);
         hc_copy_str(s_challenge_nonce, sizeof(s_challenge_nonce), nonce ? nonce : "");
         s_challenge_generation = generation;
-        ESP_LOGI(TAG, "Stored Worker binding challenge generation %u", generation);
+        ESP_LOGI(TAG, "Stored Worker binding challenge generation %u", (unsigned)generation);
         return;
     }
     if (!node_id) return;
@@ -1096,7 +1096,7 @@ void hc_role_set_binding_challenge(const homecore_config_t *cfg,
                     sizeof(s_peer_bindings[i].challenge_id), challenge_id);
         hc_copy_str(s_peer_bindings[i].challenge_nonce,
                     sizeof(s_peer_bindings[i].challenge_nonce), nonce ? nonce : "");
-        ESP_LOGI(TAG, "Stored Worker challenge for Node %s generation %u", node_id, generation);
+        ESP_LOGI(TAG, "Stored Worker challenge for Node %s generation %u", node_id, (unsigned)generation);
         return;
     }
     ESP_LOGW(TAG, "No peer slot available for binding challenge");
