@@ -28,7 +28,9 @@ import { NodeCard } from "@/components/controllers/NodeCard";
 import { NodeControllerLinkDialog } from "@/components/controllers/NodeControllerLinkDialog";
 import {
   canAssignNodeToController,
+  getBoardCapabilities,
   normalizeBoardRole,
+  supportsRole,
 } from "@homecoreos/shared";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FramePanel } from "@/components/reui/frame";
@@ -364,16 +366,19 @@ export function MyBoardsPage({
   const makeNodeCandidates = useMemo(() => {
     const device = roleTarget?.role === "node" ? roleTarget.device : null;
     if (!device) return [];
-    return controllerDevices.filter(
-      (c) =>
-        canAssignNodeToController({
-          nodeId: device.id,
-          boardInstanceId: c.id,
-          controllerRole: normalizeBoardRole(c.board_role),
-          controllerOnline: c.status === "online",
-          sameHome: !device.home_id || c.home_id === device.home_id,
-        }).ok
-    );
+    return controllerDevices.filter((c) => {
+      const board = boardForController(c);
+      const boardId = board?.slug ?? c.board_compat?.slug ?? c.reported_board_slug ?? null;
+      const registryBoard = getBoardCapabilities(boardId);
+      if (registryBoard && !supportsRole(boardId, "controller")) return false;
+      return canAssignNodeToController({
+        nodeId: device.id,
+        boardInstanceId: c.id,
+        controllerRole: normalizeBoardRole(c.board_role),
+        controllerOnline: c.status === "online",
+        sameHome: !device.home_id || c.home_id === device.home_id,
+      }).ok;
+    });
   }, [roleTarget, controllerDevices]);
 
   const filteredControllers = useMemo(() => {
@@ -874,6 +879,9 @@ export function MyBoardsPage({
                   onAction={(action) => void handleAction(ctrl, action)}
                   onMoveToTrash={() => setTrashTarget(ctrl)}
                   onMakeNode={() => {
+                    const board = boardForController(ctrl);
+                    const boardId = board?.slug ?? ctrl.board_compat?.slug ?? null;
+                    if (getBoardCapabilities(boardId) && !supportsRole(boardId, "node")) return;
                     setMakeNodeControllerId("");
                     setMakeNodePartialFailure(null);
                     setRoleTarget({ device: ctrl, role: "node" });

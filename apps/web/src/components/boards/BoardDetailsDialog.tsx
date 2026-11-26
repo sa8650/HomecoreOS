@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import {
   chipFamilyLabel,
   displayBoardRevision,
+  getBoardCapabilities,
   resolveBoardHardwareSpecs,
   supportsBleProvisioningForBoard,
 } from "@homecoreos/shared";
@@ -318,6 +319,34 @@ export function BoardDetailsDialog({
             )}
           </div>
         </DialogHeader>
+        {board && (() => {
+          const capability = getBoardCapabilities(board.slug);
+          return capability ? (
+            <div className="mb-3 rounded-lg border border-border/70 bg-muted/40 p-3 text-xs">
+              <p className="font-semibold">Connectivity profile</p>
+              <p className="mt-1 text-muted-foreground">
+                Roles: {capability.roles.supported.length
+                  ? capability.roles.supported.join(", ")
+                  : "local only"} · Transports: {capability.transports.length
+                  ? capability.transports.join(", ")
+                  : "none"} · Support: {capability.support.status}
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {capability.firmware.framework} {capability.firmware.sdk_version} ·
+                ESP-NOW peers {capability.radio.espnow_peer_limit} · max Nodes{" "}
+                {capability.limits.max_controller_nodes} · provisioning:{" "}
+                {[
+                  capability.radio.ble_provisioning ? "BLE" : null,
+                  capability.radio.softap_provisioning ? "SoftAP" : null,
+                  capability.radio.usb_recovery ? "USB recovery" : null,
+                ].filter(Boolean).join(", ") || "none"}
+              </p>
+              {capability.support.notes.map((note) => (
+                <p key={note} className="mt-1 text-muted-foreground">{note}</p>
+              ))}
+            </div>
+          ) : null;
+        })()}
         {board && (
           <Tabs defaultValue="details" key={board.id} className="space-y-4">
             <TabsList>

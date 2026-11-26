@@ -1,0 +1,1277 @@
+{
+  "schema_version": 1,
+  "description": "Canonical HomecoreOS board connectivity capability registry. Capabilities are explicit per board ID; chip names are never used as a proxy.",
+  "chip_wireless_policy": {
+    "esp32p4": {
+      "integrated_wifi": false,
+      "external_wireless_companion_required": true,
+      "network_roles_enabled": false
+    }
+  },
+  "boards": [
+    {
+      "board_id": "esp32-s3-devkitc-1-n16r8",
+      "chip_target": "esp32s3",
+      "chip_variant": "ESP32-S3-WROOM-1-N16R8",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/esp32-s3-devkitc-1-n16r8.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 16,
+        "espnow_encrypted_peer_limit": 8,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 16,
+        "psram_mb": 8,
+        "psram_mode": "octal",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 10,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "supported",
+        "firmware_build_verified": true,
+        "hardware_tested": true,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "esp32-s3-devkitc-1-v1-0",
+      "chip_target": "esp32s3",
+      "chip_variant": "ESP32-S3-WROOM-1-N8R8",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/esp32-s3-devkitc-1-v1-0.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 12,
+        "espnow_encrypted_peer_limit": 6,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 8,
+        "psram_mb": 8,
+        "psram_mode": "octal",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 8,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "seeed-xiao-esp32s3",
+      "chip_target": "esp32s3",
+      "chip_variant": "ESP32-S3R8 (Seeed XIAO)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/seeed-xiao-esp32s3.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 12,
+        "espnow_encrypted_peer_limit": 6,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 8,
+        "psram_mb": 8,
+        "psram_mode": "octal",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 8,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "seeed-xiao-esp32s3-sense",
+      "chip_target": "esp32s3",
+      "chip_variant": "ESP32-S3R8 (Seeed XIAO Sense)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/seeed-xiao-esp32s3-sense.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 12,
+        "espnow_encrypted_peer_limit": 6,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 8,
+        "psram_mb": 8,
+        "psram_mode": "octal",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 8,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "seeed-xiao-esp32s3-plus",
+      "chip_target": "esp32s3",
+      "chip_variant": "ESP32-S3R8 (Seeed XIAO Plus)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/seeed-xiao-esp32s3-plus.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 16,
+        "espnow_encrypted_peer_limit": 8,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 16,
+        "psram_mb": 8,
+        "psram_mode": "octal",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 10,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "waveshare-esp32-s3-zero",
+      "chip_target": "esp32s3",
+      "chip_variant": "ESP32-S3FH4R2 (Waveshare Zero)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/waveshare-esp32-s3-zero.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 8,
+        "espnow_encrypted_peer_limit": 4,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 2,
+        "psram_mode": "quad",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 4,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "waveshare-esp32-s3-pico",
+      "chip_target": "esp32s3",
+      "chip_variant": "ESP32-S3 (Waveshare Pico)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/waveshare-esp32-s3-pico.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 12,
+        "espnow_encrypted_peer_limit": 6,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 16,
+        "psram_mb": 2,
+        "psram_mode": "quad",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 8,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "waveshare-esp32-s3-relay-6ch",
+      "chip_target": "esp32s3",
+      "chip_variant": "ESP32-S3 (Waveshare 6-ch Relay)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/waveshare-esp32-s3-relay-6ch.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 16,
+        "espnow_encrypted_peer_limit": 8,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 16,
+        "psram_mb": 8,
+        "psram_mode": "octal",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 10,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "esp32-devkitc-v4",
+      "chip_target": "esp32",
+      "chip_variant": "ESP32-WROOM-32E",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/esp32-devkitc-v4.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 10,
+        "espnow_encrypted_peer_limit": 4,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 520
+      },
+      "limits": {
+        "max_controller_nodes": 6,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 2048,
+        "connectivity_queue_depth": 8,
+        "telemetry_interval_sec": 60,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "esp32-s2-devkitc-1",
+      "chip_target": "esp32s2",
+      "chip_variant": "ESP32-S2-SOLO-1",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/esp32-s2-devkitc-1.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 8,
+        "espnow_encrypted_peer_limit": 2,
+        "ble_provisioning": false,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 2,
+        "psram_mode": "quad",
+        "nominal_sram_kb": 320
+      },
+      "limits": {
+        "max_controller_nodes": 4,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "esp32-c3-devkitm-1",
+      "chip_target": "esp32c3",
+      "chip_variant": "ESP32-C3-MINI-1",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/esp32-c3-devkitm-1.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 8,
+        "espnow_encrypted_peer_limit": 2,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 400
+      },
+      "limits": {
+        "max_controller_nodes": 4,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 2048,
+        "connectivity_queue_depth": 8,
+        "telemetry_interval_sec": 60,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": [
+          "ESP-NOW compiled for the exact SDK target; mixed-chip interoperability not physically tested."
+        ]
+      }
+    },
+    {
+      "board_id": "seeed-xiao-esp32c3",
+      "chip_target": "esp32c3",
+      "chip_variant": "ESP32-C3 (Seeed XIAO)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/seeed-xiao-esp32c3.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 8,
+        "espnow_encrypted_peer_limit": 2,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 400
+      },
+      "limits": {
+        "max_controller_nodes": 4,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 2048,
+        "connectivity_queue_depth": 8,
+        "telemetry_interval_sec": 60,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": [
+          "ESP-NOW compiled for the exact SDK target; mixed-chip interoperability not physically tested."
+        ]
+      }
+    },
+    {
+      "board_id": "waveshare-esp32-c3-zero",
+      "chip_target": "esp32c3",
+      "chip_variant": "ESP32-C3 (Waveshare Zero)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/waveshare-esp32-c3-zero.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 8,
+        "espnow_encrypted_peer_limit": 2,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 400
+      },
+      "limits": {
+        "max_controller_nodes": 4,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 2048,
+        "connectivity_queue_depth": 8,
+        "telemetry_interval_sec": 60,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": [
+          "ESP-NOW compiled for the exact SDK target; mixed-chip interoperability not physically tested."
+        ]
+      }
+    },
+    {
+      "board_id": "esp32-c6-devkitc-1",
+      "chip_target": "esp32c6",
+      "chip_variant": "ESP32-C6-WROOM-1-N8",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/esp32-c6-devkitc-1.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 10,
+        "espnow_encrypted_peer_limit": 4,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 8,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 6,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "seeed-xiao-esp32c6",
+      "chip_target": "esp32c6",
+      "chip_variant": "ESP32-C6 (Seeed XIAO)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/seeed-xiao-esp32c6.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 8,
+        "espnow_encrypted_peer_limit": 2,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 4,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 2048,
+        "connectivity_queue_depth": 8,
+        "telemetry_interval_sec": 60,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "waveshare-esp32-c6-zero",
+      "chip_target": "esp32c6",
+      "chip_variant": "ESP32-C6 (Waveshare Zero)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/waveshare-esp32-c6-zero.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 8,
+        "espnow_encrypted_peer_limit": 2,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 4,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 2048,
+        "connectivity_queue_depth": 8,
+        "telemetry_interval_sec": 60,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": []
+      }
+    },
+    {
+      "board_id": "esp32-c5-devkitc-1",
+      "chip_target": "esp32c5",
+      "chip_variant": "ESP32-C5-WROOM-1-N8R8",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.5.2",
+        "build_profile": "firmware/boards/esp32-c5-devkitc-1.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 12,
+        "espnow_encrypted_peer_limit": 4,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 8,
+        "psram_mb": 8,
+        "psram_mode": "quad",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 8,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": [
+          "Newer target: enabled from the exact verified SDK build and CI matrix; no physical radio test recorded."
+        ]
+      }
+    },
+    {
+      "board_id": "seeed-xiao-esp32c5",
+      "chip_target": "esp32c5",
+      "chip_variant": "ESP32-C5 (Seeed XIAO)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.5.2",
+        "build_profile": "firmware/boards/seeed-xiao-esp32c5.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 12,
+        "espnow_encrypted_peer_limit": 4,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 8,
+        "psram_mb": 8,
+        "psram_mode": "quad",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 8,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": [
+          "Newer target: enabled from the exact verified SDK build and CI matrix; no physical radio test recorded."
+        ]
+      }
+    },
+    {
+      "board_id": "esp32-c61-devkitc-1",
+      "chip_target": "esp32c61",
+      "chip_variant": "ESP32-C61 (ESP32-C6 family)",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.5.2",
+        "build_profile": "firmware/boards/esp32-c61-devkitc-1.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 10,
+        "espnow_encrypted_peer_limit": 4,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 8,
+        "psram_mb": 2,
+        "psram_mode": "quad",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 6,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 4096,
+        "connectivity_queue_depth": 16,
+        "telemetry_interval_sec": 30,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 6144
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": [
+          "Newer target: enabled from the exact verified SDK build and CI matrix; no physical radio test recorded."
+        ]
+      }
+    },
+    {
+      "board_id": "esp8684-devkitm-1",
+      "chip_target": "esp32c2",
+      "chip_variant": "ESP8684 / ESP32-C2",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/esp8684-devkitm-1.sdkconfig"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": true,
+        "espnow_protocol": "esp-now-v1",
+        "espnow_mtu_bytes": 250,
+        "espnow_peer_limit": 6,
+        "espnow_encrypted_peer_limit": 1,
+        "ble_provisioning": true,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 400
+      },
+      "limits": {
+        "max_controller_nodes": 2,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 2048,
+        "connectivity_queue_depth": 8,
+        "telemetry_interval_sec": 60,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [
+          "controller",
+          "node"
+        ],
+        "default": "controller"
+      },
+      "transports": [
+        "wifi_mqtt",
+        "espnow"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": [
+          "Newer target: enabled from the exact verified SDK build and CI matrix; no physical radio test recorded."
+        ]
+      }
+    },
+    {
+      "board_id": "esp32-h2-devkitm-1",
+      "chip_target": "esp32h2",
+      "chip_variant": "ESP32-H2-MINI-1",
+      "firmware": {
+        "framework": "esp_idf",
+        "sdk_version": "esp-idf v5.4",
+        "build_profile": "firmware/boards/esp32-h2-devkitm-1.sdkconfig"
+      },
+      "radio": {
+        "wifi": false,
+        "mqtt": false,
+        "espnow": false,
+        "espnow_protocol": null,
+        "espnow_mtu_bytes": 0,
+        "espnow_peer_limit": 0,
+        "espnow_encrypted_peer_limit": 0,
+        "ble_provisioning": true,
+        "softap_provisioning": false,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 512
+      },
+      "limits": {
+        "max_controller_nodes": 0,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 2048,
+        "connectivity_queue_depth": 8,
+        "telemetry_interval_sec": 60,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [],
+        "default": null
+      },
+      "transports": [],
+      "support": {
+        "status": "unsupported",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": [
+          "No 2.4 GHz Wi-Fi radio. Thread/Zigbee-only target; outside the Wi-Fi Controller/Node architecture until a gateway profile exists."
+        ]
+      }
+    },
+    {
+      "board_id": "nodemcu-esp8266",
+      "chip_target": "esp8266",
+      "chip_variant": "ESP-12E (ESP8266EX)",
+      "firmware": {
+        "framework": "arduino_esp8266",
+        "sdk_version": "ESP8266 RTOS SDK via PlatformIO espressif8266 v4.x",
+        "build_profile": "firmware/esp8266/board-profile.json"
+      },
+      "radio": {
+        "wifi": true,
+        "mqtt": true,
+        "espnow": false,
+        "espnow_protocol": null,
+        "espnow_mtu_bytes": 0,
+        "espnow_peer_limit": 0,
+        "espnow_encrypted_peer_limit": 0,
+        "ble_provisioning": false,
+        "softap_provisioning": true,
+        "usb_recovery": true
+      },
+      "memory": {
+        "flash_mb": 4,
+        "psram_mb": 0,
+        "psram_mode": "none",
+        "nominal_sram_kb": 160
+      },
+      "limits": {
+        "max_controller_nodes": 0,
+        "max_tested_controller_nodes": 0,
+        "mqtt_buffer_bytes": 2048,
+        "connectivity_queue_depth": 8,
+        "telemetry_interval_sec": 60,
+        "keepalive_ms": 2000,
+        "link_timeout_ms": 10000,
+        "recovery_window_ms": 45000,
+        "discovery_interval_ms": 15000,
+        "connectivity_task_stack_bytes": 4096
+      },
+      "roles": {
+        "supported": [
+          "node"
+        ],
+        "default": "node"
+      },
+      "transports": [
+        "wifi_mqtt"
+      ],
+      "support": {
+        "status": "experimental",
+        "firmware_build_verified": true,
+        "hardware_tested": false,
+        "notes": [
+          "Direct Wi-Fi/MQTT only. ESP-NOW Node is disabled until mixed-chip interoperability tests pass; Controller is disabled."
+        ]
+      }
+    }
+  ]
+}

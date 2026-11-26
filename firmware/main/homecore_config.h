@@ -161,6 +161,13 @@ typedef struct homecore_config_s {
     uint8_t node_link_state;             // hc_node_link_t as last persisted
     uint16_t link_epoch;                 // command-dedupe epoch across transitions
     uint32_t last_cmd_seq;               // last executed command sequence number
+
+    // Worker-authorized Controller/Node binding. Only these values are
+    // persisted when they change; route telemetry stays in RAM.
+    char binding_id[40];                 // persistent binding UUID
+    uint32_t binding_generation;         // monotonically increasing assignment epoch
+    uint8_t binding_state;               // hc_binding_state_t
+    uint8_t cloud_route;                 // hc_cloud_route_t (runtime, not persisted)
 } homecore_config_t;
 
 #include "ble_provisioning.h"
@@ -194,6 +201,8 @@ void hc_nvs_ensure_setup_pin(homecore_config_t *cfg);
 esp_err_t hc_nvs_set_recovery_boot_req(bool req);
 esp_err_t hc_nvs_clear_pairing(homecore_config_t *cfg);
 esp_err_t hc_nvs_factory_reset(void);
+/** Writes binding credentials only when the authoritative values change. */
+esp_err_t hc_nvs_save_binding_if_changed(const homecore_config_t *cfg);
 esp_err_t hc_nvs_load_io_json(char *buf, size_t max_len);
 esp_err_t hc_nvs_save_io_json(const char *json);
 

@@ -21,6 +21,15 @@ export interface ConsolidatedControllerConfigSnapshot {
   boardInstanceId: string;
   revision: number;
   hash: string;
+  /** Worker-authorized binding; separate from live connectivity. */
+  binding: {
+    id: string | null;
+    generation: number;
+    state: string;
+    controllerId: string | null;
+    route: string | null;
+    nodeBindings: Array<{ id: string; bindingId: string | null; generation: number }>;
+  };
   role: {
     /** "controller" or "node" — one active role at a time. */
     mode: BoardRole;
@@ -146,12 +155,12 @@ export async function buildConsolidatedControllerConfig(
     heartbeat_interval_sec: number;
   } | null;
 }> {
-  const [ctrlRes, settingsRes, homesRes, swRes, devRes, senRes, rulesRes, nodesRes] =
+  const [ctrlRes, settingsRes, homesRes, swRes, devRes, senRes, rulesRes, nodesRes, bindingsRes] =
     await Promise.all([
       db
         .from("board_instances")
         .select(
-          "id,name,home_id,status,mqtt_connected,config_revision,config_hash,last_synced_config_revision,pending_config_sync,heartbeat_interval_sec,board_role,assigned_controller_id,espnow_channel"
+          "id,name,home_id,status,mqtt_connected,config_revision,config_hash,last_synced_config_revision,pending_config_sync,heartbeat_interval_sec,board_role,assigned_controller_id,espnow_channel,binding_id,binding_state,binding_generation,cloud_route"
         )
         .eq("id", boardInstanceId)
         .eq("account_id", accountId)
@@ -208,6 +217,13 @@ export async function buildConsolidatedControllerConfig(
         .is("deleted_at", null)
         .is("permanently_deleted_at", null)
         .order("created_at", { ascending: true }),
+      // Authoritative binding state for this board and every hosted Node.
+      db
+        .from("board_instances")
+        .select("id,assigned_controller_id,binding_id,binding_state,binding_generation")
+        .eq("account_id", accountId)
+        .is("deleted_at", null)
+        .is("permanently_deleted_at", null),
     ]);
 
   const ctrl = ctrlRes.data as {
@@ -224,6 +240,10 @@ export async function buildConsolidatedControllerConfig(
     board_role?: string | null;
     assigned_controller_id?: string | null;
     espnow_channel?: number | null;
+    binding_id?: string | null;
+    binding_state?: string | null;
+    binding_generation?: number | string | null;
+    cloud_route?: string | null;
   } | null;
 
   const homeTimezone = ctrl?.home_id
@@ -430,6 +450,28 @@ export async function buildConsolidatedControllerConfig(
       (uplink as { espnow_channel?: number | null } | null)?.espnow_channel ?? null;
   }
   const hostedNodeIds = ((nodesRes?.data ?? []) as Array<{ id: string }>).map((n) => n.id);
+  const bindingRows = (bindingsRes?.data ?? []) as Array<{
+    id: string;
+    assigned_controller_id?: string | null;
+    binding_id?: string | null;
+    binding_state?: string | null;
+    binding_generation?: number | string | null;
+  }>;
+  const nodeBindings = bindingRows
+    .filter((b) => boardRole === "controller" && b.assigned_controller_id === boardInstanceId)
+    .map((b) => ({
+      id: b.id,
+      bindingId: b.binding_id ?? null,
+      generation: Number(b.binding_generation ?? 0),
+    }));
+  const binding = {
+    id: ctrl?.binding_id ?? null,
+    generation: Number(ctrl?.binding_generation ?? 0),
+    state: ctrl?.binding_state ?? "unpaired",
+    controllerId: assignedControllerId,
+    route: ctrl?.cloud_route ?? null,
+    nodeBindings,
+  };
   const role = {
     mode: boardRole,
     assignedControllerId: boardRole === "node" ? assignedControllerId : null,
@@ -453,6 +495,7 @@ export async function buildConsolidatedControllerConfig(
   // role block participates: changing a role or its assigned Controller bumps the
   // config revision, so the device is reconfigured exactly once per change.
   const structuralPayload = {
+    binding,
     role,
     settings,
     switches: switches.map((s) => ({
@@ -493,6 +536,7 @@ export async function buildConsolidatedControllerConfig(
     boardInstanceId,
     revision,
     hash: structuralHash,
+    binding,
     role,
     settings,
     gpioConfig,

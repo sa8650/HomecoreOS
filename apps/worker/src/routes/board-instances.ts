@@ -4,16 +4,22 @@ import {
   CONTROLLER_TRASH_RETENTION_DAYS,
   defaultBootButtonGpioForChip,
   deriveCommMode,
+  normalizeBindingGeneration,
+  normalizeBindingState,
   normalizeBoardRole,
+  normalizeCloudRoute,
+  normalizeEspNowState,
   normalizeNodeCommMode,
   normalizeNodeLinkState,
   resolveBoardFirmwareCompatibility,
   supportsBleProvisioningForBoard,
+  userConnectionStatus,
 } from "@homecoreos/shared";
 import { recordActivity } from "../lib/audit";
 import {
   assignNodeToController,
   changeBoardRole,
+  issueBindingChallenge,
   listAttachedNodes,
 } from "../lib/board-roles";
 import { syncControllerConfigSnapshot } from "../lib/controller-config";
@@ -412,6 +418,22 @@ export function createBoardInstanceRoutes() {
         espnow_telemetry: espnowTel,
         role_changed_at: ctrl.role_changed_at ?? null,
         node_last_linked_at: ctrl.node_last_linked_at ?? null,
+        // Binding state and live connectivity are deliberately separate.
+        binding_id: ctrl.binding_id ?? null,
+        binding_state: normalizeBindingState(ctrl.binding_state),
+        binding_generation: normalizeBindingGeneration(ctrl.binding_generation),
+        cloud_route: normalizeCloudRoute(ctrl.cloud_route),
+        connection_status: userConnectionStatus({
+          boardId: board?.slug ?? null,
+          role,
+          bindingState: ctrl.binding_state,
+          espnowState: normalizeEspNowState(
+            role === "node" ? ctrl.node_link_state : "linked"
+          ),
+          cloudRoute: ctrl.cloud_route,
+          online,
+          localActive: true,
+        }),
       };
     });
 
@@ -1985,6 +2007,66 @@ export function createBoardInstanceRoutes() {
       ]);
 
       return c.json({ device: result.device });
+    }
+  );
+
+  /** Worker-issued, single-use binding challenge for a Node/Controller pair. */
+  app.post(
+    "/:id/binding-challenge",
+    requireStaffRole("owner", "administrator"),
+    async (c) => {
+      const auth = c.get("userAuth")!;
+      const db = c.get("db");
+      const parsed = z
+        .object({ controllerId: z.string().uuid() })
+        .safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: "controllerId must be a uuid." }, 400);
+      }
+      const result = await issueBindingChallenge(db, {
+        accountId: auth.accountId,
+        nodeId: c.req.param("id"),
+        controllerId: parsed.data.controllerId,
+      });
+      if (!result.ok) return c.json({ error: result.error }, result.status as 404 | 409 | 500);
+
+      /* Deliver the Worker-authorized challenge to both ends. The Node echoes
+       * it in its heartbeat; the Controller echoes it in its roster. Only then
+       * can verification consume it. */
+      if (isEmqxConfigured(c.env ?? {})) {
+        const emqx = new EmqxClient(c.env!, c.get("deps")?.emqxFetch);
+        for (const boardId of [c.req.param("id"), parsed.data.controllerId]) {
+          const { data: credential } = await db
+            .from("mqtt_credentials_metadata")
+            .select("topic_prefix")
+            .eq("board_instance_id", boardId)
+            .eq("account_id", auth.accountId)
+            .eq("status", "active")
+            .maybeSingle();
+          const prefix = (credential as { topic_prefix?: string } | null)?.topic_prefix;
+          if (!prefix) continue;
+          await emqx
+            .publish({
+              topic: `${prefix}/cmd/system`,
+              payload: {
+                action: "binding_challenge",
+                node_id: c.req.param("id"),
+                controller_id: parsed.data.controllerId,
+                challenge_id: result.challengeId,
+                nonce: result.nonce,
+                gen: result.generation,
+              },
+              qos: 1,
+            })
+            .catch(() => undefined);
+        }
+      }
+      return c.json({
+        challengeId: result.challengeId,
+        nonce: result.nonce,
+        generation: result.generation,
+        expiresAt: result.expiresAt,
+      });
     }
   );
 

@@ -208,6 +208,12 @@ export interface ControllerItem {
   pending_config_sync?: boolean;
   role_changed_at?: string | null;
   node_last_linked_at?: string | null;
+  // Worker-authorized binding and route state (separate from live connectivity).
+  binding_id?: string | null;
+  binding_state?: "unpaired" | "pairing" | "assigned" | "verified" | "revoked" | null;
+  binding_generation?: number | null;
+  cloud_route?: "direct_node_mqtt" | "controller_mqtt" | "connecting" | "unavailable" | null;
+  connection_status?: string | null;
   offline_recovery_instructions?: string[];
 }
 

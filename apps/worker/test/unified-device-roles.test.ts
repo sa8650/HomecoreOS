@@ -130,7 +130,7 @@ describe("Unified Controller & Node roles", () => {
   async function deviceRow(id: string) {
     const res = await dbHarness.pg.query<Record<string, unknown>>(
       `select id,name,board_role,assigned_controller_id,comm_mode,node_link_state,status,
-              pairing_status,hardware_uid,installed_firmware_release_id
+              pairing_status,hardware_uid,installed_firmware_release_id,binding_state,binding_generation
          from board_instances where id = $1`,
       [id]
     );
@@ -260,7 +260,10 @@ describe("Unified Controller & Node roles", () => {
 
     const row = await deviceRow(nodeId);
     expect(row.assigned_controller_id).toBe(hubId);
-    expect(row.comm_mode).toBe("espnow");
+    // Assignment is not a connection proof: MQTT stays up while seeking.
+    expect(row.comm_mode).toBe("wifi_mqtt");
+    expect(row.binding_state).toBe("assigned");
+    expect(Number(row.binding_generation)).toBe(2);
 
     // The device learns its role from the consolidated config snapshot.
     const cfgRes = await req("/api/device/config", {
@@ -384,8 +387,14 @@ describe("Unified Controller & Node roles", () => {
 
     // The Node is linked over ESP-NOW, so it has no EMQX session of its own.
     await dbHarness.pg.query(
-      "update board_instances set mqtt_connected = false, node_link_state = 'linked' where id = $1",
+      "update board_instances set mqtt_connected = false, node_link_state = 'linked', last_communication_at = now(), binding_generation = 2, binding_state = 'assigned' where id = $1",
       [nodeId]
+    );
+    await dbHarness.pg.query(
+      `update board_instances set last_communication_at = now(), espnow_telemetry = jsonb_build_object(
+        'roster', jsonb_build_array(jsonb_build_object('id', $2::text, 'link', 'linked', 'gen', 2))
+      ) where id = $1`,
+      [hubId, nodeId]
     );
 
     emqx.state.published.length = 0;
@@ -732,7 +741,7 @@ describe("Unified Controller & Node roles", () => {
     expect(nodeItem.node_link_state).toBe("reconnecting");
     expect((nodeItem.espnow_telemetry as { controllerHeardAt?: string })?.controllerHeardAt).toBeTruthy();
     expect(hubItem.reported_nodes).toEqual([
-      { id: nodeId, link: "linked", rssi: -52, channel: 6, seq: 3 },
+      { id: nodeId, link: "linked", rssi: -52, channel: 6, seq: 3, bid: null, gen: null },
     ]);
 
     // 3. Node now receives Controller ACK #4 and reports ls="linked", cm="espnow", ackRx=4.

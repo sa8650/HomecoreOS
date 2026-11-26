@@ -26,7 +26,11 @@ import {
 import {
   boardSupportsControllerRole,
   deviceStatusLabel,
+  getBoardCapabilities,
   nodeCommModeLabel,
+  supportsRole,
+  userConnectionStatus,
+  type UserConnectionStatus,
 } from "@homecoreos/shared";
 import { formatTimestamp } from "@/lib/timezone";
 import type { BoardProfileItem, ControllerItem } from "@/features/types";
@@ -53,6 +57,23 @@ export function nodeStatusBadge(node: ControllerItem, online: boolean): {
     return { label: "No Controller", variant: "warning-light" };
   }
   return { label: "Standalone", variant: "primary-light" };
+}
+
+function statusFromUserLabel(
+  label: UserConnectionStatus,
+  online: boolean
+): { label: string; variant: BadgeVariant } {
+  if (label === "Device not supported for this connection method") {
+    return { label: "Not supported", variant: "destructive-light" };
+  }
+  if (label === "Connected directly" || label === "Connected through Controller") {
+    return { label, variant: "success-light" };
+  }
+  if (label === "Reconnecting automatically" || label === "Local connection active") {
+    return { label, variant: "warning-light" };
+  }
+  if (!online) return { label: "Offline", variant: "secondary" };
+  return { label: "Cloud unavailable", variant: "destructive-light" };
 }
 
 /**
@@ -92,7 +113,28 @@ export function NodeCard({
 }) {
   const online = node.status === "online";
   const boardProfile = board ?? fallbackBoardProfile(node);
-  const status = nodeStatusBadge(node, online);
+  const boardId = boardProfile.slug;
+  const liveStatus: UserConnectionStatus =
+    (node.connection_status as UserConnectionStatus | undefined) ??
+    userConnectionStatus({
+      boardId,
+      role: node.board_role ?? "node",
+      bindingState: node.binding_state,
+      espnowState:
+        node.node_link_state === "linked"
+          ? "linked"
+          : node.node_link_state === "controller_lost"
+            ? "lost"
+            : node.node_link_state === "reconnecting"
+              ? "reconnecting"
+              : node.node_link_state === "standalone"
+                ? "searching"
+                : "unavailable",
+      cloudRoute: node.cloud_route,
+      online,
+      localActive: true,
+    });
+  const status = statusFromUserLabel(liveStatus, online);
   const commMode = node.node_comm_mode ?? (online ? null : "offline");
   const headline = deviceStatusLabel({
     role: "node",
@@ -105,7 +147,10 @@ export function NodeCard({
   // A board without a usable 2.4 GHz radio can never act as a Controller. An
   // unknown (e.g. custom) board profile is not blocked here — the Worker applies
   // the same gate authoritatively.
-  const canBecomeController = !board || boardSupportsControllerRole(board);
+  const registryBoard = getBoardCapabilities(boardId);
+  const canBecomeController = registryBoard
+    ? supportsRole(boardId, "controller")
+    : !board || boardSupportsControllerRole(board);
   const lastActivityAt = node.last_communication_at ?? node.last_heartbeat_at;
   const firmwareLabel = node.firmware_version
     ? `v${node.firmware_version.replace(/^v/, "")}`
@@ -251,6 +296,27 @@ export function NodeCard({
               <CardRow label="Status">
                 <Badge variant={status.variant} size="xs" radius="full" title={headline}>
                   {status.label}
+                </Badge>
+              </CardRow>
+              <CardRow label="Binding">
+                <Badge
+                  variant={
+                    node.binding_state === "verified"
+                      ? "primary-light"
+                      : node.binding_state === "revoked"
+                        ? "destructive-light"
+                        : "secondary"
+                  }
+                  size="xs"
+                  title="Binding state is separate from live connectivity."
+                >
+                  {node.binding_state === "verified"
+                    ? `Verified · gen ${node.binding_generation ?? 0}`
+                    : node.binding_state === "assigned"
+                      ? "Assigned · not verified"
+                      : node.binding_state === "revoked"
+                        ? "Revoked"
+                        : "Not assigned"}
                 </Badge>
               </CardRow>
               <CardRow label="Controller">

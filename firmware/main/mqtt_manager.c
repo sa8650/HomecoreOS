@@ -204,6 +204,46 @@ static void handle_system_cmd(const char *data, int len) {
                     ESP_LOGI(TAG, "Relayed OTA to Node %s: %s", node_j->valuestring, esp_err_to_name(relay));
                 }
             }
+        } else if (strcmp(action, "binding_challenge") == 0 && s_cfg) {
+            /* Worker-authorized, single-use challenge. Kept in RAM so it never
+             * survives a reboot and is echoed only in live telemetry. */
+            cJSON *node_j = cJSON_GetObjectItem(root, "node_id");
+            cJSON *cid_j = cJSON_GetObjectItem(root, "challenge_id");
+            cJSON *nonce_j = cJSON_GetObjectItem(root, "nonce");
+            cJSON *gen_j = cJSON_GetObjectItem(root, "gen");
+            if (cJSON_IsString(cid_j) && cid_j->valuestring && cJSON_IsNumber(gen_j)) {
+                hc_role_set_binding_challenge(
+                    s_cfg,
+                    cJSON_IsString(node_j) && node_j->valuestring ? node_j->valuestring : "",
+                    cid_j->valuestring,
+                    cJSON_IsString(nonce_j) && nonce_j->valuestring ? nonce_j->valuestring : "",
+                    (uint32_t)gen_j->valuedouble
+                );
+            }
+        } else if (strcmp(action, "confirm_route") == 0 && s_cfg) {
+            hc_role_consume_binding_challenge();
+            /* Worker-confirmed route handoff. Relayed to the Node so it may
+             * close its own MQTT session only after this point. */
+            cJSON *node_j = cJSON_GetObjectItem(root, "node_id");
+            cJSON *cid_j = cJSON_GetObjectItem(root, "cid");
+            cJSON *gen_j = cJSON_GetObjectItem(root, "gen");
+            if (cJSON_IsString(node_j) && node_j->valuestring) {
+                char frame[96];
+                int n = snprintf(
+                    frame,
+                    sizeof(frame),
+                    "{\"cmd\":\"route_confirm\",\"cid\":\"%s\",\"gen\":%u}",
+                    cJSON_IsString(cid_j) && cid_j->valuestring ? cid_j->valuestring : "route",
+                    cJSON_IsNumber(gen_j) ? (unsigned)gen_j->valuedouble : 0
+                );
+                if (n > 0 && (size_t)n < sizeof(frame)) {
+                    esp_err_t relay = hc_role_relay_command_to_node(
+                        s_cfg, node_j->valuestring, frame
+                    );
+                    ESP_LOGI(TAG, "Route confirmation relay to %s: %s",
+                             node_j->valuestring, relay == ESP_OK ? "ok" : "failed");
+                }
+            }
         } else if (strcmp(action, "relay_to_node") == 0 && s_cfg) {
             // A Node linked over ESP-NOW keeps no EMQX session of its own, so the
             // Worker sends its switch/device commands to this Controller. We
@@ -212,6 +252,14 @@ static void handle_system_cmd(const char *data, int len) {
             cJSON *node_j = cJSON_GetObjectItem(root, "node_id");
             cJSON *kind_j = cJSON_GetObjectItem(root, "kind");
             cJSON *payload_j = cJSON_GetObjectItem(root, "payload");
+            cJSON *cid_j = cJSON_GetObjectItem(root, "cid");
+            cJSON *gen_j = cJSON_GetObjectItem(root, "gen");
+            char cid[48] = {0};
+            uint32_t command_gen = 0;
+            if (cJSON_IsString(cid_j) && cid_j->valuestring) {
+                hc_copy_str(cid, sizeof(cid), cid_j->valuestring);
+            }
+            if (cJSON_IsNumber(gen_j)) command_gen = (uint32_t)gen_j->valuedouble;
             if (cJSON_IsString(node_j) && node_j->valuestring &&
                 cJSON_IsString(kind_j) && kind_j->valuestring &&
                 cJSON_IsObject(payload_j)) {
@@ -262,13 +310,24 @@ static void handle_system_cmd(const char *data, int len) {
                         // epoch/seq are in the frame header; the Node falls back
                         // to them, so the JSON only needs the command itself.
                         char frame[HC_ESPNOW_MAX_PAYLOAD + 1];
-                        int n = snprintf(
-                            frame,
-                            sizeof(frame),
-                            "{\"cmd\":\"exec\",\"k\":\"%s\",\"p\":%s}",
-                            kind,
-                            payload_str
-                        );
+                        int n = cid[0]
+                            ? snprintf(
+                                frame,
+                                sizeof(frame),
+                                "{\"cmd\":\"exec\",\"k\":\"%s\",\"p\":%s,\"cid\":\"%s\",\"gen\":%u}",
+                                kind,
+                                payload_str,
+                                cid,
+                                (unsigned)command_gen
+                            )
+                            : snprintf(
+                                frame,
+                                sizeof(frame),
+                                "{\"cmd\":\"exec\",\"k\":\"%s\",\"p\":%s,\"gen\":%u}",
+                                kind,
+                                payload_str,
+                                (unsigned)command_gen
+                            );
                         cJSON_free(payload_str);
                         if (n > 0 && (size_t)n <= HC_ESPNOW_MAX_PAYLOAD) {
                             esp_err_t relay =

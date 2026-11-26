@@ -19,6 +19,13 @@ esp_err_t hc_nvs_init(void) {
     return err;
 }
 
+/* Binding credentials are the only role values written to flash. A small
+ * write-through cache avoids rewriting unchanged NVS cells on every tick. */
+static char s_nvs_binding_id[40] = {0};
+static uint32_t s_nvs_binding_generation = 0;
+static uint8_t s_nvs_binding_state = 0;
+static bool s_nvs_binding_cache_valid = false;
+
 static void read_str_or_empty(nvs_handle_t h, const char *key, char *out, size_t max_len) {
     size_t len = max_len;
     if (nvs_get_str(h, key, out, &len) != ESP_OK) {
@@ -162,6 +169,15 @@ esp_err_t hc_nvs_load_config(homecore_config_t *out) {
     if (nvs_get_u32(h, "rl_seq", &seq_u32) == ESP_OK) {
         out->last_cmd_seq = seq_u32;
     }
+    read_str_or_empty(h, "bind_id", out->binding_id, sizeof(out->binding_id));
+    uint32_t bind_gen = 0;
+    if (nvs_get_u32(h, "bind_gen", &bind_gen) == ESP_OK) {
+        out->binding_generation = bind_gen;
+    }
+    uint8_t bind_state = 0;
+    if (nvs_get_u8(h, "bind_st", &bind_state) == ESP_OK && bind_state <= 4) {
+        out->binding_state = bind_state;
+    }
     if (out->board_role == 1 && out->assigned_controller_id[0] == '\0') {
         out->node_link_state = 0; // HC_NODE_UNASSIGNED
     }
@@ -169,7 +185,36 @@ esp_err_t hc_nvs_load_config(homecore_config_t *out) {
     nvs_close(h);
     hc_nvs_ensure_identity_key(out);
     hc_nvs_ensure_setup_pin(out);
+    hc_copy_str(s_nvs_binding_id, sizeof(s_nvs_binding_id), out->binding_id);
+    s_nvs_binding_generation = out->binding_generation;
+    s_nvs_binding_state = out->binding_state;
+    s_nvs_binding_cache_valid = true;
     return ESP_OK;
+}
+
+esp_err_t hc_nvs_save_binding_if_changed(const homecore_config_t *cfg) {
+    if (!cfg) return ESP_ERR_INVALID_ARG;
+    if (s_nvs_binding_cache_valid &&
+        strcmp(s_nvs_binding_id, cfg->binding_id) == 0 &&
+        s_nvs_binding_generation == cfg->binding_generation &&
+        s_nvs_binding_state == cfg->binding_state) {
+        return ESP_OK; /* no flash write */
+    }
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(HOMECORE_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, "bind_id", cfg->binding_id);
+    if (err == ESP_OK) err = nvs_set_u32(h, "bind_gen", cfg->binding_generation);
+    if (err == ESP_OK) err = nvs_set_u8(h, "bind_st", cfg->binding_state);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err == ESP_OK) {
+        hc_copy_str(s_nvs_binding_id, sizeof(s_nvs_binding_id), cfg->binding_id);
+        s_nvs_binding_generation = cfg->binding_generation;
+        s_nvs_binding_state = cfg->binding_state;
+        s_nvs_binding_cache_valid = true;
+    }
+    return err;
 }
 
 esp_err_t hc_nvs_save_config(const homecore_config_t *cfg) {
@@ -235,6 +280,16 @@ esp_err_t hc_nvs_clear_pairing(homecore_config_t *cfg) {
     cfg->config_revision = 0;
     cfg->config_hash[0] = '\0';
     cfg->heartbeat_interval_sec = HOMECORE_DEFAULT_HEARTBEAT_SEC;
+    cfg->binding_id[0] = '\0';
+    cfg->binding_generation = 0;
+    cfg->binding_state = 0; // HC_BINDING_UNPAIRED
+    /* The binding cache mirrors NVS; clearing the config without invalidating
+     * it would let hc_nvs_save_binding_if_changed() resurrect an unbound
+     * identity later in the same boot. */
+    s_nvs_binding_id[0] = '\0';
+    s_nvs_binding_generation = 0;
+    s_nvs_binding_state = 0;
+    s_nvs_binding_cache_valid = true;
     return hc_nvs_save_config(cfg);
 }
 
@@ -268,6 +323,10 @@ esp_err_t hc_nvs_factory_reset(void) {
         err = nvs_commit(h);
     }
     nvs_close(h);
+    s_nvs_binding_cache_valid = false;
+    s_nvs_binding_id[0] = '\0';
+    s_nvs_binding_generation = 0;
+    s_nvs_binding_state = 0;
     return err;
 }
 

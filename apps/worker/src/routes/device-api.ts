@@ -4,6 +4,7 @@ import {
   ESPNOW_NODE_STALE_MS,
   isDeviceStateActive,
   isNewerFirmwareVersion,
+  normalizeBindingGeneration,
   normalizeBoardRole,
 } from "@homecoreos/shared";
 import { inspectConfiguration, requireEmqxConfig } from "../config/env";
@@ -25,6 +26,8 @@ import {
   resolveControllerCompatBoard,
 } from "../lib/firmware-compatibility";
 import { resolveControllerBoardSpec } from "../lib/board-helpers";
+import { verifyNodeBinding } from "../lib/board-roles";
+import { commandIdentity } from "../lib/route-authority";
 import { findMatchingFirmwareReleaseIdForDevice } from "../lib/sensor-compatibility";
 import { emitNotification } from "../lib/notifications";
 import { getFirmwareObject } from "../lib/r2";
@@ -172,6 +175,22 @@ const heartbeatSchema = z
       .enum(["linked", "controller_lost", "reconnecting", "standalone", "unassigned"])
       .optional(),
     ch: z.number().int().min(1).max(13).optional(),
+    // Worker-authorized binding / route telemetry. Never a self-verification.
+    bindingState: z.enum(["unpaired", "pairing", "assigned", "verified", "revoked"]).optional(),
+    bs: z.enum(["unpaired", "pairing", "assigned", "verified", "revoked"]).optional(),
+    bindingId: z.string().trim().max(48).nullable().optional(),
+    bid: z.string().trim().max(48).nullable().optional(),
+    bindingGeneration: z.number().int().min(0).optional(),
+    gen: z.number().int().min(0).optional(),
+    /** Worker-issued challenge echoed by the Node after MQTT delivery. */
+    challengeId: z.string().trim().max(48).optional(),
+    chid: z.string().trim().max(48).optional(),
+    challengeNonce: z.string().trim().max(64).optional(),
+    cnon: z.string().trim().max(64).optional(),
+    challengeGeneration: z.number().int().min(0).optional(),
+    chg: z.number().int().min(0).optional(),
+    cloudRoute: z.enum(["direct_node_mqtt", "controller_mqtt", "connecting", "unavailable"]).optional(),
+    cr: z.enum(["direct_node_mqtt", "controller_mqtt", "connecting", "unavailable"]).optional(),
     kaTx: z.number().int().min(0).optional(),
     ackRx: z.number().int().min(0).optional(),
     peerRssi: z.number().int().min(-120).max(0).optional(),
@@ -185,6 +204,11 @@ const heartbeatSchema = z
           rssi: z.number().int().min(-120).max(0).optional(),
           channel: z.number().int().min(1).max(13).optional(),
           seq: z.number().int().min(0).optional(),
+          bid: z.string().trim().max(48).optional(),
+          gen: z.number().int().min(0).optional(),
+          chid: z.string().trim().max(48).optional(),
+          cnon: z.string().trim().max(64).optional(),
+          chg: z.number().int().min(0).optional(),
         })
       )
       .max(64)
@@ -220,6 +244,13 @@ const heartbeatSchema = z
     commMode: d.commMode ?? d.cm,
     linkState: d.linkState ?? d.ls,
     radioChannel: d.ch,
+    bindingState: d.bindingState ?? d.bs,
+    bindingId: d.bindingId !== undefined ? d.bindingId : d.bid,
+    bindingGeneration: d.bindingGeneration ?? d.gen,
+    challengeId: d.challengeId ?? d.chid,
+    challengeNonce: d.challengeNonce ?? d.cnon,
+    challengeGeneration: d.challengeGeneration ?? d.chg,
+    cloudRoute: d.cloudRoute ?? d.cr,
     kaTx: d.kaTx,
     ackRx: d.ackRx,
     peerRssi: d.peerRssi,
@@ -454,7 +485,7 @@ export function createDeviceApiRoutes() {
       db
         .from("board_instances")
         .select(
-          "id,name,status,mqtt_connected,wifi_connected,board_role,assigned_controller_id,comm_mode,firmware_version,config_revision,last_synced_config_revision,pending_config_sync,node_link_state,espnow_telemetry"
+          "id,name,status,mqtt_connected,wifi_connected,board_role,assigned_controller_id,comm_mode,firmware_version,config_revision,last_synced_config_revision,pending_config_sync,node_link_state,binding_generation,espnow_telemetry"
         )
         .eq("id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
@@ -479,6 +510,7 @@ export function createDeviceApiRoutes() {
       comm_mode?: string | null;
       assigned_controller_id?: string | null;
       board_role?: string | null;
+      binding_generation?: number | string | null;
       firmware_version?: string | null;
       config_revision?: number;
       last_synced_config_revision?: number;
@@ -617,6 +649,27 @@ export function createDeviceApiRoutes() {
     let keepaliveFirstReported = false;
 
     if (storedRole === "node") {
+      if (parsed.data.bindingGeneration !== undefined) {
+        const currentGeneration = normalizeBindingGeneration(prev?.binding_generation);
+        const reportedGeneration = normalizeBindingGeneration(parsed.data.bindingGeneration);
+        /* A higher generation observed on a device is authoritative even when
+         * the Worker was offline. Lower generations are ignored. */
+        if (reportedGeneration > currentGeneration) {
+          updates.binding_generation = reportedGeneration;
+          updates.route_generation = reportedGeneration;
+        }
+      }
+      if (parsed.data.cloudRoute !== undefined) {
+        Object.assign(prevTel, {
+          reportedCloudRoute: parsed.data.cloudRoute,
+          reportedBindingState: parsed.data.bindingState ?? null,
+          reportedBindingId: parsed.data.bindingId ?? null,
+          reportedChallengeId: parsed.data.challengeId ?? null,
+          reportedChallengeNonce: parsed.data.challengeNonce ?? null,
+          reportedAt: now,
+        });
+        updates.espnow_telemetry = { ...prevTel };
+      }
       if (parsed.data.commMode !== undefined) {
         updates.comm_mode = parsed.data.commMode;
       }
@@ -671,6 +724,8 @@ export function createDeviceApiRoutes() {
               rssi: n.rssi ?? null,
               channel: n.channel ?? parsed.data.radioChannel ?? null,
               seq: n.seq ?? null,
+              bid: n.bid ?? null,
+              gen: n.gen ?? null,
             }))
           : prevRoster;
       if (parsed.data.nodes !== undefined) {
@@ -969,6 +1024,82 @@ export function createDeviceApiRoutes() {
             )
           ),
         ]);
+      }
+    }
+
+    /* Binding verification is Worker-owned. A Node self-reporting "linked" is
+     * not enough: its Controller must also list it, with the same generation,
+     * and have a live cloud session. */
+    if (
+      storedRole === "node" &&
+      parsed.data.linkState === "linked" &&
+      dev.boardInstanceId &&
+      normalizeBindingGeneration(prev?.binding_generation) >= 0
+    ) {
+      const { data: ctrlForVerify } = await db
+        .from("board_instances")
+        .select("id,status,mqtt_connected,espnow_telemetry,assigned_controller_id")
+        .eq("id", prev?.assigned_controller_id ?? "")
+        .eq("account_id", dev.accountId)
+        .is("deleted_at", null)
+        .maybeSingle();
+      const ctrl = ctrlForVerify as {
+        id: string;
+        status: string | null;
+        mqtt_connected: boolean | null;
+        espnow_telemetry?: Record<string, unknown> | null;
+      } | null;
+      const roster = Array.isArray(ctrl?.espnow_telemetry?.roster)
+        ? (ctrl!.espnow_telemetry!.roster as Array<Record<string, unknown>>)
+        : [];
+      const rosterEntry = roster.find((r) => r.id === dev.boardInstanceId);
+      const challengeId =
+        parsed.data.challengeId ??
+        (typeof rosterEntry?.chid === "string" ? rosterEntry.chid : null);
+      const challengeNonce =
+        parsed.data.challengeNonce ??
+        (typeof rosterEntry?.cnon === "string" ? rosterEntry.cnon : null);
+      const reportedGeneration = Math.max(
+        normalizeBindingGeneration(prev?.binding_generation),
+        normalizeBindingGeneration(parsed.data.bindingGeneration)
+      );
+      const rosterGeneration = normalizeBindingGeneration(rosterEntry?.gen ?? rosterEntry?.generation);
+      if (ctrl && rosterEntry && rosterEntry.link === "linked" && reportedGeneration > 0) {
+        const verdict = await verifyNodeBinding(db, dev.accountId, {
+          nodeId: dev.boardInstanceId,
+          controllerId: ctrl.id,
+          generation: reportedGeneration,
+          bindingId: parsed.data.bindingId ?? null,
+          challengeId,
+          challengeNonce,
+          espnowLinked: true,
+          rosterConfirmed: rosterGeneration === 0 || rosterGeneration === reportedGeneration,
+          controllerMqttHealthy: ctrl.status === "online" && Boolean(ctrl.mqtt_connected),
+        }).catch(() => ({ verified: false, generation: reportedGeneration }));
+        if (verdict.verified && isEmqxConfigured(c.env ?? {})) {
+          const { data: parentCred } = await db
+            .from("mqtt_credentials_metadata")
+            .select("topic_prefix")
+            .eq("board_instance_id", ctrl.id)
+            .eq("account_id", dev.accountId)
+            .eq("status", "active")
+            .maybeSingle();
+          const topicPrefix = (parentCred as { topic_prefix?: string } | null)?.topic_prefix;
+          if (topicPrefix) {
+            const cid = commandIdentity({ action: "confirm_route", node: dev.boardInstanceId, gen: verdict.generation });
+            await new EmqxClient(c.env!, deps.emqxFetch).publish({
+              topic: `${topicPrefix}/cmd/system`,
+              payload: {
+                action: "confirm_route",
+                node_id: dev.boardInstanceId,
+                cid,
+                gen: verdict.generation,
+                requested_at: now,
+              },
+              qos: 1,
+            }).catch(() => undefined);
+          }
+        }
       }
     }
 

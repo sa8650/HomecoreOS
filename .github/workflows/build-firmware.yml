@@ -51,8 +51,11 @@ jobs:
         run: |
           set -eu
           python3 firmware/scripts/verify_firmware_image.py --verify-board-overlays firmware/boards
+          python3 firmware/scripts/verify_board_capabilities.py
           python3 firmware/scripts/verify_firmware_image.py --verify-esp8266-profile firmware/esp8266/board-profile.json
           python3 -m unittest -v firmware/scripts/test_verify_firmware_image.py
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_connectivity_logic.c firmware/main/connectivity_logic.c -o /tmp/test_connectivity_logic
+          /tmp/test_connectivity_logic
 
   prepare-matrix:
     name: Resolve Firmware Build Matrix

@@ -6,11 +6,11 @@
  *
  * Rules implemented here (see packages/shared/src/board-role.ts):
  *   Controller : Wi-Fi + EMQX MQTT + ESP-NOW hosting.
- *   Node       : ESP-NOW link to its Controller; no MQTT session while linked.
- *                After HC_ROLE_RECONNECT_WINDOW_MS without its Controller it
- *                falls back to Wi-Fi/MQTT as a "Standalone Node — Controller
- *                Disconnected" and returns to ESP-NOW automatically when the
- *                Controller comes back. It is never promoted to Controller.
+ *   Node       : Keeps direct MQTT until a Worker-confirmed Controller relay
+ *                is healthy, then closes it. An assignment or a search alone
+ *                never drops a working cloud session. ESP-NOW is used only
+ *                when the board's compile-time capability profile allows it.
+ *                The universal connectivity manager owns route decisions.
  *   OTA        : a Node opens a temporary Wi-Fi/MQTT window so EMQX can hand
  *                it the update (works for standalone Nodes too).
  */
@@ -63,6 +63,20 @@ void hc_role_request_relink(homecore_config_t *cfg);
 
 /** Controller: relay a JSON instruction to a hosted Node over ESP-NOW. */
 esp_err_t hc_role_relay_command_to_node(homecore_config_t *cfg, const char *node_id, const char *json);
+
+/** Clears a consumed/revoked challenge (RAM only). */
+void hc_role_consume_binding_challenge(void);
+
+/**
+ * Stores a short-lived, Worker-issued binding challenge in RAM (never NVS).
+ * On a Node it is echoed in heartbeats; on a Controller it is attached to the
+ * matching roster entry so the Worker can verify both sides.
+ */
+void hc_role_set_binding_challenge(const homecore_config_t *cfg,
+                                   const char *node_id,
+                                   const char *challenge_id,
+                                   const char *nonce,
+                                   uint32_t generation);
 
 /** Number of Nodes currently linked to this Controller (0 when it is a Node). */
 uint8_t hc_role_linked_node_count(void);

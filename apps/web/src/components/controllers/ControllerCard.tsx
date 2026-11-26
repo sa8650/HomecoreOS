@@ -181,6 +181,8 @@ export function ControllerCard({
   onMakeNode,
 }: ControllerCardProps) {
   const status = controllerStatusBadge(ctrl.status);
+  /* A Node's cloud badge follows the authoritative route, never ESP-NOW alone. */
+  const liveStatusLabel = ctrl.connection_status ?? null;
   const pairing = controllerPairingBadge(ctrl);
   const wifiUp = ctrl.wifi_connected ?? ctrl.status === "online";
   const lastSeenAt = ctrl.last_communication_at ?? ctrl.last_heartbeat_at;
@@ -376,7 +378,7 @@ export function ControllerCard({
               </CardRow>
               <CardRow label="Status">
                 <Badge variant={status.variant} size="xs" radius="full">
-                  {status.label}
+                  {liveStatusLabel ?? status.label}
                 </Badge>
               </CardRow>
               <CardRow label="Wi-Fi">
