@@ -1,25 +1,22 @@
 import { normalizeBoardRole } from "@homecoreos/shared";
 import type { DbClient } from "./db";
+import { commandIdentity, decideNodeRoute, type RouteAuthorityRow } from "./route-authority";
 
 /**
  * Where a switch/device command for one board has to be published.
  *
- * A Controller always has its own EMQX session, so commands go straight to its
- * `cmd/switch` or `cmd/device` topic. A Node that is linked to its Controller
- * over ESP-NOW deliberately keeps **no** EMQX session (see
- * `packages/shared/src/board-role.ts`), so an EMQX publish to its own topic
- * would be accepted by the broker but never delivered. For those Nodes the
- * command is wrapped as `action: "relay_to_node"` on the **Controller's**
- * `cmd/system` topic; the Controller forwards it over ESP-NOW.
- *
- * A standalone Node (Wi-Fi/MQTT fallback) has its own session again and is
- * addressed directly, so a forgotten role never turns into a lost command.
+ * Route authority is the connectivity state, not the role or the assignment
+ * alone. A Node with a healthy MQTT session is always directly reachable; a
+ * Controller relay is used only when fresh telemetry proves a verified,
+ * generation-matched roster entry and a live Controller MQTT session.
  */
 export interface DeviceCommandDelivery {
   topic: string;
   payload: Record<string, unknown>;
   /** Set when the command travels through a Controller over ESP-NOW. */
   relayedViaControllerId: string | null;
+  route: string;
+  commandId: string;
 }
 
 type CredentialRow = { topic_prefix: string; status?: string | null };
@@ -53,50 +50,87 @@ export async function resolveDeviceCommandDelivery(
 ): Promise<DeviceCommandDelivery | null> {
   const { data: row } = await db
     .from("board_instances")
-    .select("id,board_role,assigned_controller_id,mqtt_connected")
+    .select(
+      "id,board_role,assigned_controller_id,mqtt_connected,status,binding_id,binding_state,binding_generation,cloud_route,last_heartbeat_at,last_communication_at,node_last_linked_at,espnow_telemetry"
+    )
     .eq("id", params.deviceId)
     .eq("account_id", params.accountId)
     .is("deleted_at", null)
     .maybeSingle();
 
-  const device = row as {
-    id: string;
-    board_role?: string | null;
-    assigned_controller_id?: string | null;
-    mqtt_connected?: boolean | null;
-  } | null;
-
+  const device = row as RouteAuthorityRow | null;
   const credential =
     params.credential ?? (await loadActiveCredential(db, params.accountId, params.deviceId));
+  const commandId = commandIdentity(params.payload);
+  const stablePayload = { ...params.payload, command_id: commandId, cid: commandId };
 
   const isNode = normalizeBoardRole(device?.board_role) === "node";
-  const hasOwnSession =
-    Boolean(credential) && (credential!.status ?? "active") === "active";
-
-  if (!isNode || (hasOwnSession && device?.mqtt_connected)) {
-    if (!hasOwnSession) return null;
+  if (!isNode) {
+    if (!credential) return null;
     return {
-      topic: `${credential!.topic_prefix}/cmd/${params.kind}`,
-      payload: params.payload,
+      topic: `${credential.topic_prefix}/cmd/${params.kind}`,
+      payload: stablePayload,
       relayedViaControllerId: null,
+      route: "controller_mqtt",
+      commandId,
     };
   }
 
-  // Linked Node: no session of its own — relay through its Controller.
-  const parentId = device?.assigned_controller_id;
-  if (!parentId) return null;
-  const parentCredential = await loadActiveCredential(db, params.accountId, parentId);
-  if (!parentCredential) return null;
+  let controller: RouteAuthorityRow | null = null;
+  if (device?.assigned_controller_id) {
+    const { data: ctrlRow } = await db
+      .from("board_instances")
+      .select(
+        "id,board_role,status,mqtt_connected,binding_state,binding_generation,cloud_route,last_heartbeat_at,last_communication_at,espnow_telemetry"
+      )
+      .eq("id", device.assigned_controller_id)
+      .eq("account_id", params.accountId)
+      .is("deleted_at", null)
+      .maybeSingle();
+    controller = (ctrlRow as RouteAuthorityRow | null) ?? null;
+  }
 
-  return {
-    topic: `${parentCredential.topic_prefix}/cmd/system`,
-    payload: {
-      action: "relay_to_node",
-      node_id: params.deviceId,
-      kind: params.kind,
-      payload: params.payload,
-    },
-    relayedViaControllerId: parentId,
-  };
+  const decision = decideNodeRoute({
+    node: device ?? { id: params.deviceId },
+    controller,
+    nodeId: params.deviceId,
+    commandId,
+  });
+
+  if (decision.route === "direct_node_mqtt" && credential) {
+    return {
+      topic: `${credential.topic_prefix}/cmd/${params.kind}`,
+      payload: { ...stablePayload, gen: decision.generation },
+      relayedViaControllerId: null,
+      route: decision.route,
+      commandId,
+    };
+  }
+
+  if (decision.route === "controller_mqtt" && controller) {
+    const parentCredential = await loadActiveCredential(
+      db,
+      params.accountId,
+      controller.id
+    );
+    if (!parentCredential) return null;
+    return {
+      topic: `${parentCredential.topic_prefix}/cmd/system`,
+      payload: {
+        action: "relay_to_node",
+        node_id: params.deviceId,
+        kind: params.kind,
+        payload: stablePayload,
+        cid: commandId,
+        gen: decision.generation,
+      },
+      relayedViaControllerId: controller.id,
+      route: decision.route,
+      commandId,
+    };
+  }
+
+  /* No healthy route: defer rather than publish into a black hole. Callers
+   * report mqttDispatched:false and keep the command in their own history. */
+  return null;
 }
-

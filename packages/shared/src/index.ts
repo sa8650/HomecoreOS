@@ -630,6 +630,7 @@ export * from "./ble-provisioning";
 export * from "./recovery";
 export * from "./recovery-protocol";
 export * from "./board-role";
+export * from "./board-capabilities";
 export * from "./user-onboarding";
 export * from "./automations";
 export * from "./flow-graph";

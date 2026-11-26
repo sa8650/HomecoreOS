@@ -1,5 +1,12 @@
 # Unified Controller & Node Architecture
 
+> **Superseded connectivity behaviour:** this document records the original
+> Controller/Node implementation. The current binding, routing and per-board
+> capability rules are described in `UNIVERSAL_BOARD_CONNECTIVITY.md`. In
+> particular, a Node now keeps a working MQTT session while assigned/searching,
+> a binding has a persistent ID and generation, and the Worker alone marks a
+> binding verified and changes the authoritative cloud route.
+
 Date: 2026-11-18
 Status: implemented and verified (automated gates green; ESP-NOW transport unbuilt locally — see §10).
 

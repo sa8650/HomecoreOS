@@ -202,6 +202,42 @@
       "rowCount": 0,
       "dataHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
+    "board_binding_challenges": {
+      "columns": [
+        "id uuid NOT NULL DEFAULT gen_random_uuid()",
+        "account_id uuid NOT NULL",
+        "node_id uuid NOT NULL",
+        "controller_id uuid NOT NULL",
+        "nonce text NOT NULL",
+        "generation bigint NOT NULL",
+        "created_at timestamp with time zone NOT NULL DEFAULT now()",
+        "expires_at timestamp with time zone NOT NULL",
+        "consumed_at timestamp with time zone"
+      ],
+      "constraints": [
+        "board_binding_challenges_account_fkey f FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE",
+        "board_binding_challenges_account_id_not_null n NOT NULL account_id",
+        "board_binding_challenges_controller_fkey f FOREIGN KEY (controller_id) REFERENCES board_instances(id) ON DELETE CASCADE",
+        "board_binding_challenges_controller_id_not_null n NOT NULL controller_id",
+        "board_binding_challenges_created_at_not_null n NOT NULL created_at",
+        "board_binding_challenges_distinct_check c CHECK ((node_id <> controller_id))",
+        "board_binding_challenges_expires_at_not_null n NOT NULL expires_at",
+        "board_binding_challenges_generation_check c CHECK ((generation > 0))",
+        "board_binding_challenges_generation_not_null n NOT NULL generation",
+        "board_binding_challenges_id_not_null n NOT NULL id",
+        "board_binding_challenges_node_fkey f FOREIGN KEY (node_id) REFERENCES board_instances(id) ON DELETE CASCADE",
+        "board_binding_challenges_node_id_not_null n NOT NULL node_id",
+        "board_binding_challenges_nonce_not_null n NOT NULL nonce",
+        "board_binding_challenges_pkey p PRIMARY KEY (id)"
+      ],
+      "indexes": [
+        "board_binding_challenges_pkey CREATE UNIQUE INDEX board_binding_challenges_pkey ON public.board_binding_challenges USING btree (id)",
+        "idx_board_binding_challenge_lookup CREATE INDEX idx_board_binding_challenge_lookup ON public.board_binding_challenges USING btree (account_id, node_id, controller_id, expires_at)"
+      ],
+      "triggers": [],
+      "rowCount": 0,
+      "dataHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
     "board_gpio_definitions": {
       "columns": [
         "id uuid NOT NULL DEFAULT gen_random_uuid()",
@@ -308,7 +344,13 @@
         "supports_wifi boolean",
         "supports_ble boolean",
         "health_reported_at timestamp with time zone",
-        "espnow_telemetry jsonb"
+        "espnow_telemetry jsonb",
+        "binding_id uuid",
+        "binding_state text NOT NULL DEFAULT 'verified'::text",
+        "binding_generation bigint NOT NULL DEFAULT 0",
+        "binding_verified_at timestamp with time zone",
+        "cloud_route text",
+        "route_generation bigint NOT NULL DEFAULT 0"
       ],
       "constraints": [
         "board_instances_account_id_fkey f FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE",
@@ -316,12 +358,17 @@
         "board_instances_assigned_controller_fkey f FOREIGN KEY (assigned_controller_id) REFERENCES board_instances(id) ON DELETE SET NULL",
         "board_instances_assignment_not_self_check c CHECK (((assigned_controller_id IS NULL) OR (assigned_controller_id <> id)))",
         "board_instances_assignment_role_check c CHECK (((board_role = 'node'::text) OR (assigned_controller_id IS NULL)))",
+        "board_instances_binding_generation_check c CHECK ((binding_generation >= 0))",
+        "board_instances_binding_generation_not_null n NOT NULL binding_generation",
+        "board_instances_binding_state_check c CHECK ((binding_state = ANY (ARRAY['unpaired'::text, 'pairing'::text, 'assigned'::text, 'verified'::text, 'revoked'::text])))",
+        "board_instances_binding_state_not_null n NOT NULL binding_state",
         "board_instances_board_model_not_null n NOT NULL board_model",
         "board_instances_board_profile_id_fkey f FOREIGN KEY (board_profile_id) REFERENCES board_profiles(id) ON DELETE RESTRICT",
         "board_instances_board_ref_check c CHECK ((((board_profile_id IS NOT NULL) AND (custom_board_profile_id IS NULL)) OR ((board_profile_id IS NULL) AND (custom_board_profile_id IS NOT NULL))))",
         "board_instances_board_role_check c CHECK ((board_role = ANY (ARRAY['controller'::text, 'node'::text])))",
         "board_instances_board_role_not_null n NOT NULL board_role",
         "board_instances_chip_variant_not_null n NOT NULL chip_variant",
+        "board_instances_cloud_route_check c CHECK (((cloud_route IS NULL) OR (cloud_route = ANY (ARRAY['direct_node_mqtt'::text, 'controller_mqtt'::text, 'connecting'::text, 'unavailable'::text]))))",
         "board_instances_comm_mode_check c CHECK (((comm_mode IS NULL) OR (comm_mode = ANY (ARRAY['espnow'::text, 'wifi_mqtt'::text, 'offline'::text]))))",
         "board_instances_config_revision_not_null n NOT NULL config_revision",
         "board_instances_connection_history_not_null n NOT NULL connection_history",
@@ -345,6 +392,8 @@
         "board_instances_provisioning_transport_check c CHECK (((provisioning_transport IS NULL) OR (provisioning_transport = ANY (ARRAY['ble'::text, 'softap'::text, 'usb'::text, 'manual'::text]))))",
         "board_instances_psram_size_mb_not_null n NOT NULL psram_size_mb",
         "board_instances_room_id_fkey f FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL",
+        "board_instances_route_generation_check c CHECK ((route_generation >= 0))",
+        "board_instances_route_generation_not_null n NOT NULL route_generation",
         "board_instances_status_check c CHECK ((status = ANY (ARRAY['pending'::text, 'online'::text, 'offline'::text, 'disconnected'::text, 'reset_pending'::text, 'updating'::text])))",
         "board_instances_status_not_null n NOT NULL status",
         "board_instances_updated_at_not_null n NOT NULL updated_at",
@@ -357,6 +406,7 @@
         "idx_board_instances_account CREATE INDEX idx_board_instances_account ON public.board_instances USING btree (account_id) WHERE (deleted_at IS NULL)",
         "idx_board_instances_active_created CREATE INDEX idx_board_instances_active_created ON public.board_instances USING btree (account_id, created_at DESC) WHERE ((deleted_at IS NULL) AND (permanently_deleted_at IS NULL))",
         "idx_board_instances_assigned_controller CREATE INDEX idx_board_instances_assigned_controller ON public.board_instances USING btree (assigned_controller_id) WHERE ((assigned_controller_id IS NOT NULL) AND (deleted_at IS NULL))",
+        "idx_board_instances_binding_generation CREATE INDEX idx_board_instances_binding_generation ON public.board_instances USING btree (account_id, binding_generation) WHERE (deleted_at IS NULL)",
         "idx_board_instances_board_role CREATE INDEX idx_board_instances_board_role ON public.board_instances USING btree (account_id, board_role) WHERE ((deleted_at IS NULL) AND (permanently_deleted_at IS NULL))",
         "idx_board_instances_online_heartbeat CREATE INDEX idx_board_instances_online_heartbeat ON public.board_instances USING btree (status, last_heartbeat_at) WHERE ((deleted_at IS NULL) AND (permanently_deleted_at IS NULL) AND (status = 'online'::text))",
         "idx_board_instances_pending_sync CREATE INDEX idx_board_instances_pending_sync ON public.board_instances USING btree (account_id, pending_config_sync) WHERE ((deleted_at IS NULL) AND (pending_config_sync = true))",

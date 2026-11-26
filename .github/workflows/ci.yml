@@ -20,6 +20,12 @@ jobs:
       - run: npm run build
       - name: Verify database migrations match the schema snapshot
         run: npm run db:verify
+      - name: Verify canonical board capability registry
+        run: python3 firmware/scripts/verify_board_capabilities.py
+      - name: Run firmware connectivity host tests
+        run: |
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_connectivity_logic.c firmware/main/connectivity_logic.c -o /tmp/test_connectivity_logic
+          /tmp/test_connectivity_logic
       - name: Run test suites
         shell: bash
         # Keep the full output so a flaky failure can be inspected from the artifact.

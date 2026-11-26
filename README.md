@@ -55,6 +55,7 @@ database/
 .github/workflows/  CI checks & automated ESP-IDF firmware build pipeline
 DESIGN_SYSTEM.md    HomecoreOS Geist design tokens, ReUI/Radix primitives & architectural floor-plan spec
 DEPLOYMENT.md       Browser dashboard deployment guide
+docs/UNIVERSAL_BOARD_CONNECTIVITY.md  Per-board capability registry, binding authority, state separation, routing and failover
 docs/REALTIME_SYNC.md  Real-time channel: topics, ACLs, event flow, reconnect and quota rules
 docs/ADMIN_CUSTOMER_MONITORING.md  Read-only admin customer board/device monitoring: routes, health rules, query strategy
 docs/TEST_REPORT.md  End-to-end validation report (automated, firmware host-C, simulated hardware, and hardware-required checklists)
