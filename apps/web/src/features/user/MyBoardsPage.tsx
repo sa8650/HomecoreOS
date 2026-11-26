@@ -379,7 +379,7 @@ export function MyBoardsPage({
         sameHome: !device.home_id || c.home_id === device.home_id,
       }).ok;
     });
-  }, [roleTarget, controllerDevices]);
+  }, [roleTarget, controllerDevices, boardForController]);
 
   const filteredControllers = useMemo(() => {
     const q = search.trim().toLowerCase();
