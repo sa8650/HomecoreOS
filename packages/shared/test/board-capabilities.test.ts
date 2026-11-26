@@ -98,12 +98,10 @@ describe("canonical board capability registry", () => {
     expect(requiresExternalWirelessCompanion("esp32s3")).toBe(false);
   });
 
-  it("never reports a tested node count without physical testing", () => {
+  it("never claims physical testing or a tested node count", () => {
     for (const board of Object.values(BOARD_CAPABILITIES)) {
       expect(board.limits.max_tested_controller_nodes).toBe(0);
-      expect(board.support.hardware_tested).toBe(
-        board.board_id === "esp32-s3-devkitc-1-n16r8"
-      );
+      expect(board.support.hardware_tested).toBe(false);
     }
   });
 });

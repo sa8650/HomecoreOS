@@ -62,8 +62,10 @@
       "support": {
         "status": "supported",
         "firmware_build_verified": true,
-        "hardware_tested": true,
-        "notes": []
+        "hardware_tested": false,
+        "notes": [
+          "Physical board validation has not been performed in this repository."
+        ]
       }
     },
     {

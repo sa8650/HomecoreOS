@@ -39,7 +39,7 @@ typedef struct {
 } hc_board_capability_t;
 
 static const hc_board_capability_t HC_BOARD_CAPABILITIES[] = {
-    { "esp32-s3-devkitc-1-n16r8", "esp32s3", "esp-idf v5.4", "esp_idf", true, true, true, true, true, true, true, true, 250, 16, 8, 10, 0, 4096, 16, 30, 2000, 10000, 45000, 15000, 6144, 16, 8, 512, false, true },
+    { "esp32-s3-devkitc-1-n16r8", "esp32s3", "esp-idf v5.4", "esp_idf", true, true, true, true, true, true, true, true, 250, 16, 8, 10, 0, 4096, 16, 30, 2000, 10000, 45000, 15000, 6144, 16, 8, 512, false, false },
     { "esp32-s3-devkitc-1-v1-0", "esp32s3", "esp-idf v5.4", "esp_idf", true, true, true, true, true, true, true, true, 250, 12, 6, 8, 0, 4096, 16, 30, 2000, 10000, 45000, 15000, 6144, 8, 8, 512, true, false },
     { "seeed-xiao-esp32s3", "esp32s3", "esp-idf v5.4", "esp_idf", true, true, true, true, true, true, true, true, 250, 12, 6, 8, 0, 4096, 16, 30, 2000, 10000, 45000, 15000, 6144, 8, 8, 512, true, false },
     { "seeed-xiao-esp32s3-sense", "esp32s3", "esp-idf v5.4", "esp_idf", true, true, true, true, true, true, true, true, 250, 12, 6, 8, 0, 4096, 16, 30, 2000, 10000, 45000, 15000, 6144, 8, 8, 512, true, false },

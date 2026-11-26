@@ -228,9 +228,10 @@ Automated gates added for this work:
 
 Hardware limitations, stated plainly:
 
-- No physical boards were connected during this work. `max_tested_controller_nodes`
-  is 0 for every board; only the N16R8 profile is marked `hardware_tested`
-  from earlier project history.
+- No physical boards were connected during this work or in the repository's
+  test history. `hardware_tested` is false and `max_tested_controller_nodes`
+  is 0 for every board. All 21 ESP-IDF overlays passed compiler/build
+  verification, which is not hardware validation.
 - Mixed ESP8266/ESP32 ESP-NOW interoperability has not been tested, so ESP8266
   ESP-NOW remains disabled.
 - ESP32-H2 is intentionally outside the Wi-Fi Controller/Node architecture.
