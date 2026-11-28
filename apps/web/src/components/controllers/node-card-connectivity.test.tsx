@@ -60,6 +60,7 @@ describe("NodeCard connectivity UX", () => {
         canOperate
         timezone="UTC"
         onViewDetails={vi.fn()}
+        onViewLog={vi.fn()}
         onRename={vi.fn()}
         onAssignController={vi.fn()}
         onRelink={vi.fn()}
@@ -84,6 +85,7 @@ describe("NodeCard connectivity UX", () => {
         canOperate
         timezone="UTC"
         onViewDetails={vi.fn()}
+        onViewLog={vi.fn()}
         onRename={vi.fn()}
         onAssignController={vi.fn()}
         onRelink={vi.fn()}

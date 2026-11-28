@@ -1,3 +1,4 @@
+#include "board_log.h"
 #include "homecore_config.h"
 
 #include <stdio.h>
@@ -53,6 +54,22 @@ void hc_mqtt_stop(void) {
         esp_mqtt_client_destroy(s_client);
         s_client = NULL;
     }
+}
+
+/* Extracts the command id the Worker attached to a command, so a receiver-side
+   fact can be tied back to the exact command that caused it. */
+static void extract_command_id(const char *data, int len, char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (!data || len <= 0) return;
+    cJSON *root = cJSON_ParseWithLength(data, (size_t)len);
+    if (!root) return;
+    cJSON *cid_j = cJSON_GetObjectItem(root, "cid");
+    if (!cJSON_IsString(cid_j)) cid_j = cJSON_GetObjectItem(root, "command_id");
+    if (cJSON_IsString(cid_j) && cid_j->valuestring) {
+        snprintf(out, out_len, "%s", cid_j->valuestring);
+    }
+    cJSON_Delete(root);
 }
 
 /* Applies a switch/device command payload. Shared by the MQTT handlers and by
@@ -122,11 +139,49 @@ static bool apply_device_command(const char *data, int len) {
 }
 
 static void handle_switch_cmd(const char *data, int len) {
-    (void)apply_switch_command(data, len);
+    char command_id[HC_BOARD_LOG_COMMAND_LEN];
+    extract_command_id(data, len, command_id, sizeof(command_id));
+    /* "received" is a receiver-side fact: the broker delivered this command to
+     * this board. It is never derived from a publish on the Worker side. */
+    hc_board_log_record(
+        HC_BOARD_LOG_KIND_COMMAND,
+        HC_BOARD_LOG_STATUS_RECEIVED,
+        HC_BOARD_LOG_METHOD_MQTT,
+        NULL,
+        "switch",
+        command_id
+    );
+    bool applied = apply_switch_command(data, len);
+    hc_board_log_record(
+        HC_BOARD_LOG_KIND_COMMAND,
+        applied ? HC_BOARD_LOG_STATUS_EXECUTED : HC_BOARD_LOG_STATUS_FAILED,
+        HC_BOARD_LOG_METHOD_MQTT,
+        NULL,
+        applied ? "switch applied" : "switch rejected",
+        command_id
+    );
 }
 
 static void handle_device_cmd(const char *data, int len) {
-    (void)apply_device_command(data, len);
+    char command_id[HC_BOARD_LOG_COMMAND_LEN];
+    extract_command_id(data, len, command_id, sizeof(command_id));
+    hc_board_log_record(
+        HC_BOARD_LOG_KIND_COMMAND,
+        HC_BOARD_LOG_STATUS_RECEIVED,
+        HC_BOARD_LOG_METHOD_MQTT,
+        NULL,
+        "device",
+        command_id
+    );
+    bool applied = apply_device_command(data, len);
+    hc_board_log_record(
+        HC_BOARD_LOG_KIND_COMMAND,
+        applied ? HC_BOARD_LOG_STATUS_EXECUTED : HC_BOARD_LOG_STATUS_FAILED,
+        HC_BOARD_LOG_METHOD_MQTT,
+        NULL,
+        applied ? "device applied" : "device rejected",
+        command_id
+    );
 }
 
 bool hc_command_apply(const char *kind, const char *json) {
@@ -146,6 +201,18 @@ static void handle_system_cmd(const char *data, int len) {
     if (cJSON_IsString(act_j) && act_j->valuestring) {
         const char *action = act_j->valuestring;
         ESP_LOGW(TAG, "Received remote system action: %s", action);
+        {
+            char command_id[HC_BOARD_LOG_COMMAND_LEN];
+            extract_command_id(data, len, command_id, sizeof(command_id));
+            hc_board_log_record(
+                HC_BOARD_LOG_KIND_COMMAND,
+                HC_BOARD_LOG_STATUS_RECEIVED,
+                HC_BOARD_LOG_METHOD_MQTT,
+                NULL,
+                action,
+                command_id
+            );
+        }
 
         if (strcmp(action, "restart") == 0) {
             cJSON_Delete(root);

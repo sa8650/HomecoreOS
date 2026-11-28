@@ -7,6 +7,7 @@ import {
   type UserNotificationPreferences,
 } from "@homecoreos/shared";
 import type { WorkerBindings } from "../config/env";
+import { captureBoardLog, createBoardLogCollector } from "./board-log";
 import type { CustomFetch, DbClient } from "./db";
 import { makeRealtimeEvent, publishRealtimeEvents } from "./realtime";
 
@@ -427,8 +428,34 @@ export async function refreshStaleControllerStates(
         }, realtime),
       ]);
 
+      // The offline verdict is a connection event on the board's own log. It
+      // travels in the same envelope as the board state change.
+      const logCollector = createBoardLogCollector();
+      await captureBoardLog(
+        {
+          db,
+          env: realtime?.env,
+          deps: realtime ? { emqxFetch: realtime.emqxFetch } : undefined,
+          collector: logCollector,
+        },
+        {
+          accountId: ctrl.account_id,
+          boardInstanceId: ctrl.id,
+          category: "connection",
+          severity: "warning",
+          status: "offline",
+          method: "worker",
+          source: "worker",
+          destination: ctrl.id,
+          message: `${roleLabel} missed its heartbeat window (${timeoutSec}s) and is now offline.`,
+          dedupeKey: `status:offline:${ctrl.id}:${ctrl.last_heartbeat_at ?? "none"}`,
+          metadata: { timeoutSec, previousStatus: "online" },
+        }
+      );
+
       if (realtime?.env) {
         await publishRealtimeEvents(realtime.env, { emqxFetch: realtime.emqxFetch }, ctrl.account_id, [
+          ...logCollector.events,
           makeRealtimeEvent(
             "board",
             "state",

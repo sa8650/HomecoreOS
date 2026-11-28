@@ -9,6 +9,7 @@ import {
 } from "@homecoreos/shared";
 import type { WorkerBindings } from "../config/env";
 import { recordActivity } from "./audit";
+import { captureBoardLog, type BoardLogCollector } from "./board-log";
 import { syncControllerConfigSnapshot } from "./controller-config";
 import type { CustomFetch, DbClient } from "./db";
 import { resolveControllerBoardSpec } from "./board-helpers";
@@ -115,6 +116,8 @@ export async function changeBoardRole(
     deviceId: string;
     targetRole: BoardRole;
     acknowledgeAttachedNodes?: boolean;
+    /** Collects the real-time events so they travel with the action's envelope. */
+    collector?: BoardLogCollector;
   }
 ): Promise<RoleChangeResult> {
   const { data: row } = await db
@@ -260,6 +263,30 @@ export async function changeBoardRole(
           }`,
   });
 
+  await captureBoardLog(
+    { db, env, deps, collector: params.collector },
+    {
+      accountId: params.accountId,
+      boardInstanceId: device.id,
+      category: "binding",
+      severity: "info",
+      status: "role_changed",
+      method: "user",
+      source: params.actorUserId,
+      destination: device.id,
+      message:
+        params.targetRole === "controller"
+          ? `Role changed: Node promoted to Controller.`
+          : `Role changed: Controller changed to Node.`,
+      dedupeKey: `role:${device.id}:${params.targetRole}:${normalizeBindingGeneration(device.binding_generation) + 1}`,
+      metadata: {
+        from: currentRole,
+        to: params.targetRole,
+        releasedNodes: attachedNodes.length,
+      },
+    }
+  );
+
   // Re-publish the role configuration for the device and every detached Node.
   await syncControllerConfigSnapshot(db, env, deps, {
     accountId: params.accountId,
@@ -303,6 +330,8 @@ export async function assignNodeToController(
     actorUserId: string | null;
     nodeId: string;
     boardInstanceId: string | null;
+    /** Collects the real-time events so they travel with the action's envelope. */
+    collector?: BoardLogCollector;
   }
 ): Promise<AssignResult> {
   const { data: nodeRow } = await db
@@ -375,6 +404,43 @@ export async function assignNodeToController(
       action: "controller.node_unassigned",
       summary: `Cleared the Controller assignment for Node "${node.name}"`,
     });
+    await captureBoardLog(
+      { db, env, deps },
+      {
+        accountId: params.accountId,
+        boardInstanceId: node.id,
+        category: "binding",
+        severity: "warning",
+        status: "revoked",
+        method: "user",
+        source: params.actorUserId,
+        destination: prevControllerId,
+        message: "Controller assignment cleared; the binding was revoked.",
+        dedupeKey: `unassign:${node.id}:${nextGeneration}`,
+        metadata: {
+          previousControllerId: prevControllerId,
+          generation: nextGeneration,
+        },
+      }
+    );
+    if (prevControllerId) {
+      await captureBoardLog(
+        { db, env, deps, collector: params.collector },
+        {
+          accountId: params.accountId,
+          boardInstanceId: prevControllerId,
+          category: "binding",
+          severity: "warning",
+          status: "revoked",
+          method: "user",
+          source: params.actorUserId,
+          destination: node.id,
+          message: `Node "${node.name}" was unassigned from this Controller.`,
+          dedupeKey: `unassign:${prevControllerId}:${node.id}:${nextGeneration}`,
+          metadata: { nodeId: node.id, generation: nextGeneration },
+        }
+      );
+    }
     const toSync = [node.id, ...(prevControllerId ? [prevControllerId] : [])];
     for (const syncId of toSync) {
       await syncControllerConfigSnapshot(db, env, deps, {
@@ -465,6 +531,46 @@ export async function assignNodeToController(
     summary: `Assigned Node "${node.name}" to Controller "${controller.name}"`,
   });
 
+  // The assignment is a binding event on the Node's own log. The Controller
+  // records the Node only as the peer of this binding.
+  await captureBoardLog(
+    { db, env, deps, collector: params.collector },
+    {
+      accountId: params.accountId,
+      boardInstanceId: node.id,
+      category: "binding",
+      severity: "info",
+      status: "assigned",
+      method: "user",
+      source: params.actorUserId,
+      destination: controller.id,
+      message: `Assigned to Controller "${controller.name}".`,
+      dedupeKey: `assign:${node.id}:${controller.id}:${nextGeneration}`,
+      metadata: {
+        controllerId: controller.id,
+        generation: nextGeneration,
+        bindingId: assignUpdates.binding_id,
+        previousControllerId: prevControllerId,
+      },
+    }
+  );
+  await captureBoardLog(
+    { db, env, deps, collector: params.collector },
+    {
+      accountId: params.accountId,
+      boardInstanceId: controller.id,
+      category: "binding",
+      severity: "info",
+      status: "assigned",
+      method: "user",
+      source: params.actorUserId,
+      destination: node.id,
+      message: `Node "${node.name}" was assigned to this Controller.`,
+      dedupeKey: `assign:${controller.id}:${node.id}:${nextGeneration}`,
+      metadata: { nodeId: node.id, generation: nextGeneration },
+    }
+  );
+
   const syncIds = [
     node.id,
     controller.id,
@@ -501,6 +607,11 @@ export interface BindingVerificationInput {
   /** Challenge echoed by both devices from the Worker command. */
   challengeId?: string | null;
   challengeNonce?: string | null;
+  /** Optional realtime plumbing so the verification reaches the console live. */
+  env?: WorkerBindings;
+  deps?: { emqxFetch?: CustomFetch };
+  /** Collects the real-time events so they travel with the action's envelope. */
+  collector?: BoardLogCollector;
 }
 
 /**
@@ -607,6 +718,38 @@ export async function verifyNodeBinding(
     action: "controller.node_binding_verified",
     summary: `Verified binding generation ${generation} over ESP-NOW and Controller cloud`,
   });
+  await captureBoardLog(
+    { db, env: params.env ?? undefined, deps: params.deps, collector: params.collector },
+    {
+      accountId,
+      boardInstanceId: node.id,
+      category: "binding",
+      severity: "success",
+      status: "verified",
+      method: "espnow",
+      source: params.controllerId,
+      destination: node.id,
+      message: `Binding generation ${generation} verified over ESP-NOW and a healthy Controller cloud session.`,
+      dedupeKey: `binding:verified:${node.id}:${generation}`,
+      metadata: { controllerId: params.controllerId, generation },
+    }
+  );
+  await captureBoardLog(
+    { db, env: params.env ?? undefined, deps: params.deps, collector: params.collector },
+    {
+      accountId,
+      boardInstanceId: params.controllerId,
+      category: "communication",
+      severity: "success",
+      status: "verified",
+      method: "espnow",
+      source: params.controllerId,
+      destination: node.id,
+      message: `Binding with Node ${node.id} verified at generation ${generation}.`,
+      dedupeKey: `binding:verified:${params.controllerId}:${node.id}:${generation}`,
+      metadata: { nodeId: node.id, generation },
+    }
+  );
   return { verified: true, generation };
 }
 

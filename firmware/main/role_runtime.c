@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "board_log.h"
+
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "espnow_link.h"
@@ -214,6 +216,14 @@ static bool nodes_upsert_validated(const hc_espnow_rx_t *frame) {
             if (was_stale) {
                 s_report_requested = true;
                 ESP_LOGI(TAG, "Node re-linked: %s (%s) rssi=%d ch=%u", id, mac, frame->rssi, (unsigned)frame->channel);
+                hc_board_log_record(
+                    HC_BOARD_LOG_KIND_COMM,
+                    HC_BOARD_LOG_STATUS_LINK_UP,
+                    HC_BOARD_LOG_METHOD_ESPNOW,
+                    id,
+                    "node re-linked",
+                    NULL
+                );
             }
             return true;
         }
@@ -230,6 +240,14 @@ static bool nodes_upsert_validated(const hc_espnow_rx_t *frame) {
     slot->last_seen_ms = rx_now;
     s_report_requested = true;
     ESP_LOGI(TAG, "Node linked: %s (%s) rssi=%d ch=%u", id, mac, frame->rssi, (unsigned)frame->channel);
+    hc_board_log_record(
+        HC_BOARD_LOG_KIND_COMM,
+        HC_BOARD_LOG_STATUS_LINK_UP,
+        HC_BOARD_LOG_METHOD_ESPNOW,
+        id,
+        "node linked",
+        NULL
+    );
     return true;
 }
 
@@ -245,6 +263,9 @@ static void on_node_frame(const hc_espnow_rx_t *frame) {
 
     if (frame->type == HC_ESPNOW_FRAME_NODE_KEEPALIVE) {
         uint8_t active_ch = hc_espnow_get_channel();
+        /* The keepalive itself is not logged: it arrives every couple of
+         * seconds and would push every other fact out of the ring. Only the
+         * link *transitions* are recorded (see nodes_upsert_validated). */
         char ack_json[HC_ESPNOW_MAX_PAYLOAD];
         if (s_cfg->board_instance_id[0]) {
             int n = snprintf(
@@ -326,6 +347,11 @@ static void on_controller_frame(const hc_espnow_rx_t *frame) {
             return;
         }
 
+        /* The Controller's acknowledgement reached this Node: the Node's own
+         * transmission is now acknowledged. The per-acknowledgement record is
+         * deliberately not written — it arrives every couple of seconds and
+         * would push every other fact out of the ring. The link transition
+         * below carries the same information once, when it matters. */
         s_last_ack_rx_seq = frame->seq;
         s_controller_cloud_healthy = ack_cloud_healthy;
         s_peer_binding_generation = ack_generation ? ack_generation : s_peer_binding_generation;
@@ -352,12 +378,14 @@ static void on_controller_frame(const hc_espnow_rx_t *frame) {
         // Dedupe on the *Controller's* command window, not on this Node's own
         // link epoch (each side counts its own transitions).
         bool accept = hc_role_accept_command(epoch, seq, &s_remote_epoch, &s_cmd_seq);
+        char relay_command_id[HC_BOARD_LOG_COMMAND_LEN] = {0};
         /* Bounded in-memory command ID dedupe survives route changes without a
          * flash write; replayed toggles after a failover are rejected. */
         {
             cJSON *cid_j = cJSON_GetObjectItem(root, "cid");
             cJSON *gen_j = cJSON_GetObjectItem(root, "gen");
             if (cJSON_IsString(cid_j) && cid_j->valuestring) {
+                snprintf(relay_command_id, sizeof(relay_command_id), "%s", cid_j->valuestring);
                 uint32_t cmd_gen = cJSON_IsNumber(gen_j)
                     ? (uint32_t)gen_j->valuedouble
                     : s_cfg->binding_generation;
@@ -365,6 +393,22 @@ static void on_controller_frame(const hc_espnow_rx_t *frame) {
                     accept = false;
                 }
             }
+        }
+        {
+            /* The Node received a command frame over ESP-NOW. A frame that is
+             * a replay or that fails the dedupe window is reported as such and
+             * is never executed. */
+            const char *cmd_name = cJSON_IsString(cmd_j) && cmd_j->valuestring
+                ? cmd_j->valuestring
+                : NULL;
+            hc_board_log_record(
+                HC_BOARD_LOG_KIND_COMMAND,
+                accept ? HC_BOARD_LOG_STATUS_RECEIVED : HC_BOARD_LOG_STATUS_DUPLICATE,
+                HC_BOARD_LOG_METHOD_ESPNOW,
+                cmd_name,
+                accept ? "relayed command" : "replayed command",
+                relay_command_id
+            );
         }
 
         if (s_cfg && s_cmd_seq > s_cfg->last_cmd_seq) {
@@ -423,6 +467,14 @@ static void on_controller_frame(const hc_espnow_rx_t *frame) {
                             "Relayed %s command from Controller: %s",
                             kind_j->valuestring,
                             applied ? "applied" : "ignored"
+                        );
+                        hc_board_log_record(
+                            HC_BOARD_LOG_KIND_COMMAND,
+                            applied ? HC_BOARD_LOG_STATUS_EXECUTED : HC_BOARD_LOG_STATUS_FAILED,
+                            HC_BOARD_LOG_METHOD_ESPNOW,
+                            kind_j->valuestring,
+                            applied ? "relayed command applied" : "relayed command rejected",
+                            relay_command_id
                         );
                         cJSON_free(payload_str);
                     }
@@ -627,12 +679,23 @@ esp_err_t hc_role_relay_command_to_node(homecore_config_t *cfg, const char *node
             ESP_LOGW(TAG, "Node %s is stale; dropping relayed command", node_id);
             return ESP_ERR_INVALID_STATE;
         }
-        return hc_espnow_send_command(
+        esp_err_t sent = hc_espnow_send_command(
             s_nodes[i].mac,
             s_state.epoch,
             ++s_tx_seq,
             json
         );
+        /* Only a transmission is claimed here. Whether the Node received,
+         * acknowledged or executed it is reported by the Node itself. */
+        hc_board_log_record(
+            HC_BOARD_LOG_KIND_COMMAND,
+            sent == ESP_OK ? HC_BOARD_LOG_STATUS_SENT : HC_BOARD_LOG_STATUS_FAILED,
+            HC_BOARD_LOG_METHOD_ESPNOW,
+            node_id,
+            sent == ESP_OK ? "command transmitted" : "command not transmitted",
+            NULL
+        );
+        return sent;
     }
     ESP_LOGW(TAG, "Node %s is not linked to this Controller", node_id);
     return ESP_ERR_NOT_FOUND;
@@ -743,6 +806,18 @@ static void node_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
             hc_node_link_name(prev_link),
             hc_node_link_name(s_state.link),
             s_state.standalone ? "active" : "off"
+        );
+        hc_board_log_record(
+            HC_BOARD_LOG_KIND_COMM,
+            s_state.link == HC_NODE_LINKED
+                ? HC_BOARD_LOG_STATUS_LINK_UP
+                : s_state.link == HC_NODE_CONTROLLER_LOST
+                    ? HC_BOARD_LOG_STATUS_LINK_DOWN
+                    : HC_BOARD_LOG_STATUS_LINK_DOWN,
+            HC_BOARD_LOG_METHOD_ESPNOW,
+            cfg->assigned_controller_id[0] ? cfg->assigned_controller_id : NULL,
+            hc_node_link_name(s_state.link),
+            NULL
         );
         if (prev_link == HC_NODE_LINKED && s_state.link != HC_NODE_LINKED && cfg->espnow_channel == 0) {
             // The Controller may have moved to another Wi-Fi channel while it

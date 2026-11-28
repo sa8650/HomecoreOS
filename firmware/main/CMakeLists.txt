@@ -62,6 +62,7 @@ idf_component_register(
         "ota_boot_logic.c"
         "ota_manager.c"
         "mqtt_manager.c"
+        "board_log.c"
         "role_logic.c"
         "role_runtime.c"
         "connectivity_logic.c"

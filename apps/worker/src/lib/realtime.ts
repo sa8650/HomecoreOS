@@ -27,7 +27,8 @@ export type RealtimeEntity =
   | "sensor"
   | "automation"
   | "notification"
-  | "home";
+  | "home"
+  | "log";
 
 export type RealtimeEventAction =
   | "created"

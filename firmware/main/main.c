@@ -1,3 +1,4 @@
+#include "board_log.h"
 #include "homecore_config.h"
 #include "recovery_console.h"
 #include "recovery_logic.h"
@@ -904,6 +905,11 @@ void app_main(void) {
         HOMECORE_HAS_WIFI ? "yes" : "no",
         HOMECORE_HAS_BLE ? "yes" : "no"
     );
+    /* The per-board Log ring gets a random per-boot session id, so the fact
+     * sequence of this boot can never collide with the facts of an earlier
+     * boot. The ring itself lives in RAM only. */
+    hc_board_log_init((uint32_t)esp_random());
+
     ESP_ERROR_CHECK(hc_nvs_init());
     ESP_ERROR_CHECK(hc_nvs_load_config(&s_config));
 

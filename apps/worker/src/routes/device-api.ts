@@ -9,6 +9,11 @@ import {
 } from "@homecoreos/shared";
 import { inspectConfiguration, requireEmqxConfig } from "../config/env";
 import { recordActivity } from "../lib/audit";
+import {
+  captureBoardLog,
+  createBoardLogCollector,
+  describeBoardFact,
+} from "../lib/board-log";
 import { evaluateAutomationsForEvent } from "../lib/automation-engine";
 import {
   acknowledgeControllerConfigRevision,
@@ -195,6 +200,62 @@ const heartbeatSchema = z
     ackRx: z.number().int().min(0).optional(),
     peerRssi: z.number().int().min(-120).max(0).optional(),
     peerCh: z.number().int().min(1).max(13).optional(),
+    /**
+     * Receiver-side facts reported by the board itself.
+     *
+     * A board has no per-log MQTT publisher: it keeps a tiny bounded ring of
+     * facts in RAM and ships them inside the heartbeat it already sends. These
+     * are the only honest source for "received", "acknowledged" and
+     * "executed" — a publish on the Worker side never proves receipt.
+     */
+    facts: z
+      .array(
+        z.object({
+          /** kind: cmd | comm | dev | sys */
+          k: z.enum(["cmd", "comm", "dev", "sys"]).optional(),
+          /** status token, e.g. received / acknowledged / executed */
+          s: z.string().trim().max(24).optional(),
+          /** transport the fact was observed on */
+          m: z.enum(["mqtt", "espnow", "http"]).optional(),
+          /** target identifier (switch, device, peer board) */
+          t: z.string().trim().max(64).optional(),
+          /** short detail, never a payload */
+          d: z.string().trim().max(80).optional(),
+          /** command id the Worker attached to the command */
+          c: z.string().trim().max(64).optional(),
+          /** monotonic counter used for ordering */
+          ts: z.number().int().min(0).max(4_000_000_000).optional(),
+        })
+      )
+      // The firmware ring holds up to 12 facts; the cap must stay in sync with
+      // HC_BOARD_LOG_RING_SIZE, otherwise a full ring would reject the whole
+      // heartbeat (and with it the board's telemetry).
+      .max(12)
+      .optional(),
+    /**
+     * Random per-boot session id. It namespaces the board's fact sequence so
+     * a reboot can never collide with the facts of the previous session.
+     */
+    factSession: z.number().int().min(0).max(4_294_967_295).optional(),
+    sid: z.number().int().min(0).max(4_294_967_295).optional(),
+    /** Compact alias used by the firmware. */
+    fx: z
+      .array(
+        z.object({
+          k: z.enum(["cmd", "comm", "dev", "sys"]).optional(),
+          s: z.string().trim().max(24).optional(),
+          m: z.enum(["mqtt", "espnow", "http"]).optional(),
+          t: z.string().trim().max(64).optional(),
+          d: z.string().trim().max(80).optional(),
+          c: z.string().trim().max(64).optional(),
+          ts: z.number().int().min(0).max(4_000_000_000).optional(),
+        })
+      )
+      // The firmware ring holds up to 12 facts; the cap must stay in sync with
+      // HC_BOARD_LOG_RING_SIZE, otherwise a full ring would reject the whole
+      // heartbeat (and with it the board's telemetry).
+      .max(12)
+      .optional(),
     /** Controller only: the Nodes it currently hosts over ESP-NOW. */
     nodes: z
       .array(
@@ -255,6 +316,8 @@ const heartbeatSchema = z
     ackRx: d.ackRx,
     peerRssi: d.peerRssi,
     peerCh: d.peerCh,
+    facts: d.facts ?? d.fx,
+    factSession: d.factSession ?? d.sid ?? 0,
     nodes: d.nodes,
   }));
 
@@ -485,7 +548,7 @@ export function createDeviceApiRoutes() {
       db
         .from("board_instances")
         .select(
-          "id,name,status,mqtt_connected,wifi_connected,board_role,assigned_controller_id,comm_mode,firmware_version,config_revision,last_synced_config_revision,pending_config_sync,node_link_state,binding_generation,espnow_telemetry"
+          "id,name,status,mqtt_connected,wifi_connected,board_role,assigned_controller_id,comm_mode,firmware_version,config_revision,last_synced_config_revision,pending_config_sync,node_link_state,binding_generation,espnow_telemetry,last_heartbeat_at,last_communication_at,last_error,uptime_sec"
         )
         .eq("id", dev.boardInstanceId)
         .eq("account_id", dev.accountId)
@@ -516,6 +579,10 @@ export function createDeviceApiRoutes() {
       last_synced_config_revision?: number;
       pending_config_sync?: boolean;
       espnow_telemetry?: Record<string, unknown> | null;
+      last_heartbeat_at?: string | null;
+      last_communication_at?: string | null;
+      last_error?: string | null;
+      uptime_sec?: number | null;
     } | null;
 
     // A Node is never described as a Controller in a notification.
@@ -826,7 +893,301 @@ export function createDeviceApiRoutes() {
         parsed.data.linkState !== undefined &&
         prev?.node_link_state !== parsed.data.linkState);
 
+    /* ------------------------------------------------------------------
+     * Per-board live Log.
+     *
+     * Only *transitions* are written. A steady heartbeat never produces a
+     * row, so the log stays a readable operational history instead of a
+     * firehose of keepalives. Every line belongs to this board alone.
+     * ---------------------------------------------------------------- */
+    const nodeExpectsNoMqtt =
+      storedRole === "node" &&
+      Boolean(prev?.assigned_controller_id) &&
+      parsed.data.linkState !== "standalone" &&
+      parsed.data.linkState !== "unassigned";
+
+    const logCollector = createBoardLogCollector();
+    const logCtx = { db, env: c.env ?? {}, deps, collector: logCollector };
+    const logBoard = (entry: {
+      category: string;
+      severity?: string;
+      status?: string | null;
+      method?: string | null;
+      source?: string | null;
+      destination?: string | null;
+      message: string;
+      metadata?: Record<string, unknown>;
+      dedupeKey?: string | null;
+    }) =>
+      captureBoardLog(logCtx, {
+        accountId: dev.accountId,
+        boardInstanceId: dev.boardInstanceId,
+        ...entry,
+      });
+
+    const boardName = prev?.name ?? "Board";
+    // Identifies one transition: the previous heartbeat is a unique marker
+    // for "the board was in this state until now".
+    const transitionToken = prev?.last_heartbeat_at ?? prev?.status ?? "init";
+    const minuteBucket = Math.floor(Date.now() / 60_000);
+
+    if (prev && prev.status !== "online") {
+      await logBoard({
+        category: "connection",
+        severity: "success",
+        status: "online",
+        method: "http",
+        source: dev.boardInstanceId,
+        message: `${boardName} came online.`,
+        dedupeKey: `status:online:${transitionToken}`,
+        metadata: { previousStatus: prev.status, role: storedRole },
+      });
+    }
+
+    if (
+      parsed.data.mqttConnected !== undefined &&
+      prev?.mqtt_connected !== parsed.data.mqttConnected
+    ) {
+      const connected = parsed.data.mqttConnected;
+      // A Node that is linked over ESP-NOW deliberately owns no MQTT session;
+      // losing it is the expected route change, not a fault.
+      if (!(nodeExpectsNoMqtt && !connected)) {
+        await logBoard({
+          category: "communication",
+          severity: connected ? "success" : "warning",
+          status: connected ? "connected" : "disconnected",
+          method: "mqtt",
+          message: connected
+            ? "MQTT session established."
+            : "MQTT session lost.",
+          dedupeKey: `mqtt:${connected ? "up" : "down"}:${transitionToken}`,
+          metadata: { role: storedRole },
+        });
+      }
+    }
+
+    if (
+      parsed.data.wifiConnected !== undefined &&
+      prev?.wifi_connected !== parsed.data.wifiConnected
+    ) {
+      const connected = parsed.data.wifiConnected;
+      await logBoard({
+        category: "communication",
+        severity: connected ? "success" : "error",
+        status: connected ? "connected" : "disconnected",
+        method: "wifi",
+        message: connected ? "Wi-Fi connected." : "Wi-Fi disconnected.",
+        dedupeKey: `wifi:${connected ? "up" : "down"}:${transitionToken}`,
+        metadata: { rssi: parsed.data.wifiRssi ?? null, ssid: parsed.data.wifiSsid ?? null },
+      });
+    }
+
+    if (
+      storedRole === "node" &&
+      parsed.data.linkState !== undefined &&
+      prev?.node_link_state !== parsed.data.linkState
+    ) {
+      const linkState = parsed.data.linkState;
+      await logBoard({
+        category: "connection",
+        severity:
+          linkState === "linked"
+            ? "success"
+            : linkState === "controller_lost"
+              ? "warning"
+              : "info",
+        status: linkState,
+        method: "espnow",
+        source: prev?.assigned_controller_id ?? null,
+        destination: dev.boardInstanceId,
+        message:
+          linkState === "linked"
+            ? "Controller link established over ESP-NOW."
+            : linkState === "controller_lost"
+              ? "Controller link lost."
+              : `Controller link state changed to ${linkState}.`,
+        dedupeKey: `link:${linkState}:${transitionToken}`,
+        metadata: {
+          rssi: parsed.data.peerRssi ?? null,
+          channel: parsed.data.peerCh ?? null,
+        },
+      });
+    }
+
+    if (
+      storedRole === "node" &&
+      parsed.data.commMode !== undefined &&
+      prev?.comm_mode !== parsed.data.commMode
+    ) {
+      const routeMethod =
+        parsed.data.commMode === "espnow"
+          ? "espnow"
+          : parsed.data.commMode === "wifi_mqtt"
+            ? "mqtt"
+            : "worker";
+      await logBoard({
+        category: "communication",
+        severity: "info",
+        status: "route_changed",
+        method: routeMethod,
+        message: `Communication route changed: ${prev?.comm_mode ?? "unknown"} → ${parsed.data.commMode}.`,
+        dedupeKey: `route:${parsed.data.commMode}:${transitionToken}`,
+        metadata: {
+          from: prev?.comm_mode ?? null,
+          to: parsed.data.commMode,
+        },
+      });
+    }
+
+    if (storedRole === "node" && parsed.data.bindingGeneration !== undefined) {
+      const authorised = normalizeBindingGeneration(prev?.binding_generation);
+      const reported = normalizeBindingGeneration(parsed.data.bindingGeneration);
+      if (reported > authorised) {
+        await logBoard({
+          category: "binding",
+          severity: "info",
+          status: "verified",
+          method: "worker",
+          message: `Binding generation advanced ${authorised} → ${reported}.`,
+          dedupeKey: `binding:gen:${reported}`,
+          metadata: {
+            from: authorised,
+            to: reported,
+            bindingId: parsed.data.bindingId ?? null,
+          },
+        });
+      } else if (reported > 0 && reported < authorised) {
+        await logBoard({
+          category: "binding",
+          severity: "warning",
+          status: "generation_mismatch",
+          method: "worker",
+          message: `Reported binding generation ${reported} is older than the authorised ${authorised}.`,
+          dedupeKey: `binding:mismatch:${reported}:${authorised}`,
+          metadata: { reported, authorised },
+        });
+      }
+    }
+
+    // A reboot is visible as the uptime counter going backwards. It is a
+    // genuine "boot" fact reported by the board itself.
+    if (
+      parsed.data.uptimeSec !== undefined &&
+      typeof prev?.uptime_sec === "number" &&
+      parsed.data.uptimeSec < prev.uptime_sec
+    ) {
+      await logBoard({
+        category: "system",
+        severity: "info",
+        status: "reboot",
+        method: "http",
+        source: dev.boardInstanceId,
+        message: `Board rebooted (uptime restarted at ${parsed.data.uptimeSec}s).`,
+        dedupeKey: `reboot:${transitionToken}:${parsed.data.uptimeSec}`,
+        metadata: {
+          previousUptimeSec: prev.uptime_sec,
+          uptimeSec: parsed.data.uptimeSec,
+        },
+      });
+    }
+
+    if (
+      parsed.data.firmwareVersion !== undefined &&
+      prev?.firmware_version !== parsed.data.firmwareVersion
+    ) {
+      await logBoard({
+        category: "system",
+        severity: "info",
+        status: null,
+        method: "http",
+        message: `Firmware version ${prev?.firmware_version ?? "unknown"} → ${parsed.data.firmwareVersion}.`,
+        dedupeKey: `firmware:${parsed.data.firmwareVersion}`,
+        metadata: {
+          from: prev?.firmware_version ?? null,
+          to: parsed.data.firmwareVersion,
+        },
+      });
+    }
+
+    const reportedError = parsed.data.lastError?.trim() ?? null;
+    if (reportedError !== (prev?.last_error ?? null)) {
+      if (reportedError) {
+        await logBoard({
+          category: "system",
+          severity: "error",
+          status: "error",
+          method: "http",
+          message: reportedError,
+          dedupeKey: `error:${transitionToken}`,
+          metadata: { source: "device" },
+        });
+      } else if (prev?.last_error) {
+        await logBoard({
+          category: "system",
+          severity: "success",
+          status: null,
+          method: "http",
+          message: "The board cleared its reported error.",
+          dedupeKey: `error:cleared:${transitionToken}`,
+          metadata: { previousError: prev.last_error },
+        });
+      }
+    }
+
+    // Receiver-side facts reported by the board itself. These are the only
+    // honest source for "received", "acknowledged" and "executed": a publish
+    // on the Worker side never proves that the destination received it.
+    const factSession = parsed.data.factSession ?? 0;
+    for (const fact of parsed.data.facts ?? []) {
+      const status = fact.s?.trim();
+      if (!status) continue;
+      const kind = fact.k ?? "cmd";
+      const category =
+        kind === "cmd"
+          ? "command"
+          : kind === "dev"
+            ? "device_activity"
+            : kind === "comm"
+              ? "communication"
+              : "system";
+      await logBoard({
+        category,
+        severity:
+          status === "failed" || status === "rejected" || status === "timeout"
+            ? "error"
+            : status === "duplicate"
+              ? "warning"
+              : status === "executed" ||
+                  status === "acknowledged" ||
+                  status === "received"
+                ? "success"
+                : "info",
+        status,
+        method: fact.m ?? null,
+        source: dev.boardInstanceId,
+        destination: fact.t ?? null,
+        message: describeBoardFact({
+          kind,
+          status,
+          target: fact.t ?? null,
+          detail: fact.d ?? null,
+        }),
+        dedupeKey: `fact:${factSession}:${status}:${fact.t ?? "-"}:${fact.c ?? "-"}:${fact.ts ?? 0}`,
+        metadata: {
+          detail: fact.d ?? null,
+          reportedBy: "device",
+          // The command id ties a receiver-side fact back to the command the
+          // Worker published, so a published command can be confirmed (or
+          // timed out) against the board's own report.
+          commandId: fact.c ?? null,
+        },
+      });
+    }
+
     if (boardTransition) {
+      // The log entries of this report travel in the same envelope as the
+      // state change: one broker message per device report.
+      const logEvents = logCollector.events.splice(0, logCollector.events.length);
       await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
         makeRealtimeEvent(
           "board",
@@ -850,6 +1211,7 @@ export function createDeviceApiRoutes() {
           "confirmed",
           now
         ),
+        ...logEvents,
       ]);
     }
 
@@ -986,6 +1348,78 @@ export function createDeviceApiRoutes() {
         return !row || row.status !== "online" || row.node_link_state !== "linked";
       });
 
+      /* The Controller's own log records the Node only as the peer of a
+       * communication event. A Node never inherits the Controller's log and
+       * the Controller never inherits the Node's log. */
+      for (const id of linkedChanged) {
+        await captureBoardLog(logCtx, {
+          accountId: dev.accountId,
+          boardInstanceId: dev.boardInstanceId,
+          category: "communication",
+          severity: "success",
+          status: "linked",
+          method: "espnow",
+          source: dev.boardInstanceId,
+          destination: id,
+          message: `Node ${id} is linked over ESP-NOW.`,
+          dedupeKey: `roster:linked:${id}:${transitionToken}`,
+          metadata: {
+            nodeId: id,
+            rssi: rosterById.get(id)?.rssi ?? null,
+            channel: rosterById.get(id)?.channel ?? null,
+          },
+        });
+      }
+
+      for (const row of missing) {
+        await captureBoardLog(logCtx, {
+          accountId: dev.accountId,
+          boardInstanceId: dev.boardInstanceId,
+          category: "communication",
+          severity: "warning",
+          status: "controller_lost",
+          method: "espnow",
+          source: dev.boardInstanceId,
+          destination: row.id,
+          message: `Node ${row.id} stopped answering on ESP-NOW.`,
+          dedupeKey: `roster:lost:${row.id}:${transitionToken}`,
+          metadata: { nodeId: row.id },
+        });
+        // The Worker owns the link verdict, so the loss is recorded on the
+        // Node's own log as well — as that board's connection event.
+        await captureBoardLog(logCtx, {
+          accountId: dev.accountId,
+          boardInstanceId: row.id,
+          category: "connection",
+          severity: "warning",
+          status: "controller_lost",
+          method: "espnow",
+          source: dev.boardInstanceId,
+          destination: row.id,
+          message: "Controller link lost.",
+          dedupeKey: `link:controller_lost:${transitionToken}`,
+          metadata: { controllerId: dev.boardInstanceId },
+        });
+      }
+
+      for (const id of oneWayHeardIds) {
+        // One-way reception is a delivery problem: the Controller hears the
+        // Node but the Node has no acknowledgement to prove the return path.
+        await captureBoardLog(logCtx, {
+          accountId: dev.accountId,
+          boardInstanceId: dev.boardInstanceId,
+          category: "communication",
+          severity: "warning",
+          status: "received",
+          method: "espnow",
+          source: id,
+          destination: dev.boardInstanceId,
+          message: `Heard a keepalive from Node ${id}, but the Node reports no received acknowledgements.`,
+          dedupeKey: `roster:oneway:${id}:${minuteBucket}`,
+          metadata: { nodeId: id },
+        });
+      }
+
       if (linkedChanged.length > 0 || missing.length > 0 || oneWayHeardIds.length > 0) {
         await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
           ...linkedChanged.map((id) =>
@@ -1075,6 +1509,9 @@ export function createDeviceApiRoutes() {
           espnowLinked: true,
           rosterConfirmed: rosterGeneration === 0 || rosterGeneration === reportedGeneration,
           controllerMqttHealthy: ctrl.status === "online" && Boolean(ctrl.mqtt_connected),
+          env: c.env ?? undefined,
+          deps,
+          collector: logCollector,
         }).catch(() => ({ verified: false, generation: reportedGeneration }));
         if (verdict.verified && isEmqxConfigured(c.env ?? {})) {
           const { data: parentCred } = await db
@@ -1380,12 +1817,6 @@ export function createDeviceApiRoutes() {
       });
     }
 
-    const nodeExpectsNoMqtt =
-      storedRole === "node" &&
-      Boolean(prev?.assigned_controller_id) &&
-      parsed.data.linkState !== "standalone" &&
-      parsed.data.linkState !== "unassigned";
-
     if (prev && prev.mqtt_connected && parsed.data.mqttConnected === false && !nodeExpectsNoMqtt) {
       await emitNotification(db, {
         scope: "user",
@@ -1435,6 +1866,10 @@ export function createDeviceApiRoutes() {
         Boolean(syncRes?.published) && parsed.data.mqttConnected !== false;
     }
 
+    if (logCollector.events.length > 0) {
+      await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, logCollector.events);
+    }
+
     return c.json({
       ok: true,
       server_time: now,
@@ -1455,6 +1890,8 @@ export function createDeviceApiRoutes() {
     // Every entity change in this one report is coalesced into a single MQTT
     // message at the end of the handler.
     const realtimeEvents: RealtimeEvent[] = [];
+    const logCollector = createBoardLogCollector();
+    const logCtx = { db, env: c.env ?? {}, deps, collector: logCollector };
 
     await db
       .from("board_instances")
@@ -1543,6 +1980,29 @@ export function createDeviceApiRoutes() {
       const freshnessTouch =
         !prevLastReadingAt ||
         Date.now() - Date.parse(prevLastReadingAt) > 5 * 60 * 1000;
+
+      if (sensorMeta && statusFlipped) {
+        // A sensor that starts or stops failing is a device-activity event.
+        // Only the transition is logged, never the reading itself.
+        await captureBoardLog(
+          logCtx,
+          {
+            accountId: dev.accountId,
+            boardInstanceId: dev.boardInstanceId,
+            category: "device_activity",
+            severity: isErrorReading ? "error" : "success",
+            status: isErrorReading ? "error" : "ok",
+            method: "http",
+            source: dev.boardInstanceId,
+            destination: s.sensorId,
+            message: isErrorReading
+              ? `Sensor ${s.sensorId} stopped reporting: ${s.error ?? "read failed"}.`
+              : `Sensor ${s.sensorId} is reporting again.`,
+            dedupeKey: `sensor:error:${s.sensorId}:${isErrorReading ? "on" : "off"}:${now}`,
+            metadata: { sensorId: s.sensorId, driverId: s.driverId ?? null },
+          }
+        );
+      }
 
       if (sensorMeta && (statusFlipped || valueChanged || freshnessTouch)) {
         realtimeEvents.push(
@@ -1679,6 +2139,24 @@ export function createDeviceApiRoutes() {
         .is("deleted_at", null);
 
       if (existingSw && stateChanged) {
+        await captureBoardLog(
+          logCtx,
+          {
+            accountId: dev.accountId,
+            boardInstanceId: dev.boardInstanceId,
+            category: "device_activity",
+            severity: "info",
+            status: sw.isOn ? "on" : "off",
+            method: "http",
+            source: dev.boardInstanceId,
+            destination: sw.switchId,
+            message: `Switch ${sw.switchId} is now ${sw.isOn ? "ON" : "OFF"}.`,
+            // The switch's own change timestamp identifies the transition, so
+            // a repeated report of the same state never writes a second row.
+            dedupeKey: `switch:${sw.switchId}:${sw.isOn ? "on" : "off"}:${now}`,
+            metadata: { switchId: sw.switchId },
+          }
+        );
         realtimeEvents.push(
           makeRealtimeEvent(
             "switch",
@@ -1750,6 +2228,24 @@ export function createDeviceApiRoutes() {
       const prevDevOnline =
         (existingDev as { is_online?: boolean | null } | null)?.is_online ?? null;
       if (updatedDev && (prevDevState !== effectiveState || prevDevOnline !== !isDisconnected)) {
+        await captureBoardLog(
+          logCtx,
+          {
+            accountId: dev.accountId,
+            boardInstanceId: dev.boardInstanceId,
+            category: "device_activity",
+            severity: isDisconnected ? "warning" : "info",
+            status: isDisconnected ? "offline" : effectiveState,
+            method: "http",
+            source: dev.boardInstanceId,
+            destination: d.deviceId,
+            message: isDisconnected
+              ? `Device ${d.deviceId} reported "${d.state}".`
+              : `Device ${d.deviceId} is now "${effectiveState}".`,
+            dedupeKey: `device:${d.deviceId}:${effectiveState}:${now}`,
+            metadata: { deviceId: d.deviceId, previousState: prevDevState },
+          }
+        );
         realtimeEvents.push(
           makeRealtimeEvent(
             "device",
@@ -1791,6 +2287,9 @@ export function createDeviceApiRoutes() {
         event: { kind: "device", deviceId: d.deviceId, state: effectiveState },
       });
     }
+
+    // The per-board log entries of this report travel with the state changes.
+    realtimeEvents.push(...logCollector.events);
 
     if (realtimeEvents.length > 0) {
       await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, realtimeEvents);

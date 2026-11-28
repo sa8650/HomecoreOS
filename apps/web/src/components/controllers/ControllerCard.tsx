@@ -10,6 +10,7 @@ import {
   RiDeleteBinLine,
   RiDoorOpenLine,
   RiEyeLine,
+  RiFileListLine,
   RiFlashlightFill,
   RiLinkUnlinkM,
   RiMore2Fill,
@@ -136,6 +137,8 @@ export interface ControllerCardProps {
   canManage: boolean;
   canOperate: boolean;
   onViewDetails: () => void;
+  /** Opens the per-board live Log for this Controller. */
+  onViewLog: () => void;
   /** Opens the rename dialog for this Controller. */
   onRename: () => void;
   onRecover: () => void;
@@ -172,6 +175,7 @@ export function ControllerCard({
   canManage,
   canOperate,
   onViewDetails,
+  onViewLog,
   onRename,
   onRecover,
   onConfigureWifi,
@@ -280,6 +284,10 @@ export function ControllerCard({
                     <DropdownMenuItem onClick={onViewDetails}>
                       <RiEyeLine className="size-4" aria-hidden="true" />
                       View Details
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={onViewLog}>
+                      <RiFileListLine className="size-4" aria-hidden="true" />
+                      View Log
                     </DropdownMenuItem>
                     {canManage && (
                       <DropdownMenuItem onClick={onRename}>

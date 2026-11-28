@@ -9,6 +9,7 @@ HomecoreOS is a multi-user smart-home automation platform and ESP32 device fleet
 - **Firmware Storage**: Private Cloudflare R2 (`FIRMWARE_BUCKET`)
 - **Device Messaging**: EMQX Serverless (MQTT over TLS 8883 for devices, MQTT over WebSocket for the browser console, EMQX v5 REST API)
 - **Real-Time Sync**: one subscribe-only MQTT-over-WebSocket session per browser session drives every live component through a shared frontend store; row-version events, batched publishes, snapshot reconciliation and instant credential revocation are specified in `docs/REALTIME_SYNC.md`
+- **Per-Board Live Log**: every Controller and every Node has its own Log — status, communication, commands, device activity and binding/routing history, isolated by board id and account, newest first, live over the existing account channel; the strict `sent` / `received` / `acknowledged` / `executed` vocabulary, the bounded firmware fact ring and the performance guards are specified in `docs/BOARD_LOG.md`
 - **ESP32 & ESP8266 Firmware**: Native ESP-IDF v5.4/v5.5.2 C firmware with board-aware sensor drivers (`firmware/`, 21 ESP-IDF board overlays covering Wi-Fi, BLE Security 1, ESP-NOW, EMQX MQTT, dual-OTA rollback, and unified Wi-Fi/BLE/USB recovery) plus an isolated PlatformIO ESP8266 starter profile for `nodemcu-esp8266` (`firmware/esp8266/`, Wi-Fi STA + I2C/ADC only — does not include BLE, ESP-NOW, MQTT, OTA, or the recovery console)
 - **Browser USB Flashing**: Espressif `esptool-js` + Web Serial API with SHA-256 download check, board/chip/flash verification, flash MD5 readback, and post-flash serial boot inspection (detecting invalid headers, panics, watchdog boot loops, and `[HC_SETUP]` boot banners without logging secrets)
 - **Firmware CI Pipeline**: GitHub Actions (`.github/workflows/build-firmware.yml`) with host C tests, board overlay & ESP8266 isolation checks, 21-board ESP-IDF build matrix, and SHA-256 driver manifest verification
@@ -57,6 +58,7 @@ DESIGN_SYSTEM.md    HomecoreOS Geist design tokens, ReUI/Radix primitives & arch
 DEPLOYMENT.md       Browser dashboard deployment guide
 docs/UNIVERSAL_BOARD_CONNECTIVITY.md  Per-board capability registry, binding authority, state separation, routing and failover
 docs/REALTIME_SYNC.md  Real-time channel: topics, ACLs, event flow, reconnect and quota rules
+docs/BOARD_LOG.md  Per-board live Log: captured events, delivery vocabulary, storage, performance guards and API
 docs/ADMIN_CUSTOMER_MONITORING.md  Read-only admin customer board/device monitoring: routes, health rules, query strategy
 docs/TEST_REPORT.md  End-to-end validation report (automated, firmware host-C, simulated hardware, and hardware-required checklists)
 ```

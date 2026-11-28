@@ -1,3 +1,4 @@
+#include "board_log.h"
 #include "homecore_config.h"
 #include "role_runtime.h"
 #include "sdkconfig.h"
@@ -310,6 +311,24 @@ esp_err_t hc_http_post_heartbeat(homecore_config_t *cfg) {
     if (reported_err) {
         cJSON_AddStringToObject(root, "err", reported_err);
     }
+    /* Receiver-side facts ride along with the heartbeat the board already
+     * sends. There is no per-log MQTT publish, no extra task and no flash
+     * write: the facts live in a small RAM ring until they are reported. */
+    cJSON_AddNumberToObject(root, "sid", (double)hc_board_log_session_id());
+    uint8_t facts_written = 0;
+    {
+        char facts_json[HC_BOARD_LOG_JSON_MAX];
+        size_t facts_len = hc_board_log_write_json(facts_json, sizeof(facts_json), &facts_written);
+        if (facts_len > 0) {
+            cJSON *facts = cJSON_Parse(facts_json);
+            if (facts) {
+                cJSON_AddItemToObject(root, "fx", facts);
+            } else {
+                ESP_LOGW(TAG, "Discarded malformed board log facts");
+                facts_written = 0;
+            }
+        }
+    }
 
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -340,6 +359,13 @@ esp_err_t hc_http_post_heartbeat(homecore_config_t *cfg) {
         }
     }
     free(resp_buf);
+    if (res == ESP_OK) {
+        /* The facts that were actually sent reached the Worker, so only those
+         * are dropped from the ring. A failed report keeps them (the next
+         * heartbeat retries instead of losing them) and facts that did not
+         * fit into this payload stay in the ring for the next heartbeat. */
+        hc_board_log_commit_sent(facts_written);
+    }
     return res;
 }
 

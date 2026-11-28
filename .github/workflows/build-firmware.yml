@@ -45,6 +45,7 @@ jobs:
           gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_role_logic.c firmware/main/role_logic.c -o /tmp/test_role_logic && /tmp/test_role_logic
           gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_recovery_logic.c firmware/main/recovery_logic.c -o /tmp/test_recovery_logic && /tmp/test_recovery_logic
           gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_ble_protocol_logic.c firmware/main/ble_protocol_logic.c -o /tmp/test_ble_protocol_logic && /tmp/test_ble_protocol_logic
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_board_log.c firmware/main/board_log.c -o /tmp/test_board_log && /tmp/test_board_log
 
       - name: Verify board overlays, driver manifest verifier & ESP8266 isolation
         shell: bash

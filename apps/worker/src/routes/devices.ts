@@ -20,6 +20,7 @@ import {
   validateGpioAssignment,
 } from "@homecoreos/shared";
 import { recordActivity } from "../lib/audit";
+import { createBoardLogCollector, recordCommandLifecycle } from "../lib/board-log";
 import { evaluateAutomationsForEvent } from "../lib/automation-engine";
 import {
   checkPinSelectionPolicy,
@@ -30,6 +31,7 @@ import {
 import { syncControllerConfigSnapshot } from "../lib/controller-config";
 import { resolveDeviceCommandDelivery } from "../lib/device-command-delivery";
 import { EmqxClient, isEmqxConfigured } from "../lib/emqx";
+import { commandIdentity } from "../lib/route-authority";
 import { makeRealtimeEvent, publishRealtimeEvents } from "../lib/realtime";
 import { validateControllerSensorMutation } from "../lib/sensor-compatibility";
 import { requireStaffRole, requireUserSession } from "../middleware/auth";
@@ -429,7 +431,21 @@ export function createDeviceRoutes() {
         status: string;
       }>).find((r) => r.board_instance_id === dev.board_instance_id);
 
+      const logCollector = createBoardLogCollector();
+      const logCtx = { db, env: c.env ?? {}, deps, collector: logCollector };
+      const dispatchId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const deviceCommandPayload = {
+        device_id: dev.id,
+        device_type: dev.device_type,
+        gpio_pin: dev.gpio_pin,
+        state: parsed.data.state,
+        active: isDeviceStateActive(parsed.data.state),
+        actor_user_id: auth.userId,
+      };
+      const expectedCommandId = commandIdentity(deviceCommandPayload);
+
       let mqttDispatched = false;
+      let deviceDelivery: Awaited<ReturnType<typeof resolveDeviceCommandDelivery>> = null;
       if (emqxReady) {
         try {
           // A linked Node has no EMQX session of its own: its Controller relays
@@ -439,14 +455,7 @@ export function createDeviceRoutes() {
             deviceId: dev.board_instance_id,
             kind: "device",
             credential: cred ?? null,
-            payload: {
-              device_id: dev.id,
-              device_type: dev.device_type,
-              gpio_pin: dev.gpio_pin,
-              state: parsed.data.state,
-              active: isDeviceStateActive(parsed.data.state),
-              actor_user_id: auth.userId,
-            },
+            payload: deviceCommandPayload,
           });
           if (delivery) {
             const emqx = new EmqxClient(c.env!, deps.emqxFetch);
@@ -456,6 +465,7 @@ export function createDeviceRoutes() {
               qos: 1,
             });
             mqttDispatched = true;
+            deviceDelivery = delivery;
           }
         } catch (err) {
           const msg =
@@ -501,6 +511,22 @@ export function createDeviceRoutes() {
           : Promise.resolve(0),
       ]);
 
+      await recordCommandLifecycle(logCtx, {
+        accountId: auth.accountId,
+        boardInstanceId: dev.board_instance_id,
+        targetId: dev.id,
+        targetName: dev.name,
+        kind: "device",
+        requestedState: parsed.data.state,
+        commandId: deviceDelivery?.commandId ?? expectedCommandId,
+        dispatchId,
+        route: deviceDelivery?.route ?? null,
+        relayedViaControllerId: deviceDelivery?.relayedViaControllerId ?? null,
+        delivered: mqttDispatched,
+        boardOnline: controllerOnline,
+        actorUserId: auth.userId,
+      });
+
       const commandedDevice = updateRes.data as { id?: string } | null;
       if (commandedDevice?.id) {
         await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
@@ -517,7 +543,10 @@ export function createDeviceRoutes() {
             mqttDispatched ? "accepted" : "desired",
             commandedAt
           ),
+          ...logCollector.events,
         ]);
+      } else if (logCollector.events.length > 0) {
+        await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, logCollector.events);
       }
 
       return c.json({ device: updateRes.data, mqttDispatched, controllerOnline });
@@ -901,7 +930,20 @@ export function createDeviceRoutes() {
         status: string;
       }>).find((r) => r.board_instance_id === sw.board_instance_id);
 
+      const logCollector = createBoardLogCollector();
+      const logCtx = { db, env: c.env ?? {}, deps, collector: logCollector };
+      const dispatchId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const switchCommandPayload = {
+        switch_id: sw.id,
+        gpio_pin: sw.gpio_pin,
+        state: parsed.data.isOn ? "ON" : "OFF",
+        inverted: sw.inverted,
+        actor_user_id: auth.userId,
+      };
+      const expectedCommandId = commandIdentity(switchCommandPayload);
+
       let mqttDispatched = false;
+      let switchDelivery: Awaited<ReturnType<typeof resolveDeviceCommandDelivery>> = null;
       if (emqxReady) {
         try {
           const delivery = await resolveDeviceCommandDelivery(db, {
@@ -909,13 +951,7 @@ export function createDeviceRoutes() {
             deviceId: sw.board_instance_id,
             kind: "switch",
             credential: cred ?? null,
-            payload: {
-              switch_id: sw.id,
-              gpio_pin: sw.gpio_pin,
-              state: parsed.data.isOn ? "ON" : "OFF",
-              inverted: sw.inverted,
-              actor_user_id: auth.userId,
-            },
+            payload: switchCommandPayload,
           });
           if (delivery) {
             const emqx = new EmqxClient(c.env!, deps.emqxFetch);
@@ -925,6 +961,7 @@ export function createDeviceRoutes() {
               qos: 1,
             });
             mqttDispatched = true;
+            switchDelivery = delivery;
           }
         } catch (err) {
           const msg =
@@ -980,6 +1017,22 @@ export function createDeviceRoutes() {
           : Promise.resolve(0),
       ]);
 
+      await recordCommandLifecycle(logCtx, {
+        accountId: auth.accountId,
+        boardInstanceId: sw.board_instance_id,
+        targetId: sw.id,
+        targetName: sw.name,
+        kind: "switch",
+        requestedState: parsed.data.isOn ? "ON" : "OFF",
+        commandId: switchDelivery?.commandId ?? expectedCommandId,
+        dispatchId,
+        route: switchDelivery?.route ?? null,
+        relayedViaControllerId: switchDelivery?.relayedViaControllerId ?? null,
+        delivered: mqttDispatched,
+        boardOnline: controllerOnline,
+        actorUserId: auth.userId,
+      });
+
       await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
         makeRealtimeEvent(
           "switch",
@@ -995,6 +1048,7 @@ export function createDeviceRoutes() {
           mqttDispatched ? "accepted" : "desired",
           changedAt
         ),
+        ...logCollector.events,
       ]);
 
       return c.json({ switch: updateRes.data, mqttDispatched, controllerOnline });

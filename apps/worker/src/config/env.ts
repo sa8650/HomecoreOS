@@ -21,6 +21,17 @@ export interface WorkerBindings {
   BREVO_API_KEY?: string;
   FIRMWARE_BUCKET?: R2Bucket;
   ASSETS?: Fetcher;
+  /**
+   * Per-board live Log. Set to "false" to switch the capture off entirely
+   * (the table stays, the console keeps reading the history that was already
+   * stored). Defaults to enabled.
+   */
+  BOARD_LOG_ENABLED?: string;
+  /**
+   * Retention window for the stored per-board log rows, in days. Defaults to
+   * BOARD_LOG_RETENTION_DAYS from the shared package.
+   */
+  BOARD_LOG_RETENTION_DAYS?: string;
 }
 
 export interface ConfigValidationEntry {
