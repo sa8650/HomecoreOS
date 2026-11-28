@@ -95,6 +95,10 @@ export const BOARD_LOG_STATUSES = [
   "inactive",
   "error",
   "reboot",
+  "boot",
+  "ok",
+  "link_established",
+  "link_lost",
 ] as const;
 
 export type BoardLogStatus = (typeof BOARD_LOG_STATUSES)[number];
@@ -295,6 +299,14 @@ export function boardLogStatusLabel(status: string | null | undefined): string {
       return "Created";
     case "reboot":
       return "Reboot";
+    case "boot":
+      return "Boot";
+    case "ok":
+      return "OK";
+    case "link_established":
+      return "Link Established";
+    case "link_lost":
+      return "Link Lost";
     case "on":
       return "ON";
     case "off":

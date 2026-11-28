@@ -18,7 +18,7 @@ of the link it belongs to.
 | `command` | created, sent, received, acknowledged, executed, rejected, duplicate, failed, timeout, offline |
 | `device_activity` | switch state changes, device state changes, sensor reading failures and recoveries |
 | `binding` | assignment, unassignment, binding verification, revocation, role change, generation mismatch |
-| `system` | firmware version change, board-reported errors, operator commands (restart / reset / disconnect) |
+| `system` | boot (with the chip's reset reason), firmware version change, board-reported errors, operator commands (restart / reset / disconnect) |
 
 ## The vocabulary is strict
 
@@ -27,17 +27,31 @@ of the link it belongs to.
 | `created` | the console accepted the request | Worker |
 | `sent` | the Worker handed the command to a transport — **a publish, nothing more** | Worker |
 | `received` | the destination board confirms it received the command | **the board itself** |
-| `acknowledged` | the sender received a valid acknowledgement for it | **the board itself** |
+| `acknowledged` | the sender received a valid acknowledgement (a link-level ACK today, see below) | **the board itself** |
 | `executed` | the destination board confirms it applied the command | **the board itself** |
 | `rejected` | the destination board refused the command | **the board itself** |
 | `duplicate` | the destination board had already seen this command | **the board itself** |
-| `failed` | the command could not be delivered or could not be applied | Worker / board |
+| `failed` | the command was accepted but could not be delivered or applied | Worker / board |
 | `timeout` | no confirmation arrived before the deadline | Worker |
 | `offline` | the destination board was not reachable | Worker |
 
 A publish on the Worker side is **never** presented as a receipt. The states
 `received`, `acknowledged` and `executed` are only ever written from a fact the
 *destination* board reported about itself.
+
+The board keeps `rejected` and `failed` apart, because they are different
+events: a command the board refuses (unknown switch, malformed payload) is
+`rejected`, one whose payload was valid but whose GPIO write failed is `failed`.
+Both come from the same apply step (`hc_command_apply_outcome`), so the MQTT
+path and the Controller-relayed ESP-NOW path report them identically.
+
+`acknowledged` is only written where a real acknowledgement exists. The link
+layer has one: a Node validates its Controller's ACK (mount, epoch, sequence,
+binding generation) before it considers its link healthy. That ACK — not a
+publish and not a guess — produces the entry, worded "Link acknowledged by …"
+so it is never mistaken for a command acknowledgement. The command path itself
+has no acknowledgement frame, so no command entry claims one; those commands go
+`received` → `executed` (or `rejected` / `failed`).
 
 ## How the facts reach the Worker
 
@@ -56,6 +70,18 @@ compile time and never grows. A fact is only cleared once the report actually
 succeeded — a failed heartbeat retries with the next one instead of losing it.
 Facts are evicted by priority: a rare command fact is never pushed out by a
 stream of routine link facts.
+
+The ring is written from more than one task (the MQTT task records the command
+it just received, role supervision records link transitions, the HTTP task
+serializes and commits), so every entry point takes a short critical section.
+The commit drops exactly the facts that were serialized — identified by their
+insertion age, not by their slot — so a fact recorded *while* the report is in
+flight survives even when a full ring shifted the array.
+
+The first fact of every boot is the boot itself, carrying the reset reason the
+chip reports (`power_on`, `software`, `panic`, `task_wdt`, `brownout`, …). It
+travels with the first heartbeat, so a restart shows up even when the uptime
+counter cannot be compared.
 
 The batch that travels with the heartbeat is bounded as well (900 bytes). If
 not every pending fact fits into that payload, the batch is still written as
@@ -87,6 +113,13 @@ sensor values — only identifiers and short tokens.
 
 `dedupe_key` is the identity of the logical event: the same key is never stored
 twice, so a retried request or a replayed device report cannot duplicate a line.
+A key is always derived from the event itself — the transition it describes, the
+board's fact sequence number, the binding generation — never from the request
+clock, so two identical reports collide on purpose. A fact that arrives without
+a sequence number is identified by its position in the batch, so two facts in
+one report cannot collapse into one. The key is remembered only after a row was
+really stored (or the insert reported an existing row): a failed insert is
+retried by the next report instead of being suppressed forever.
 
 ## Performance protections
 
@@ -97,7 +130,7 @@ twice, so a retried request or a replayed device report cannot duplicate a line.
 | Bounded RAM ring (12 facts, fixed field lengths) | `firmware/main/board_log.c` |
 | No NVS/flash write per event | Firmware |
 | One broker message per user action or device report — the log entries travel in the same envelope as the state change | Worker (`BoardLogCollector`) |
-| Per-board rate limit (120 low-priority entries/minute); warnings and errors are never dropped | `apps/worker/src/lib/board-log.ts` |
+| Per-board rate limit (120 low-priority entries/minute); warnings and errors are never dropped, and only stored rows consume the quota | `apps/worker/src/lib/board-log.ts` |
 | Retention window (default 14 days) and per-board row ceiling (2000 rows) | `pruneBoardLogs` on the Worker's scheduled tick |
 | Command timeout sweep reads a bounded window, never the whole table | `expireUnconfirmedCommands` |
 | Bounded metadata (20 keys, 240 characters per value) | `sanitizeBoardLogMetadata` |
@@ -129,9 +162,22 @@ method, the source and the destination.
 
 Live entries arrive over the existing account real-time channel
 (`entity: "log"`); the modal never polls. While the view is paused the
-incoming entries are **buffered** and applied on resume. The view can be
-refreshed, older pages can be loaded with the server's cursor, and the
-auto-scroll toggle follows the newest entry.
+incoming entries are **buffered** and applied on resume; changing the filter or
+the search while paused reloads the page behind the buffer without discarding a
+buffered entry or resuming the view. The view can be refreshed, older pages can
+be loaded with the server's cursor, and the auto-scroll toggle follows the
+newest entry.
+
+Entries are merged by id and sorted newest-first, so a page that is fetched
+while live entries arrive never drops them. Responses carry a request sequence
+and the board id, so a slow answer for a previous board (or a previous filter)
+can never overwrite what is on screen. When the channel reconnects after a
+drop, the newest page is refilled — the entries written during the gap are
+picked up instead of being lost. `Clear View` hides what is already on screen
+and stays in effect across reloads, filter changes and reconnects; it is a view
+decision only and never touches the stored rows. It also drops the paused
+buffer, so the "N new entries" counter never promises an entry the view can no
+longer show.
 
 ## Verification
 
@@ -157,5 +203,11 @@ gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_board_log.c firmware/main/
   firmware version that reports facts. An older board still produces
   `created` / `sent` and the Worker's own transitions, but never claims a
   receipt it cannot prove.
+* Neither transport has a command-level acknowledgement frame: the ESP-NOW ACK
+  covers a Node's keepalive, and MQTT QoS 1 confirms a PUBACK to the Worker, not
+  that the board executed anything. So a command entry never shows
+  `acknowledged`; it moves `sent` → `received` (the board reported the command
+  arrived) → `executed` / `rejected` / `failed`. Adding a per-command ACK would
+  be a protocol change, not a logging change, and is deliberately out of scope.
 * The Worker can only time out a command it published; a command that never
   left the Worker is recorded as `failed`/`offline` at once.

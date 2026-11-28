@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include "board_log.h"
 #include "esp_err.h"
 #include "io_state_logic.h"
 #include "provisioning_logic.h"
@@ -312,6 +313,9 @@ bool hc_mqtt_consume_sync_request(void);
  * locally and one relayed through a Controller behave identically.
  */
 bool hc_command_apply(const char *kind, const char *json);
+/* Same as hc_command_apply, but reports *why* a command did not run, so the
+ * board's Log can distinguish a rejected command from a failed one. */
+hc_cmd_outcome_t hc_command_apply_outcome(const char *kind, const char *json);
 void hc_mqtt_publish_status(const char *status_str);
 void hc_mqtt_publish_telemetry(const char *json_payload);
 void hc_mqtt_publish_config_ack(uint32_t revision, const char *hash);

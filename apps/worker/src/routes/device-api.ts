@@ -1138,7 +1138,14 @@ export function createDeviceApiRoutes() {
     // honest source for "received", "acknowledged" and "executed": a publish
     // on the Worker side never proves that the destination received it.
     const factSession = parsed.data.factSession ?? 0;
+    // A fact is identified by the boot session plus its board sequence number.
+    // When a fact arrives without one (older firmware), its position in the
+    // batch keeps it distinct: without that, two facts with the same status and
+    // target in one report would collide and the second would be dropped as a
+    // "duplicate".
+    let factIndex = 0;
     for (const fact of parsed.data.facts ?? []) {
+      factIndex += 1;
       const status = fact.s?.trim();
       if (!status) continue;
       const kind = fact.k ?? "cmd";
@@ -1172,7 +1179,9 @@ export function createDeviceApiRoutes() {
           target: fact.t ?? null,
           detail: fact.d ?? null,
         }),
-        dedupeKey: `fact:${factSession}:${status}:${fact.t ?? "-"}:${fact.c ?? "-"}:${fact.ts ?? 0}`,
+        dedupeKey: `fact:${factSession}:${status}:${fact.t ?? "-"}:${fact.c ?? "-"}:${
+          fact.ts ?? `i${factIndex}`
+        }`,
         metadata: {
           detail: fact.d ?? null,
           reportedBy: "device",
@@ -1331,14 +1340,21 @@ export function createDeviceApiRoutes() {
         return !Number.isFinite(lastLinked) || lastLinked < staleCutoff;
       });
 
-      if (missing.length > 0) {
+      /* A Node that was already declared controller_lost is not a new event:
+       * re-reporting it on every Controller heartbeat would turn the log into a
+       * heartbeat firehose (and the Node's own log into one too). Only the
+       * transition is written, and the state update is limited to the Nodes
+       * that actually changed. */
+      const newlyMissing = missing.filter((n) => n.node_link_state !== "controller_lost");
+
+      if (newlyMissing.length > 0) {
         await db
           .from("board_instances")
           .update({ node_link_state: "controller_lost" })
           .eq("account_id", dev.accountId)
           .in(
             "id",
-            missing.map((n) => n.id)
+            newlyMissing.map((n) => n.id)
           );
       }
 
@@ -1371,7 +1387,7 @@ export function createDeviceApiRoutes() {
         });
       }
 
-      for (const row of missing) {
+      for (const row of newlyMissing) {
         await captureBoardLog(logCtx, {
           accountId: dev.accountId,
           boardInstanceId: dev.boardInstanceId,
@@ -1420,7 +1436,7 @@ export function createDeviceApiRoutes() {
         });
       }
 
-      if (linkedChanged.length > 0 || missing.length > 0 || oneWayHeardIds.length > 0) {
+      if (linkedChanged.length > 0 || newlyMissing.length > 0 || oneWayHeardIds.length > 0) {
         await publishRealtimeEvents(c.env ?? {}, deps, dev.accountId, [
           ...linkedChanged.map((id) =>
             makeRealtimeEvent(
@@ -1448,7 +1464,7 @@ export function createDeviceApiRoutes() {
               now
             )
           ),
-          ...missing.map((row) =>
+          ...newlyMissing.map((row) =>
             makeRealtimeEvent(
               "board",
               "state",
@@ -1998,7 +2014,12 @@ export function createDeviceApiRoutes() {
             message: isErrorReading
               ? `Sensor ${s.sensorId} stopped reporting: ${s.error ?? "read failed"}.`
               : `Sensor ${s.sensorId} is reporting again.`,
-            dedupeKey: `sensor:error:${s.sensorId}:${isErrorReading ? "on" : "off"}:${now}`,
+            // The flip direction plus the state it flipped from identifies the
+            // transition. A timestamp here would make every report a new key
+            // and defeat the dedupe entirely.
+            dedupeKey: `sensor:error:${s.sensorId}:${isErrorReading ? "on" : "off"}:${
+              prevErrorStatus ? "error" : "ok"
+            }`,
             metadata: { sensorId: s.sensorId, driverId: s.driverId ?? null },
           }
         );
@@ -2122,9 +2143,9 @@ export function createDeviceApiRoutes() {
         .is("deleted_at", null)
         .maybeSingle();
 
-      const stateChanged =
-        !existingSw ||
-        Boolean((existingSw as { is_on: boolean }).is_on) !== sw.isOn;
+      const prevIsOn =
+        (existingSw as { is_on?: boolean | null } | null)?.is_on ?? null;
+      const stateChanged = !existingSw || Boolean(prevIsOn) !== sw.isOn;
 
       await db
         .from("switches")
@@ -2151,9 +2172,11 @@ export function createDeviceApiRoutes() {
             source: dev.boardInstanceId,
             destination: sw.switchId,
             message: `Switch ${sw.switchId} is now ${sw.isOn ? "ON" : "OFF"}.`,
-            // The switch's own change timestamp identifies the transition, so
-            // a repeated report of the same state never writes a second row.
-            dedupeKey: `switch:${sw.switchId}:${sw.isOn ? "on" : "off"}:${now}`,
+            // The transition is identified by the state it flipped from, so a
+            // repeated report of the same change never writes a second row.
+            dedupeKey: `switch:${sw.switchId}:${sw.isOn ? "on" : "off"}:${
+              prevIsOn === true ? "on" : prevIsOn === false ? "off" : "new"
+            }`,
             metadata: { switchId: sw.switchId },
           }
         );
@@ -2242,7 +2265,11 @@ export function createDeviceApiRoutes() {
             message: isDisconnected
               ? `Device ${d.deviceId} reported "${d.state}".`
               : `Device ${d.deviceId} is now "${effectiveState}".`,
-            dedupeKey: `device:${d.deviceId}:${effectiveState}:${now}`,
+            // Identified by the previous state, not by the clock: a repeated
+            // report of the same transition must dedupe, not add a row.
+            dedupeKey: `device:${d.deviceId}:${effectiveState}:${
+              prevDevState ?? "-"
+            }`,
             metadata: { deviceId: d.deviceId, previousState: prevDevState },
           }
         );

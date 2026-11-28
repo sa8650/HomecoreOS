@@ -42,7 +42,9 @@ export function createBoardLogRoutes() {
     // never as "forbidden": the caller learns nothing about other accounts.
     if (!board) return c.json({ error: "Board not found." }, 404);
 
-    const limitRaw = Number(c.req.query("limit") ?? BOARD_LOG_DEFAULT_PAGE_SIZE);
+    const limitParam = c.req.query("limit");
+    const limitRaw =
+      limitParam === undefined || limitParam.trim() === "" ? NaN : Number(limitParam);
     const limit = Number.isFinite(limitRaw)
       ? Math.min(Math.max(1, Math.trunc(limitRaw)), BOARD_LOG_MAX_PAGE_SIZE)
       : BOARD_LOG_DEFAULT_PAGE_SIZE;
@@ -50,6 +52,19 @@ export function createBoardLogRoutes() {
     const categoryRaw = c.req.query("category");
     const severityRaw = c.req.query("severity");
     const beforeRaw = c.req.query("before");
+
+    // The cursor is the `seq` of the last entry of the previous page. A value
+    // that is not a positive integer is rejected instead of being silently
+    // ignored: ignoring it would return the first page again, and a console
+    // asking for older entries would loop on the same rows for ever.
+    if (
+      beforeRaw !== undefined &&
+      beforeRaw !== null &&
+      beforeRaw !== "" &&
+      !/^[1-9][0-9]{0,18}$/.test(beforeRaw)
+    ) {
+      return c.json({ error: "Invalid log cursor." }, 400);
+    }
 
     try {
       const page = await listBoardLogs(db, {

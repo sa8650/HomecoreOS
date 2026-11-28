@@ -470,6 +470,27 @@ export function createDeviceRoutes() {
         } catch (err) {
           const msg =
             err instanceof Error ? err.message : "Failed to dispatch MQTT command.";
+          // A publish error is a real delivery failure: store it on the board's
+          // own log (created + failed) instead of leaving only "created".
+          await recordCommandLifecycle(logCtx, {
+            accountId: auth.accountId,
+            boardInstanceId: dev.board_instance_id,
+            targetId: dev.id,
+            targetName: dev.name,
+            kind: "device",
+            requestedState: parsed.data.state,
+            commandId: expectedCommandId,
+            dispatchId,
+            route: null,
+            relayedViaControllerId: null,
+            delivered: false,
+            boardOnline: true,
+            failureReason: msg,
+            actorUserId: auth.userId,
+          });
+          if (logCollector.events.length > 0) {
+            await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, logCollector.events);
+          }
           return c.json({ error: `Controller command failed: ${msg}` }, 502);
         }
       }
@@ -966,6 +987,24 @@ export function createDeviceRoutes() {
         } catch (err) {
           const msg =
             err instanceof Error ? err.message : "Failed to dispatch MQTT switch command.";
+          // The command never left the Worker: the board's log records the
+          // failure instead of stopping at "created".
+          await recordCommandLifecycle(logCtx, {
+            accountId: auth.accountId,
+            boardInstanceId: sw.board_instance_id,
+            targetId: sw.id,
+            targetName: sw.name,
+            kind: "switch",
+            requestedState: parsed.data.isOn ? "ON" : "OFF",
+            commandId: expectedCommandId,
+            dispatchId,
+            route: null,
+            relayedViaControllerId: null,
+            delivered: false,
+            boardOnline: true,
+            failureReason: msg,
+            actorUserId: auth.userId,
+          });
           await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
             makeRealtimeEvent(
               "switch",
@@ -974,6 +1013,7 @@ export function createDeviceRoutes() {
               { isOn: parsed.data.isOn, mqttDispatched: false, error: msg },
               "failed"
             ),
+            ...logCollector.events,
           ]);
           return c.json({ error: `Controller command failed: ${msg}` }, 502);
         }

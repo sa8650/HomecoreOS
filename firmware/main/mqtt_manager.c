@@ -75,12 +75,12 @@ static void extract_command_id(const char *data, int len, char *out, size_t out_
 /* Applies a switch/device command payload. Shared by the MQTT handlers and by
    ESP-NOW commands relayed from a Controller, so both transports execute exactly
    the same GPIO logic (no second command implementation to drift). */
-static bool apply_switch_command(const char *data, int len) {
-    if (!data || len <= 0) return false;
+static hc_cmd_outcome_t apply_switch_command(const char *data, int len) {
+    if (!data || len <= 0) return HC_CMD_REJECTED;
     cJSON *root = cJSON_ParseWithLength(data, (size_t)len);
-    if (!root) return false;
+    if (!root) return HC_CMD_REJECTED;
 
-    bool applied = false;
+    hc_cmd_outcome_t outcome = HC_CMD_REJECTED;
     cJSON *id_j = cJSON_GetObjectItem(root, "switch_id");
     cJSON *pin_j = cJSON_GetObjectItem(root, "gpio_pin");
     cJSON *state_j = cJSON_GetObjectItem(root, "state");
@@ -92,25 +92,27 @@ static bool apply_switch_command(const char *data, int len) {
             ? cJSON_IsTrue(state_j)
             : hc_io_parse_bool_state(state_j->valuestring, false);
         bool inv = cJSON_IsBool(inv_j) && cJSON_IsTrue(inv_j);
-        applied = hc_io_drive_pin(
+        /* The payload is valid, so a drive failure is a *failed* command, not
+         * a rejected one: the board accepted it and could not apply it. */
+        outcome = hc_io_drive_pin(
             id_j->valuestring,
             HC_IO_KIND_SWITCH,
             (uint8_t)pin_j->valueint,
             inv,
             on
-        ) == ESP_OK;
+        ) == ESP_OK ? HC_CMD_APPLIED : HC_CMD_FAILED;
         ESP_LOGI(TAG, "Switch %s (GPIO %d) -> %s", id_j->valuestring, pin_j->valueint, on ? "ON" : "OFF");
     }
     cJSON_Delete(root);
-    return applied;
+    return outcome;
 }
 
-static bool apply_device_command(const char *data, int len) {
-    if (!data || len <= 0) return false;
+static hc_cmd_outcome_t apply_device_command(const char *data, int len) {
+    if (!data || len <= 0) return HC_CMD_REJECTED;
     cJSON *root = cJSON_ParseWithLength(data, (size_t)len);
-    if (!root) return false;
+    if (!root) return HC_CMD_REJECTED;
 
-    bool applied = false;
+    hc_cmd_outcome_t outcome = HC_CMD_REJECTED;
     cJSON *id_j = cJSON_GetObjectItem(root, "device_id");
     cJSON *pin_j = cJSON_GetObjectItem(root, "gpio_pin");
     cJSON *state_j = cJSON_GetObjectItem(root, "state");
@@ -121,13 +123,13 @@ static bool apply_device_command(const char *data, int len) {
         bool active = cJSON_IsBool(active_j)
             ? cJSON_IsTrue(active_j)
             : hc_io_parse_bool_state(state_j->valuestring, false);
-        applied = hc_io_drive_pin(
+        outcome = hc_io_drive_pin(
             id_j->valuestring,
             HC_IO_KIND_DEVICE,
             (uint8_t)pin_j->valueint,
             false,
             active
-        ) == ESP_OK;
+        ) == ESP_OK ? HC_CMD_APPLIED : HC_CMD_FAILED;
         ESP_LOGI(TAG, "Device %s (GPIO %d) -> %s (%s)",
             id_j->valuestring,
             pin_j->valueint,
@@ -135,7 +137,7 @@ static bool apply_device_command(const char *data, int len) {
             active ? "HIGH" : "LOW");
     }
     cJSON_Delete(root);
-    return applied;
+    return outcome;
 }
 
 static void handle_switch_cmd(const char *data, int len) {
@@ -151,13 +153,15 @@ static void handle_switch_cmd(const char *data, int len) {
         "switch",
         command_id
     );
-    bool applied = apply_switch_command(data, len);
+    hc_cmd_outcome_t outcome = apply_switch_command(data, len);
     hc_board_log_record(
         HC_BOARD_LOG_KIND_COMMAND,
-        applied ? HC_BOARD_LOG_STATUS_EXECUTED : HC_BOARD_LOG_STATUS_FAILED,
+        hc_cmd_outcome_status(outcome),
         HC_BOARD_LOG_METHOD_MQTT,
         NULL,
-        applied ? "switch applied" : "switch rejected",
+        outcome == HC_CMD_APPLIED
+            ? "switch applied"
+            : (outcome == HC_CMD_REJECTED ? "switch rejected" : "switch failed"),
         command_id
     );
 }
@@ -173,24 +177,31 @@ static void handle_device_cmd(const char *data, int len) {
         "device",
         command_id
     );
-    bool applied = apply_device_command(data, len);
+    hc_cmd_outcome_t outcome = apply_device_command(data, len);
     hc_board_log_record(
         HC_BOARD_LOG_KIND_COMMAND,
-        applied ? HC_BOARD_LOG_STATUS_EXECUTED : HC_BOARD_LOG_STATUS_FAILED,
+        hc_cmd_outcome_status(outcome),
         HC_BOARD_LOG_METHOD_MQTT,
         NULL,
-        applied ? "device applied" : "device rejected",
+        outcome == HC_CMD_APPLIED
+            ? "device applied"
+            : (outcome == HC_CMD_REJECTED ? "device rejected" : "device failed"),
         command_id
     );
 }
 
-bool hc_command_apply(const char *kind, const char *json) {
-    if (!kind || !json) return false;
+hc_cmd_outcome_t hc_command_apply_outcome(const char *kind, const char *json) {
+    if (!kind || !json) return HC_CMD_REJECTED;
     int len = (int)strlen(json);
     if (strcmp(kind, "switch") == 0) return apply_switch_command(json, len);
     if (strcmp(kind, "device") == 0) return apply_device_command(json, len);
+    /* An unknown command kind is refused, never executed. */
     ESP_LOGW(TAG, "Unsupported relayed command kind: %s", kind);
-    return false;
+    return HC_CMD_REJECTED;
+}
+
+bool hc_command_apply(const char *kind, const char *json) {
+    return hc_command_apply_outcome(kind, json) == HC_CMD_APPLIED;
 }
 
 static void handle_system_cmd(const char *data, int len) {

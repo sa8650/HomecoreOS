@@ -26,6 +26,8 @@ jobs:
         run: |
           gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_connectivity_logic.c firmware/main/connectivity_logic.c -o /tmp/test_connectivity_logic
           /tmp/test_connectivity_logic
+          gcc -Wall -Wextra -Werror -std=c11 firmware/test/test_board_log.c firmware/main/board_log.c -o /tmp/test_board_log
+          /tmp/test_board_log
       - name: Run test suites
         shell: bash
         # Keep the full output so a flaky failure can be inspected from the artifact.

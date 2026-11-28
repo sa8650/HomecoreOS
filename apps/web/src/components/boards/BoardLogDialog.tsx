@@ -51,6 +51,13 @@ import { Input } from "@/components/ui/input";
  */
 
 const PAGE_SIZE = 50;
+/**
+ * Upper bound for the paused buffer. A dialog left paused for hours must not
+ * grow without limit; the oldest buffered entries are dropped and the newest
+ * page is refilled on resume, so nothing silently disappears from the stored
+ * history (it stays reachable with "Load older").
+ */
+const MAX_PAUSED_BUFFER = 500;
 
 export interface BoardLogDialogBoard {
   id: string;
@@ -78,6 +85,36 @@ const SEVERITY_STYLE: Record<BoardLogSeverity, string> = {
   warning: "text-amber-600 dark:text-amber-400",
   error: "text-destructive",
 };
+
+/** Newest first. An unparseable timestamp sorts last instead of throwing. */
+function sortEntries(entries: BoardLogEntry[]): BoardLogEntry[] {
+  return [...entries].sort((a, b) => {
+    const at = Date.parse(a.createdAt);
+    const bt = Date.parse(b.createdAt);
+    return (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0);
+  });
+}
+
+/**
+ * Merges `incoming` into `existing` by entry id and keeps the list newest
+ * first. Used for every write to the view (server page, live event, buffered
+ * event) so an entry can never appear twice and a late response can never
+ * duplicate the live entries that arrived while it was in flight.
+ */
+function mergeEntries(
+  incoming: BoardLogEntry[],
+  existing: BoardLogEntry[]
+): BoardLogEntry[] {
+  if (incoming.length === 0) return existing;
+  const seen = new Set<string>();
+  const merged: BoardLogEntry[] = [];
+  for (const entry of [...incoming, ...existing]) {
+    if (!entry || typeof entry.id !== "string" || seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    merged.push(entry);
+  }
+  return sortEntries(merged);
+}
 
 function StatusDot({ online }: { online: boolean }) {
   return (
@@ -198,11 +235,24 @@ export function BoardLogDialog({
   const [bufferedCount, setBufferedCount] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
   const [clearedAt, setClearedAt] = useState<number | null>(null);
+  // Connection facts that arrive while the dialog is open. The board row is a
+  // snapshot from when the dialog opened; these keep "current status" and
+  // "last seen" honest while the view is live.
+  const [liveBoard, setLiveBoard] = useState<{
+    status?: string;
+    lastHeartbeatAt?: string;
+  } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bufferRef = useRef<BoardLogEntry[]>([]);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
+  /** Board currently shown; guards a response that belongs to a previous board. */
+  const boardKeyRef = useRef<string | null>(null);
+  /** The newest request owns the view; older responses are dropped. */
+  const requestSeqRef = useRef(0);
+  /** A gap was detected (reconnect) while the view was paused. */
+  const resyncPendingRef = useRef(false);
 
   const filter = useMemo(
     () => BOARD_LOG_FILTERS.find((item) => item.id === filterId) ?? BOARD_LOG_FILTERS[0],
@@ -210,58 +260,137 @@ export function BoardLogDialog({
   );
 
   const buildQuery = useCallback(
-    (before?: string | null, overrides?: { filterId?: string; search?: string }) => {
-      const activeFilter =
-        BOARD_LOG_FILTERS.find(
-          (item) => item.id === (overrides?.filterId ?? filterId)
-        ) ?? BOARD_LOG_FILTERS[0];
+    (before?: string | null) => {
       const params = new URLSearchParams();
       params.set("limit", String(PAGE_SIZE));
       if (before) params.set("before", before);
-      if (activeFilter.category) params.set("category", activeFilter.category);
-      if (activeFilter.severity) params.set("severity", activeFilter.severity);
-      const term = (overrides?.search ?? search).trim();
+      if (filter.category) params.set("category", filter.category);
+      if (filter.severity) params.set("severity", filter.severity);
+      const term = search.trim();
       if (term) params.set("q", term);
       return `/api/board-logs/${boardId}?${params.toString()}`;
     },
-    [boardId, filterId, search]
+    [boardId, filter, search]
   );
 
+  /**
+   * Refills the view. Entries are merged by id and kept newest-first, so a
+   * response never drops a live entry that arrived while the request was in
+   * flight, and a stale response for another board is discarded outright.
+   */
   const load = useCallback(
-    async (options?: { before?: string | null; silent?: boolean }) => {
+    async (options?: { silent?: boolean }) => {
       if (!boardId) return;
+      const seq = ++requestSeqRef.current;
       if (!options?.silent) setLoading(true);
       try {
-        const path = buildQuery(options?.before ?? null);
-        const data = await apiFetch<BoardLogResponse>(path);
-        setEntries(data.entries ?? []);
+        const data = await apiFetch<BoardLogResponse>(buildQuery());
+        if (seq !== requestSeqRef.current || boardKeyRef.current !== boardId) return;
+        setEntries((previous) => mergeEntries(data.entries ?? [], previous));
         setCursor(data.nextCursor ?? null);
         setHasMore(Boolean(data.hasMore));
         setError(null);
       } catch (err) {
+        if (seq !== requestSeqRef.current) return;
         setError(err instanceof Error ? err.message : "Failed to load the board log.");
       } finally {
-        setLoading(false);
+        if (seq === requestSeqRef.current) setLoading(false);
       }
     },
     [boardId, buildQuery]
   );
 
-  // Load the recent entries whenever the dialog opens for a board.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
+  // Opening the dialog (or switching to another board) starts from a clean
+  // view: the entries of the previous board must never be shown under the new
+  // board's name while the first page is loading.
+  useEffect(() => {
+    if (!open || !boardId) {
+      boardKeyRef.current = null;
+      return;
+    }
+    boardKeyRef.current = boardId;
+    requestSeqRef.current += 1;
+    setEntries([]);
+    setCursor(null);
+    setHasMore(false);
+    setError(null);
+    setClearedAt(null);
+    setPaused(false);
+    setBufferedCount(0);
+    setLiveBoard(null);
+    bufferRef.current = [];
+    resyncPendingRef.current = false;
+    void loadRef.current();
+  }, [open, boardId]);
+
+  // A filter or search change re-reads the page from the server, debounced so
+  // typing does not fire a request per keystroke. It only refreshes the
+  // entries: "Clear View" and the paused buffer are display state and must
+  // survive a filter change.
+  const lastQueryRef = useRef<{ boardId: string | null; filterId: string; search: string }>({
+    boardId: null,
+    filterId: "all",
+    search: "",
+  });
   useEffect(() => {
     if (!open || !boardId) return;
-    setClearedAt(null);
-    setBufferedCount(0);
-    bufferRef.current = [];
-    void load();
-  }, [open, boardId, load]);
+    const previous = lastQueryRef.current;
+    lastQueryRef.current = { boardId, filterId, search };
+    if (previous.boardId !== boardId) return; // the open effect already loaded
+    if (previous.filterId === filterId && previous.search === search) return;
+    const timer = window.setTimeout(() => {
+      void loadRef.current({ silent: true });
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [open, boardId, filterId, search]);
 
-  // Live updates: the account channel carries one "log" event per new entry.
+  // A reconnect can have missed entries. The snapshot does not carry log rows,
+  // so refill the newest page once the channel is live again instead of
+  // pretending the live view is complete.
+  const wasLiveRef = useRef(realtimeState === "live");
+  useEffect(() => {
+    const isLive = realtimeState === "live";
+    const becameLive = isLive && !wasLiveRef.current;
+    wasLiveRef.current = isLive;
+    if (!becameLive || !open || !boardId) return;
+    if (pausedRef.current) {
+      resyncPendingRef.current = true;
+      return;
+    }
+    void loadRef.current({ silent: true });
+  }, [realtimeState, open, boardId]);
+
+  // Live updates: the account channel carries one "log" event per new entry
+  // and the board state events that keep the header honest.
   useEffect(() => {
     if (!open || !boardId) return;
     const client = getRealtimeClient();
     return client.subscribe((batch) => {
+      if (batch.resync) {
+        // The channel repaired a gap: entries written while it was down are
+        // not in the view. Refill now, or when the paused view resumes.
+        if (pausedRef.current) {
+          resyncPendingRef.current = true;
+        } else {
+          void loadRef.current({ silent: true });
+        }
+      }
       for (const event of batch.events) {
+        if (event.entity === "board" && event.id === boardId) {
+          const patch = event.patch as
+            | { status?: string; lastHeartbeatAt?: string }
+            | undefined;
+          if (patch && (patch.status !== undefined || patch.lastHeartbeatAt !== undefined)) {
+            setLiveBoard((previous) => ({
+              status: patch.status ?? previous?.status,
+              lastHeartbeatAt: patch.lastHeartbeatAt ?? previous?.lastHeartbeatAt,
+            }));
+          }
+          continue;
+        }
         if (event.entity !== "log") continue;
         const patch = event.patch as { boardInstanceId?: string } | undefined;
         if (!patch || patch.boardInstanceId !== boardId) continue;
@@ -279,14 +408,16 @@ export function BoardLogDialog({
           createdAt: (patch as { createdAt?: string }).createdAt ?? event.ts,
         } as BoardLogEntry;
         if (pausedRef.current) {
+          if (bufferRef.current.length >= MAX_PAUSED_BUFFER) {
+            bufferRef.current.shift();
+            // The dropped entry must come back with the refilled page.
+            resyncPendingRef.current = true;
+          }
           bufferRef.current.push(entry);
           setBufferedCount(bufferRef.current.length);
           continue;
         }
-        setEntries((previous) => {
-          if (previous.some((item) => item.id === entry.id)) return previous;
-          return [entry, ...previous];
-        });
+        setEntries((previous) => mergeEntries([entry], previous));
       }
     });
   }, [open, boardId]);
@@ -304,23 +435,40 @@ export function BoardLogDialog({
     const buffered = bufferRef.current;
     bufferRef.current = [];
     setBufferedCount(0);
-    if (buffered.length === 0) return;
-    setEntries((previous) => {
-      const known = new Set(previous.map((item) => item.id));
-      const fresh = buffered.filter((item) => !known.has(item.id));
-      return fresh.length > 0 ? [...fresh, ...previous] : previous;
-    });
+    // Buffered entries were collected in arrival order; merging sorts them
+    // newest-first with the entries that were already on screen.
+    if (buffered.length > 0) {
+      setEntries((previous) => mergeEntries(buffered, previous));
+    }
+    if (resyncPendingRef.current) {
+      resyncPendingRef.current = false;
+      void loadRef.current({ silent: true });
+    }
+  }, []);
+
+  /**
+   * "Clear View" hides what is on screen. The paused buffer is part of the view
+   * as well: leaving it behind would promise "3 new entries" that can never
+   * appear (they are older than the clear point), so the buffer is dropped and
+   * its counter reset — the stored rows are untouched and still reachable by
+   * refreshing or paging.
+   */
+  const clearView = useCallback(() => {
+    setClearedAt(Date.now());
+    bufferRef.current = [];
+    setBufferedCount(0);
+    resyncPendingRef.current = false;
   }, []);
 
   const loadOlder = useCallback(async () => {
     if (!cursor || loadingOlder) return;
+    const forBoard = boardId;
     setLoadingOlder(true);
     try {
-      const path = buildQuery(cursor);
-      const data = await apiFetch<BoardLogResponse>(path);
-      const known = new Set(entries.map((item) => item.id));
-      const older = (data.entries ?? []).filter((item) => !known.has(item.id));
-      setEntries((previous) => [...previous, ...older]);
+      const data = await apiFetch<BoardLogResponse>(buildQuery(cursor));
+      // A response for another board is never merged into this view.
+      if (!forBoard || boardKeyRef.current !== forBoard) return;
+      setEntries((previous) => mergeEntries(data.entries ?? [], previous));
       setCursor(data.nextCursor ?? null);
       setHasMore(Boolean(data.hasMore));
     } catch (err) {
@@ -328,7 +476,7 @@ export function BoardLogDialog({
     } finally {
       setLoadingOlder(false);
     }
-  }, [buildQuery, cursor, entries, loadingOlder]);
+  }, [boardId, buildQuery, cursor, loadingOlder]);
 
   const visibleEntries = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -344,7 +492,10 @@ export function BoardLogDialog({
 
   if (!board) return null;
 
-  const isOnline = board.status === "online";
+  const effectiveStatus = liveBoard?.status ?? board.status ?? null;
+  const isOnline = effectiveStatus === "online";
+  const lastSeenAt =
+    liveBoard?.lastHeartbeatAt ?? board.lastHeartbeatAt ?? board.lastCommunicationAt ?? null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -364,11 +515,11 @@ export function BoardLogDialog({
             </span>
             <span className="mx-2 text-muted-foreground">·</span>
             <span data-testid="board-log-status-line">
-              {isOnline ? "Online" : board.status ?? "unknown"}
+              {isOnline ? "Online" : effectiveStatus ?? "unknown"}
             </span>
             <span className="mx-2 text-muted-foreground">·</span>
             <span data-testid="board-log-last-seen">
-              Last seen {formatTimestamp(board.lastHeartbeatAt ?? board.lastCommunicationAt, timezone)}
+              Last seen {formatTimestamp(lastSeenAt, timezone)}
             </span>
             {board.boardRole ? (
               <>
@@ -423,7 +574,7 @@ export function BoardLogDialog({
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => setClearedAt(Date.now())}
+            onClick={clearView}
             data-testid="board-log-clear"
           >
             <RiCloseLine className="size-4" aria-hidden="true" />
