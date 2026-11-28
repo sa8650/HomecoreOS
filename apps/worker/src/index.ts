@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { inspectConfiguration, type WorkerBindings } from "./config/env";
 import { evaluateScheduledAutomations } from "./lib/automation-engine";
+import { expireUnconfirmedCommands, pruneBoardLogs } from "./lib/board-log";
 import { createDbClient } from "./lib/db";
 import { emitNotification } from "./lib/notifications";
 import { dbMiddleware } from "./middleware/auth";
@@ -11,6 +12,7 @@ import { createAuthRoutes } from "./routes/auth";
 import { createAutomationRoutes } from "./routes/automations";
 import { createBoardRoutes } from "./routes/boards";
 import { createBoardInstanceRoutes } from "./routes/board-instances";
+import { createBoardLogRoutes } from "./routes/board-logs";
 import { createDeviceApiRoutes } from "./routes/device-api";
 import { createDeviceRoutes } from "./routes/devices";
 import { createFirmwareRoutes } from "./routes/firmware";
@@ -64,6 +66,7 @@ export function createWorkerApp(defaultDeps?: WorkerRuntimeDeps) {
   app.route("/api/homes", createHomeRoutes());
   app.route("/api/board-library", createBoardRoutes());
   app.route("/api/board-instances", createBoardInstanceRoutes());
+  app.route("/api/board-logs", createBoardLogRoutes());
   app.route("/api/automations", createAutomationRoutes());
   app.route("/api/firmware", createFirmwareRoutes());
   app.route("/api/notifications", createUserNotificationRoutes());
@@ -148,6 +151,23 @@ export default {
       evaluateScheduledAutomations({ db, env, now }).catch((err) => {
         console.error("HomecoreOS scheduled automation tick failed:", err);
       })
+    );
+    // Per-board log housekeeping: retention, per-board row ceiling and the
+    // command timeout sweep. All three are bounded and best-effort; a failure
+    // here never affects the automation tick.
+    ctx.waitUntil(
+      (async () => {
+        try {
+          await pruneBoardLogs(db, { env });
+        } catch (err) {
+          console.error("HomecoreOS board log retention sweep failed:", err);
+        }
+        try {
+          await expireUnconfirmedCommands(db, { now, env });
+        } catch (err) {
+          console.error("HomecoreOS board log command timeout sweep failed:", err);
+        }
+      })()
     );
   },
 };

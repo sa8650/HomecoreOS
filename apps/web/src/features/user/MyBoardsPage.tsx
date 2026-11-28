@@ -26,6 +26,7 @@ import {
 import { ControllerCard } from "@/components/controllers/ControllerCard";
 import { NodeCard } from "@/components/controllers/NodeCard";
 import { NodeControllerLinkDialog } from "@/components/controllers/NodeControllerLinkDialog";
+import { BoardLogDialog } from "@/components/boards/BoardLogDialog";
 import {
   canAssignNodeToController,
   getBoardCapabilities,
@@ -156,6 +157,7 @@ export function MyBoardsPage({
   const [trashTarget, setTrashTarget] = useState<ControllerItem | null>(null);
   const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<ControllerItem | null>(null);
   const [detailTarget, setDetailTarget] = useState<ControllerItem | null>(null);
+  const [logTarget, setLogTarget] = useState<ControllerItem | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   function openSetupFlow(
@@ -869,6 +871,7 @@ export function MyBoardsPage({
                   canManage={canManage}
                   canOperate={canOperate}
                   onViewDetails={() => setDetailTarget(ctrl)}
+                  onViewLog={() => setLogTarget(ctrl)}
                   onRename={() => openRename(ctrl)}
                   onRecover={() => openSetupFlow("recover", ctrl)}
                   onConfigureWifi={() => {
@@ -934,6 +937,7 @@ export function MyBoardsPage({
                   canOperate={canOperate}
                   timezone={timezone}
                   onViewDetails={() => setDetailTarget(node)}
+                  onViewLog={() => setLogTarget(node)}
                   onRename={() => openRename(node)}
                   onAssignController={() => {
                     setAssignNodeSelection(node.assigned_controller_id ?? "");
@@ -1756,6 +1760,29 @@ export function MyBoardsPage({
         confirmLabel="Move to Trash"
         busy={deleting}
         onConfirm={handleMoveToTrash}
+      />
+
+      {/* Per-board live Log. Each board has its own history; a Controller and a
+          Node never share one. */}
+      <BoardLogDialog
+        board={
+          logTarget
+            ? {
+                id: logTarget.id,
+                name: logTarget.name,
+                status: logTarget.status,
+                boardRole: logTarget.board_role ?? null,
+                lastHeartbeatAt: logTarget.last_heartbeat_at ?? null,
+                lastCommunicationAt: logTarget.last_communication_at ?? null,
+                mqttConnected: logTarget.mqtt_connected ?? null,
+                wifiConnected: logTarget.wifi_connected ?? null,
+                nodeLinkState: logTarget.node_link_state ?? null,
+                commMode: logTarget.comm_mode ?? null,
+              }
+            : null
+        }
+        open={Boolean(logTarget)}
+        onOpenChange={(o) => !o && setLogTarget(null)}
       />
 
       {/* Controller Details Modal */}

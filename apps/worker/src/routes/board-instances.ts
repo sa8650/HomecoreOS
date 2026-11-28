@@ -16,6 +16,7 @@ import {
   userConnectionStatus,
 } from "@homecoreos/shared";
 import { recordActivity } from "../lib/audit";
+import { captureBoardLog, createBoardLogCollector } from "../lib/board-log";
 import {
   assignNodeToController,
   changeBoardRole,
@@ -1786,7 +1787,7 @@ export function createBoardInstanceRoutes() {
     const auth = c.get("userAuth")!;
     const db = c.get("db");
     const deps = c.get("deps") ?? {};
-    const boardInstanceId = c.req.param("id");
+    const boardInstanceId = c.req.param("id") ?? "";
 
     const { data: ctrlData } = await db
       .from("board_instances")
@@ -1914,6 +1915,66 @@ export function createBoardInstanceRoutes() {
       summary: `Sent "${command}" command to controller "${ctrl.name}"`,
     });
 
+    const dispatchId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const logCollector = createBoardLogCollector();
+    const logCtx = { db, env: c.env ?? {}, deps, collector: logCollector };
+    if (command === "disconnect") {
+      // The broker session was kicked: the board is on its own from here.
+      await captureBoardLog(
+        logCtx,
+        {
+          accountId: auth.accountId,
+          boardInstanceId,
+          category: "connection",
+          severity: "warning",
+          status: "disconnected",
+          method: "mqtt",
+          source: auth.userId,
+          destination: boardInstanceId,
+          message: `MQTT session disconnected by an operator.`,
+          dedupeKey: `disconnect:${boardInstanceId}:${dispatchId}`,
+          metadata: { command },
+        }
+      );
+    } else {
+      await captureBoardLog(
+        logCtx,
+        {
+          accountId: auth.accountId,
+          boardInstanceId,
+          category: "command",
+          severity: "info",
+          status: "created",
+          method: "user",
+          source: auth.userId,
+          destination: boardInstanceId,
+          message: `Command created: "${command}" for board "${ctrl.name}".`,
+          dedupeKey: `boardcmd:created:${boardInstanceId}:${command}:${dispatchId}`,
+          metadata: { command },
+        }
+      );
+      await captureBoardLog(
+        logCtx,
+        {
+          accountId: auth.accountId,
+          boardInstanceId,
+          category: "command",
+          severity: "info",
+          status: "sent",
+          method: "mqtt",
+          source: "worker",
+          destination: boardInstanceId,
+          message: `"${command}" published to the board.`,
+          dedupeKey: `boardcmd:sent:${boardInstanceId}:${command}:${dispatchId}`,
+          metadata: { command },
+        }
+      );
+    }
+
+    if (logCollector.events.length > 0) {
+      await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, logCollector.events);
+    }
+
     return c.json({ ok: true, command, boardInstanceId });
   }
 
@@ -1964,12 +2025,14 @@ export function createBoardInstanceRoutes() {
         return c.json({ error: 'Role must be "controller" or "node".' }, 400);
       }
 
+      const logCollector = createBoardLogCollector();
       const result = await changeBoardRole(db, c.env!, deps, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
         deviceId: c.req.param("id"),
         targetRole: parsed.data.role,
         acknowledgeAttachedNodes: parsed.data.acknowledgeAttachedNodes,
+        collector: logCollector,
       });
 
       if (!result.ok) {
@@ -2004,6 +2067,7 @@ export function createBoardInstanceRoutes() {
             "accepted"
           )
         ),
+        ...logCollector.events,
       ]);
 
       return c.json({ device: result.device });
@@ -2083,11 +2147,13 @@ export function createBoardInstanceRoutes() {
         return c.json({ error: "boardInstanceId must be a uuid or null." }, 400);
       }
 
+      const logCollector = createBoardLogCollector();
       const result = await assignNodeToController(db, c.env!, deps, {
         accountId: auth.accountId,
         actorUserId: auth.userId,
         nodeId: c.req.param("id"),
         boardInstanceId: parsed.data.boardInstanceId,
+        collector: logCollector,
       });
       if (!result.ok) return c.json({ error: result.error }, result.status as 404 | 409);
       await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, [
@@ -2109,6 +2175,7 @@ export function createBoardInstanceRoutes() {
               }),
             ]
           : []),
+        ...logCollector.events,
       ]);
 
       return c.json({ node: result.node, controller: result.controller ?? null });

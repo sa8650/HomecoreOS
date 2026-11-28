@@ -90,7 +90,8 @@ function isRealtimeEntity(value: unknown): value is RealtimeEntity {
     value === "sensor" ||
     value === "automation" ||
     value === "notification" ||
-    value === "home"
+    value === "home" ||
+    value === "log"
   );
 }
 

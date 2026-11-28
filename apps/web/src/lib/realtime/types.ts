@@ -13,7 +13,8 @@ export type RealtimeEntity =
   | "sensor"
   | "automation"
   | "notification"
-  | "home";
+  | "home"
+  | "log";
 
 export type RealtimeEventAction =
   | "created"
@@ -131,6 +132,7 @@ export const REALTIME_CACHE_PREFIXES: Record<RealtimeEntity, string[]> = {
   sensor: ["/api/sensors", "/api/homes/overview", "/api/activity"],
   automation: ["/api/automations", "/api/activity"],
   notification: ["/api/notifications"],
+  log: ["/api/board-logs"],
   home: [
     "/api/homes",
     "/api/switches",

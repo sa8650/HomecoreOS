@@ -232,6 +232,10 @@ The channel covers the **user console**: Overview and the 2D floor plan, rooms, 
 switches, sensors, My Boards (Controllers and Nodes), Automations, Firmware/OTA, Activity
 and the notification bell, plus the pairing and controller-setup modals.
 
+It also carries the **per-board live Log** (`entity: "log"`): one event per stored
+log entry, published in the same envelope as the state change that produced it.
+See `docs/BOARD_LOG.md`.
+
 The **admin console** is not subscribed to account channels by design: platform staff read
 aggregated data that is not tied to one home, and keeping admin out of the per-account
 stream means an admin tab never consumes a home's real-time quota. Admin pages keep their

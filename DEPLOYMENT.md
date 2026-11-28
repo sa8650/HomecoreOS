@@ -24,6 +24,8 @@ HomecoreOS uses **only** the following Cloudflare Worker environment variables, 
 | `EMQX_WS_PATH` | Variable (optional) | `/mqtt` (WebSocket path) when `EMQX_WS_URL` is omitted. |
 | `BREVO_API_KEY` | Secret | Brevo → SMTP & API → API Keys (sends password-recovery codes; optional) |
 | `FIRMWARE_BUCKET` | R2 Binding | Cloudflare R2 private bucket (`homecoreos-firmware`) |
+| `BOARD_LOG_ENABLED` | Variable (optional) | Per-board live Log capture. Set to `false` to stop writing new log rows; the console keeps reading the stored history. Defaults to enabled. |
+| `BOARD_LOG_RETENTION_DAYS` | Variable (optional) | Retention window for the stored per-board log rows. Defaults to `14` days. |
 
 > **Do not create** `JWT_SECRET`, `APP_SECRET`, Supabase Auth keys, Firebase keys, or Cloudflare D1 bindings.
 

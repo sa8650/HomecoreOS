@@ -2,6 +2,7 @@ import {
   RiArrowLeftRightLine,
   RiCpuLine,
   RiEyeLine,
+  RiFileListLine,
   RiFlashlightFill,
   RiLinksLine,
   RiLinkM,
@@ -95,6 +96,7 @@ export function NodeCard({
   canOperate,
   timezone,
   onViewDetails,
+  onViewLog,
   onRename,
   onAssignController,
   onRelink,
@@ -106,6 +108,8 @@ export function NodeCard({
   canOperate: boolean;
   timezone: string;
   onViewDetails: () => void;
+  /** Opens the per-board live Log for this Node. */
+  onViewLog: () => void;
   onRename: () => void;
   onAssignController: () => void;
   onRelink: () => void;
@@ -231,6 +235,10 @@ export function NodeCard({
                     <DropdownMenuItem onClick={onViewDetails}>
                       <RiEyeLine className="size-4" aria-hidden="true" />
                       View Details
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={onViewLog}>
+                      <RiFileListLine className="size-4" aria-hidden="true" />
+                      View Log
                     </DropdownMenuItem>
                     {canManage && (
                       <DropdownMenuItem onClick={onRename}>
