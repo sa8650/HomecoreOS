@@ -910,6 +910,35 @@ void app_main(void) {
      * boot. The ring itself lives in RAM only. */
     hc_board_log_init((uint32_t)esp_random());
 
+    /* The first fact of every boot is the boot itself, with the reset reason
+     * the chip reports. It rides along with the first heartbeat, so a restart
+     * is visible in the board's own Log even when the uptime counter cannot be
+     * compared (a board that was never seen online before, or a fresh pair). */
+    {
+        const char *reset_reason = "unknown";
+        switch (esp_reset_reason()) {
+            case ESP_RST_POWERON: reset_reason = "power_on"; break;
+            case ESP_RST_EXT: reset_reason = "external"; break;
+            case ESP_RST_SW: reset_reason = "software"; break;
+            case ESP_RST_PANIC: reset_reason = "panic"; break;
+            case ESP_RST_INT_WDT: reset_reason = "interrupt_wdt"; break;
+            case ESP_RST_TASK_WDT: reset_reason = "task_wdt"; break;
+            case ESP_RST_WDT: reset_reason = "watchdog"; break;
+            case ESP_RST_BROWNOUT: reset_reason = "brownout"; break;
+            case ESP_RST_DEEPSLEEP: reset_reason = "deep_sleep"; break;
+            case ESP_RST_SDIO: reset_reason = "sdio"; break;
+            default: break;
+        }
+        hc_board_log_record(
+            HC_BOARD_LOG_KIND_SYSTEM,
+            HC_BOARD_LOG_STATUS_BOOT,
+            NULL,
+            NULL,
+            reset_reason,
+            NULL
+        );
+    }
+
     ESP_ERROR_CHECK(hc_nvs_init());
     ESP_ERROR_CHECK(hc_nvs_load_config(&s_config));
 

@@ -348,10 +348,21 @@ static void on_controller_frame(const hc_espnow_rx_t *frame) {
         }
 
         /* The Controller's acknowledgement reached this Node: the Node's own
-         * transmission is now acknowledged. The per-acknowledgement record is
-         * deliberately not written — it arrives every couple of seconds and
-         * would push every other fact out of the ring. The link transition
-         * below carries the same information once, when it matters. */
+         * transmission is now acknowledged. Per-acknowledgement facts are
+         * deliberately not written — an ACK arrives every couple of seconds
+         * and would push every other fact out of the ring. The first ACK that
+         * restores a fresh link is recorded once, because that is the moment
+         * the acknowledgement is operationally meaningful. */
+        if (!s_controller_fresh) {
+            hc_board_log_record(
+                HC_BOARD_LOG_KIND_COMM,
+                HC_BOARD_LOG_STATUS_ACKNOWLEDGED,
+                HC_BOARD_LOG_METHOD_ESPNOW,
+                ack_ctrl_id[0] ? ack_ctrl_id : (s_cfg ? s_cfg->assigned_controller_id : NULL),
+                "controller ack",
+                NULL
+            );
+        }
         s_last_ack_rx_seq = frame->seq;
         s_controller_cloud_healthy = ack_cloud_healthy;
         s_peer_binding_generation = ack_generation ? ack_generation : s_peer_binding_generation;
@@ -461,19 +472,24 @@ static void on_controller_frame(const hc_espnow_rx_t *frame) {
                     cJSON_IsObject(payload_j)) {
                     char *payload_str = cJSON_PrintUnformatted(payload_j);
                     if (payload_str) {
-                        bool applied = hc_command_apply(kind_j->valuestring, payload_str);
+                        hc_cmd_outcome_t outcome =
+                            hc_command_apply_outcome(kind_j->valuestring, payload_str);
                         ESP_LOGI(
                             TAG,
                             "Relayed %s command from Controller: %s",
                             kind_j->valuestring,
-                            applied ? "applied" : "ignored"
+                            hc_cmd_outcome_status(outcome)
                         );
                         hc_board_log_record(
                             HC_BOARD_LOG_KIND_COMMAND,
-                            applied ? HC_BOARD_LOG_STATUS_EXECUTED : HC_BOARD_LOG_STATUS_FAILED,
+                            hc_cmd_outcome_status(outcome),
                             HC_BOARD_LOG_METHOD_ESPNOW,
                             kind_j->valuestring,
-                            applied ? "relayed command applied" : "relayed command rejected",
+                            outcome == HC_CMD_APPLIED
+                                ? "relayed command applied"
+                                : (outcome == HC_CMD_REJECTED
+                                       ? "relayed command rejected"
+                                       : "relayed command failed"),
                             relay_command_id
                         );
                         cJSON_free(payload_str);
@@ -811,9 +827,7 @@ static void node_tick(homecore_config_t *cfg, uint32_t elapsed_ms) {
             HC_BOARD_LOG_KIND_COMM,
             s_state.link == HC_NODE_LINKED
                 ? HC_BOARD_LOG_STATUS_LINK_UP
-                : s_state.link == HC_NODE_CONTROLLER_LOST
-                    ? HC_BOARD_LOG_STATUS_LINK_DOWN
-                    : HC_BOARD_LOG_STATUS_LINK_DOWN,
+                : HC_BOARD_LOG_STATUS_LINK_DOWN,
             HC_BOARD_LOG_METHOD_ESPNOW,
             cfg->assigned_controller_id[0] ? cfg->assigned_controller_id : NULL,
             hc_node_link_name(s_state.link),

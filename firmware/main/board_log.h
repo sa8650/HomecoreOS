@@ -47,7 +47,10 @@ extern "C" {
 #define HC_BOARD_LOG_KIND_LEN 8
 #define HC_BOARD_LOG_STATUS_LEN 20
 #define HC_BOARD_LOG_METHOD_LEN 10
-#define HC_BOARD_LOG_TARGET_LEN 36
+/* A board instance id is a 36 character UUID. The buffer must hold it plus the
+ * terminating NUL, otherwise the peer id of every ESP-NOW fact would lose its
+ * last character and no longer match the id the Worker knows. */
+#define HC_BOARD_LOG_TARGET_LEN 40
 #define HC_BOARD_LOG_DETAIL_LEN 32
 #define HC_BOARD_LOG_COMMAND_LEN 44
 
@@ -68,10 +71,34 @@ extern "C" {
 #define HC_BOARD_LOG_STATUS_TIMEOUT "timeout"
 #define HC_BOARD_LOG_STATUS_LINK_UP "link_established"
 #define HC_BOARD_LOG_STATUS_LINK_DOWN "link_lost"
+/** Reported once, right after the ring is initialised on a boot. */
+#define HC_BOARD_LOG_STATUS_BOOT "boot"
 
 /** Transport methods. */
 #define HC_BOARD_LOG_METHOD_MQTT "mqtt"
 #define HC_BOARD_LOG_METHOD_ESPNOW "espnow"
+
+/**
+ * How a command ended on the board that received it.
+ *
+ * The three outcomes are genuinely different events and the Log keeps them
+ * apart: a command the board refused (unknown switch, malformed payload) is
+ * `rejected`, one it accepted but could not apply (GPIO write failed) is
+ * `failed`, and one it applied is `executed`. Collapsing them into `failed`
+ * would make an invalid command look like a hardware problem.
+ */
+typedef enum {
+    HC_CMD_APPLIED = 0,
+    HC_CMD_REJECTED = 1,
+    HC_CMD_FAILED = 2,
+} hc_cmd_outcome_t;
+
+/** The Log status string for a command outcome. */
+static inline const char *hc_cmd_outcome_status(hc_cmd_outcome_t outcome) {
+    if (outcome == HC_CMD_APPLIED) return HC_BOARD_LOG_STATUS_EXECUTED;
+    if (outcome == HC_CMD_REJECTED) return HC_BOARD_LOG_STATUS_REJECTED;
+    return HC_BOARD_LOG_STATUS_FAILED;
+}
 
 typedef struct {
     char kind[HC_BOARD_LOG_KIND_LEN];

@@ -483,6 +483,115 @@ describe("Per-board live Log", () => {
     expect(rows[0]!.count).toBe(0);
   });
 
+  it("rejects a malformed cursor instead of serving the first page again", async () => {
+    const res = await readLog(controllerId, "?before=not-a-cursor");
+    expect(res.status).toBe(400);
+    expect(res.body.entries).toBeUndefined();
+  });
+
+  it("records a failed command when the broker refuses the publish", async () => {
+    // A broker that accepts credentials but fails the publish. The board's log
+    // must show the delivery failure instead of stopping at "created".
+    const failingApp = createWorkerApp({
+      dbFetch: dbHarness.fetch,
+      emqxFetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes("/publish")) {
+          return new Response(JSON.stringify({ message: "broker unavailable" }), {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return emqx.fetch(input, init);
+      }) as typeof fetch,
+    });
+
+    const res = await failingApp.fetch(
+      new Request(`https://homecore.local/api/switches/${switchId}/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ isOn: true }),
+      }),
+      env
+    );
+    expect(res.status).toBe(502);
+
+    const log = await readLog(controllerId, "?category=command");
+    const failed = log.body.entries.find(
+      (entry) => entry.status === "failed" && entry.message.includes("not delivered")
+    );
+    expect(failed).toBeTruthy();
+    expect(failed?.severity).toBe("error");
+    expect(failed?.metadata.commandId).toBeTruthy();
+  });
+
+  it("writes a lost Node once, not on every Controller heartbeat", async () => {
+    // The second board is created as a Controller; make it a Node first.
+    const roleRes = await postJson(
+      `/api/board-instances/${nodeId}/role`,
+      { role: "node" },
+      "PATCH"
+    );
+    expect(roleRes.status).toBe(200);
+
+    const assign = await postJson(`/api/board-instances/${nodeId}/assign-controller`, {
+      boardInstanceId: controllerId,
+    });
+    expect(assign.status).toBe(200);
+
+    // The Node was linked minutes ago and is now silent.
+    await dbHarness.pg.query(
+      `update board_instances
+          set status = 'online',
+              node_link_state = 'linked',
+              node_last_linked_at = now() - interval '10 minutes'
+        where id = $1`,
+      [nodeId]
+    );
+
+    const controllerBefore = await readLog(controllerId, "?category=communication&limit=200");
+    const nodeBefore = await readLog(nodeId, "?category=connection&limit=200");
+    const lostCount = (entries: LogEntry[]) =>
+      entries.filter((entry) => entry.status === "controller_lost").length;
+
+    for (let i = 0; i < 2; i += 1) {
+      const res = await req("/api/device/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${controllerToken}`,
+        },
+        body: JSON.stringify({ w: true, m: true, role: "controller", nodes: [] }),
+      });
+      expect(res.status).toBe(200);
+    }
+
+    const controllerAfter = await readLog(controllerId, "?category=communication&limit=200");
+    const nodeAfter = await readLog(nodeId, "?category=connection&limit=200");
+    // The first heartbeat is the transition; the second is not a new event.
+    expect(lostCount(controllerAfter.body.entries) - lostCount(controllerBefore.body.entries)).toBe(1);
+    expect(lostCount(nodeAfter.body.entries) - lostCount(nodeBefore.body.entries)).toBe(1);
+  });
+
+  it("names a boot fact reported by the board, including the reset reason", async () => {
+    await req("/api/device/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${controllerToken}` },
+      body: JSON.stringify({
+        w: true,
+        m: true,
+        role: "controller",
+        sid: 9090,
+        fx: [{ k: "sys", s: "boot", d: "task_wdt", ts: 1 }],
+      }),
+    });
+
+    const log = await readLog(controllerId, "?category=system&limit=200");
+    const boot = log.body.entries.find((entry) => entry.status === "boot");
+    expect(boot).toBeTruthy();
+    expect(boot?.message).toContain("Board booted");
+    expect(boot?.message).toContain("task_wdt");
+  });
+
   it("keeps the stored records: the API exposes no destructive operation", async () => {
     const before = await readLog(controllerId);
     const deleteAttempt = await req(`/api/board-logs/${controllerId}`, {

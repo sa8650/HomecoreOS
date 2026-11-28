@@ -15,11 +15,42 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * The ring is written from several tasks: the MQTT client task records the
+ * command it just received, the role supervision task records link
+ * transitions, and the HTTP task serializes and commits the batch. On a
+ * dual-core part those really run concurrently, so every public entry point
+ * takes a tiny critical section. The sections are only a few instructions
+ * long and run on plain RAM; on the host build (no ESP-IDF) they compile away
+ * so the unit tests stay portable.
+ */
+#if defined(ESP_PLATFORM)
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+static portMUX_TYPE s_log_lock = portMUX_INITIALIZER_UNLOCKED;
+#define HC_BOARD_LOG_LOCK() taskENTER_CRITICAL(&s_log_lock)
+#define HC_BOARD_LOG_UNLOCK() taskEXIT_CRITICAL(&s_log_lock)
+#else
+#define HC_BOARD_LOG_LOCK() ((void)0)
+#define HC_BOARD_LOG_UNLOCK() ((void)0)
+#endif
+
 #define HC_BOARD_LOG_SEQ_MAX 0xFFFFFFFEu
 
 static hc_board_log_fact_t s_facts[HC_BOARD_LOG_RING_SIZE];
 /** Number of stored facts. s_facts[0] is the oldest one. */
 static uint8_t s_count = 0;
+/**
+ * Insertion age of the last fact serialized into the current batch.
+ *
+ * The commit removes exactly the facts that were serialized, not "the first N
+ * slots": facts recorded while the batch is in flight are appended at the end
+ * (and, when the ring is full, shift the array by evicting the oldest one).
+ * Matching on the age keeps a fact recorded during the HTTP round-trip even
+ * when an eviction moved everything down by one.
+ */
+static uint32_t s_batch_max_age = 0;
 static uint32_t s_seq = 0;
 static uint32_t s_age = 0;
 static uint32_t s_session_id = 0;
@@ -53,15 +84,21 @@ static void copy_field(char *dst, size_t dst_len, const char *src) {
 }
 
 void hc_board_log_init(uint32_t session_id) {
+    HC_BOARD_LOG_LOCK();
     s_count = 0;
     s_seq = 0;
     s_age = 0;
+    s_batch_max_age = 0;
     s_session_id = session_id;
     memset(s_facts, 0, sizeof(s_facts));
+    HC_BOARD_LOG_UNLOCK();
 }
 
 uint32_t hc_board_log_session_id(void) {
-    return s_session_id;
+    HC_BOARD_LOG_LOCK();
+    uint32_t session_id = s_session_id;
+    HC_BOARD_LOG_UNLOCK();
+    return session_id;
 }
 
 /**
@@ -114,6 +151,7 @@ void hc_board_log_record(const char *kind,
                          const char *command_id) {
     if (!kind || !status) return;
 
+    HC_BOARD_LOG_LOCK();
     if (s_count >= HC_BOARD_LOG_RING_SIZE) {
         /* Full: drop one fact (the oldest of the lowest priority when the
          * incoming fact matters more), then append the new fact. */
@@ -135,14 +173,21 @@ void hc_board_log_record(const char *kind,
      * written into a slot that is not the oldest one. */
     s_age = (s_age >= UINT32_MAX) ? 1u : s_age + 1u;
     fact->age = s_age;
+    HC_BOARD_LOG_UNLOCK();
 }
 
 uint8_t hc_board_log_pending(void) {
-    return s_count;
+    HC_BOARD_LOG_LOCK();
+    uint8_t count = s_count;
+    HC_BOARD_LOG_UNLOCK();
+    return count;
 }
 
 bool hc_board_log_has_pending(void) {
-    return s_count > 0;
+    HC_BOARD_LOG_LOCK();
+    bool pending = s_count > 0;
+    HC_BOARD_LOG_UNLOCK();
+    return pending;
 }
 
 static size_t append_json_string(char *out, size_t out_len, size_t pos, const char *value) {
@@ -200,7 +245,10 @@ static size_t serialize_fact(const hc_board_log_fact_t *fact, char *out, size_t 
     if (fact->detail[0] != '\0') needed += 7 + escaped_len(fact->detail);
     needed += 16;                                                 /* ,"ts":4294967295 */
     needed += 1;                                                  /* '}' */
-    if (needed > out_len) return 0;
+    /* +1 for the terminating NUL the caller writes at out[needed]: a fact is
+     * only accepted when the whole object *and* its terminator fit. Without
+     * this the final NUL could be written one byte past the buffer. */
+    if (needed + 1 > out_len) return 0;
 
     out[pos++] = '{';
     pos = append_json_string(out, out_len, pos, "k");
@@ -256,8 +304,11 @@ static size_t serialize_fact(const hc_board_log_fact_t *fact, char *out, size_t 
 size_t hc_board_log_write_json(char *out, size_t out_len, uint8_t *written_count) {
     if (written_count) *written_count = 0;
     if (!out || out_len < 4) return 0;
+
+    HC_BOARD_LOG_LOCK();
     if (s_count == 0) {
         out[0] = '\0';
+        HC_BOARD_LOG_UNLOCK();
         return 0;
     }
 
@@ -280,37 +331,69 @@ size_t hc_board_log_write_json(char *out, size_t out_len, uint8_t *written_count
         written++;
     }
 
-    if (pos + 2 >= out_len) {
-        /* Not even the closing bracket fits: report nothing rather than
-         * writing a broken array. */
+    if (written == 0 || pos + 2 >= out_len) {
+        /* Not a single fact (or not even the closing bracket) fits: report
+         * nothing rather than an empty or broken array. An "[]" batch would
+         * claim a report that carried no fact, and the caller would add an
+         * empty "fx" to every heartbeat. */
         out[0] = '\0';
+        HC_BOARD_LOG_UNLOCK();
         return 0;
     }
     out[pos++] = ']';
     out[pos] = '\0';
+    /* The facts are ordered by insertion, so the last one written carries the
+     * boundary of this batch. */
+    s_batch_max_age = s_facts[written - 1].age;
     if (written_count) *written_count = written;
+    HC_BOARD_LOG_UNLOCK();
     return pos;
 }
 
 void hc_board_log_commit_sent(uint8_t count) {
     if (count == 0) return;
-    if (count > s_count) count = s_count;
-    if (count < s_count) {
-        memmove(&s_facts[0], &s_facts[count],
-                (size_t)(s_count - count) * sizeof(s_facts[0]));
+    HC_BOARD_LOG_LOCK();
+    uint8_t remove = 0;
+    if (s_batch_max_age != 0) {
+        /* Remove the batch that was actually serialized, even when facts were
+         * appended (or the oldest fact was evicted) while the report was in
+         * flight. */
+        while (remove < s_count && remove < count && s_facts[remove].age <= s_batch_max_age) {
+            remove += 1;
+        }
+    } else {
+        remove = count < s_count ? count : s_count;
     }
-    memset(&s_facts[s_count - count], 0, (size_t)count * sizeof(s_facts[0]));
-    s_count = (uint8_t)(s_count - count);
+    if (remove > 0) {
+        if (remove < s_count) {
+            memmove(&s_facts[0], &s_facts[remove],
+                    (size_t)(s_count - remove) * sizeof(s_facts[0]));
+        }
+        memset(&s_facts[s_count - remove], 0, (size_t)remove * sizeof(s_facts[0]));
+        s_count = (uint8_t)(s_count - remove);
+    }
+    s_batch_max_age = 0;
+    HC_BOARD_LOG_UNLOCK();
 }
 
-void hc_board_log_clear(void) {
+/** Caller holds the lock. */
+static void clear_locked(void) {
     s_count = 0;
+    s_batch_max_age = 0;
     memset(s_facts, 0, sizeof(s_facts));
 }
 
+void hc_board_log_clear(void) {
+    HC_BOARD_LOG_LOCK();
+    clear_locked();
+    HC_BOARD_LOG_UNLOCK();
+}
+
 void hc_board_log_reset(void) {
-    hc_board_log_clear();
+    HC_BOARD_LOG_LOCK();
+    clear_locked();
     s_seq = 0;
     s_age = 0;
     s_session_id = 0;
+    HC_BOARD_LOG_UNLOCK();
 }

@@ -82,10 +82,13 @@ function rememberDedupeKey(key: string): void {
   }
 }
 
+/**
+ * Read-only probe. The key is only remembered once the row is actually
+ * stored (or the database proves it already is), so a transient write failure
+ * is retried by the next report instead of being swallowed by the cache.
+ */
 function hasSeenDedupeKey(key: string): boolean {
-  if (dedupeIndex.has(key)) return true;
-  rememberDedupeKey(key);
-  return false;
+  return dedupeIndex.has(key);
 }
 
 /**
@@ -185,6 +188,13 @@ export function describeBoardFact(params: {
     case "received":
       return `Command received${subject}${suffix}.`;
     case "acknowledged":
+      // A link-level ACK (the Node validated its Controller's reply) is not a
+      // command acknowledgement, and the wording keeps the two apart.
+      if (params.kind !== "cmd") {
+        return target
+          ? `Link acknowledged by ${target}${suffix}.`
+          : `Link acknowledged${suffix}.`;
+      }
       return target
         ? `Acknowledgement received for ${target}${suffix}.`
         : `Acknowledgement received${suffix}.`;
@@ -212,6 +222,10 @@ export function describeBoardFact(params: {
       return `Link established${subject}.`;
     case "link_lost":
       return `Link lost${subject}.`;
+    case "boot":
+      // The chip's reset reason is a short token ("power_on", "task_wdt"),
+      // never a payload.
+      return detail ? `Board booted (${detail}).` : "Board booted.";
     default:
       return `${params.kind === "cmd" ? "Command" : "Event"} ${params.status}${subject}${suffix}.`;
   }
@@ -290,14 +304,19 @@ export async function captureBoardLog(
   const category = isBoardLogCategory(input.category) ? input.category : "system";
   const severity = isBoardLogSeverity(input.severity) ? input.severity : "info";
   const dedupeKey = input.dedupeKey ? truncateToken(input.dedupeKey, 200) : null;
+  const fullDedupeKey = dedupeKey
+    ? `${input.accountId}:${input.boardInstanceId}:${dedupeKey}`
+    : null;
 
-  if (dedupeKey && hasSeenDedupeKey(`${input.accountId}:${input.boardInstanceId}:${dedupeKey}`)) {
+  if (fullDedupeKey && hasSeenDedupeKey(fullDedupeKey)) {
     return null;
   }
 
   // Rate limiting: warnings and errors are always kept, low-priority chatter
-  // is dropped and counted. The count is attached to the next accepted entry
-  // so a burst shows up as one aggregated line instead of many.
+  // is dropped and counted. The count is attached to the next *stored* entry
+  // so a burst shows up as one aggregated line instead of many. The quota is
+  // consumed only once the row is actually stored: a failed insert must not
+  // eat a slot, or a database hiccup would silently mute the board's Log.
   const bucketKey = `${input.accountId}:${input.boardInstanceId}`;
   const bucket = takeRateBucket(bucketKey);
   let metadata = sanitizeBoardLogMetadata(input.metadata);
@@ -307,11 +326,12 @@ export async function captureBoardLog(
       return null;
     }
   }
-  if (bucket.suppressed > 0) {
-    metadata = { ...metadata, suppressed: bucket.suppressed };
-    bucket.suppressed = 0;
+  // Snapshot rather than reset: the drop count is only reported once the row
+  // that carries it exists, so a failed insert leaves it to the next entry.
+  const suppressedCount = bucket.suppressed;
+  if (suppressedCount > 0) {
+    metadata = { ...metadata, suppressed: suppressedCount };
   }
-  bucket.accepted += 1;
 
   const row = {
     account_id: input.accountId,
@@ -337,10 +357,19 @@ export async function captureBoardLog(
     if (error) {
       // A duplicate logical event is not an error: the event is already stored.
       if (error.code === "23505" || /duplicate key/i.test(error.message ?? "")) {
+        if (fullDedupeKey) rememberDedupeKey(fullDedupeKey);
+        // Nothing new was stored, so nothing is charged to the rate bucket.
         return null;
       }
+      // The row was not stored, so the key is deliberately not remembered:
+      // the next report of the same event is allowed to retry the write.
       console.warn(`[board-log] insert failed: ${error.message}`);
       return null;
+    }
+    if (fullDedupeKey) rememberDedupeKey(fullDedupeKey);
+    bucket.accepted += 1;
+    if (suppressedCount > 0) {
+      bucket.suppressed = Math.max(0, bucket.suppressed - suppressedCount);
     }
     const created = data as { id: string; seq: number; created_at: string };
     const entry: BoardLogEntry = {
@@ -357,9 +386,7 @@ export async function captureBoardLog(
       createdAt: created.created_at,
     };
     if (ctx.collector) {
-      ctx.collector.events.push(
-        buildBoardLogRealtimeEvent(input.accountId, entry)
-      );
+      ctx.collector.events.push(buildBoardLogRealtimeEvent(entry));
     } else if (ctx.env) {
       await publishBoardLogRealtime(ctx, input.accountId, entry);
     }
@@ -376,13 +403,13 @@ export async function captureBoardLog(
  * Publishes one log entry on the existing account-scoped real-time channel.
  * The event id is the log row id, so two entries created in the same
  * millisecond are still two distinct deliveries.
+ *
+ * The event carries the row's own timestamp (not the publish time) as `ts`,
+ * and no `version`: a log row is a one-shot delivery, never a snapshot entity,
+ * so it must not grow the client's reconciliation version map.
  */
-function buildBoardLogRealtimeEvent(
-  accountId: string,
-  entry: BoardLogEntry
-): RealtimeEvent {
-  void accountId;
-  return makeRealtimeEvent(
+function buildBoardLogRealtimeEvent(entry: BoardLogEntry): RealtimeEvent {
+  const event = makeRealtimeEvent(
     "log",
     "created",
     entry.id,
@@ -399,8 +426,12 @@ function buildBoardLogRealtimeEvent(
       createdAt: entry.createdAt,
     },
     undefined,
-    entry.createdAt
+    undefined
   );
+  if (Number.isFinite(Date.parse(entry.createdAt))) {
+    event.ts = entry.createdAt;
+  }
+  return event;
 }
 
 async function publishBoardLogRealtime(
@@ -410,7 +441,7 @@ async function publishBoardLogRealtime(
 ): Promise<void> {
   try {
     await publishRealtimeEvents(ctx.env!, ctx.deps, accountId, [
-      buildBoardLogRealtimeEvent(accountId, entry),
+      buildBoardLogRealtimeEvent(entry),
     ]);
   } catch (err) {
     console.warn(
@@ -622,6 +653,12 @@ export async function recordCommandLifecycle(
     delivered: boolean;
     boardOnline: boolean;
     actorUserId?: string | null;
+    /**
+     * Set when the Worker had a route but the transport itself refused the
+     * command (a broker/publish error). The entry is then a real `failed`
+     * command, not an "offline" guess.
+     */
+    failureReason?: string | null;
   }
 ): Promise<void> {
   const subject =
@@ -649,24 +686,28 @@ export async function recordCommandLifecycle(
   });
 
   if (!params.delivered) {
+    const failure = params.failureReason?.trim() ? params.failureReason.trim() : null;
     await captureBoardLog(ctx, {
       accountId: params.accountId,
       boardInstanceId: params.boardInstanceId,
       category: "command",
-      severity: "warning",
-      status: params.boardOnline ? "failed" : "offline",
+      severity: failure ? "error" : "warning",
+      status: failure ? "failed" : params.boardOnline ? "failed" : "offline",
       method: "worker",
       source: "worker",
       destination: params.targetId,
-      message: params.boardOnline
-        ? `Command was not delivered: no healthy route to the board.`
-        : `Command was not delivered: the board is offline.`,
+      message: failure
+        ? `Command was not delivered: ${failure}`
+        : params.boardOnline
+          ? `Command was not delivered: no healthy route to the board.`
+          : `Command was not delivered: the board is offline.`,
       dedupeKey: `cmd:undelivered:${params.commandId}:${params.dispatchId}`,
       metadata: {
         commandId: params.commandId,
         target: params.targetId,
         kind: params.kind,
         boardOnline: params.boardOnline,
+        failure: failure ?? null,
       },
     });
     return;
@@ -745,23 +786,14 @@ export async function expireUnconfirmedCommands(
   const lookback = new Date(nowMs - 15 * 60 * 1000).toISOString();
 
   try {
-    const [{ data: sentRows }, { data: confirmedRows }] = await Promise.all([
-      db
-        .from("board_log_events")
-        .select("id,seq,account_id,board_instance_id,created_at,metadata")
-        .eq("category", "command")
-        .eq("status", "sent")
-        .gte("created_at", lookback)
-        .order("seq", { ascending: false })
-        .limit(maxRows),
-      db
-        .from("board_log_events")
-        .select("board_instance_id,status,metadata,created_at")
-        .eq("category", "command")
-        .in("status", ["received", "acknowledged", "executed", "rejected", "failed"])
-        .gte("created_at", lookback)
-        .limit(maxRows * 5),
-    ]);
+    const { data: sentRows } = await db
+      .from("board_log_events")
+      .select("id,seq,account_id,board_instance_id,created_at,metadata")
+      .eq("category", "command")
+      .eq("status", "sent")
+      .gte("created_at", lookback)
+      .order("seq", { ascending: false })
+      .limit(maxRows);
 
     const sent = (sentRows ?? []) as Array<{
       id: string;
@@ -773,16 +805,38 @@ export async function expireUnconfirmedCommands(
     }>;
     if (sent.length === 0) return 0;
 
+    /* Only the boards that actually have an outstanding command are queried,
+     * newest confirmations first. Without both bounds a busy account could
+     * push an older confirmation out of the window and turn a confirmed
+     * command into a false "timeout". */
+    const boardIds = Array.from(new Set(sent.map((row) => row.board_instance_id)));
+    /* The board ids travel in the query string, so they are asked for in
+     * bounded chunks instead of one URL that could grow past the request
+     * limit and fail the whole sweep. */
+    const confirmedRows: Array<{
+      board_instance_id: string;
+      metadata?: Record<string, unknown> | null;
+      created_at: string;
+    }> = [];
+    for (let offset = 0; offset < boardIds.length; offset += 50) {
+      const { data: chunk } = await db
+        .from("board_log_events")
+        .select("board_instance_id,status,metadata,created_at")
+        .eq("category", "command")
+        .in("status", ["received", "acknowledged", "executed", "rejected", "failed"])
+        .in("board_instance_id", boardIds.slice(offset, offset + 50))
+        .gte("created_at", lookback)
+        .order("created_at", { ascending: false })
+        .limit(maxRows * 5);
+      confirmedRows.push(...((chunk ?? []) as typeof confirmedRows));
+    }
+
     /* A confirmation only counts for a command that was still outstanding when
      * the confirmation arrived. The same payload can be dispatched twice (the
      * command id is a hash of the payload), so a confirmation that predates the
      * send must not confirm it. */
     const confirmations = new Map<string, number[]>();
-    for (const row of (confirmedRows ?? []) as Array<{
-      board_instance_id: string;
-      metadata?: Record<string, unknown> | null;
-      created_at: string;
-    }>) {
+    for (const row of confirmedRows) {
       const commandId = (row.metadata as { commandId?: unknown } | null)?.commandId;
       if (typeof commandId !== "string" || commandId.length === 0) continue;
       const key = `${row.board_instance_id}:${commandId}`;

@@ -1860,50 +1860,76 @@ export function createBoardInstanceRoutes() {
     }
 
     const emqx = new EmqxClient(c.env!, deps.emqxFetch);
+    const dispatchId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const logCollector = createBoardLogCollector();
+    const logCtx = { db, env: c.env ?? {}, deps, collector: logCollector };
 
-    if (command === "disconnect") {
-      await emqx.kickClient(credRow.mqtt_client_id);
-      await db
-        .from("board_instances")
-        .update({
-          status: "disconnected",
-          mqtt_connected: false,
-          connection_history: [
-            ...(Array.isArray(ctrl.connection_history)
-              ? ctrl.connection_history.slice(-19)
-              : []),
-            { event: "disconnected_by_user", at: new Date().toISOString() },
-          ],
-        })
-        .eq("id", boardInstanceId)
-        .eq("account_id", auth.accountId);
-    } else if (command === "reconnect") {
-      await emqx.publish({
-        topic: `${credRow.topic_prefix}/cmd/system`,
-        payload: { action: "reconnect", requested_at: new Date().toISOString() },
-        qos: 1,
-      });
-    } else {
-      await emqx.publish({
-        topic: `${credRow.topic_prefix}/cmd/system`,
-        payload: {
-          action: command,
-          ...payload,
-          requested_at: new Date().toISOString(),
-        },
-        qos: 1,
-      });
-      if (command === "reset") {
+    try {
+      if (command === "disconnect") {
+        await emqx.kickClient(credRow.mqtt_client_id);
         await db
           .from("board_instances")
           .update({
-            status: "reset_pending",
-            pairing_status: "revoked",
+            status: "disconnected",
             mqtt_connected: false,
+            connection_history: [
+              ...(Array.isArray(ctrl.connection_history)
+                ? ctrl.connection_history.slice(-19)
+                : []),
+              { event: "disconnected_by_user", at: new Date().toISOString() },
+            ],
           })
           .eq("id", boardInstanceId)
           .eq("account_id", auth.accountId);
+      } else if (command === "reconnect") {
+        await emqx.publish({
+          topic: `${credRow.topic_prefix}/cmd/system`,
+          payload: { action: "reconnect", requested_at: new Date().toISOString() },
+          qos: 1,
+        });
+      } else {
+        await emqx.publish({
+          topic: `${credRow.topic_prefix}/cmd/system`,
+          payload: {
+            action: command,
+            ...payload,
+            requested_at: new Date().toISOString(),
+          },
+          qos: 1,
+        });
+        if (command === "reset") {
+          await db
+            .from("board_instances")
+            .update({
+              status: "reset_pending",
+              pairing_status: "revoked",
+              mqtt_connected: false,
+            })
+            .eq("id", boardInstanceId)
+            .eq("account_id", auth.accountId);
+        }
       }
+    } catch (err) {
+      // The publish/kick failed: the board's own log records a failed command
+      // instead of stopping at nothing at all.
+      const reason = err instanceof Error ? err.message : "MQTT operation failed.";
+      await captureBoardLog(logCtx, {
+        accountId: auth.accountId,
+        boardInstanceId,
+        category: "command",
+        severity: "error",
+        status: "failed",
+        method: "mqtt",
+        source: auth.userId,
+        destination: boardInstanceId,
+        message: `Command "${command}" could not be published: ${reason}`,
+        dedupeKey: `boardcmd:failed:${boardInstanceId}:${command}:${dispatchId}`,
+        metadata: { command, reason },
+      });
+      if (logCollector.events.length > 0) {
+        await publishRealtimeEvents(c.env ?? {}, deps, auth.accountId, logCollector.events);
+      }
+      throw err;
     }
 
     await recordActivity(db, {
@@ -1915,9 +1941,6 @@ export function createBoardInstanceRoutes() {
       summary: `Sent "${command}" command to controller "${ctrl.name}"`,
     });
 
-    const dispatchId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    const logCollector = createBoardLogCollector();
-    const logCtx = { db, env: c.env ?? {}, deps, collector: logCollector };
     if (command === "disconnect") {
       // The broker session was kicked: the board is on its own from here.
       await captureBoardLog(

@@ -284,6 +284,104 @@ int main(void) {
     assert(hc_board_log_pending() == 0);
     assert(hc_board_log_session_id() == 0);
 
+    /* ---------------------------------------------------------------- */
+    /* A board instance id is a 36 character UUID and must survive      */
+    /* intact: the Worker matches the peer of an ESP-NOW fact by id.    */
+    /* ---------------------------------------------------------------- */
+    hc_board_log_init(11);
+    {
+        const char *uuid = "77941df9-8170-441c-9aaf-de4c843ba4c9";
+        assert(strlen(uuid) == 36);
+        hc_board_log_record(
+            HC_BOARD_LOG_KIND_COMMAND,
+            HC_BOARD_LOG_STATUS_EXECUTED,
+            HC_BOARD_LOG_METHOD_ESPNOW,
+            uuid,
+            NULL,
+            NULL
+        );
+        written = hc_board_log_write_json(json, sizeof(json), &written_count);
+        assert(written > 0);
+        char expected[48];
+        snprintf(expected, sizeof(expected), "\"t\":\"%s\"", uuid);
+        assert(strstr(json, expected) != NULL);
+    }
+
+    /* ---------------------------------------------------------------- */
+    /* A batch that cannot hold a single fact is not reported as an     */
+    /* empty array: nothing was written, so the fact must stay pending  */
+    /* and the caller must not add an empty "fx" list.                  */
+    /* ---------------------------------------------------------------- */
+    hc_board_log_init(12);
+    hc_board_log_record(
+        HC_BOARD_LOG_KIND_COMMAND,
+        HC_BOARD_LOG_STATUS_EXECUTED,
+        HC_BOARD_LOG_METHOD_ESPNOW,
+        "77941df9-8170-441c-9aaf-de4c843ba4c9",
+        "a rather long detail for the fact",
+        "cmd-1234"
+    );
+    {
+        char tiny[8];
+        written_count = 0xFF;
+        written = hc_board_log_write_json(tiny, sizeof(tiny), &written_count);
+        assert(written == 0);
+        assert(written_count == 0);
+        assert(tiny[0] == '\0');
+        /* The fact is still waiting for the next heartbeat. */
+        assert(hc_board_log_pending() == 1);
+    }
+
+    /* ---------------------------------------------------------------- */
+    /* The boot fact carries the chip's reset reason as its detail.     */
+    /* ---------------------------------------------------------------- */
+    hc_board_log_init(13);
+    hc_board_log_record(
+        HC_BOARD_LOG_KIND_SYSTEM,
+        HC_BOARD_LOG_STATUS_BOOT,
+        NULL,
+        NULL,
+        "power_on",
+        NULL
+    );
+    written = hc_board_log_write_json(json, sizeof(json), &written_count);
+    assert(written > 0);
+    assert(strstr(json, "\"k\":\"sys\"") != NULL);
+    assert(strstr(json, "\"s\":\"boot\"") != NULL);
+    assert(strstr(json, "\"d\":\"power_on\"") != NULL);
+    assert(json_is_balanced(json));
+
+    /* ---------------------------------------------------------------- */
+    /* A fact recorded while the batch is in flight survives the commit.*/
+    /* A full ring evicts the oldest fact when that happens, so the     */
+    /* array shifts down by one; the commit must still remove only the  */
+    /* facts that were serialized.                                      */
+    /* ---------------------------------------------------------------- */
+    hc_board_log_init(14);
+    for (int i = 0; i < HC_BOARD_LOG_RING_SIZE; i++) {
+        hc_board_log_record(HC_BOARD_LOG_KIND_COMM, "sent", "espnow", "peer", NULL, NULL);
+    }
+    written = hc_board_log_write_json(json, sizeof(json), &written_count);
+    assert(written > 0);
+    assert(written_count == HC_BOARD_LOG_RING_SIZE);
+    /* The report is now on the wire: a link transition is recorded. */
+    hc_board_log_record(
+        HC_BOARD_LOG_KIND_COMM,
+        HC_BOARD_LOG_STATUS_LINK_UP,
+        HC_BOARD_LOG_METHOD_ESPNOW,
+        "peer",
+        "linked",
+        NULL
+    );
+    assert(hc_board_log_pending() == HC_BOARD_LOG_RING_SIZE);
+    hc_board_log_commit_sent(written_count);
+    /* The new fact is still pending; only the serialized batch went away. */
+    assert(hc_board_log_pending() == 1);
+    written = hc_board_log_write_json(json, sizeof(json), &written_count);
+    assert(written > 0);
+    assert(written_count == 1);
+    assert(strstr(json, "\"s\":\"link_established\"") != NULL);
+
     printf("test_board_log: all assertions passed.\n");
     return 0;
 }
